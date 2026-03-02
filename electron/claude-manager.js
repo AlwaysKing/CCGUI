@@ -141,12 +141,26 @@ class ClaudeManager {
       })
     })
 
-    // Handle stderr
+    // Handle stderr - 系统状态消息
     this.process.stderr.on('data', (data) => {
       const errorMsg = data.toString()
       console.log('[ClaudeManager] stderr RAW:', JSON.stringify(errorMsg))
       if (errorMsg.trim()) {
         console.log('[ClaudeManager] stderr:', errorMsg.trim())
+
+        // 将 stderr 消息发送到前端显示
+        const statusHandlers = this.messageHandlers.get('cli-status') || []
+        statusHandlers.forEach(handler => {
+          try {
+            handler({
+              type: 'status',
+              message: errorMsg.trim()
+            })
+          } catch (error) {
+            console.error('Status handler error:', error)
+          }
+        })
+
         // Check if this is a permission prompt
         if (errorMsg.includes('Permission') || errorMsg.includes('Allow') || errorMsg.includes('Deny')) {
           console.log('[ClaudeManager] This looks like a permission prompt!')

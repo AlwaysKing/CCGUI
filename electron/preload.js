@@ -77,6 +77,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('control-request', listener)
   },
 
+  // Listen to CLI status messages (connection status, retries, errors, etc.)
+  onCliStatus: (callback) => {
+    const listener = (event, message) => callback(message)
+    ipcRenderer.on('cli-status', listener)
+    return () => ipcRenderer.removeListener('cli-status', listener)
+  },
+
   // Platform info
   platform: process.platform,
 

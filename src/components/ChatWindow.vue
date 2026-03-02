@@ -105,19 +105,45 @@ onMounted(() => {
   const controlRequestUnsub = window.electronAPI.onControlRequest((message) => {
     console.log('◀ Received (control_request):', JSON.stringify(message, null, 2))
     if (message.request && message.request.subtype === 'can_use_tool') {
-      // Clear any pending permission (control_request takes precedence)
-      pendingPermission.value = null
-      // Show permission dialog for control_request
-      pendingControlRequest.value = {
-        request_id: message.request_id,
-        tool_name: message.request.tool_name,
-        tool_input: message.request.input,
-        permission_suggestions: message.request.permission_suggestions
+      // Check if this is an AskUserQuestion request
+      if (message.request.tool_name === 'AskUserQuestion') {
+        // Show question dialog for AskUserQuestion
+        pendingQuestion.value = {
+          request_id: message.request_id,
+          tool_name: message.request.tool_name,
+          tool_input: message.request.input
+        }
+        console.log('Set pendingQuestion (from control_request):', pendingQuestion.value)
+      } else {
+        // Clear any pending permission (control_request takes precedence)
+        pendingPermission.value = null
+        // Show permission dialog for control_request
+        pendingControlRequest.value = {
+          request_id: message.request_id,
+          tool_name: message.request.tool_name,
+          tool_input: message.request.input,
+          permission_suggestions: message.request.permission_suggestions
+        }
+        console.log('Set pendingControlRequest:', pendingControlRequest.value)
       }
-      console.log('Set pendingControlRequest:', pendingControlRequest.value)
     }
   })
   unsubs.push(controlRequestUnsub)
+
+  // Listen for CLI status messages (connection status, retries, errors)
+  const cliStatusUnsub = window.electronAPI.onCliStatus((message) => {
+    console.log('◀ Received (cli-status):', message)
+    // 显示状态消息
+    if (message.message) {
+      messages.value.push({
+        role: 'status',
+        content: message.message,
+        timestamp: new Date()
+      })
+      scrollToBottom()
+    }
+  })
+  unsubs.push(cliStatusUnsub)
 
   unsubscribers = unsubs
 })
@@ -321,22 +347,16 @@ async function handleQuestionAnswer(requestId, answer) {
     scrollToBottom()
   }
 
-  const toolResult = {
-    type: 'user',
-    message: {
-      role: 'user',
-      content: [{
-        type: 'tool_result',
-        tool_use_id: requestId,
-        content: answer,
-        is_error: false
-      }]
-    }
-  }
-  console.log('▶ Sent (answer):', JSON.stringify(toolResult, null, 2))
+  console.log('▶ Sent (answer):', { requestId, answer })
 
   try {
-    await window.electronAPI.sendToolResult(requestId, answer, false)
+    // 对于 AskUserQuestion，发送 control_response 并包含答案
+    // 答案格式需要匹配 AskUserQuestion 的预期响应格式
+    await window.electronAPI.sendControlResponse(requestId, true, {
+      updatedInput: {
+        answers: { [requestId]: answer }
+      }
+    })
   } catch (error) {
     console.error('Failed to send answer:', error)
   }
@@ -352,15 +372,15 @@ async function handleQuestionAnswer(requestId, answer) {
         class="message"
         :class="message.role"
       >
-        <div class="message-avatar">
+        <div class="message-avatar" v-if="message.role !== 'status'">
           {{ message.role === 'user' ? 'U' : message.role === 'assistant' ? 'C' : 'S' }}
         </div>
-        <div class="message-content">
-          <div class="message-text">
+        <div class="message-content" :class="{ 'status-content': message.role === 'status' }">
+          <div class="message-text" :class="{ 'status-text': message.role === 'status' }">
             <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
             <div v-else>{{ message.content }}</div>
           </div>
-          <div class="message-time">
+          <div class="message-time" v-if="message.role !== 'status'">
             {{ new Date(message.timestamp).toLocaleTimeString() }}
           </div>
         </div>
@@ -499,6 +519,27 @@ async function handleQuestionAnswer(requestId, answer) {
 .message.system .message-text {
   background: #7F1D1D;
   border: 1px solid #EF4444;
+}
+
+/* Status message styles (CLI connection status, retries, etc.) */
+.message.status {
+  justify-content: center;
+  margin: 8px 0;
+}
+
+.message.status .status-content {
+  max-width: 100%;
+}
+
+.message.status .status-text {
+  background: #1E3A5F;
+  border: 1px solid #3B82F6;
+  color: #93C5FD;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  text-align: center;
+  font-family: monospace;
 }
 
 .message-time {

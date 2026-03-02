@@ -103,6 +103,11 @@ function initClaudeManager() {
     // Forward to renderer for permission dialog
     mainWindow?.webContents.send('control-request', message)
   })
+
+  // Handle CLI status messages (stderr output like connection status, retries, etc.)
+  claudeManager.on('cli-status', (message) => {
+    mainWindow?.webContents.send('cli-status', message)
+  })
 }
 
 /**

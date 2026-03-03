@@ -35,17 +35,22 @@ onMounted(() => {
   unsubs.push(resultUnsub)
 
   const systemUnsub = window.electronAPI.onSystemMessage((message) => {
-    // 打印原始系统消息
-    console.log('◀', JSON.stringify(message, null, 2))
+    // 打印系统消息
+    console.log('◀ [SYSTEM]:', JSON.stringify(message, null, 2))
   })
   unsubs.push(systemUnsub)
 
   const toolUnsub = window.electronAPI.onToolUse((message) => {
+    // 打印 tool_use 消息
+    console.log('◀ [TOOL_USE]:', JSON.stringify(message, null, 2))
     // Tool use messages handled via tool_use_request
   })
   unsubs.push(toolUnsub)
 
   const toolResultUnsub = window.electronAPI.onToolResult((message) => {
+    // 打印 tool_result 消息
+    console.log('◀ [TOOL_RESULT]:', JSON.stringify(message, null, 2))
+
     // Display tool result and reset processing state
     isProcessing.value = false
 
@@ -80,6 +85,9 @@ onMounted(() => {
 
   // Listen for tool_use requests (permission dialog or question dialog)
   const toolUseRequestUnsub = window.electronAPI.onToolUseRequest((message) => {
+    // 打印 tool_use_request 消息
+    console.log('◀ [TOOL_USE_REQUEST]:', JSON.stringify(message, null, 2))
+
     if (message.message && message.message.content) {
       const toolUseContent = message.message.content.find(c => c.type === 'tool_use')
       if (toolUseContent) {
@@ -148,7 +156,9 @@ onMounted(() => {
 
   // Listen for CLI status messages (connection status, retries, errors)
   const cliStatusUnsub = window.electronAPI.onCliStatus((message) => {
-    // CLI 状态消息不在 console 打印,只显示在界面上
+    // 打印 CLI 状态消息
+    console.log('◀ [CLI_STATUS]:', JSON.stringify(message, null, 2))
+
     // 显示状态消息
     if (message.message) {
       messages.value.push({
@@ -166,6 +176,9 @@ onMounted(() => {
   let currentThinkingMessage = null
 
   const streamEventUnsub = window.electronAPI.onStreamEvent((message) => {
+    // 打印所有 stream events 到 console
+    console.log('◀ [STREAM_EVENT]:', JSON.stringify(message, null, 2))
+
     const event = message.event
     if (!event) return
 
@@ -238,6 +251,21 @@ onMounted(() => {
     }
   })
   unsubs.push(streamEventUnsub)
+
+  // Listen for unknown/unsupported message types
+  const unknownMessageUnsub = window.electronAPI.onUnknownMessage((message) => {
+    console.log('◀ [UNKNOWN MESSAGE]:', JSON.stringify(message, null, 2))
+
+    // 在界面中显示未知消息
+    messages.value.push({
+      role: 'unknown',
+      messageType: message.type,
+      content: JSON.stringify(message, null, 2),
+      timestamp: new Date()
+    })
+    scrollToBottom()
+  })
+  unsubs.push(unknownMessageUnsub)
 
   unsubscribers = unsubs
 })
@@ -576,6 +604,14 @@ async function handleQuestionAnswer(requestId, answer) {
           </div>
           <div class="thinking-content">{{ message.content }}</div>
         </div>
+        <!-- Unknown/unsupported message -->
+        <div v-else-if="message.role === 'unknown'" class="unknown-message">
+          <div class="unknown-header">
+            <span class="unknown-icon">⚠️</span>
+            <span class="unknown-label">暂未支持的消息类型: {{ message.messageType }}</span>
+          </div>
+          <pre class="unknown-content">{{ message.content }}</pre>
+        </div>
         <!-- Regular messages -->
         <template v-else>
           <div class="message-avatar" v-if="message.role !== 'status'">
@@ -901,5 +937,50 @@ async function handleQuestionAnswer(requestId, answer) {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+}
+
+/* Unknown message styles */
+.unknown-message {
+  background: linear-gradient(135deg, #2D1F1F 0%, #1F1F1F 100%);
+  border: 1px solid #EF4444;
+  border-left: 3px solid #EF4444;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 0;
+  width: 100%;
+}
+
+.unknown-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.unknown-icon {
+  font-size: 14px;
+}
+
+.unknown-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #FCA5A5;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.unknown-content {
+  font-size: 11px;
+  color: #D4D4D4;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+  background: #18181B;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 0;
+  max-height: 300px;
+  overflow: auto;
 }
 </style>

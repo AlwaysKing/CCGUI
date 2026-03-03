@@ -91,6 +91,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('stream-event', listener)
   },
 
+  // Listen to unknown/unsupported message types
+  onUnknownMessage: (callback) => {
+    const listener = (event, message) => callback(message)
+    ipcRenderer.on('unknown-message', listener)
+    return () => ipcRenderer.removeListener('unknown-message', listener)
+  },
+
   // Platform info
   platform: process.platform,
 

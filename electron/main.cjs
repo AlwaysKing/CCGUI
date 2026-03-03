@@ -113,6 +113,12 @@ function initClaudeManager() {
   claudeManager.on('stream_event', (message) => {
     mainWindow?.webContents.send('stream-event', message)
   })
+
+  // Handle unknown/unsupported message types
+  claudeManager.on('unknown_message', (message) => {
+    console.log('[Claude Manager] ⚠️ Unknown message type:', message.type)
+    mainWindow?.webContents.send('unknown-message', message)
+  })
 }
 
 /**

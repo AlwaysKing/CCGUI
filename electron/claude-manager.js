@@ -184,7 +184,9 @@ class ClaudeManager {
    * Handle incoming messages from Claude CLI
    */
   handleMessage(message) {
-    console.log('[ClaudeManager] Received message type:', message.type)
+    // 打印完整的消息内容到 console
+    console.log('[ClaudeManager] ◀ RECEIVED MESSAGE:')
+    console.log(JSON.stringify(message, null, 2))
 
     // Handle stream_event (thinking_delta, text_delta, message_start, etc.)
     if (message.type === 'stream_event') {
@@ -218,7 +220,16 @@ class ClaudeManager {
         }
       })
     } else {
-      console.log('[ClaudeManager] No handlers for message type:', message.type)
+      // 没有处理器的消息类型，发送到前端显示
+      console.log('[ClaudeManager] ⚠️ No handlers for message type:', message.type)
+      const unknownHandlers = this.messageHandlers.get('unknown_message') || []
+      unknownHandlers.forEach(handler => {
+        try {
+          handler(message)
+        } catch (error) {
+          console.error('Unknown message handler error:', error)
+        }
+      })
     }
   }
 
@@ -228,6 +239,9 @@ class ClaudeManager {
   handleStreamEvent(message) {
     const event = message.event
     if (!event) return
+
+    // 打印 stream event 详情
+    console.log(`[ClaudeManager] 📊 Stream event: ${event.type}`)
 
     // Send all stream events to front-end
     const streamHandlers = this.messageHandlers.get('stream_event') || []

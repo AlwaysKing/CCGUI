@@ -23,21 +23,8 @@ onMounted(() => {
   const msgUnsub = window.electronAPI.onClaudeMessage((message) => {
     // 只在 web console 打印原始消息
     console.log('◀', JSON.stringify(message, null, 2))
-    if (message.message && message.message.content) {
-      // 注意: tool_use 只是为了信息展示, 实际的权限请求通过 control_request 来处理
-      // 所以这里不添加 tool_use 消息, 避免重复显示
-
-      // 只处理文本内容
-      const textContent = message.message.content.find(c => c.type === 'text')
-      if (textContent) {
-        messages.value.push({
-          role: 'assistant',
-          content: textContent.text,
-          timestamp: new Date()
-        })
-        scrollToBottom()
-      }
-    }
+    // 注意: assistant 消息现在通过 stream_event 处理，这里不再处理
+    // 只处理其他类型的消息（如果有）
   })
   unsubs.push(msgUnsub)
 
@@ -173,6 +160,84 @@ onMounted(() => {
     }
   })
   unsubs.push(cliStatusUnsub)
+
+  // Listen for stream events (thinking_delta, text_delta, etc.)
+  let currentAssistantMessage = null
+  let currentThinkingMessage = null
+
+  const streamEventUnsub = window.electronAPI.onStreamEvent((message) => {
+    const event = message.event
+    if (!event) return
+
+    // Handle message_start - reset current message tracking
+    if (event.type === 'message_start') {
+      currentAssistantMessage = null
+      currentThinkingMessage = null
+      return
+    }
+
+    // Handle content_block_start
+    if (event.type === 'content_block_start') {
+      const contentBlock = event.content_block
+      if (contentBlock?.type === 'thinking') {
+        // Start a new thinking message
+        currentThinkingMessage = {
+          role: 'thinking',
+          content: '',
+          timestamp: new Date()
+        }
+        messages.value.push(currentThinkingMessage)
+        scrollToBottom()
+      } else if (contentBlock?.type === 'text') {
+        // Start a new assistant text message
+        currentAssistantMessage = {
+          role: 'assistant',
+          content: '',
+          timestamp: new Date()
+        }
+        messages.value.push(currentAssistantMessage)
+        scrollToBottom()
+      }
+      return
+    }
+
+    // Handle content_block_delta
+    if (event.type === 'content_block_delta') {
+      const delta = event.delta
+
+      // Handle thinking_delta
+      if (delta?.type === 'thinking_delta' && delta.thinking) {
+        if (currentThinkingMessage) {
+          currentThinkingMessage.content += delta.thinking
+          scrollToBottom()
+        }
+      }
+
+      // Handle text_delta
+      if (delta?.type === 'text_delta' && delta.text) {
+        if (currentAssistantMessage) {
+          currentAssistantMessage.content += delta.text
+          scrollToBottom()
+        }
+      }
+      return
+    }
+
+    // Handle content_block_stop
+    if (event.type === 'content_block_stop') {
+      // Finalize the current block
+      return
+    }
+
+    // Handle message_stop
+    if (event.type === 'message_stop') {
+      currentAssistantMessage = null
+      currentThinkingMessage = null
+      isProcessing.value = false
+      return
+    }
+  })
+  unsubs.push(streamEventUnsub)
 
   unsubscribers = unsubs
 })
@@ -503,6 +568,14 @@ async function handleQuestionAnswer(requestId, answer) {
           :is-error="message.isError"
           :is-executing="message.isExecuting"
         />
+        <!-- Thinking message -->
+        <div v-else-if="message.role === 'thinking'" class="thinking-message">
+          <div class="thinking-header">
+            <span class="thinking-icon">💭</span>
+            <span class="thinking-label">思考中</span>
+          </div>
+          <div class="thinking-content">{{ message.content }}</div>
+        </div>
         <!-- Regular messages -->
         <template v-else>
           <div class="message-avatar" v-if="message.role !== 'status'">
@@ -789,5 +862,44 @@ async function handleQuestionAnswer(requestId, answer) {
 
 .message-text :deep(::-webkit-scrollbar-thumb:hover) {
   background: #71717A;
+}
+
+/* Thinking message styles */
+.thinking-message {
+  background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
+  border: 1px solid #3B82F6;
+  border-left: 3px solid #3B82F6;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 0;
+  width: 100%;
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.thinking-icon {
+  font-size: 14px;
+}
+
+.thinking-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #93C5FD;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.thinking-content {
+  font-size: 13px;
+  color: #A1A1AA;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
 }
 </style>

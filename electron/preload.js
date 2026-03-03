@@ -84,6 +84,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('cli-status', listener)
   },
 
+  // Listen to stream events (thinking_delta, text_delta, etc.)
+  onStreamEvent: (callback) => {
+    const listener = (event, message) => callback(message)
+    ipcRenderer.on('stream-event', listener)
+    return () => ipcRenderer.removeListener('stream-event', listener)
+  },
+
   // Platform info
   platform: process.platform,
 

@@ -186,6 +186,12 @@ class ClaudeManager {
   handleMessage(message) {
     console.log('[ClaudeManager] Received message type:', message.type)
 
+    // Handle stream_event (thinking_delta, text_delta, message_start, etc.)
+    if (message.type === 'stream_event') {
+      this.handleStreamEvent(message)
+      return
+    }
+
     // Handle control_request (permission prompts when using --permission-prompt-tool stdio)
     if (message.type === 'control_request') {
       console.log('[ClaudeManager] Control request:', message.request?.subtype)
@@ -214,6 +220,24 @@ class ClaudeManager {
     } else {
       console.log('[ClaudeManager] No handlers for message type:', message.type)
     }
+  }
+
+  /**
+   * Handle stream_event messages
+   */
+  handleStreamEvent(message) {
+    const event = message.event
+    if (!event) return
+
+    // Send all stream events to front-end
+    const streamHandlers = this.messageHandlers.get('stream_event') || []
+    streamHandlers.forEach(handler => {
+      try {
+        handler(message)
+      } catch (error) {
+        console.error('Stream event handler error:', error)
+      }
+    })
   }
 
   /**

@@ -108,6 +108,11 @@ function initClaudeManager() {
   claudeManager.on('cli-status', (message) => {
     mainWindow?.webContents.send('cli-status', message)
   })
+
+  // Handle stream events (thinking_delta, text_delta, etc.)
+  claudeManager.on('stream_event', (message) => {
+    mainWindow?.webContents.send('stream-event', message)
+  })
 }
 
 /**

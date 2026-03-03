@@ -553,40 +553,50 @@ async function handlePermissionApproveAll(requestId) {
   }
 }
 
-async function handleQuestionAnswer(requestId, answer) {
+async function handleQuestionAnswer(requestId, answers) {
   const question = pendingQuestion.value
   pendingQuestion.value = null
 
   if (question) {
-    // 获取问题和选项信息
-    const questionData = question.tool_input?.questions?.[0]
-    const questionText = questionData?.question || ''
-    const header = questionData?.header || '问题'
-    const options = questionData?.options || []
+    // answers 现在是一个数组，每个元素包含 { question, header, answer }
+    const questionsData = question.tool_input?.questions || []
 
-    // 找到选中的选项的完整信息
-    const selectedOption = options.find(opt => opt.label === answer)
-    const selectedDescription = selectedOption?.description || ''
+    // 为每个问题创建一条消息
+    answers.forEach((answerItem, index) => {
+      const questionData = questionsData[index]
+      const questionText = answerItem.question || questionData?.question || ''
+      const header = answerItem.header || questionData?.header || `问题 ${index + 1}`
+      const options = questionData?.options || []
 
-    // 添加问答消息
-    messages.value.push({
-      role: 'question',
-      header: header,
-      question: questionText,
-      options: options,
-      selectedAnswer: answer,
-      selectedDescription: selectedDescription,
-      timestamp: new Date()
+      // 找到选中的选项的完整信息
+      const selectedOption = options.find(opt => opt.label === answerItem.answer)
+      const selectedDescription = selectedOption?.description || ''
+
+      // 添加问答消息
+      messages.value.push({
+        role: 'question',
+        header: header,
+        question: questionText,
+        options: options,
+        selectedAnswer: answerItem.answer,
+        selectedDescription: selectedDescription,
+        timestamp: new Date()
+      })
     })
     scrollToBottom()
   }
 
   try {
-    // 对于 AskUserQuestion，发送 control_response 并包含答案
-    // 答案格式需要匹配 AskUserQuestion 的预期响应格式
+    // 对于 AskUserQuestion，发送 control_response 并包含所有答案
+    // 答案格式：answers 数组，包含每个问题的选择
+    const responseAnswers = answers.map(a => ({
+      question: a.question,
+      answer: a.answer
+    }))
+
     const options = {
       updatedInput: {
-        answers: { [requestId]: answer }
+        answers: responseAnswers
       }
     }
 

@@ -12,47 +12,117 @@ const emit = defineEmits(['answer'])
 
 const questions = ref([])
 const answers = ref({})
+const currentTabIndex = ref(0)
 
 onMounted(() => {
   // Parse the questions from tool input
   if (props.request.tool_input && props.request.tool_input.questions) {
     questions.value = props.request.tool_input.questions
+    // Initialize answers object with null for each question
+    questions.value.forEach((q, index) => {
+      answers.value[index] = null
+    })
   }
 })
 
 const currentQuestion = computed(() => {
-  return questions.value[0] || null
+  return questions.value[currentTabIndex.value] || null
 })
 
-function handleSelect(optionIndex) {
-  const question = currentQuestion.value
+function handleSelect(questionIndex, optionIndex) {
+  const question = questions.value[questionIndex]
   const selectedOption = question.options[optionIndex]
-  emit('answer', props.request.request_id, selectedOption.label)
+  answers.value[questionIndex] = selectedOption.label
 }
+
+function handleSubmit() {
+  // Check if all questions have been answered
+  const allAnswered = questions.value.every((q, index) => answers.value[index] !== null)
+
+  if (!allAnswered) {
+    // Show which questions are not answered
+    const unanswered = questions.value
+      .map((q, index) => answers.value[index] === null ? (q.header || `问题 ${index + 1}`) : null)
+      .filter(Boolean)
+
+    console.warn('请回答所有问题后再提交。未回答的问题:', unanswered.join(', '))
+    return
+  }
+
+  // Collect all answers
+  const allAnswers = questions.value.map((q, index) => ({
+    question: q.question,
+    header: q.header,
+    answer: answers.value[index]
+  }))
+
+  emit('answer', props.request.request_id, allAnswers)
+}
+
+function switchTab(index) {
+  currentTabIndex.value = index
+}
+
+const isAllAnswered = computed(() => {
+  return questions.value.every((q, index) => answers.value[index] !== null)
+})
 </script>
 
 <template>
-  <div class="question-dialog-overlay" v-if="currentQuestion" data-question-dialog>
+  <div class="question-dialog-overlay" v-if="questions.length > 0" data-question-dialog>
     <div class="question-bar" data-question-dialog-inner>
-      <div class="question-header">
-        <span class="icon">❓</span>
-        <span class="header-text">{{ currentQuestion.header }}</span>
+      <!-- Tab Headers -->
+      <div class="tab-headers">
+        <button
+          v-for="(question, index) in questions"
+          :key="index"
+          @click="switchTab(index)"
+          class="tab-button"
+          :class="{ active: currentTabIndex === index, answered: answers[index] !== null }"
+        >
+          <span class="tab-status">{{ answers[index] !== null ? '✓' : '○' }}</span>
+          <span class="tab-label">{{ question.header || `问题 ${index + 1}` }}</span>
+        </button>
       </div>
 
-      <div class="question-text-short">{{ currentQuestion.question }}</div>
+      <!-- Current Question Content -->
+      <div class="question-content" v-if="currentQuestion">
+        <div class="question-header">
+          <span class="icon">❓</span>
+          <span class="header-text">{{ currentQuestion.header }}</span>
+        </div>
 
-      <div class="options-list">
+        <div class="question-text-short">{{ currentQuestion.question }}</div>
+
+        <div class="options-list">
+          <button
+            v-for="(option, optionIndex) in currentQuestion.options"
+            :key="optionIndex"
+            @click="handleSelect(currentTabIndex, optionIndex)"
+            class="option-item"
+            :class="{ selected: answers[currentTabIndex] === option.label }"
+          >
+            <span class="option-marker">
+              {{ answers[currentTabIndex] === option.label ? '✓' : '○' }}
+            </span>
+            <div class="option-content">
+              <span class="option-text">{{ option.label }}</span>
+              <span v-if="option.description" class="option-description">{{ option.description }}</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <!-- Submit Button -->
+      <div class="submit-section">
         <button
-          v-for="(option, index) in currentQuestion.options"
-          :key="index"
-          @click="handleSelect(index)"
-          class="option-item"
+          @click="handleSubmit"
+          class="submit-button"
+          :class="{ enabled: isAllAnswered }"
+          :disabled="!isAllAnswered"
         >
-          <span class="option-marker">○</span>
-          <div class="option-content">
-            <span class="option-text">{{ option.label }}</span>
-            <span v-if="option.description" class="option-description">{{ option.description }}</span>
-          </div>
+          <span class="submit-text">{{ isAllAnswered ? '确定提交' : '请回答所有问题' }}</span>
+          <span class="submit-count">{{ Object.values(answers).filter(a => a !== null).length }} / {{ questions.length }}</span>
         </button>
       </div>
     </div>
@@ -68,7 +138,7 @@ function handleSelect(optionIndex) {
   z-index: 99999;
   pointer-events: none;
   width: 90%;
-  max-width: 800px;
+  max-width: 900px;
 }
 
 .question-bar {
@@ -78,6 +148,60 @@ function handleSelect(optionIndex) {
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Tab Headers */
+.tab-headers {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid #3F3F46;
+  padding-bottom: 10px;
+}
+
+.tab-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #A1A1AA;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tab-button:hover {
+  background: #3F3F46;
+  color: #E4E4E7;
+}
+
+.tab-button.active {
+  background: #F97316;
+  color: white;
+  border-color: #F97316;
+}
+
+.tab-button.answered:not(.active) {
+  color: #10B981;
+}
+
+.tab-status {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.tab-label {
+  font-weight: 500;
+}
+
+/* Question Content */
+.question-content {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -115,7 +239,6 @@ function handleSelect(optionIndex) {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 4px;
 }
 
 .option-item {
@@ -139,6 +262,11 @@ function handleSelect(optionIndex) {
   background: #1E1E1E;
 }
 
+.option-item.selected {
+  border-color: #10B981;
+  background: #064E3B;
+}
+
 .option-item:active {
   transform: scale(0.98);
 }
@@ -153,6 +281,10 @@ function handleSelect(optionIndex) {
 
 .option-item:hover .option-marker {
   color: #F97316;
+}
+
+.option-item.selected .option-marker {
+  color: #10B981;
 }
 
 .option-content {
@@ -176,5 +308,60 @@ function handleSelect(optionIndex) {
 
 .option-item:hover .option-description {
   color: #A1A1AA;
+}
+
+.option-item.selected .option-description {
+  color: #6EE7B7;
+}
+
+/* Submit Section */
+.submit-section {
+  border-top: 1px solid #3F3F46;
+  padding-top: 10px;
+}
+
+.submit-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 20px;
+  background: #18181B;
+  border: 1px solid #3F3F46;
+  border-radius: 8px;
+  color: #71717A;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: not-allowed;
+  transition: all 0.2s ease;
+}
+
+.submit-button.enabled {
+  background: #F97316;
+  border-color: #F97316;
+  color: white;
+  cursor: pointer;
+}
+
+.submit-button.enabled:hover {
+  background: #EA580C;
+  border-color: #EA580C;
+}
+
+.submit-button:active {
+  transform: scale(0.98);
+}
+
+.submit-text {
+  flex: 1;
+  text-align: center;
+}
+
+.submit-count {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
 }
 </style>

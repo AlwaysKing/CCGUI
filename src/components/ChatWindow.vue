@@ -21,10 +21,28 @@ onMounted(() => {
   const unsubs = []
 
   const msgUnsub = window.electronAPI.onClaudeMessage((message) => {
-    // 只在 web console 打印原始消息
-    console.log('◀', JSON.stringify(message, null, 2))
-    // 注意: assistant 消息现在通过 stream_event 处理，这里不再处理
-    // 只处理其他类型的消息（如果有）
+    // 打印原始消息
+    console.log('◀ [MESSAGE]:', JSON.stringify(message, null, 2))
+
+    // 如果正在使用流式事件，跳过 onClaudeMessage 处理（避免重复）
+    if (isUsingStreamEvents) {
+      console.log('  ↳ 跳过（正在使用流式事件）')
+      return
+    }
+
+    // 处理非流式消息
+    if (message.message && message.message.content) {
+      // 只处理文本内容
+      const textContent = message.message.content.find(c => c.type === 'text')
+      if (textContent) {
+        messages.value.push({
+          role: 'assistant',
+          content: textContent.text,
+          timestamp: new Date()
+        })
+        scrollToBottom()
+      }
+    }
   })
   unsubs.push(msgUnsub)
 
@@ -136,7 +154,7 @@ onMounted(() => {
           result: '',
           isError: false,
           isExecuting: true,
-          request_id: message.request_id,
+          request_id: message.request.tool_use_id || message.request_id, // 使用 tool_use_id 以便与 tool_result 关联
           timestamp: new Date()
         })
         scrollToBottom()
@@ -174,6 +192,7 @@ onMounted(() => {
   // Listen for stream events (thinking_delta, text_delta, etc.)
   let currentAssistantMessage = null
   let currentThinkingMessage = null
+  let isUsingStreamEvents = false // 标记是否使用了流式事件
 
   const streamEventUnsub = window.electronAPI.onStreamEvent((message) => {
     // 打印所有 stream events 到 console
@@ -181,6 +200,9 @@ onMounted(() => {
 
     const event = message.event
     if (!event) return
+
+    // 标记正在使用流式事件
+    isUsingStreamEvents = true
 
     // Handle message_start - reset current message tracking
     if (event.type === 'message_start') {
@@ -247,6 +269,7 @@ onMounted(() => {
       currentAssistantMessage = null
       currentThinkingMessage = null
       isProcessing.value = false
+      isUsingStreamEvents = false // 重置流式事件标志
       return
     }
   })
@@ -535,14 +558,24 @@ async function handleQuestionAnswer(requestId, answer) {
   pendingQuestion.value = null
 
   if (question) {
+    // 获取问题和选项信息
+    const questionData = question.tool_input?.questions?.[0]
+    const questionText = questionData?.question || ''
+    const header = questionData?.header || '问题'
+    const options = questionData?.options || []
+
+    // 找到选中的选项的完整信息
+    const selectedOption = options.find(opt => opt.label === answer)
+    const selectedDescription = selectedOption?.description || ''
+
+    // 添加问答消息
     messages.value.push({
-      role: 'assistant',
-      content: `❓ Question: ${question.tool_input?.questions?.[0]?.question || ''}`,
-      timestamp: new Date()
-    })
-    messages.value.push({
-      role: 'user',
-      content: `✓ Answer: ${answer}`,
+      role: 'question',
+      header: header,
+      question: questionText,
+      options: options,
+      selectedAnswer: answer,
+      selectedDescription: selectedDescription,
       timestamp: new Date()
     })
     scrollToBottom()
@@ -596,6 +629,31 @@ async function handleQuestionAnswer(requestId, answer) {
           :is-error="message.isError"
           :is-executing="message.isExecuting"
         />
+        <!-- Question message -->
+        <div v-else-if="message.role === 'question'" class="question-message">
+          <div class="question-header">
+            <span class="question-icon">❓</span>
+            <span class="question-label">{{ message.header }}</span>
+          </div>
+          <div class="question-text">{{ message.question }}</div>
+          <div class="question-options" v-if="message.options && message.options.length > 0">
+            <div class="options-label">选项：</div>
+            <div class="options-list">
+              <div
+                v-for="(option, index) in message.options"
+                :key="index"
+                class="option-item"
+                :class="{ selected: option.label === message.selectedAnswer }"
+              >
+                <span class="option-marker">{{ option.label === message.selectedAnswer ? '✓' : '○' }}</span>
+                <div class="option-content">
+                  <span class="option-text">{{ option.label }}</span>
+                  <span v-if="option.description" class="option-description">{{ option.description }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
         <!-- Thinking message -->
         <div v-else-if="message.role === 'thinking'" class="thinking-message">
           <div class="thinking-header">
@@ -937,6 +995,119 @@ async function handleQuestionAnswer(requestId, answer) {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+}
+
+/* Question message styles */
+.question-message {
+  background: linear-gradient(135deg, #1E2A1E 0%, #18181B 100%);
+  border: 1px solid #10B981;
+  border-left: 3px solid #10B981;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 0;
+  width: 100%;
+}
+
+.question-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.question-icon {
+  font-size: 14px;
+}
+
+.question-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6EE7B7;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.question-text {
+  font-size: 13px;
+  color: #E4E4E7;
+  line-height: 1.6;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #18181B;
+  border-radius: 6px;
+}
+
+.question-options {
+  margin-bottom: 12px;
+}
+
+.options-label {
+  font-size: 11px;
+  color: #71717A;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.options-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.option-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #18181B;
+  border-radius: 6px;
+  border: 1px solid #27272A;
+  transition: all 0.15s ease;
+}
+
+.option-item.selected {
+  background: #065F46;
+  border-color: #10B981;
+}
+
+.option-marker {
+  font-size: 12px;
+  color: #71717A;
+  flex-shrink: 0;
+}
+
+.option-item.selected .option-marker {
+  color: #6EE7B7;
+}
+
+.option-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.option-text {
+  font-size: 13px;
+  color: #A1A1AA;
+  flex-shrink: 0;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.option-item.selected .option-text {
+  color: #E4E4E7;
+}
+
+.option-description {
+  font-size: 12px;
+  color: #71717A;
+  line-height: 1.4;
+}
+
+.option-item.selected .option-description {
+  color: #A1A1AA;
 }
 
 /* Unknown message styles */

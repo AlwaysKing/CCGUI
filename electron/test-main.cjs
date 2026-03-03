@@ -1,13 +1,10 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
 
-console.log('=== Test Start ===')
-console.log('app:', typeof app)
-console.log('BrowserWindow:', typeof BrowserWindow)
-console.log('ipcMain:', typeof ipcMain)
+console.log('Testing ipcMain:', typeof ipcMain)
 console.log('ipcMain.handle:', typeof ipcMain?.handle)
 
 app.whenReady().then(() => {
-  console.log('App is ready!')
+  console.log('App is ready')
   const win = new BrowserWindow({
     width: 800,
     height: 600,
@@ -17,5 +14,4 @@ app.whenReady().then(() => {
     }
   })
   win.loadURL('about:blank')
-  console.log('Window created!')
 })

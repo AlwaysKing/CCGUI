@@ -209,6 +209,39 @@ class ClaudeManager {
       return
     }
 
+    // Handle user messages (which may contain tool_result from CLI)
+    if (message.type === 'user') {
+      console.log('[ClaudeManager] User message received, checking for tool_result')
+      // Check if this is a tool_result message from CLI
+      if (message.message && message.message.content) {
+        const toolResultContent = message.message.content.find(c => c.type === 'tool_result')
+        if (toolResultContent) {
+          console.log('[ClaudeManager] Found tool_result in user message:', toolResultContent.tool_use_id)
+          // Trigger tool_result event
+          const toolResultHandlers = this.messageHandlers.get('tool_result') || []
+          toolResultHandlers.forEach(handler => {
+            try {
+              handler(message)
+            } catch (error) {
+              console.error('Tool result handler error:', error)
+            }
+          })
+          return
+        }
+      }
+      // If not a tool_result, treat as unknown message
+      console.log('[ClaudeManager] User message is not a tool_result, treating as unknown')
+      const unknownHandlers = this.messageHandlers.get('unknown_message') || []
+      unknownHandlers.forEach(handler => {
+        try {
+          handler(message)
+        } catch (error) {
+          console.error('Unknown message handler error:', error)
+        }
+      })
+      return
+    }
+
     // Handle regular messages (assistant, user, etc.)
     const handlers = this.messageHandlers.get(message.type) || []
     if (handlers.length > 0) {

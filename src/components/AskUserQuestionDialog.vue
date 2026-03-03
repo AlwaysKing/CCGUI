@@ -41,14 +41,18 @@ function handleSelect(optionIndex) {
 
       <div class="question-text-short">{{ currentQuestion.question }}</div>
 
-      <div class="options-row">
+      <div class="options-list">
         <button
           v-for="(option, index) in currentQuestion.options"
           :key="index"
           @click="handleSelect(index)"
-          class="option-pill"
+          class="option-item"
         >
-          {{ option.label }}
+          <span class="option-marker">○</span>
+          <div class="option-content">
+            <span class="option-text">{{ option.label }}</span>
+            <span v-if="option.description" class="option-description">{{ option.description }}</span>
+          </div>
         </button>
       </div>
     </div>
@@ -107,32 +111,70 @@ function handleSelect(optionIndex) {
   padding: 10px 12px;
 }
 
-.options-row {
+.options-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   margin-top: 4px;
 }
 
-.option-pill {
+.option-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
   background: #18181B;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
-  padding: 8px 16px;
+  border: 1px solid #27272A;
+  border-radius: 8px;
   font-size: 13px;
   color: #E4E4E7;
   cursor: pointer;
   transition: all 0.15s ease;
-  white-space: nowrap;
+  text-align: left;
+  width: 100%;
 }
 
-.option-pill:hover {
+.option-item:hover {
   border-color: #F97316;
-  background: #27272A;
+  background: #1E1E1E;
+}
+
+.option-item:active {
+  transform: scale(0.98);
+}
+
+.option-marker {
+  font-size: 12px;
+  color: #71717A;
+  flex-shrink: 0;
+  line-height: 1.5;
+  margin-top: 1px;
+}
+
+.option-item:hover .option-marker {
   color: #F97316;
 }
 
-.option-pill:active {
-  transform: scale(0.96);
+.option-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.option-text {
+  flex-shrink: 0;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.option-description {
+  font-size: 12px;
+  color: #71717A;
+  line-height: 1.4;
+}
+
+.option-item:hover .option-description {
+  color: #A1A1AA;
 }
 </style>

@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import PermissionDialog from './PermissionDialog.vue'
 import AskUserQuestionDialog from './AskUserQuestionDialog.vue'
+import ToolUseMessage from './ToolUseMessage.vue'
 
 const messages = ref([])
 const inputMessage = ref('')
@@ -20,9 +21,13 @@ onMounted(() => {
   const unsubs = []
 
   const msgUnsub = window.electronAPI.onClaudeMessage((message) => {
-    console.log('◀ Received:', JSON.stringify(message, null, 2))
+    // 只在 web console 打印原始消息
+    console.log('◀', JSON.stringify(message, null, 2))
     if (message.message && message.message.content) {
-      // Process text content only (tool_use is handled via permission dialog)
+      // 注意: tool_use 只是为了信息展示, 实际的权限请求通过 control_request 来处理
+      // 所以这里不添加 tool_use 消息, 避免重复显示
+
+      // 只处理文本内容
       const textContent = message.message.content.find(c => c.type === 'text')
       if (textContent) {
         messages.value.push({
@@ -43,7 +48,8 @@ onMounted(() => {
   unsubs.push(resultUnsub)
 
   const systemUnsub = window.electronAPI.onSystemMessage((message) => {
-    console.log('◀ Received (system):', JSON.stringify(message, null, 2))
+    // 打印原始系统消息
+    console.log('◀', JSON.stringify(message, null, 2))
   })
   unsubs.push(systemUnsub)
 
@@ -63,13 +69,22 @@ onMounted(() => {
         const content = toolResultContent.content || ''
         const toolUseId = toolResultContent.tool_use_id
 
-        messages.value.push({
-          role: 'system',
-          content: isError
-            ? `❌ ${toolUseId} 失败: ${content}`
-            : `✅ ${toolUseId} 完成: ${content || '(无输出)'}`,
-          timestamp: new Date()
-        })
+        // 找到对应的 tool_use 消息并更新结果
+        const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === toolUseId)
+        if (toolUseMsg) {
+          toolUseMsg.isExecuting = false
+          toolUseMsg.isError = isError
+          toolUseMsg.result = content || '(无输出)'
+        } else {
+          // 如果没有找到对应的 tool_use 消息，添加为系统消息
+          messages.value.push({
+            role: 'status',
+            content: isError
+              ? `❌ ${toolUseId} 失败: ${content}`
+              : `✅ ${toolUseId} 完成: ${content || '(无输出)'}`,
+            timestamp: new Date()
+          })
+        }
         scrollToBottom()
       }
     }
@@ -103,7 +118,8 @@ onMounted(() => {
 
   // Listen for control_request (for --permission-prompt-tool stdio)
   const controlRequestUnsub = window.electronAPI.onControlRequest((message) => {
-    console.log('◀ Received (control_request):', JSON.stringify(message, null, 2))
+    // 打印原始 control_request
+    console.log('◀', JSON.stringify(message, null, 2))
     if (message.request && message.request.subtype === 'can_use_tool') {
       // Check if this is an AskUserQuestion request
       if (message.request.tool_name === 'AskUserQuestion') {
@@ -113,18 +129,31 @@ onMounted(() => {
           tool_name: message.request.tool_name,
           tool_input: message.request.input
         }
-        console.log('Set pendingQuestion (from control_request):', pendingQuestion.value)
       } else {
         // Clear any pending permission (control_request takes precedence)
         pendingPermission.value = null
+
+        // Add tool use message to chat (显示工具使用，等待权限确认)
+        messages.value.push({
+          role: 'tool_use',
+          toolName: message.request.tool_name,
+          toolInput: message.request.input,
+          result: '',
+          isError: false,
+          isExecuting: true,
+          request_id: message.request_id,
+          timestamp: new Date()
+        })
+        scrollToBottom()
+
         // Show permission dialog for control_request
         pendingControlRequest.value = {
           request_id: message.request_id,
           tool_name: message.request.tool_name,
           tool_input: message.request.input,
-          permission_suggestions: message.request.permission_suggestions
+          permission_suggestions: message.request.permission_suggestions,
+          tool_use_id: message.request.tool_use_id
         }
-        console.log('Set pendingControlRequest:', pendingControlRequest.value)
       }
     }
   })
@@ -132,7 +161,7 @@ onMounted(() => {
 
   // Listen for CLI status messages (connection status, retries, errors)
   const cliStatusUnsub = window.electronAPI.onCliStatus((message) => {
-    console.log('◀ Received (cli-status):', message)
+    // CLI 状态消息不在 console 打印,只显示在界面上
     // 显示状态消息
     if (message.message) {
       messages.value.push({
@@ -179,7 +208,8 @@ async function sendMessage() {
       content: [{ type: 'text', text: userText }]
     }
   }
-  console.log('▶ Sent:', JSON.stringify(userMessage, null, 2))
+  // 打印原始发送消息
+  console.log('▶', JSON.stringify(userMessage, null, 2))
 
   try {
     await window.electronAPI.sendMessage(userMessage)
@@ -202,53 +232,76 @@ function scrollToBottom() {
   })
 }
 
-async function handlePermissionApprove(requestId) {
+function handleEnterKey(event) {
+  // 如果正在使用输入法组合（如中文输入），不触发发送
+  if (event.isComposing) {
+    return
+  }
+  sendMessage()
+}
+
+async function handlePermissionApprove(requestId, toolName, displayDetail) {
   const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
   pendingPermission.value = null
   pendingControlRequest.value = null
 
-  if (permission) {
-    messages.value.push({
-      role: 'system',
-      content: `✅ 已允许: ${permission.tool_name}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
-  }
-
-  console.log('▶ Sent (approval):', { requestId, isControlRequest: !!controlRequest, controlRequest })
+  // 注意: 工具刚刚被批准，还没有执行完成，所以 isExecuting 应该保持 true
+  // 工具执行完成后会通过 toolResult 事件来更新状态
 
   try {
     // Check if this is a control_request (for --permission-prompt-tool stdio)
     if (controlRequest && controlRequest.request_id === requestId) {
-      console.log('Sending control_response for:', requestId)
-      // 传递权限建议规则和更新后的输入 - 使用 JSON 序列化来确保可以克隆
+      // 对于单次批准，不传递 permissionRules
+      // 这样 CLI 就不会记住这个决定，下次还会询问
       const options = {}
-      if (controlRequest.permission_suggestions && controlRequest.permission_suggestions.length > 0) {
-        options.permissionRules = JSON.parse(JSON.stringify(controlRequest.permission_suggestions))
+
+      // 添加 toolUseID (从 controlRequest.tool_use_id 获取)
+      if (controlRequest.tool_use_id) {
+        options.toolUseID = controlRequest.tool_use_id
       }
+
       // 传递工具的输入参数作为 updatedInput
       if (controlRequest.tool_input) {
         options.updatedInput = JSON.parse(JSON.stringify(controlRequest.tool_input))
       }
+
+      // 构建完整的响应消息用于日志
+      const responseMessage = {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          response: {
+            behavior: 'allow',
+            ...options
+          }
+        }
+      }
+      console.log('▶', JSON.stringify(responseMessage, null, 2))
+
       await window.electronAPI.sendControlResponse(requestId, true, options)
-      console.log('control_response sent successfully')
     } else {
       // Regular tool_use permission
-      console.log('Sending tool_result for:', requestId)
+      const responseMessage = {
+        type: 'tool_result',
+        tool_use_id: requestId,
+        content: '',
+        is_error: false
+      }
+      console.log('▶', JSON.stringify(responseMessage, null, 2))
+
       await window.electronAPI.sendToolResult(requestId, '', false)
-      console.log('tool_result sent successfully')
     }
   } catch (error) {
     console.error('Failed to send approval:', error)
-    messages.value.push({
-      role: 'system',
-      content: `❌ 发送权限响应失败: ${error.message}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
+    // 找到对应的 tool_use 消息并更新状态
+    const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === requestId)
+    if (toolUseMsg) {
+      toolUseMsg.isError = true
+      toolUseMsg.result = `发送权限响应失败: ${error.message}`
+    }
   }
 }
 
@@ -259,71 +312,126 @@ async function handlePermissionDeny(requestId) {
   pendingPermission.value = null
   pendingControlRequest.value = null
 
-  if (permission) {
-    messages.value.push({
-      role: 'system',
-      content: `❌ 已拒绝: ${permission.tool_name}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
+  // 找到对应的 tool_use 消息并更新状态
+  const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === requestId)
+  if (toolUseMsg) {
+    toolUseMsg.isExecuting = false
+    toolUseMsg.isError = true
+    toolUseMsg.result = '用户拒绝'
   }
-
-  console.log('▶ Sent (denial):', { requestId, isControlRequest: !!controlRequest, controlRequest })
 
   try {
     // Check if this is a control_request (for --permission-prompt-tool stdio)
     if (controlRequest && controlRequest.request_id === requestId) {
-      console.log('Sending denial control_response for:', requestId)
-      await window.electronAPI.sendControlResponse(requestId, false, {
+      const options = {
         reason: 'Permission denied by user'
-      })
-      console.log('Denial control_response sent successfully')
+      }
+      // 添加 toolUseID (从 controlRequest.tool_use_id 获取)
+      if (controlRequest.tool_use_id) {
+        options.toolUseID = controlRequest.tool_use_id
+      }
+
+      // 构建完整的响应消息用于日志
+      const responseMessage = {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          response: {
+            behavior: 'deny',
+            ...options
+          }
+        }
+      }
+      console.log('▶', JSON.stringify(responseMessage, null, 2))
+
+      await window.electronAPI.sendControlResponse(requestId, false, options)
     } else {
       // Regular tool_use permission
-      console.log('Sending denial tool_result for:', requestId)
+      const responseMessage = {
+        type: 'tool_result',
+        tool_use_id: requestId,
+        content: 'Permission denied by user',
+        is_error: true
+      }
+      console.log('▶', JSON.stringify(responseMessage, null, 2))
+
       await window.electronAPI.sendToolResult(requestId, 'Permission denied by user', true)
-      console.log('Denial tool_result sent successfully')
     }
   } catch (error) {
     console.error('Failed to send denial:', error)
-    messages.value.push({
-      role: 'system',
-      content: `❌ 发送拒绝响应失败: ${error.message}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
+    if (toolUseMsg) {
+      toolUseMsg.result = `发送拒绝响应失败: ${error.message}`
+    }
   }
 }
 
 async function handlePermissionApproveAll(requestId) {
   const permission = pendingPermission.value
-  pendingPermission.value = null
+  const controlRequest = pendingControlRequest.value
 
-  if (permission) {
+  pendingPermission.value = null
+  pendingControlRequest.value = null
+
+  if (permission || controlRequest) {
+    const toolName = permission?.tool_name || controlRequest?.tool_name
     messages.value.push({
       role: 'system',
-      content: `✅ 已允许 (所有): ${permission.tool_name}`,
+      content: `✅ 已允许 (所有): ${toolName}`,
       timestamp: new Date()
     })
     scrollToBottom()
   }
 
-  const toolResult = {
-    type: 'user',
-    message: {
-      role: 'user',
-      content: [{
+  try {
+    // Check if this is a control_request (for --permission-prompt-tool stdio)
+    if (controlRequest && controlRequest.request_id === requestId) {
+      // 对于 approve all，需要传递 permissionRules 来添加规则
+      // 这样 CLI 会记住这个决定，以后类似的工具调用就不会再询问
+      const options = {}
+
+      // 添加 toolUseID (从 controlRequest.tool_use_id 获取)
+      if (controlRequest.tool_use_id) {
+        options.toolUseID = controlRequest.tool_use_id
+      }
+
+      if (controlRequest.permission_suggestions && controlRequest.permission_suggestions.length > 0) {
+        // 传递完整的 permission_suggestions 数组
+        options.permissionRules = JSON.parse(JSON.stringify(controlRequest.permission_suggestions))
+      }
+      if (controlRequest.tool_input) {
+        options.updatedInput = JSON.parse(JSON.stringify(controlRequest.tool_input))
+      }
+
+      // 构建完整的响应消息用于日志
+      const responseMessage = {
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          response: {
+            behavior: 'allow',
+            toolUseID: options.toolUseID,
+            updatedInput: options.updatedInput,
+            updatedPermissions: options.permissionRules
+          }
+        }
+      }
+      console.log('▶', JSON.stringify(responseMessage, null, 2))
+
+      await window.electronAPI.sendControlResponse(requestId, true, options)
+    } else {
+      // Regular tool_use permission
+      const responseMessage = {
         type: 'tool_result',
         tool_use_id: requestId,
         content: '',
         is_error: false
-      }]
-    }
-  }
-  console.log('▶ Sent (approve all):', JSON.stringify(toolResult, null, 2))
+      }
+      console.log('▶', JSON.stringify(responseMessage, null, 2))
 
-  try {
-    await window.electronAPI.sendToolResult(requestId, '', false)
+      await window.electronAPI.sendToolResult(requestId, '', false)
+    }
   } catch (error) {
     console.error('Failed to send approve all:', error)
   }
@@ -347,16 +455,30 @@ async function handleQuestionAnswer(requestId, answer) {
     scrollToBottom()
   }
 
-  console.log('▶ Sent (answer):', { requestId, answer })
-
   try {
     // 对于 AskUserQuestion，发送 control_response 并包含答案
     // 答案格式需要匹配 AskUserQuestion 的预期响应格式
-    await window.electronAPI.sendControlResponse(requestId, true, {
+    const options = {
       updatedInput: {
         answers: { [requestId]: answer }
       }
-    })
+    }
+
+    // 构建完整的响应消息用于日志
+    const responseMessage = {
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: requestId,
+        response: {
+          behavior: 'allow',
+          ...options
+        }
+      }
+    }
+    console.log('▶', JSON.stringify(responseMessage, null, 2))
+
+    await window.electronAPI.sendControlResponse(requestId, true, options)
   } catch (error) {
     console.error('Failed to send answer:', error)
   }
@@ -372,18 +494,30 @@ async function handleQuestionAnswer(requestId, answer) {
         class="message"
         :class="message.role"
       >
-        <div class="message-avatar" v-if="message.role !== 'status'">
-          {{ message.role === 'user' ? 'U' : message.role === 'assistant' ? 'C' : 'S' }}
-        </div>
-        <div class="message-content" :class="{ 'status-content': message.role === 'status' }">
-          <div class="message-text" :class="{ 'status-text': message.role === 'status' }">
-            <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
-            <div v-else>{{ message.content }}</div>
+        <!-- Tool use message -->
+        <ToolUseMessage
+          v-if="message.role === 'tool_use'"
+          :tool-name="message.toolName"
+          :tool-input="message.toolInput"
+          :result="message.result"
+          :is-error="message.isError"
+          :is-executing="message.isExecuting"
+        />
+        <!-- Regular messages -->
+        <template v-else>
+          <div class="message-avatar" v-if="message.role !== 'status'">
+            {{ message.role === 'user' ? 'U' : message.role === 'assistant' ? 'C' : 'S' }}
           </div>
-          <div class="message-time" v-if="message.role !== 'status'">
-            {{ new Date(message.timestamp).toLocaleTimeString() }}
+          <div class="message-content" :class="{ 'status-content': message.role === 'status' }">
+            <div class="message-text" :class="{ 'status-text': message.role === 'status' }">
+              <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
+              <div v-else>{{ message.content }}</div>
+            </div>
+            <div class="message-time" v-if="message.role !== 'status'">
+              {{ new Date(message.timestamp).toLocaleTimeString() }}
+            </div>
           </div>
-        </div>
+        </template>
       </div>
       <div v-if="isProcessing" class="message assistant typing">
         <div class="message-avatar">C</div>
@@ -395,7 +529,7 @@ async function handleQuestionAnswer(requestId, answer) {
     <div class="input-area">
       <textarea
         v-model="inputMessage"
-        @keydown.enter.prevent="sendMessage"
+        @keydown.enter.prevent="handleEnterKey"
         placeholder="输入消息... (Enter 发送)"
         rows="3"
         :disabled="isProcessing || pendingPermission !== null || pendingControlRequest !== null"
@@ -517,8 +651,15 @@ async function handleQuestionAnswer(requestId, answer) {
 }
 
 .message.system .message-text {
-  background: #7F1D1D;
-  border: 1px solid #EF4444;
+  background: #374151;
+  border: 1px solid #52525B;
+  color: #a1a1aa;
+}
+
+/* Tool use message styles */
+.message.tool_use {
+  margin: 8px 0;
+  margin-left: 0;
 }
 
 /* Status message styles (CLI connection status, retries, etc.) */

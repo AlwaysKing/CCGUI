@@ -220,7 +220,7 @@ class ClaudeManager {
    * Send control response (for permission prompts with --permission-prompt-tool stdio)
    * @param {string} requestId - 请求 ID
    * @param {boolean} approved - 是否批准
-   * @param {object} options - 额外选项，可以包含 permissionRules, updatedInput 等
+   * @param {object} options - 额外选项，可以包含 toolUseID, updatedInput, permissionRules 等
    */
   sendControlResponse(requestId, approved, options = {}) {
     if (!this.process) {
@@ -232,11 +232,24 @@ class ClaudeManager {
       throw new Error('Claude process stdin is not writable')
     }
 
+    console.log('[ClaudeManager] sendControlResponse called with:', {
+      requestId,
+      approved,
+      options: JSON.stringify(options, null, 2)
+    })
+
     // 构建响应内容 - 根据 VSCode 插件分析，需要包含:
     // - behavior: 'allow' 或 'deny'
+    // - toolUseID: 工具使用ID
     // - updatedInput: 工具的输入参数（如果批准）
+    // - updatedPermissions: 权限规则数组（用于 allow all，可选）
     const responseData = {
       behavior: approved ? 'allow' : 'deny'
+    }
+
+    // 添加 toolUseID (从 options 中获取)
+    if (options.toolUseID) {
+      responseData.toolUseID = options.toolUseID
     }
 
     // 如果批准且有更新后的输入，添加到响应中
@@ -244,9 +257,17 @@ class ClaudeManager {
       responseData.updatedInput = options.updatedInput
     }
 
-    // 如果有权限规则，添加到响应中
-    if (options.permissionRules) {
-      responseData.permissionRules = options.permissionRules
+    // 如果有权限规则（非空数组），放在 updatedPermissions 数组中
+    // permissionRules 的格式是: [{type: "setMode", ...}, {type: "addDirectories", ...}]
+    // 需要将所有建议都放在 updatedPermissions 数组中
+    if (approved && options.permissionRules && Array.isArray(options.permissionRules) && options.permissionRules.length > 0) {
+      responseData.updatedPermissions = options.permissionRules
+      console.log('[ClaudeManager] Processing permission rules:', {
+        count: options.permissionRules.length,
+        rules: JSON.stringify(options.permissionRules, null, 2)
+      })
+    } else if (approved) {
+      console.log('[ClaudeManager] No permission rules (single approval only)')
     }
 
     // 正确的格式：request_id 必须在 response 对象内部，并且需要 subtype
@@ -258,6 +279,9 @@ class ClaudeManager {
         response: responseData
       }
     }
+
+    // 详细日志：显示完整的响应内容
+    console.log('[ClaudeManager] Sending FULL control_response:', JSON.stringify(responseMessage, null, 2))
     this.sendMessage(responseMessage)
   }
 

@@ -63,6 +63,8 @@ function handleSelect(optionIndex) {
   transform: translateX(-50%);
   z-index: 99999;
   pointer-events: none;
+  width: 90%;
+  max-width: 800px;
 }
 
 .question-bar {
@@ -71,12 +73,10 @@ function handleSelect(optionIndex) {
   border: 1px solid #3F3F46;
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-  max-width: 600px;
-  width: 90%;
-  padding: 12px 16px;
+  padding: 14px 18px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .question-header {
@@ -101,21 +101,25 @@ function handleSelect(optionIndex) {
 .question-text-short {
   font-size: 13px;
   color: #E4E4E7;
-  line-height: 1.4;
+  line-height: 1.5;
+  background: #18181B;
+  border-radius: 8px;
+  padding: 10px 12px;
 }
 
 .options-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .option-pill {
   background: #18181B;
   border: 1px solid #3F3F46;
   border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 8px 16px;
+  font-size: 13px;
   color: #E4E4E7;
   cursor: pointer;
   transition: all 0.15s ease;

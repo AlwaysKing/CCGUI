@@ -14,6 +14,7 @@ const pendingQuestion = ref(null)
 const pendingControlRequest = ref(null)
 const isDragOver = ref(false)
 const questionActiveTabs = ref({}) // 存储每条问答消息的 active tab
+const questionCollapsed = ref({}) // 存储每条问答消息的折叠状态
 
 // Store unsubscribe functions
 let unsubscribers = []
@@ -712,6 +713,16 @@ function getQuestionActiveTab(messageIndex) {
   return questionActiveTabs.value[messageIndex] ?? 0
 }
 
+// 切换问答消息的折叠状态
+function toggleQuestionCollapse(messageIndex) {
+  questionCollapsed.value[messageIndex] = !isQuestionCollapsed(messageIndex)
+}
+
+// 获取问答消息的折叠状态（默认折叠）
+function isQuestionCollapsed(messageIndex) {
+  return questionCollapsed.value[messageIndex] ?? true
+}
+
 // 比较两个答案对象是否一致
 function compareAnswers(userAnswers, receivedAnswers) {
   const userKeys = Object.keys(userAnswers)
@@ -848,6 +859,36 @@ async function handleQuestionAnswer(requestId, answers) {
               class="question-message"
               :class="{ 'answer-mismatch': message.resultReceived && !message.answersConsistent }"
             >
+          <!-- Header with collapse button -->
+          <div class="question-message-header">
+            <div class="question-title">
+              <span class="question-icon">❓</span>
+              <span class="question-count" v-if="message.questions && message.questions.length > 1">{{ message.questions.length }} 个问题</span>
+              <span class="question-count" v-else>问答</span>
+            </div>
+            <button
+              type="button"
+              class="collapse-button"
+              @click="toggleQuestionCollapse(index)"
+            >
+              {{ isQuestionCollapsed(index) ? '展开' : '折叠' }}
+            </button>
+          </div>
+
+          <!-- Collapsed view: show only answers -->
+          <div v-if="isQuestionCollapsed(index)" class="collapsed-answers">
+            <div
+              v-for="(q, qIdx) in message.questions"
+              :key="qIdx"
+              class="collapsed-answer-item"
+            >
+              <span class="collapsed-question-label">{{ q.header }}:</span>
+              <span class="collapsed-answer-value">{{ q.selectedAnswer || '未选择' }}</span>
+            </div>
+          </div>
+
+          <!-- Expanded view: show full content -->
+          <template v-else>
           <!-- Tab Headers (only show if multiple questions) -->
           <div v-if="message.questions && message.questions.length > 1" class="question-tab-headers">
             <button
@@ -903,6 +944,7 @@ async function handleQuestionAnswer(requestId, answers) {
               </div>
             </div>
           </div>
+          </template>
 
           <!-- Result status -->
           <div v-if="message.resultReceived" class="answer-result">
@@ -1087,6 +1129,7 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .question-message-wrapper {
+  flex: 1;
   max-width: 70%;
 }
 
@@ -1311,6 +1354,71 @@ async function handleQuestionAnswer(requestId, answers) {
   background: linear-gradient(135deg, #2E1E1E 0%, #18181B 100%);
   border-color: #EF4444;
   border-left-color: #EF4444;
+}
+
+/* Question message header */
+.question-message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #3F3F46;
+}
+
+.question-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.question-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: #6EE7B7;
+}
+
+.collapse-button {
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid #10B981;
+  border-radius: 4px;
+  color: #6EE7B7;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.collapse-button:hover {
+  background: rgba(110, 231, 183, 0.1);
+}
+
+/* Collapsed answers */
+.collapsed-answers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.collapsed-answer-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.collapsed-question-label {
+  font-size: 12px;
+  color: #A1A1AA;
+  font-weight: 500;
+  min-width: 80px;
+}
+
+.collapsed-answer-value {
+  font-size: 13px;
+  color: #6EE7B7;
+  font-weight: 500;
 }
 
 /* Answer result styles */

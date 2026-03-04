@@ -841,11 +841,13 @@ async function handleQuestionAnswer(requestId, answers) {
           :is-executing="message.isExecuting"
         />
         <!-- Question message -->
-        <div
-          v-else-if="message.role === 'question'"
-          class="question-message"
-          :class="{ 'answer-mismatch': message.resultReceived && !message.answersConsistent }"
-        >
+        <template v-else-if="message.role === 'question'">
+          <div class="message-avatar">Q</div>
+          <div class="question-message-wrapper">
+            <div
+              class="question-message"
+              :class="{ 'answer-mismatch': message.resultReceived && !message.answersConsistent }"
+            >
           <!-- Tab Headers (only show if multiple questions) -->
           <div v-if="message.questions && message.questions.length > 1" class="question-tab-headers">
             <button
@@ -929,7 +931,9 @@ async function handleQuestionAnswer(requestId, answers) {
               </div>
             </template>
           </div>
-        </div>
+            </div>
+          </div>
+        </template>
         <!-- Thinking message -->
         <div v-else-if="message.role === 'thinking'" class="thinking-message">
           <div class="thinking-header">
@@ -1074,7 +1078,15 @@ async function handleQuestionAnswer(requestId, answers) {
   background: #6366F1;
 }
 
+.message.question .message-avatar {
+  background: #059669;
+}
+
 .message-content {
+  max-width: 70%;
+}
+
+.question-message-wrapper {
   max-width: 70%;
 }
 

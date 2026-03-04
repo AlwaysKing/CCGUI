@@ -77,7 +77,9 @@ class ClaudeManager {
       '--verbose',
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
-      '--permission-prompt-tool', 'stdio'
+      '--permission-prompt-tool', 'stdio',
+      '--max-thinking-tokens', '31999',
+      '--include-partial-messages'
     ]
 
     try {

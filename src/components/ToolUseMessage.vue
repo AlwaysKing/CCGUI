@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   toolName: {
@@ -26,6 +26,16 @@ const props = defineProps({
 
 const isExpanded = ref(true)
 
+// 当工具执行完成且没有错误时，自动折叠
+watch(() => props.result, (newResult) => {
+  if (newResult && !props.isError && !props.isExecuting) {
+    // 延迟一点折叠，让用户看到完成状态
+    setTimeout(() => {
+      isExpanded.value = false
+    }, 500)
+  }
+})
+
 // 获取工具图标
 const toolIcon = computed(() => {
   const icons = {
@@ -41,7 +51,8 @@ const toolIcon = computed(() => {
     WebSearch: '🌐',
     AskUserQuestion: '❓',
     EnterPlanMode: '📋',
-    EnterWorktree: '🌳'
+    EnterWorktree: '🌳',
+    TodoWrite: '✅'
   }
   return icons[props.toolName] || '🔧'
 })
@@ -94,6 +105,20 @@ const primaryContent = computed(() => {
         value: input.query,
         description: null
       }
+    case 'TodoWrite':
+      // 显示任务列表摘要
+      const todos = input.todos || []
+      const completed = todos.filter(t => t.status === 'completed').length
+      const inProgress = todos.filter(t => t.status === 'in_progress').length
+      const pending = todos.filter(t => t.status === 'pending').length
+      return {
+        label: '任务列表',
+        value: `${todos.length} 个任务 (✓${completed} ○${pending} ◐${inProgress})`,
+        description: todos.map(t => {
+          const status = t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '◐' : '○'
+          return `${status} ${t.content}`
+        }).join('\n')
+      }
     default:
       if (input.description) {
         return { label: '描述', value: input.description, description: null }
@@ -102,23 +127,51 @@ const primaryContent = computed(() => {
   }
 })
 
+// 折叠时显示的精简摘要
+const collapsedSummary = computed(() => {
+  const input = props.toolInput
+  if (!input) return ''
+
+  switch (props.toolName) {
+    case 'Bash':
+      // 显示命令的前30个字符
+      const cmd = input.command || ''
+      return cmd.length > 40 ? cmd.substring(0, 40) + '...' : cmd
+    case 'Read':
+    case 'Edit':
+    case 'Write':
+      // 只显示文件名
+      const path = input.file_path || ''
+      const fileName = path.split('/').pop() || path
+      return fileName
+    case 'Glob':
+    case 'Grep':
+      return input.pattern || ''
+    case 'WebSearch':
+      const query = input.query || ''
+      return query.length > 40 ? query.substring(0, 40) + '...' : query
+    case 'TodoWrite':
+      const todos = input.todos || []
+      return `${todos.length} 个任务`
+    default:
+      return ''
+  }
+})
+
 // 格式化结果显示
 const formattedResult = computed(() => {
   if (!props.result) return null
-  // 限制显示长度
-  if (props.result.length > 2000) {
-    return props.result.substring(0, 2000) + '\n... (输出已截断)'
-  }
   return props.result
 })
 
-function toggleExpand() {
+function toggleExpand(event) {
+  event.stopPropagation()
   isExpanded.value = !isExpanded.value
 }
 </script>
 
 <template>
-  <div class="tool-use-card" :class="{ error: isError, executing: isExecuting }">
+  <div class="tool-use-card" :class="{ error: isError, executing: isExecuting, collapsed: !isExpanded }">
     <div class="tool-header" @click="toggleExpand">
       <div class="tool-info">
         <span class="tool-icon">{{ toolIcon }}</span>
@@ -126,6 +179,8 @@ function toggleExpand() {
         <span v-if="isExecuting" class="status-badge executing">执行中...</span>
         <span v-else-if="isError" class="status-badge error">失败</span>
         <span v-else-if="result" class="status-badge success">完成</span>
+        <!-- 折叠时显示精简摘要 -->
+        <span v-if="!isExpanded && collapsedSummary" class="collapsed-summary">{{ collapsedSummary }}</span>
       </div>
       <span class="expand-icon">{{ isExpanded ? '▼' : '▶' }}</span>
     </div>
@@ -159,6 +214,7 @@ function toggleExpand() {
   border-radius: 8px;
   overflow: hidden;
   margin: 4px 0;
+  max-width: 100%;
 }
 
 .tool-use-card.error {
@@ -169,6 +225,14 @@ function toggleExpand() {
   border-color: #3B82F6;
 }
 
+.tool-use-card.collapsed {
+  opacity: 0.85;
+}
+
+.tool-use-card.collapsed:hover {
+  opacity: 1;
+}
+
 .tool-header {
   display: flex;
   align-items: center;
@@ -177,6 +241,7 @@ function toggleExpand() {
   background: #252526;
   cursor: pointer;
   user-select: none;
+  min-width: 0;
 }
 
 .tool-header:hover {
@@ -187,16 +252,32 @@ function toggleExpand() {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .tool-icon {
   font-size: 14px;
+  flex-shrink: 0;
 }
 
 .tool-name {
   font-size: 13px;
   font-weight: 600;
   color: #E4E4E7;
+  flex-shrink: 0;
+}
+
+.collapsed-summary {
+  font-size: 12px;
+  color: #71717A;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .status-badge {
@@ -204,6 +285,7 @@ function toggleExpand() {
   padding: 2px 8px;
   border-radius: 4px;
   font-weight: 500;
+  flex-shrink: 0;
 }
 
 .status-badge.executing {
@@ -224,6 +306,8 @@ function toggleExpand() {
 .expand-icon {
   font-size: 10px;
   color: #71717A;
+  flex-shrink: 0;
+  margin-left: 8px;
 }
 
 .tool-body {
@@ -255,6 +339,13 @@ function toggleExpand() {
 
 .section-content.description {
   color: #A1A1AA;
+  white-space: pre-wrap;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  background: #18181B;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 .section-content.code {
@@ -272,7 +363,7 @@ function toggleExpand() {
   background: #18181B;
   padding: 10px 12px;
   border-radius: 6px;
-  max-height: 300px;
+  max-height: 600px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;

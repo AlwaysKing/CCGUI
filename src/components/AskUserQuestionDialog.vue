@@ -18,9 +18,13 @@ onMounted(() => {
   // Parse the questions from tool input
   if (props.request.tool_input && props.request.tool_input.questions) {
     questions.value = props.request.tool_input.questions
-    // Initialize answers object with null for each question
+    // Initialize answers based on multiSelect
     questions.value.forEach((q, index) => {
-      answers.value[index] = null
+      if (q.multiSelect) {
+        answers.value[index] = [] // 多选初始化为空数组
+      } else {
+        answers.value[index] = null // 单选初始化为 null
+      }
     })
   }
 })
@@ -32,31 +36,60 @@ const currentQuestion = computed(() => {
 function handleSelect(questionIndex, optionIndex) {
   const question = questions.value[questionIndex]
   const selectedOption = question.options[optionIndex]
-  answers.value[questionIndex] = selectedOption.label
+  const optionLabel = selectedOption.label
+
+  if (question.multiSelect) {
+    // 多选模式：切换选中状态
+    const currentAnswers = answers.value[questionIndex]
+    const index = currentAnswers.indexOf(optionLabel)
+    if (index > -1) {
+      // 取消选中
+      currentAnswers.splice(index, 1)
+    } else {
+      // 选中
+      currentAnswers.push(optionLabel)
+    }
+  } else {
+    // 单选模式：直接设置
+    answers.value[questionIndex] = optionLabel
+  }
+}
+
+// 检查问题是否已回答
+function isQuestionAnswered(index) {
+  const answer = answers.value[index]
+  if (Array.isArray(answer)) {
+    return answer.length > 0
+  }
+  return answer !== null
 }
 
 function handleSubmit() {
   // Check if all questions have been answered
-  const allAnswered = questions.value.every((q, index) => answers.value[index] !== null)
+  const allAnswered = questions.value.every((q, index) => isQuestionAnswered(index))
 
   if (!allAnswered) {
     // Show which questions are not answered
     const unanswered = questions.value
-      .map((q, index) => answers.value[index] === null ? (q.header || `问题 ${index + 1}`) : null)
+      .map((q, index) => !isQuestionAnswered(index) ? (q.header || `问题 ${index + 1}`) : null)
       .filter(Boolean)
 
     console.warn('请回答所有问题后再提交。未回答的问题:', unanswered.join(', '))
     return
   }
 
-  // Collect all answers
-  const allAnswers = questions.value.map((q, index) => ({
-    question: q.question,
-    header: q.header,
-    answer: answers.value[index]
-  }))
+  // Collect all answers - 格式为 { "问题": "答案" }，多选题答案用逗号分隔
+  const answersMap = {}
+  questions.value.forEach((q, index) => {
+    let answer = answers.value[index]
+    // 如果是多选且是数组，转换为逗号分隔的字符串
+    if (q.multiSelect && Array.isArray(answer)) {
+      answer = answer.join(',')
+    }
+    answersMap[q.question] = answer
+  })
 
-  emit('answer', props.request.request_id, allAnswers)
+  emit('answer', props.request.request_id, answersMap)
 }
 
 function switchTab(index) {
@@ -64,7 +97,7 @@ function switchTab(index) {
 }
 
 const isAllAnswered = computed(() => {
-  return questions.value.every((q, index) => answers.value[index] !== null)
+  return questions.value.every((q, index) => isQuestionAnswered(index))
 })
 </script>
 
@@ -76,12 +109,14 @@ const isAllAnswered = computed(() => {
         <button
           v-for="(question, index) in questions"
           :key="index"
-          @click="switchTab(index)"
+          type="button"
+          @click.stop="switchTab(index)"
           class="tab-button"
-          :class="{ active: currentTabIndex === index, answered: answers[index] !== null }"
+          :class="{ active: currentTabIndex === index, answered: isQuestionAnswered(index) }"
         >
-          <span class="tab-status">{{ answers[index] !== null ? '✓' : '○' }}</span>
+          <span class="tab-status">{{ isQuestionAnswered(index) ? '✓' : '○' }}</span>
           <span class="tab-label">{{ question.header || `问题 ${index + 1}` }}</span>
+          <span v-if="question.multiSelect" class="multi-badge">多选</span>
         </button>
       </div>
 
@@ -90,6 +125,7 @@ const isAllAnswered = computed(() => {
         <div class="question-header">
           <span class="icon">❓</span>
           <span class="header-text">{{ currentQuestion.header }}</span>
+          <span v-if="currentQuestion.multiSelect" class="multi-hint">(可多选)</span>
         </div>
 
         <div class="question-text-short">{{ currentQuestion.question }}</div>
@@ -100,10 +136,19 @@ const isAllAnswered = computed(() => {
             :key="optionIndex"
             @click="handleSelect(currentTabIndex, optionIndex)"
             class="option-item"
-            :class="{ selected: answers[currentTabIndex] === option.label }"
+            :class="{
+              selected: currentQuestion.multiSelect
+                ? (Array.isArray(answers[currentTabIndex]) && answers[currentTabIndex].includes(option.label))
+                : answers[currentTabIndex] === option.label
+            }"
           >
             <span class="option-marker">
-              {{ answers[currentTabIndex] === option.label ? '✓' : '○' }}
+              <template v-if="currentQuestion.multiSelect">
+                {{ Array.isArray(answers[currentTabIndex]) && answers[currentTabIndex].includes(option.label) ? '☑' : '☐' }}
+              </template>
+              <template v-else>
+                {{ answers[currentTabIndex] === option.label ? '✓' : '○' }}
+              </template>
             </span>
             <div class="option-content">
               <span class="option-text">{{ option.label }}</span>
@@ -122,7 +167,7 @@ const isAllAnswered = computed(() => {
           :disabled="!isAllAnswered"
         >
           <span class="submit-text">{{ isAllAnswered ? '确定提交' : '请回答所有问题' }}</span>
-          <span class="submit-count">{{ Object.values(answers).filter(a => a !== null).length }} / {{ questions.length }}</span>
+          <span class="submit-count">{{ questions.filter((q, i) => isQuestionAnswered(i)).length }} / {{ questions.length }}</span>
         </button>
       </div>
     </div>
@@ -160,6 +205,9 @@ const isAllAnswered = computed(() => {
   flex-wrap: wrap;
   border-bottom: 1px solid #3F3F46;
   padding-bottom: 10px;
+  pointer-events: auto;
+  position: relative;
+  z-index: 10;
 }
 
 .tab-button {
@@ -173,6 +221,9 @@ const isAllAnswered = computed(() => {
   color: #A1A1AA;
   font-size: 12px;
   cursor: pointer;
+  pointer-events: auto;
+  position: relative;
+  z-index: 10;
   transition: all 0.2s ease;
 }
 
@@ -200,6 +251,15 @@ const isAllAnswered = computed(() => {
   font-weight: 500;
 }
 
+.multi-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  background: rgba(249, 115, 22, 0.2);
+  color: #FB923C;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+
 /* Question Content */
 .question-content {
   display: flex;
@@ -224,6 +284,13 @@ const isAllAnswered = computed(() => {
   color: #F97316;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.multi-hint {
+  font-size: 11px;
+  color: #FB923C;
+  font-weight: normal;
+  text-transform: none;
 }
 
 .question-text-short {

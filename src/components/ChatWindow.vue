@@ -12,6 +12,8 @@ const messagesContainer = ref(null)
 const pendingPermission = ref(null)
 const pendingQuestion = ref(null)
 const pendingControlRequest = ref(null)
+const isDragOver = ref(false)
+const questionActiveTabs = ref({}) // 存储每条问答消息的 active tab
 
 // Store unsubscribe functions
 let unsubscribers = []
@@ -22,7 +24,7 @@ onMounted(() => {
 
   const msgUnsub = window.electronAPI.onClaudeMessage((message) => {
     // 打印原始消息
-    console.log('◀ [MESSAGE]:', JSON.stringify(message, null, 2))
+    console.log('⬅️ IN [MESSAGE]:', message.type, message.message?.role || '', message)
 
     // 如果正在使用流式事件，跳过 onClaudeMessage 处理（避免重复）
     if (isUsingStreamEvents) {
@@ -32,7 +34,7 @@ onMounted(() => {
 
     // 处理非流式消息
     if (message.message && message.message.content) {
-      // 只处理文本内容
+      // 处理文本内容
       const textContent = message.message.content.find(c => c.type === 'text')
       if (textContent) {
         messages.value.push({
@@ -41,6 +43,29 @@ onMounted(() => {
           timestamp: new Date()
         })
         scrollToBottom()
+      }
+
+      // 也处理 tool_use 内容（但排除 AskUserQuestion，它由 control_request 处理）
+      const toolUseContent = message.message.content.find(c => c.type === 'tool_use')
+      if (toolUseContent && toolUseContent.name !== 'AskUserQuestion') {
+        const toolUseId = toolUseContent.id
+
+        // 检查是否已经显示过这个 tool_use（避免与 control_request 重复）
+        const existingMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === toolUseId)
+        if (!existingMsg) {
+          // 添加工具使用消息
+          messages.value.push({
+            role: 'tool_use',
+            toolName: toolUseContent.name,
+            toolInput: toolUseContent.input,
+            result: '',
+            isError: false,
+            isExecuting: true,
+            request_id: toolUseId,
+            timestamp: new Date()
+          })
+          scrollToBottom()
+        }
       }
     }
   })
@@ -54,23 +79,86 @@ onMounted(() => {
 
   const systemUnsub = window.electronAPI.onSystemMessage((message) => {
     // 打印系统消息
-    console.log('◀ [SYSTEM]:', JSON.stringify(message, null, 2))
+    console.log('⬅️ IN [SYSTEM]:', message.subtype || message.type || '', message)
   })
   unsubs.push(systemUnsub)
 
   const toolUnsub = window.electronAPI.onToolUse((message) => {
     // 打印 tool_use 消息
-    console.log('◀ [TOOL_USE]:', JSON.stringify(message, null, 2))
-    // Tool use messages handled via tool_use_request
+    const toolName = message.message?.content?.find(c => c.type === 'tool_use')?.name || 'unknown'
+    console.log('⬅️ IN [TOOL_USE]:', toolName, message)
+
+    // 显示工具使用消息
+    if (message.message && message.message.content) {
+      const toolUseContent = message.message.content.find(c => c.type === 'tool_use')
+      if (toolUseContent) {
+        const toolUseId = toolUseContent.id
+
+        // AskUserQuestion 由 control_request 处理，不在这里创建消息
+        if (toolUseContent.name === 'AskUserQuestion') {
+          console.log('  ↳ 跳过（AskUserQuestion 由 control_request 处理）')
+          return
+        }
+
+        // 检查是否已经显示过这个 tool_use（避免与 control_request 重复）
+        const existingMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === toolUseId)
+        if (existingMsg) {
+          console.log('  ↳ 跳过（已通过 control_request 显示）')
+          return
+        }
+
+        // 添加工具使用消息
+        messages.value.push({
+          role: 'tool_use',
+          toolName: toolUseContent.name,
+          toolInput: toolUseContent.input,
+          result: '',
+          isError: false,
+          isExecuting: true,
+          request_id: toolUseId,
+          timestamp: new Date()
+        })
+        scrollToBottom()
+      }
+    }
   })
   unsubs.push(toolUnsub)
 
   const toolResultUnsub = window.electronAPI.onToolResult((message) => {
     // 打印 tool_result 消息
-    console.log('◀ [TOOL_RESULT]:', JSON.stringify(message, null, 2))
+    const hasAnswers = !!message.tool_use_result?.answers
+    console.log('⬅️ IN [TOOL_RESULT]:', hasAnswers ? 'AskUserQuestion' : 'tool_result', message)
 
     // Display tool result and reset processing state
     isProcessing.value = false
+
+    // 检查是否是 AskUserQuestion 的结果
+    if (message.tool_use_result?.answers) {
+      // tool_use_id 在 message.message.content 中
+      const toolResultContent = message.message?.content?.find(c => c.type === 'tool_result')
+      const toolUseId = toolResultContent?.tool_use_id || message.uuid
+      const receivedAnswers = message.tool_use_result.answers
+
+      console.log('AskUserQuestion result:', { toolUseId, receivedAnswers })
+
+      // 找到对应的问答消息
+      const questionMsg = messages.value.find(m => m.role === 'question' && m.tool_use_id === toolUseId)
+      if (questionMsg) {
+        // 比较答案
+        const userAnswers = questionMsg.userAnswers || {}
+        const isConsistent = compareAnswers(userAnswers, receivedAnswers)
+
+        console.log('Question message found:', { userAnswers, isConsistent })
+
+        questionMsg.resultReceived = true
+        questionMsg.answersConsistent = isConsistent
+        questionMsg.receivedAnswers = receivedAnswers
+      } else {
+        console.log('Question message not found for tool_use_id:', toolUseId)
+      }
+      scrollToBottom()
+      return
+    }
 
     if (message.message && message.message.content) {
       const toolResultContent = message.message.content.find(c => c.type === 'tool_result')
@@ -104,7 +192,8 @@ onMounted(() => {
   // Listen for tool_use requests (permission dialog or question dialog)
   const toolUseRequestUnsub = window.electronAPI.onToolUseRequest((message) => {
     // 打印 tool_use_request 消息
-    console.log('◀ [TOOL_USE_REQUEST]:', JSON.stringify(message, null, 2))
+    const toolName = message.message?.content?.find(c => c.type === 'tool_use')?.name || 'unknown'
+    console.log('⬅️ IN [TOOL_USE_REQUEST]:', toolName, message)
 
     if (message.message && message.message.content) {
       const toolUseContent = message.message.content.find(c => c.type === 'tool_use')
@@ -113,6 +202,7 @@ onMounted(() => {
           // Show question dialog for AskUserQuestion
           pendingQuestion.value = {
             request_id: toolUseContent.id,
+            tool_use_id: toolUseContent.id, // 存储 tool_use_id 以便关联 tool_result
             tool_name: toolUseContent.name,
             tool_input: toolUseContent.input
           }
@@ -132,13 +222,14 @@ onMounted(() => {
   // Listen for control_request (for --permission-prompt-tool stdio)
   const controlRequestUnsub = window.electronAPI.onControlRequest((message) => {
     // 打印原始 control_request
-    console.log('◀', JSON.stringify(message, null, 2))
+    console.log('⬅️ IN [CONTROL_REQUEST]:', message.request?.subtype || '', message.request?.tool_name || '', message)
     if (message.request && message.request.subtype === 'can_use_tool') {
       // Check if this is an AskUserQuestion request
       if (message.request.tool_name === 'AskUserQuestion') {
         // Show question dialog for AskUserQuestion
         pendingQuestion.value = {
           request_id: message.request_id,
+          tool_use_id: message.request.tool_use_id, // 存储 tool_use_id 以便关联 tool_result
           tool_name: message.request.tool_name,
           tool_input: message.request.input
         }
@@ -146,18 +237,27 @@ onMounted(() => {
         // Clear any pending permission (control_request takes precedence)
         pendingPermission.value = null
 
-        // Add tool use message to chat (显示工具使用，等待权限确认)
-        messages.value.push({
-          role: 'tool_use',
-          toolName: message.request.tool_name,
-          toolInput: message.request.input,
-          result: '',
-          isError: false,
-          isExecuting: true,
-          request_id: message.request.tool_use_id || message.request_id, // 使用 tool_use_id 以便与 tool_result 关联
-          timestamp: new Date()
-        })
-        scrollToBottom()
+        // 只有当 tool_use_id 存在时才创建 tool_use 消息
+        // 这样可以确保 request_id 与 onToolUse 中使用的 toolUseContent.id 一致
+        // 如果 tool_use_id 不存在，让 onToolUse 来创建消息
+        if (message.request.tool_use_id) {
+          // 检查是否已经存在相同的消息（避免重复）
+          const existingMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === message.request.tool_use_id)
+          if (!existingMsg) {
+            // Add tool use message to chat (显示工具使用，等待权限确认)
+            messages.value.push({
+              role: 'tool_use',
+              toolName: message.request.tool_name,
+              toolInput: message.request.input,
+              result: '',
+              isError: false,
+              isExecuting: true,
+              request_id: message.request.tool_use_id,
+              timestamp: new Date()
+            })
+            scrollToBottom()
+          }
+        }
 
         // Show permission dialog for control_request
         pendingControlRequest.value = {
@@ -175,7 +275,7 @@ onMounted(() => {
   // Listen for CLI status messages (connection status, retries, errors)
   const cliStatusUnsub = window.electronAPI.onCliStatus((message) => {
     // 打印 CLI 状态消息
-    console.log('◀ [CLI_STATUS]:', JSON.stringify(message, null, 2))
+    console.log('⬅️ IN [CLI_STATUS]:', message.subtype || message.type || '', message)
 
     // 显示状态消息
     if (message.message) {
@@ -196,9 +296,9 @@ onMounted(() => {
 
   const streamEventUnsub = window.electronAPI.onStreamEvent((message) => {
     // 打印所有 stream events 到 console
-    console.log('◀ [STREAM_EVENT]:', JSON.stringify(message, null, 2))
-
     const event = message.event
+    console.log('⬅️ IN [STREAM_EVENT]:', event?.type || 'unknown', message)
+
     if (!event) return
 
     // 标记正在使用流式事件
@@ -277,7 +377,7 @@ onMounted(() => {
 
   // Listen for unknown/unsupported message types
   const unknownMessageUnsub = window.electronAPI.onUnknownMessage((message) => {
-    console.log('◀ [UNKNOWN MESSAGE]:', JSON.stringify(message, null, 2))
+    console.log('⬅️ IN [UNKNOWN MESSAGE]:', message.type || 'unknown', message)
 
     // 在界面中显示未知消息
     messages.value.push({
@@ -325,7 +425,7 @@ async function sendMessage() {
     }
   }
   // 打印原始发送消息
-  console.log('▶', JSON.stringify(userMessage, null, 2))
+  console.log('➡️ OUT [SEND_MESSAGE]:', 'user', userMessage)
 
   try {
     await window.electronAPI.sendMessage(userMessage)
@@ -353,7 +453,52 @@ function handleEnterKey(event) {
   if (event.isComposing) {
     return
   }
+
+  // Shift+Enter 换行，Enter 发送
+  if (event.shiftKey) {
+    // 换行：不做任何处理，让默认行为发生
+    return
+  }
+
+  // Enter 发送消息
+  event.preventDefault() // 阻止换行
   sendMessage()
+}
+
+// 处理文件拖放
+function handleFileDrop(event) {
+  event.preventDefault()
+  isDragOver.value = false
+
+  const files = event.dataTransfer?.files
+  if (!files || files.length === 0) return
+
+  // 提取文件路径并添加到输入框
+  const filePaths = []
+  for (const file of files) {
+    // file.path 在 Electron 中可用，包含完整文件路径
+    if (file.path) {
+      filePaths.push(file.path)
+    }
+  }
+
+  if (filePaths.length > 0) {
+    // 如果输入框已有内容，先添加空格
+    if (inputMessage.value.trim()) {
+      inputMessage.value += ' '
+    }
+    inputMessage.value += filePaths.join(' ')
+  }
+}
+
+function handleDragEnter(event) {
+  event.preventDefault()
+  isDragOver.value = true
+}
+
+function handleDragLeave(event) {
+  event.preventDefault()
+  isDragOver.value = false
 }
 
 async function handlePermissionApprove(requestId, toolName, displayDetail) {
@@ -395,7 +540,7 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
           }
         }
       }
-      console.log('▶', JSON.stringify(responseMessage, null, 2))
+      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendControlResponse(requestId, true, options)
     } else {
@@ -406,14 +551,16 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
         content: '',
         is_error: false
       }
-      console.log('▶', JSON.stringify(responseMessage, null, 2))
+      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendToolResult(requestId, '', false)
     }
   } catch (error) {
     console.error('Failed to send approval:', error)
     // 找到对应的 tool_use 消息并更新状态
-    const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === requestId)
+    // 对于 control_request，消息使用 tool_use_id 作为 request_id
+    const searchId = controlRequest?.tool_use_id || requestId
+    const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === searchId)
     if (toolUseMsg) {
       toolUseMsg.isError = true
       toolUseMsg.result = `发送权限响应失败: ${error.message}`
@@ -429,7 +576,9 @@ async function handlePermissionDeny(requestId) {
   pendingControlRequest.value = null
 
   // 找到对应的 tool_use 消息并更新状态
-  const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === requestId)
+  // 对于 control_request，消息使用 tool_use_id 作为 request_id
+  const searchId = controlRequest?.tool_use_id || requestId
+  const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === searchId)
   if (toolUseMsg) {
     toolUseMsg.isExecuting = false
     toolUseMsg.isError = true
@@ -459,7 +608,7 @@ async function handlePermissionDeny(requestId) {
           }
         }
       }
-      console.log('▶', JSON.stringify(responseMessage, null, 2))
+      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendControlResponse(requestId, false, options)
     } else {
@@ -470,7 +619,7 @@ async function handlePermissionDeny(requestId) {
         content: 'Permission denied by user',
         is_error: true
       }
-      console.log('▶', JSON.stringify(responseMessage, null, 2))
+      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendToolResult(requestId, 'Permission denied by user', true)
     }
@@ -533,7 +682,7 @@ async function handlePermissionApproveAll(requestId) {
           }
         }
       }
-      console.log('▶', JSON.stringify(responseMessage, null, 2))
+      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendControlResponse(requestId, true, options)
     } else {
@@ -544,7 +693,7 @@ async function handlePermissionApproveAll(requestId) {
         content: '',
         is_error: false
       }
-      console.log('▶', JSON.stringify(responseMessage, null, 2))
+      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendToolResult(requestId, '', false)
     }
@@ -553,50 +702,102 @@ async function handlePermissionApproveAll(requestId) {
   }
 }
 
+// 切换问答消息的 tab
+function switchQuestionTab(messageIndex, tabIndex) {
+  questionActiveTabs.value[messageIndex] = tabIndex
+}
+
+// 获取问答消息的 active tab
+function getQuestionActiveTab(messageIndex) {
+  return questionActiveTabs.value[messageIndex] ?? 0
+}
+
+// 比较两个答案对象是否一致
+function compareAnswers(userAnswers, receivedAnswers) {
+  const userKeys = Object.keys(userAnswers)
+  const receivedKeys = Object.keys(receivedAnswers)
+
+  if (userKeys.length !== receivedKeys.length) {
+    return false
+  }
+
+  for (const key of userKeys) {
+    if (!receivedAnswers.hasOwnProperty(key)) {
+      return false
+    }
+    // 标准化答案进行比较（处理空格差异）
+    const userAnswer = String(userAnswers[key]).trim()
+    const receivedAnswer = String(receivedAnswers[key]).trim()
+    if (userAnswer !== receivedAnswer) {
+      return false
+    }
+  }
+
+  return true
+}
+
+// 检查选项是否被选中（支持数组和逗号分隔字符串两种格式）
+function isOptionSelected(question, optionLabel) {
+  if (question.multiSelect) {
+    const answer = question.selectedAnswer
+    if (Array.isArray(answer)) {
+      return answer.includes(optionLabel)
+    }
+    if (typeof answer === 'string') {
+      // 支持逗号分隔或逗号+空格分隔
+      const selectedOptions = answer.split(/,\s*/).map(s => s.trim())
+      return selectedOptions.includes(optionLabel)
+    }
+    return false
+  }
+  return optionLabel === question.selectedAnswer
+}
+
 async function handleQuestionAnswer(requestId, answers) {
   const question = pendingQuestion.value
   pendingQuestion.value = null
 
   if (question) {
-    // answers 现在是一个数组，每个元素包含 { question, header, answer }
+    // answers 是一个对象 { "问题": "答案" }
     const questionsData = question.tool_input?.questions || []
 
-    // 为每个问题创建一条消息
-    answers.forEach((answerItem, index) => {
-      const questionData = questionsData[index]
-      const questionText = answerItem.question || questionData?.question || ''
-      const header = answerItem.header || questionData?.header || `问题 ${index + 1}`
+    // 构建问题列表用于显示
+    const questionItems = questionsData.map((questionData, index) => {
+      const questionText = questionData?.question || ''
+      const header = questionData?.header || `问题 ${index + 1}`
       const options = questionData?.options || []
+      const multiSelect = questionData?.multiSelect || false
+      const selectedAnswer = answers[questionText] || ''
 
-      // 找到选中的选项的完整信息
-      const selectedOption = options.find(opt => opt.label === answerItem.answer)
-      const selectedDescription = selectedOption?.description || ''
-
-      // 添加问答消息
-      messages.value.push({
-        role: 'question',
-        header: header,
-        question: questionText,
+      return {
+        header: String(header),
+        question: String(questionText),
         options: options,
-        selectedAnswer: answerItem.answer,
-        selectedDescription: selectedDescription,
-        timestamp: new Date()
-      })
+        selectedAnswer: selectedAnswer,
+        multiSelect: multiSelect
+      }
     })
+
+    // 添加一个包含所有问题的问答消息
+    const newMessage = {
+      role: 'question',
+      tool_use_id: question.tool_use_id, // 存储 tool_use_id 以便关联 tool_result
+      questions: questionItems,
+      userAnswers: answers, // 存储用户提交的答案
+      timestamp: new Date()
+    }
+    console.log('Creating question message:', { tool_use_id: question.tool_use_id, userAnswers: answers })
+    messages.value.push(newMessage)
+
     scrollToBottom()
   }
 
   try {
     // 对于 AskUserQuestion，发送 control_response 并包含所有答案
-    // 答案格式：answers 数组，包含每个问题的选择
-    const responseAnswers = answers.map(a => ({
-      question: a.question,
-      answer: a.answer
-    }))
-
+    // 答案格式：{ "问题": "答案" }
     const options = {
       updatedInput: {
-        answers: responseAnswers
+        answers: answers
       }
     }
 
@@ -612,7 +813,7 @@ async function handleQuestionAnswer(requestId, answers) {
         }
       }
     }
-    console.log('▶', JSON.stringify(responseMessage, null, 2))
+    console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
     await window.electronAPI.sendControlResponse(requestId, true, options)
   } catch (error) {
@@ -640,28 +841,93 @@ async function handleQuestionAnswer(requestId, answers) {
           :is-executing="message.isExecuting"
         />
         <!-- Question message -->
-        <div v-else-if="message.role === 'question'" class="question-message">
-          <div class="question-header">
-            <span class="question-icon">❓</span>
-            <span class="question-label">{{ message.header }}</span>
+        <div
+          v-else-if="message.role === 'question'"
+          class="question-message"
+          :class="{ 'answer-mismatch': message.resultReceived && !message.answersConsistent }"
+        >
+          <!-- Tab Headers (only show if multiple questions) -->
+          <div v-if="message.questions && message.questions.length > 1" class="question-tab-headers">
+            <button
+              v-for="(q, qIdx) in message.questions"
+              :key="qIdx"
+              type="button"
+              class="question-tab-button"
+              :class="{ active: qIdx === getQuestionActiveTab(index) }"
+              @click="switchQuestionTab(index, qIdx)"
+            >
+              <span class="tab-status">✓</span>
+              <span class="tab-label">{{ q.header }}</span>
+            </button>
           </div>
-          <div class="question-text">{{ message.question }}</div>
-          <div class="question-options" v-if="message.options && message.options.length > 0">
-            <div class="options-label">选项：</div>
-            <div class="options-list">
-              <div
-                v-for="(option, index) in message.options"
-                :key="index"
-                class="option-item"
-                :class="{ selected: option.label === message.selectedAnswer }"
-              >
-                <span class="option-marker">{{ option.label === message.selectedAnswer ? '✓' : '○' }}</span>
-                <div class="option-content">
-                  <span class="option-text">{{ option.label }}</span>
-                  <span v-if="option.description" class="option-description">{{ option.description }}</span>
+
+          <!-- Question content -->
+          <div
+            v-for="(q, qIndex) in message.questions"
+            :key="qIndex"
+            v-show="qIndex === getQuestionActiveTab(index)"
+            class="question-content"
+          >
+            <div class="question-header">
+              <span class="question-icon">❓</span>
+              <span class="question-label">{{ q.header }}</span>
+              <span v-if="q.multiSelect" class="multi-select-hint">(可多选)</span>
+            </div>
+            <div class="question-text">{{ q.question }}</div>
+            <div class="question-options" v-if="q.options && q.options.length > 0">
+              <div class="options-label">选项：</div>
+              <div class="options-list">
+                <div
+                  v-for="(option, optIndex) in q.options"
+                  :key="optIndex"
+                  class="option-item"
+                  :class="{
+                    selected: isOptionSelected(q, option.label)
+                  }"
+                >
+                  <span class="option-marker">
+                    <template v-if="q.multiSelect">
+                      {{ isOptionSelected(q, option.label) ? '☑' : '☐' }}
+                    </template>
+                    <template v-else>
+                      {{ option.label === q.selectedAnswer ? '✓' : '○' }}
+                    </template>
+                  </span>
+                  <div class="option-content">
+                    <span class="option-text">{{ option.label }}</span>
+                    <span v-if="option.description" class="option-description">{{ option.description }}</span>
+                  </div>
                 </div>
               </div>
             </div>
+          </div>
+
+          <!-- Result status -->
+          <div v-if="message.resultReceived" class="answer-result">
+            <template v-if="message.answersConsistent">
+              <div class="result-consistent">
+                <span class="result-icon">✅</span>
+                <span class="result-text">答案已确认</span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="result-mismatch">
+                <div class="mismatch-header">
+                  <span class="result-icon">⚠️</span>
+                  <span class="result-text">答案不一致，实际收到的答案：</span>
+                </div>
+                <div class="mismatch-answers">
+                  <div
+                    v-for="(answer, questionText) in message.receivedAnswers"
+                    :key="questionText"
+                    class="mismatch-item"
+                  >
+                    <span class="mismatch-question">{{ questionText }}</span>
+                    <span class="mismatch-answer">{{ answer }}</span>
+                  </div>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
         <!-- Thinking message -->
@@ -706,8 +972,13 @@ async function handleQuestionAnswer(requestId, answers) {
     <div class="input-area">
       <textarea
         v-model="inputMessage"
-        @keydown.enter.prevent="handleEnterKey"
-        placeholder="输入消息... (Enter 发送)"
+        @keydown.enter="handleEnterKey"
+        @dragover.prevent
+        @dragenter="handleDragEnter"
+        @dragleave="handleDragLeave"
+        @drop="handleFileDrop"
+        :class="{ 'drag-over': isDragOver }"
+        placeholder="输入消息... (Enter 发送, Shift+Enter 换行，可拖拽文件)"
         rows="3"
         :disabled="isProcessing || pendingPermission !== null || pendingControlRequest !== null"
       />
@@ -903,6 +1174,12 @@ async function handleQuestionAnswer(requestId, answers) {
   opacity: 0.5;
 }
 
+.input-area textarea.drag-over {
+  border-color: #F97316;
+  background: rgba(249, 115, 22, 0.1);
+  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.2);
+}
+
 .send-button {
   padding: 12px 24px;
   background: #F97316;
@@ -1018,6 +1295,126 @@ async function handleQuestionAnswer(requestId, answers) {
   width: 100%;
 }
 
+.question-message.answer-mismatch {
+  background: linear-gradient(135deg, #2E1E1E 0%, #18181B 100%);
+  border-color: #EF4444;
+  border-left-color: #EF4444;
+}
+
+/* Answer result styles */
+.answer-result {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #3F3F46;
+}
+
+.result-consistent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #10B981;
+  font-size: 12px;
+}
+
+.result-mismatch {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mismatch-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #F87171;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.mismatch-answers {
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mismatch-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mismatch-question {
+  font-size: 11px;
+  color: #A1A1AA;
+}
+
+.mismatch-answer {
+  font-size: 12px;
+  color: #FCA5A5;
+  font-weight: 500;
+}
+
+.result-icon {
+  font-size: 12px;
+}
+
+.result-text {
+  font-weight: 500;
+}
+
+/* Question Tab Headers */
+.question-tab-headers {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #3F3F46;
+}
+
+.question-tab-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #6EE7B7;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.question-tab-button:hover {
+  background: rgba(110, 231, 183, 0.1);
+  border-color: rgba(110, 231, 183, 0.3);
+}
+
+.question-tab-button.active {
+  background: #10B981;
+  color: white;
+  border-color: #10B981;
+}
+
+.question-tab-button .tab-status {
+  font-size: 11px;
+}
+
+.question-tab-button .tab-label {
+  font-weight: 500;
+}
+
+.question-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .question-header {
   display: flex;
   align-items: center;
@@ -1035,6 +1432,13 @@ async function handleQuestionAnswer(requestId, answers) {
   color: #6EE7B7;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.multi-select-hint {
+  font-size: 11px;
+  color: #FB923C;
+  font-weight: normal;
+  text-transform: none;
 }
 
 .question-text {
@@ -1118,6 +1522,126 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .option-item.selected .option-description {
   color: #A1A1AA;
+}
+
+/* Question Result Section */
+.question-result-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #3F3F46;
+}
+
+.result-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+.result-status:hover {
+  opacity: 0.8;
+}
+
+.result-status.success {
+  background: #065F46;
+  color: #6EE7B7;
+}
+
+.result-status.error {
+  background: #7F1D1D;
+  color: #FCA5A5;
+}
+
+.result-status.mismatch {
+  background: #78350F;
+  color: #FCD34D;
+}
+
+.status-icon {
+  font-size: 11px;
+}
+
+.status-text {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.expand-arrow {
+  font-size: 9px;
+  margin-left: 4px;
+  opacity: 0.7;
+}
+
+.result-detail {
+  margin-top: 10px;
+  background: #18181B;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.detail-label {
+  font-size: 11px;
+  color: #A1A1AA;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.detail-item {
+  padding: 6px 0;
+  border-bottom: 1px solid #27272A;
+}
+
+.detail-item:last-child {
+  border-bottom: none;
+}
+
+.detail-item.match .detail-header {
+  color: #71717A;
+}
+
+.detail-item.mismatch .detail-header {
+  color: #FCA5A5;
+}
+
+.detail-header {
+  font-size: 11px;
+  color: #71717A;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.detail-values {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.detail-user {
+  font-size: 12px;
+  color: #6EE7B7;
+}
+
+.detail-item.mismatch .detail-user {
+  color: #FCA5A5;
+}
+
+.detail-claude {
+  font-size: 12px;
+  color: #93C5FD;
+}
+
+.detail-item.match .detail-claude {
+  color: #6EE7B7;
+}
+
+.detail-item.mismatch .detail-claude {
+  color: #FCD34D;
 }
 
 /* Unknown message styles */

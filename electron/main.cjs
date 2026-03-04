@@ -142,7 +142,8 @@ ipcMain.handle('get-claude-info', async () => {
   return {
     version: '1.0.0',
     tools: ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep'],
-    isReady: claudeManager?.isReady() || false
+    isReady: claudeManager?.isReady() || false,
+    workingDirectory: claudeManager?.getWorkingDirectory() || process.cwd()
   }
 })
 

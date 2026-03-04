@@ -1,9 +1,11 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import ChatWindow from './components/ChatWindow.vue'
+import ToolUseTest from './views/ToolUseTest.vue'
 
 const isClaudeReady = ref(false)
 const claudeInfo = ref(null)
+const showTestPage = ref(false)
 let initUnsub = null
 
 onMounted(async () => {
@@ -33,12 +35,20 @@ onUnmounted(() => {
   <div class="app-container">
     <header class="app-header">
       <h1>Claude Code GUI</h1>
-      <div class="status" :class="{ ready: isClaudeReady }">
-        {{ isClaudeReady ? '● 已连接' : '○ 连接中...' }}
+      <div class="header-right">
+        <button class="test-toggle" @click="showTestPage = !showTestPage">
+          {{ showTestPage ? '返回聊天' : '测试样式' }}
+        </button>
+        <div class="status" :class="{ ready: isClaudeReady }">
+          {{ isClaudeReady ? '● 已连接' : '○ 连接中...' }}
+        </div>
       </div>
     </header>
     <main class="app-main">
-      <ChatWindow v-if="isClaudeReady" />
+      <!-- 测试页面 -->
+      <ToolUseTest v-if="showTestPage" />
+      <!-- 正常聊天页面 -->
+      <ChatWindow v-else-if="isClaudeReady" />
       <div v-else class="loading">
         <p>正在连接 Claude...</p>
         <p class="loading-sub">请确保已安装 Claude Code CLI</p>
@@ -85,6 +95,28 @@ body {
   margin: 0;
   font-size: 20px;
   color: #F97316;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.test-toggle {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #3B82F6;
+  background: transparent;
+  color: #3B82F6;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.test-toggle:hover {
+  background: #3B82F6;
+  color: white;
 }
 
 .status {

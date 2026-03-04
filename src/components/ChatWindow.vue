@@ -14,12 +14,22 @@ const pendingQuestion = ref(null)
 const pendingControlRequest = ref(null)
 const isDragOver = ref(false)
 const questionActiveTabs = ref({}) // 存储每条问答消息的 active tab
+const workingDirectory = ref('') // 工作目录
 let previousMessageCount = 0 // 追踪之前的消息数量
 
 // Store unsubscribe functions
 let unsubscribers = []
 
-onMounted(() => {
+onMounted(async () => {
+  // Get working directory
+  try {
+    const info = await window.electronAPI.getClaudeInfo()
+    workingDirectory.value = info.workingDirectory || ''
+    console.log('Working directory:', workingDirectory.value)
+  } catch (error) {
+    console.error('Failed to get working directory:', error)
+  }
+
   // Listen to Claude messages
   const unsubs = []
 
@@ -929,6 +939,7 @@ async function handleQuestionAnswer(requestId, answers) {
               :is-error="message.isError"
               :is-executing="message.isExecuting"
               :collapsed="message.collapsed"
+              :working-directory="workingDirectory"
               @toggle-collapse="() => handleToolToggleCollapse(message)"
             />
           </div>

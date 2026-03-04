@@ -12,6 +12,14 @@ class ClaudeManager {
     this.messageHandlers = new Map()
     this.claudePath = null
     this.pendingPermissions = new Map()
+    this.workingDirectory = process.cwd()
+  }
+
+  /**
+   * Get the working directory
+   */
+  getWorkingDirectory() {
+    return this.workingDirectory
   }
 
   /**

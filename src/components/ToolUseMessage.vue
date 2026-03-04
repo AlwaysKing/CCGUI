@@ -209,20 +209,23 @@ function toggleExpand(event) {
 
 <style scoped>
 .tool-use-card {
-  background: #1E1E1E;
-  border: 1px solid #333;
+  background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
+  border: 1px solid #3B82F6;
+  border-left: 3px solid #3B82F6;
   border-radius: 8px;
   overflow: hidden;
-  margin: 4px 0;
+  margin: 8px 0;
   max-width: 100%;
 }
 
 .tool-use-card.error {
-  border-color: #52525B;
+  border-color: #EF4444;
+  border-left-color: #EF4444;
 }
 
 .tool-use-card.executing {
   border-color: #3B82F6;
+  border-left-color: #3B82F6;
 }
 
 .tool-use-card.collapsed {

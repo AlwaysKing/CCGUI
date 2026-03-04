@@ -843,14 +843,18 @@ async function handleQuestionAnswer(requestId, answers) {
         :class="message.role"
       >
         <!-- Tool use message -->
-        <ToolUseMessage
-          v-if="message.role === 'tool_use'"
-          :tool-name="message.toolName"
-          :tool-input="message.toolInput"
-          :result="message.result"
-          :is-error="message.isError"
-          :is-executing="message.isExecuting"
-        />
+        <template v-if="message.role === 'tool_use'">
+          <div class="message-avatar">T</div>
+          <div class="tool-use-message-wrapper">
+            <ToolUseMessage
+              :tool-name="message.toolName"
+              :tool-input="message.toolInput"
+              :result="message.result"
+              :is-error="message.isError"
+              :is-executing="message.isExecuting"
+            />
+          </div>
+        </template>
         <!-- Question message -->
         <template v-else-if="message.role === 'question'">
           <div class="message-avatar">Q</div>
@@ -1124,11 +1128,20 @@ async function handleQuestionAnswer(requestId, answers) {
   background: #059669;
 }
 
+.message.tool_use .message-avatar {
+  background: #3B82F6;
+}
+
 .message-content {
   max-width: 70%;
 }
 
 .question-message-wrapper {
+  flex: 1;
+  max-width: 70%;
+}
+
+.tool-use-message-wrapper {
   flex: 1;
   max-width: 70%;
 }

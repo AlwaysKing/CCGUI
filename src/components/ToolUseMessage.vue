@@ -1,5 +1,7 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
+
+const emit = defineEmits(['toggle-collapse'])
 
 const props = defineProps({
   toolName: {
@@ -21,20 +23,14 @@ const props = defineProps({
   isExecuting: {
     type: Boolean,
     default: false
+  },
+  collapsed: {
+    type: Boolean,
+    default: false
   }
 })
 
-const isExpanded = ref(true)
-
-// 当工具执行完成且没有错误时，自动折叠
-watch(() => props.result, (newResult) => {
-  if (newResult && !props.isError && !props.isExecuting) {
-    // 延迟一点折叠，让用户看到完成状态
-    setTimeout(() => {
-      isExpanded.value = false
-    }, 500)
-  }
-})
+const isExpanded = computed(() => !props.collapsed)
 
 // 获取工具图标
 const toolIcon = computed(() => {
@@ -106,18 +102,22 @@ const primaryContent = computed(() => {
         description: null
       }
     case 'TodoWrite':
-      // 显示任务列表摘要
+      // 显示任务列表
       const todos = input.todos || []
       const completed = todos.filter(t => t.status === 'completed').length
       const inProgress = todos.filter(t => t.status === 'in_progress').length
       const pending = todos.filter(t => t.status === 'pending').length
+
+      // 格式化每个任务，使用更清晰的状态标识
+      const formattedTodos = todos.map(t => {
+        const status = t.status === 'completed' ? '✅' : t.status === 'in_progress' ? '🔄' : '⏳'
+        return `${status}  ${t.content}`
+      }).join('<br>')
+
       return {
-        label: '任务列表',
-        value: `${todos.length} 个任务 (✓${completed} ○${pending} ◐${inProgress})`,
-        description: todos.map(t => {
-          const status = t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '◐' : '○'
-          return `${status} ${t.content}`
-        }).join('\n')
+        label: `${todos.length} 个任务 (✅${completed} ⏳${pending} 🔄${inProgress})`,
+        value: formattedTodos,
+        description: null
       }
     default:
       if (input.description) {
@@ -152,7 +152,35 @@ const collapsedSummary = computed(() => {
       return query.length > 40 ? query.substring(0, 40) + '...' : query
     case 'TodoWrite':
       const todos = input.todos || []
-      return `${todos.length} 个任务`
+      if (todos.length === 0) return '无任务'
+
+      // 格式化每个任务，和展开时一样的样式
+      const formattedTodos = todos.map(t => {
+        const status = t.status === 'completed' ? '✅' : t.status === 'in_progress' ? '🔄' : '⏳'
+        return `${status}  ${t.content}`
+      }).join('<br>')
+
+      // 如果所有任务都完成，只显示最后一步
+      const allCompleted = todos.every(t => t.status === 'completed')
+      if (allCompleted) {
+        return formattedTodos.split('<br>')[todos.length - 1]
+      }
+
+      // 如果第一个任务正在进行，只显示执行中的任务
+      const firstTodo = todos[0]
+      if (firstTodo?.status === 'in_progress') {
+        return formattedTodos.split('<br>')[0]
+      }
+
+      // 如果有任务正在进行，找到正在进行的任务和它的前一个已完成任务
+      const inProgressIndex = todos.findIndex(t => t.status === 'in_progress')
+      if (inProgressIndex !== -1 && inProgressIndex > 0) {
+        const lastCompletedIndex = inProgressIndex - 1
+        return [formattedTodos.split('<br>')[lastCompletedIndex], formattedTodos.split('<br>')[inProgressIndex]].join('<br>')
+      }
+
+      // 默认显示第一个任务
+      return formattedTodos.split('<br>')[0]
     default:
       return ''
   }
@@ -164,9 +192,8 @@ const formattedResult = computed(() => {
   return props.result
 })
 
-function toggleExpand(event) {
-  event.stopPropagation()
-  isExpanded.value = !isExpanded.value
+function toggleExpand() {
+  emit('toggle-collapse')
 }
 </script>
 
@@ -179,10 +206,11 @@ function toggleExpand(event) {
         <span v-if="isExecuting" class="status-badge executing">执行中...</span>
         <span v-else-if="isError" class="status-badge error">失败</span>
         <span v-else-if="result" class="status-badge success">完成</span>
-        <!-- 折叠时显示精简摘要 -->
-        <span v-if="!isExpanded && collapsedSummary" class="collapsed-summary">{{ collapsedSummary }}</span>
       </div>
       <span class="expand-icon">{{ isExpanded ? '▼' : '▶' }}</span>
+    </div>
+    <!-- 折叠时显示精简摘要 -->
+    <div v-if="!isExpanded && collapsedSummary" class="collapsed-summary-line" :class="{ 'todo-collapsed': props.toolName === 'TodoWrite' }" @click="toggleExpand" v-html="collapsedSummary">
     </div>
 
     <div v-if="isExpanded" class="tool-body">
@@ -194,8 +222,14 @@ function toggleExpand(event) {
 
       <!-- 主要内容 -->
       <div v-if="primaryContent" class="tool-section">
-        <div class="section-label">{{ primaryContent.label }}</div>
-        <div class="section-content code">{{ primaryContent.value }}</div>
+        <div class="section-label" :class="{ 'todo-label': props.toolName === 'TodoWrite' }">{{ primaryContent.label }}</div>
+        <!-- TodoWrite 专用样式 -->
+        <template v-if="props.toolName === 'TodoWrite'">
+          <div class="section-content todo-list" v-html="primaryContent.value"></div>
+        </template>
+        <template v-else>
+          <div class="section-content todo-list">{{ primaryContent.value }}</div>
+        </template>
       </div>
 
       <!-- 结果 -->
@@ -257,7 +291,6 @@ function toggleExpand(event) {
   gap: 10px;
   flex: 1;
   min-width: 0;
-  overflow: hidden;
 }
 
 .tool-icon {
@@ -272,15 +305,29 @@ function toggleExpand(event) {
   flex-shrink: 0;
 }
 
-.collapsed-summary {
+.collapsed-summary-line {
+  padding: 8px 14px;
   font-size: 12px;
-  color: #71717A;
+  color: #94A3B8;
   font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
-  min-width: 0;
+  border-top: 1px solid rgba(59, 130, 246, 0.15);
+  cursor: pointer;
+  background: rgba(59, 130, 246, 0.03);
+}
+
+.collapsed-summary-line:hover {
+  background: rgba(59, 130, 246, 0.06);
+}
+
+/* TodoWrite 折叠时允许多行显示 */
+.collapsed-summary-line.todo-collapsed {
+  white-space: pre-wrap;
+  line-height: 1.6;
+  padding: 10px 14px;
+  font-size: 13px;
 }
 
 .status-badge {
@@ -334,6 +381,16 @@ function toggleExpand(event) {
   letter-spacing: 0.05em;
 }
 
+/* TodoWrite 标签样式 */
+.section-label.todo-label {
+  font-size: 13px;
+  color: #60A5FA;
+  font-weight: 600;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .section-content {
   font-size: 12px;
   color: #D4D4D4;
@@ -359,6 +416,28 @@ function toggleExpand(event) {
   color: #93C5FD;
   word-break: break-all;
   white-space: pre-wrap;
+}
+
+.section-content.todo-list {
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+  padding: 14px 16px;
+  border-radius: 8px;
+  color: #F8FAFC;
+  font-size: 15px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* 任务之间的间距增强 */
+.section-content.todo-list .task-separator {
+  display: block;
+  height: 1px;
+  background: rgba(59, 130, 246, 0.1);
+  margin: 4px 0;
 }
 
 .section-content.result {

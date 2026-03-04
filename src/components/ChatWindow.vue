@@ -14,7 +14,7 @@ const pendingQuestion = ref(null)
 const pendingControlRequest = ref(null)
 const isDragOver = ref(false)
 const questionActiveTabs = ref({}) // 存储每条问答消息的 active tab
-const questionCollapsed = ref({}) // 存储每条问答消息的折叠状态
+let previousMessageCount = 0 // 追踪之前的消息数量
 
 // Store unsubscribe functions
 let unsubscribers = []
@@ -63,6 +63,7 @@ onMounted(() => {
             isError: false,
             isExecuting: true,
             request_id: toolUseId,
+            collapsed: false,
             timestamp: new Date()
           })
           scrollToBottom()
@@ -254,6 +255,7 @@ onMounted(() => {
               isError: false,
               isExecuting: true,
               request_id: message.request.tool_use_id,
+              collapsed: false,
               timestamp: new Date()
             })
             scrollToBottom()
@@ -403,6 +405,53 @@ onUnmounted(() => {
   })
 })
 
+// 监听消息变化，当有新消息时自动折叠之前已完成的消息
+watch(() => messages.value, async (newMessages) => {
+  const newLength = newMessages?.length || 0
+  console.log('[watch] 消息数量变化:', previousMessageCount, '->', newLength)
+
+  if (newLength > previousMessageCount && newLength > 1) {
+    console.log('[watch] 有新消息添加，准备自动折叠')
+    // 等待 DOM 更新完成
+    await nextTick()
+
+    // 有新消息添加，自动折叠之前已完成的消息
+    const lastIndex = newLength - 1
+    let collapsedCount = 0
+
+    newMessages.forEach((message, index) => {
+      // 不折叠最后一条消息
+      if (index === lastIndex) return
+
+      // 只处理有 collapsed 属性的消息
+      if (!message.hasOwnProperty('collapsed')) return
+
+      // 跳过手动展开的消息
+      if (message.manuallyExpanded) {
+        console.log('[watch] 跳过手动展开的消息')
+        return
+      }
+
+      // 折叠已完成的 tool_use 消息
+      if (message.role === 'tool_use' && message.result && !message.isError && !message.isExecuting) {
+        console.log('[watch] 折叠 tool_use:', message.toolName)
+        message.collapsed = true
+        collapsedCount++
+      }
+
+      // 折叠已完成的 question 消息
+      if (message.role === 'question' && message.resultReceived) {
+        console.log('[watch] 折叠 question')
+        message.collapsed = true
+        collapsedCount++
+      }
+    })
+
+    console.log('[watch] 折叠了', collapsedCount, '条已完成消息')
+  }
+  previousMessageCount = newLength
+}, { deep: true })
+
 async function sendMessage() {
   if (!inputMessage.value.trim() || isProcessing.value) return
 
@@ -415,7 +464,7 @@ async function sendMessage() {
 
   inputMessage.value = ''
   isProcessing.value = true
-  scrollToBottom()
+  scrollToBottom(true) // 用户发送消息时强制滚动
 
   // Send to Claude
   const userMessage = {
@@ -441,11 +490,22 @@ async function sendMessage() {
   }
 }
 
-function scrollToBottom() {
+function scrollToBottom(forceScroll = false) {
   nextTick(() => {
-    if (messagesContainer.value) {
-      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+    if (!messagesContainer.value) return
+
+    // 如果不强制滚动，检查当前是否接近底部
+    if (!forceScroll) {
+      const container = messagesContainer.value
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50
+
+      if (!isNearBottom) {
+        console.log('[scrollToBottom] 滚动条不在底部，不自动滚动')
+        return
+      }
     }
+
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
   })
 }
 
@@ -713,14 +773,29 @@ function getQuestionActiveTab(messageIndex) {
   return questionActiveTabs.value[messageIndex] ?? 0
 }
 
+// 切换工具使用消息的折叠状态
+function handleToolToggleCollapse(message) {
+  if (message) {
+    message.collapsed = !message.collapsed
+    // 标记为手动操作
+    message.manuallyExpanded = !message.collapsed
+  }
+}
+
 // 切换问答消息的折叠状态
 function toggleQuestionCollapse(messageIndex) {
-  questionCollapsed.value[messageIndex] = !isQuestionCollapsed(messageIndex)
+  const message = messages.value[messageIndex]
+  if (message) {
+    message.collapsed = !message.collapsed
+    // 标记为手动操作
+    message.manuallyExpanded = !message.collapsed
+  }
 }
 
 // 获取问答消息的折叠状态（默认折叠）
 function isQuestionCollapsed(messageIndex) {
-  return questionCollapsed.value[messageIndex] ?? true
+  const message = messages.value[messageIndex]
+  return message?.collapsed ?? true
 }
 
 // 比较两个答案对象是否一致
@@ -795,12 +870,13 @@ async function handleQuestionAnswer(requestId, answers) {
       tool_use_id: question.tool_use_id, // 存储 tool_use_id 以便关联 tool_result
       questions: questionItems,
       userAnswers: answers, // 存储用户提交的答案
+      collapsed: false,
       timestamp: new Date()
     }
     console.log('Creating question message:', { tool_use_id: question.tool_use_id, userAnswers: answers })
     messages.value.push(newMessage)
 
-    scrollToBottom()
+    scrollToBottom(true) // 用户提交答案时强制滚动
   }
 
   try {
@@ -852,6 +928,8 @@ async function handleQuestionAnswer(requestId, answers) {
               :result="message.result"
               :is-error="message.isError"
               :is-executing="message.isExecuting"
+              :collapsed="message.collapsed"
+              @toggle-collapse="() => handleToolToggleCollapse(message)"
             />
           </div>
         </template>
@@ -869,6 +947,8 @@ async function handleQuestionAnswer(requestId, answers) {
               <span class="question-icon">❓</span>
               <span class="question-count" v-if="message.questions && message.questions.length > 1">{{ message.questions.length }} 个问题</span>
               <span class="question-count" v-else>问答</span>
+              <span v-if="message.resultReceived && message.answersConsistent" class="status-badge success">答案已确认</span>
+              <span v-else-if="message.resultReceived && !message.answersConsistent" class="status-badge warning">答案不一致</span>
             </div>
             <button
               type="button"
@@ -881,14 +961,16 @@ async function handleQuestionAnswer(requestId, answers) {
 
           <!-- Collapsed view: show only answers -->
           <div v-if="isQuestionCollapsed(index)" class="collapsed-answers">
-            <div
+            <template
               v-for="(q, qIdx) in message.questions"
               :key="qIdx"
-              class="collapsed-answer-item"
             >
-              <span class="collapsed-question-label">{{ q.header }}:</span>
-              <span class="collapsed-answer-value">{{ q.selectedAnswer || '未选择' }}</span>
-            </div>
+              <div class="collapsed-answer-item">
+                <span class="collapsed-question-label">{{ q.header }}:</span>
+                <span class="collapsed-answer-content">{{ q.selectedAnswer || '未选择' }}</span>
+              </div>
+              <span v-if="qIdx < message.questions.length - 1" class="collapsed-answer-separator">|</span>
+            </template>
           </div>
 
           <!-- Expanded view: show full content -->
@@ -950,32 +1032,24 @@ async function handleQuestionAnswer(requestId, answers) {
           </div>
           </template>
 
-          <!-- Result status -->
-          <div v-if="message.resultReceived" class="answer-result">
-            <template v-if="message.answersConsistent">
-              <div class="result-consistent">
-                <span class="result-icon">✅</span>
-                <span class="result-text">答案已确认</span>
+          <!-- Result status (only show expanded with mismatch) -->
+          <div v-if="!isQuestionCollapsed(index) && message.resultReceived && !message.answersConsistent" class="answer-result">
+            <div class="result-mismatch">
+              <div class="mismatch-header">
+                <span class="result-icon">⚠️</span>
+                <span class="result-text">实际收到的答案：</span>
               </div>
-            </template>
-            <template v-else>
-              <div class="result-mismatch">
-                <div class="mismatch-header">
-                  <span class="result-icon">⚠️</span>
-                  <span class="result-text">答案不一致，实际收到的答案：</span>
-                </div>
-                <div class="mismatch-answers">
-                  <div
-                    v-for="(answer, questionText) in message.receivedAnswers"
-                    :key="questionText"
-                    class="mismatch-item"
-                  >
-                    <span class="mismatch-question">{{ questionText }}</span>
-                    <span class="mismatch-answer">{{ answer }}</span>
-                  </div>
+              <div class="mismatch-answers">
+                <div
+                  v-for="(answer, questionText) in message.receivedAnswers"
+                  :key="questionText"
+                  class="mismatch-item"
+                >
+                  <span class="mismatch-question">{{ questionText }}</span>
+                  <span class="mismatch-answer">{{ answer }}</span>
                 </div>
               </div>
-            </template>
+            </div>
           </div>
             </div>
           </div>
@@ -1391,6 +1465,24 @@ async function handleQuestionAnswer(requestId, answers) {
   color: #6EE7B7;
 }
 
+/* Status badge in question title */
+.question-title .status-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.question-title .status-badge.success {
+  background: #065F46;
+  color: #6EE7B7;
+}
+
+.question-title .status-badge.warning {
+  background: #713F12;
+  color: #FCD34D;
+}
+
 .collapse-button {
   padding: 4px 12px;
   background: transparent;
@@ -1410,28 +1502,43 @@ async function handleQuestionAnswer(requestId, answers) {
 /* Collapsed answers */
 .collapsed-answers {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+  flex-wrap: wrap;
 }
 
 .collapsed-answer-item {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 0;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: rgba(59, 130, 246, 0.06);
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.12);
 }
 
 .collapsed-question-label {
   font-size: 12px;
-  color: #A1A1AA;
-  font-weight: 500;
-  min-width: 80px;
+  color: #6EE7B7;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
-.collapsed-answer-value {
+.collapsed-answer-content {
   font-size: 13px;
-  color: #6EE7B7;
+  color: #F1F5F9;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
   font-weight: 500;
+}
+
+.collapsed-answer-separator {
+  color: #475569;
+  font-size: 14px;
+  font-weight: 300;
+  margin: 0 4px;
 }
 
 /* Answer result styles */

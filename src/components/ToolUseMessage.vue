@@ -6,19 +6,21 @@ const emit = defineEmits(['toggle-collapse'])
 // 检测是否为空的 old_string（文件末尾添加内容）
 const isAddOperation = computed(() => {
   if (props.toolName !== 'Edit') return false
-  return props.toolInput?.old_string === '' || props.toolInput?.old_string === null || props.toolInput?.old_string === undefined
+  const input = mergedToolInput.value
+  return input?.old_string === '' || input?.old_string === null || input?.old_string === undefined
 })
 
 // 检测是否为空的 new_string（删除内容）
 const isDeleteOperation = computed(() => {
   if (props.toolName !== 'Edit') return false
-  return props.toolInput?.new_string === '' || props.toolInput?.new_string === null || props.toolInput?.new_string === undefined
+  const input = mergedToolInput.value
+  return input?.new_string === '' || input?.new_string === null || input?.new_string === undefined
 })
 
 // Edit 工具的 diff 数据
 const editDiffData = computed(() => {
   if (props.toolName !== 'Edit') return null
-  const input = props.toolInput
+  const input = mergedToolInput.value
   if (!input) return null
 
   const oldStr = input.old_string || ''
@@ -40,7 +42,7 @@ const editDiffData = computed(() => {
 // Write 工具的内容数据
 const writeContentData = computed(() => {
   if (props.toolName !== 'Write') return null
-  const input = props.toolInput
+  const input = mergedToolInput.value
   if (!input) return null
 
   const content = input.content || ''
@@ -57,7 +59,7 @@ const writeContentData = computed(() => {
 // Bash 工具的数据
 const bashData = computed(() => {
   if (props.toolName !== 'Bash') return null
-  const input = props.toolInput
+  const input = mergedToolInput.value
   if (!input) return null
 
   return {
@@ -71,7 +73,7 @@ const bashData = computed(() => {
 // Agent 工具的数据
 const agentData = computed(() => {
   if (props.toolName !== 'Agent') return null
-  const input = props.toolInput
+  const input = mergedToolInput.value
   if (!input) return null
 
   return {
@@ -84,7 +86,7 @@ const agentData = computed(() => {
 // WebSearch 工具的数据
 const webSearchData = computed(() => {
   if (props.toolName !== 'WebSearch') return null
-  const input = props.toolInput
+  const input = mergedToolInput.value
   if (!input) return null
 
   return {
@@ -97,7 +99,7 @@ const webSearchData = computed(() => {
 // Grep 工具的数据
 const grepData = computed(() => {
   if (props.toolName !== 'Grep') return null
-  const input = props.toolInput
+  const input = mergedToolInput.value
   if (!input) return null
 
   return {
@@ -115,7 +117,7 @@ const grepData = computed(() => {
 // Skill 工具的数据
 const skillData = computed(() => {
   if (props.toolName !== 'Skill') return null
-  const input = props.toolInput
+  const input = mergedToolInput.value
   if (!input) return null
 
   return {
@@ -152,10 +154,34 @@ const props = defineProps({
   workingDirectory: {
     type: String,
     default: ''
+  },
+  isPartial: {
+    type: Boolean,
+    default: false
+  },
+  rawMessages: {
+    type: Array,
+    default: () => []
   }
 })
 
 const isExpanded = computed(() => !props.collapsed)
+
+// 合并部分消息中的 tool_input
+const mergedToolInput = computed(() => {
+  const toolInput = props.toolInput || {}
+
+  console.log('[ToolUseMessage] mergedToolInput computed:', {
+    toolName: props.toolName,
+    isPartial: props.isPartial,
+    toolInputKeys: Object.keys(toolInput),
+    toolInput: JSON.stringify(toolInput)
+  })
+
+  // toolInput 已经在 ChatWindow.vue 中通过 content_block_delta 事件合并完成
+  // 直接返回 props.toolInput，无需额外的合并逻辑
+  return toolInput
+})
 
 // 获取工具图标 (已更新)
 const toolIcon = computed(() => {
@@ -178,9 +204,9 @@ const toolIcon = computed(() => {
   return icons[props.toolName] || '🔧'
 })
 
-// 获取主要显示内容
+// 获取主要显示内容（使用合并后的 toolInput）
 const primaryContent = computed(() => {
-  const input = props.toolInput
+  const input = mergedToolInput.value
   if (!input) return null
 
   switch (props.toolName) {
@@ -305,7 +331,7 @@ const formatFilePath = (filePath) => {
 
 // 折叠时显示的精简摘要
 const collapsedSummary = computed(() => {
-  const input = props.toolInput
+  const input = mergedToolInput.value
   if (!input) return ''
 
   switch (props.toolName) {
@@ -397,6 +423,10 @@ function toggleExpand() {
       <div class="tool-info">
         <span class="tool-icon">{{ toolIcon }}</span>
         <span class="tool-name">{{ toolName }}</span>
+        <!-- 部分消息状态指示器 - 只在工具正在执行且没有输入数据时显示 -->
+        <span v-if="isPartial && isExecuting" class="partial-status">
+          <span>⏳ 等待数据...</span>
+        </span>
         <span v-if="isExecuting" class="status-badge executing">执行中...</span>
         <span v-else-if="isError" class="status-badge error">失败</span>
         <span v-else-if="result" class="status-badge success">完成</span>
@@ -480,7 +510,7 @@ function toggleExpand() {
             </div>
 
             <!-- replace_all 标识 -->
-            <div v-if="props.toolInput?.replace_all" class="replace-all-badge">
+            <div v-if="mergedToolInput?.replace_all" class="replace-all-badge">
               🔄 替换所有匹配项
             </div>
           </div>
@@ -681,6 +711,23 @@ function toggleExpand() {
   font-weight: 600;
   color: #E4E4E7;
   flex-shrink: 0;
+}
+
+/* 部分消息状态指示器样式 */
+.partial-status {
+  font-size: 11px;
+  color: #F59E0B;
+  animation: pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .collapsed-summary-line {

@@ -4,6 +4,7 @@ import MarkdownRenderer from './MarkdownRenderer.vue'
 import PermissionDialog from './PermissionDialog.vue'
 import AskUserQuestionDialog from './AskUserQuestionDialog.vue'
 import ToolUseMessage from './ToolUseMessage.vue'
+import MessageDetailDialog from './MessageDetailDialog.vue'
 
 const messages = ref([])
 const inputMessage = ref('')
@@ -15,6 +16,7 @@ const pendingControlRequest = ref(null)
 const isDragOver = ref(false)
 const questionActiveTabs = ref({}) // 存储每条问答消息的 active tab
 const workingDirectory = ref('') // 工作目录
+const selectedMessage = ref(null) // 当前选中的消息（用于显示详情）
 let previousMessageCount = 0 // 追踪之前的消息数量
 
 // Store unsubscribe functions
@@ -51,7 +53,8 @@ onMounted(async () => {
         messages.value.push({
           role: 'assistant',
           content: textContent.text,
-          timestamp: new Date()
+          timestamp: new Date(),
+          rawMessages: [message]
         })
         scrollToBottom()
       }
@@ -74,7 +77,8 @@ onMounted(async () => {
             isExecuting: true,
             request_id: toolUseId,
             collapsed: false,
-            timestamp: new Date()
+            timestamp: new Date(),
+            rawMessages: [message]
           })
           scrollToBottom()
         }
@@ -128,7 +132,8 @@ onMounted(async () => {
           isError: false,
           isExecuting: true,
           request_id: toolUseId,
-          timestamp: new Date()
+          timestamp: new Date(),
+          rawMessages: [message]
         })
         scrollToBottom()
       }
@@ -266,7 +271,8 @@ onMounted(async () => {
               isExecuting: true,
               request_id: message.request.tool_use_id,
               collapsed: false,
-              timestamp: new Date()
+              timestamp: new Date(),
+              rawMessages: [message]
             })
             scrollToBottom()
           }
@@ -295,7 +301,8 @@ onMounted(async () => {
       messages.value.push({
         role: 'status',
         content: message.message,
-        timestamp: new Date()
+        timestamp: new Date(),
+        rawMessages: [message]
       })
       scrollToBottom()
     }
@@ -303,9 +310,10 @@ onMounted(async () => {
   unsubs.push(cliStatusUnsub)
 
   // Listen for stream events (thinking_delta, text_delta, etc.)
-  let currentAssistantMessage = null
-  let currentThinkingMessage = null
+  let currentAssistantMessageIndex = -1
+  let currentThinkingMessageIndex = -1
   let isUsingStreamEvents = false // 标记是否使用了流式事件
+  let contentBlockIndexToId = new Map() // 追踪 content_block index 到 id 的映射
 
   const streamEventUnsub = window.electronAPI.onStreamEvent((message) => {
     // 打印所有 stream events 到 console
@@ -319,8 +327,11 @@ onMounted(async () => {
 
     // Handle message_start - reset current message tracking
     if (event.type === 'message_start') {
-      currentAssistantMessage = null
-      currentThinkingMessage = null
+      currentAssistantMessageIndex = -1
+      currentThinkingMessageIndex = -1
+      contentBlockIndexToId.clear() // 清除 index 到 id 的映射
+      // 标记正在使用流式事件（message_start 也是 stream_event 的一部分）
+      isUsingStreamEvents = true
       return
     }
 
@@ -329,22 +340,54 @@ onMounted(async () => {
       const contentBlock = event.content_block
       if (contentBlock?.type === 'thinking') {
         // Start a new thinking message
-        currentThinkingMessage = {
+        messages.value.push({
           role: 'thinking',
           content: '',
-          timestamp: new Date()
-        }
-        messages.value.push(currentThinkingMessage)
+          timestamp: new Date(),
+          rawMessages: [message]
+        })
+        currentThinkingMessageIndex = messages.value.length - 1
         scrollToBottom()
       } else if (contentBlock?.type === 'text') {
         // Start a new assistant text message
-        currentAssistantMessage = {
+        messages.value.push({
           role: 'assistant',
           content: '',
-          timestamp: new Date()
+          timestamp: new Date(),
+          rawMessages: [message]
+        })
+        currentAssistantMessageIndex = messages.value.length - 1
+        console.log('📄 Text block started - creating assistant message at index:', currentAssistantMessageIndex)
+        scrollToBottom(true)
+      } else if (contentBlock?.type === 'tool_use') {
+        // Start a new tool use message with partial data
+        const toolUseData = contentBlock
+        // 记录 index 到 id 的映射（用于后续 content_block_delta）
+        if (typeof event.index === 'number') {
+          contentBlockIndexToId.set(event.index, toolUseData.id)
+          console.log('📍 Mapped index', event.index, 'to id', toolUseData.id)
         }
-        messages.value.push(currentAssistantMessage)
-        scrollToBottom()
+        // 创建消息对象，确保 toolInput 是一个新的对象引用
+        const newMessage = {
+          role: 'tool_use',
+          toolName: toolUseData.name,
+          toolInput: toolUseData.input ? { ...toolUseData.input } : {}, // 初始输入（可能不完整）- 使用展开运算符确保新对象
+          result: '',
+          isError: false,
+          isExecuting: true,
+          request_id: toolUseData.id,
+          collapsed: false,
+          timestamp: new Date(),
+          rawMessages: [message]
+        }
+        messages.value.push(newMessage)
+        console.log('🔧 Tool use block started:', {
+          toolName: toolUseData.name,
+          initialInput: newMessage.toolInput,
+          contentBlockId: toolUseData.id,
+          messageIndex: messages.value.length - 1
+        })
+        scrollToBottom(true)
       }
       return
     }
@@ -355,17 +398,185 @@ onMounted(async () => {
 
       // Handle thinking_delta
       if (delta?.type === 'thinking_delta' && delta.thinking) {
-        if (currentThinkingMessage) {
-          currentThinkingMessage.content += delta.thinking
+        if (currentThinkingMessageIndex >= 0 && messages.value[currentThinkingMessageIndex]) {
+          const msg = messages.value[currentThinkingMessageIndex]
+          msg.content += delta.thinking
+          // 存储原始消息 - 使用 reactive 更新
+          if (!msg.rawMessages) msg.rawMessages = []
+          msg.rawMessages.push(message)
           scrollToBottom()
         }
       }
 
       // Handle text_delta
       if (delta?.type === 'text_delta' && delta.text) {
-        if (currentAssistantMessage) {
-          currentAssistantMessage.content += delta.text
-          scrollToBottom()
+        if (currentAssistantMessageIndex >= 0 && messages.value[currentAssistantMessageIndex]) {
+          const msg = messages.value[currentAssistantMessageIndex]
+          const prevContent = msg.content
+          // 使用显式的 reactive 更新
+          msg.content = prevContent + delta.text
+          console.log('📝 Text delta:', {
+            delta: delta.text,
+            prevContent: prevContent,
+            newContent: msg.content,
+            deltaLength: delta.text.length,
+            messageIndex: currentAssistantMessageIndex
+          })
+          // 存储原始消息 - 使用 reactive 更新
+          if (!msg.rawMessages) msg.rawMessages = []
+          msg.rawMessages.push(message)
+          // 强制滚动到最新内容（使用 true 参数确保总是滚动）
+          scrollToBottom(true)
+        }
+      }
+
+      // Handle tool_use_delta - 处理工具调用的部分数据
+      if (delta?.type === 'tool_use_delta' && delta.input) {
+        // 使用 event.index 从映射中获取 content_block_id
+        const contentBlockId = contentBlockIndexToId.get(event.index)
+
+        // 找到最近创建的 tool use 消息（使用索引方式确保 reactivity）
+        const toolUseMsgIndex = messages.value.findLastIndex(m =>
+          m.role === 'tool_use' && m.request_id === contentBlockId
+        )
+
+        console.log('🔍 Looking for tool use message:', {
+          eventIndex: event.index,
+          contentBlockId: contentBlockId,
+          foundIndex: toolUseMsgIndex,
+          totalMessages: messages.value.length,
+          toolUseMessages: messages.value.filter(m => m.role === 'tool_use').map(m => ({
+            name: m.toolName,
+            id: m.request_id,
+            isExecuting: m.isExecuting
+          }))
+        })
+
+        if (toolUseMsgIndex >= 0 && toolUseMsgIndex < messages.value.length) {
+          const toolUseMsg = messages.value[toolUseMsgIndex]
+          console.log('📥 Tool use delta received:', {
+            toolName: toolUseMsg.toolName,
+            contentBlockId: contentBlockId,
+            deltaInput: delta.input,
+            currentInputBefore: JSON.stringify(toolUseMsg.toolInput),
+            messageIndex: toolUseMsgIndex
+          })
+
+          // 使用深度合并策略来更新 toolInput - 确保创建新的对象引用
+          const currentInput = toolUseMsg.toolInput || {}
+          const deltaInput = delta.input
+
+          // 创建新的 toolInput 对象来确保 Vue reactivity
+          const newToolInput = { ...currentInput }
+
+          // 深度合并输入数据，根据不同类型采用不同策略
+          Object.keys(deltaInput).forEach(key => {
+            const currentValue = currentInput[key]
+            const deltaValue = deltaInput[key]
+
+            // 如果值不存在，直接赋值
+            if (currentValue === undefined || currentValue === null) {
+              newToolInput[key] = deltaValue
+            }
+            // 如果是对象（非数组），递归合并
+            else if (typeof currentValue === 'object' && !Array.isArray(currentValue)) {
+              newToolInput[key] = { ...currentValue, ...deltaValue }
+            }
+            // 字符串：追加（如果部分内容）
+            else if (typeof currentValue === 'string' && typeof deltaValue === 'string') {
+              // 对于字符串，只在 deltaValue 包含新内容时才追加
+              // 避免重复追加相同的内容
+              if (!currentValue.includes(deltaValue) || deltaValue.length > currentValue.length) {
+                newToolInput[key] = deltaValue
+              }
+            }
+            // 数组：如果不是完整替换，则追加
+            else if (Array.isArray(currentValue) && Array.isArray(deltaValue)) {
+              // 简单的数组合并策略：如果 delta 是更大/更完整的数组，则替换
+              if (deltaValue.length >= currentValue.length) {
+                newToolInput[key] = deltaValue
+              }
+            }
+            // 其他情况：直接覆盖
+            else {
+              newToolInput[key] = deltaValue
+            }
+          })
+
+          // 更新消息的 toolInput 为新对象，确保 Vue reactivity
+          toolUseMsg.toolInput = newToolInput
+
+          // 强制触发 Vue 的响应式更新 - 创建新的消息对象
+          messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
+
+          console.log('✅ Tool use delta merged:', {
+            toolName: toolUseMsg.toolName,
+            key: Object.keys(deltaInput)[0],
+            finalInput: JSON.stringify(toolUseMsg.toolInput)
+          })
+
+          // 存储原始消息 - 使用 reactive 更新
+          if (!toolUseMsg.rawMessages) toolUseMsg.rawMessages = []
+          toolUseMsg.rawMessages.push(message)
+          // 强制滚动确保实时显示
+          scrollToBottom(true)
+        } else {
+          console.log('⚠️ No tool_use message found for delta:', contentBlockId, 'event.index:', event.index)
+        }
+      }
+
+      // Handle input_json_delta - 处理工具调用的 JSON 部分数据（Claude API 使用这种格式）
+      if (delta?.type === 'input_json_delta' && delta.partial_json) {
+        // 使用 event.index 从映射中获取 content_block_id
+        const contentBlockId = contentBlockIndexToId.get(event.index)
+
+        console.log('🔍 Looking for tool use message (input_json_delta):', {
+          eventIndex: event.index,
+          contentBlockId: contentBlockId,
+          totalMessages: messages.value.length,
+          partialJson: delta.partial_json
+        })
+
+        // 找到对应的 tool use 消息
+        const toolUseMsgIndex = messages.value.findLastIndex(m =>
+          m.role === 'tool_use' && m.request_id === contentBlockId
+        )
+
+        if (toolUseMsgIndex >= 0 && toolUseMsgIndex < messages.value.length) {
+          const toolUseMsg = messages.value[toolUseMsgIndex]
+          console.log('📥 Input JSON delta received:', {
+            toolName: toolUseMsg.toolName,
+            contentBlockId: contentBlockId,
+            partialJson: delta.partial_json,
+            currentInputBefore: JSON.stringify(toolUseMsg.toolInput),
+            messageIndex: toolUseMsgIndex
+          })
+
+          try {
+            // 解析 partial_json
+            const parsedInput = JSON.parse(delta.partial_json)
+
+            // 直接替换 toolInput 为解析后的对象（确保新对象引用）
+            toolUseMsg.toolInput = { ...parsedInput }
+
+            // 强制触发 Vue 的响应式更新 - 创建新的消息对象
+            messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
+
+            console.log('✅ Input JSON delta merged:', {
+              toolName: toolUseMsg.toolName,
+              finalInput: JSON.stringify(toolUseMsg.toolInput)
+            })
+
+            // 存储原始消息 - 使用 reactive 更新
+            if (!toolUseMsg.rawMessages) toolUseMsg.rawMessages = []
+            toolUseMsg.rawMessages.push(message)
+            // 强制滚动确保实时显示
+            scrollToBottom(true)
+          } catch (error) {
+            console.error('❌ Failed to parse partial_json:', error, delta.partial_json)
+          }
+        } else {
+          console.log('⚠️ No tool use message found for input_json_delta:', contentBlockId, 'event.index:', event.index)
         }
       }
       return
@@ -373,16 +584,34 @@ onMounted(async () => {
 
     // Handle content_block_stop
     if (event.type === 'content_block_stop') {
-      // Finalize the current block
+      // 使用 event.index 从映射中获取 content_block_id
+      const contentBlockId = contentBlockIndexToId.get(event.index)
+      if (contentBlockId) {
+        // 标记 tool_use 消息部分数据接收完成 - 使用索引方式
+        const toolUseMsgIndex = messages.value.findLastIndex(m =>
+          m.role === 'tool_use' && m.isExecuting && m.request_id === contentBlockId
+        )
+        if (toolUseMsgIndex >= 0 && toolUseMsgIndex < messages.value.length) {
+          const toolUseMsg = messages.value[toolUseMsgIndex]
+          console.log('✅ Tool use partial data completed for:', toolUseMsg.toolName, 'isExecuting was:', toolUseMsg.isExecuting)
+          // 重要：设置 isExecuting 为 false，表示数据已接收完毕
+          toolUseMsg.isExecuting = false
+          // 强制触发 Vue 的响应式更新
+          messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
+        } else {
+          console.log('⚠️ No tool use message found for content_block_stop:', contentBlockId, 'event.index:', event.index)
+        }
+      }
       return
     }
 
     // Handle message_stop
     if (event.type === 'message_stop') {
-      currentAssistantMessage = null
-      currentThinkingMessage = null
+      currentAssistantMessageIndex = -1
+      currentThinkingMessageIndex = -1
       isProcessing.value = false
       isUsingStreamEvents = false // 重置流式事件标志
+      console.log('📌 Message stream stopped')
       return
     }
   })
@@ -397,7 +626,8 @@ onMounted(async () => {
       role: 'unknown',
       messageType: message.type,
       content: JSON.stringify(message, null, 2),
-      timestamp: new Date()
+      timestamp: new Date(),
+      rawMessages: [message]
     })
     scrollToBottom()
   })
@@ -462,19 +692,33 @@ watch(() => messages.value, async (newMessages) => {
   previousMessageCount = newLength
 }, { deep: true })
 
+// 处理消息点击（Cmd+点击显示详情）
+function handleMessageClick(event, message) {
+  // 检查是否按住了 Cmd (Mac) 或 Ctrl (Windows/Linux)
+  if (event.metaKey || event.ctrlKey) {
+    event.preventDefault()
+    event.stopPropagation()
+    selectedMessage.value = message
+  }
+}
+
+// 关闭消息详情弹窗
+function closeMessageDetail() {
+  selectedMessage.value = null
+}
+
+// 为消息添加原始数据
+function addRawMessage(displayMessage, rawMessage) {
+  if (!displayMessage.rawMessages) {
+    displayMessage.rawMessages = []
+  }
+  displayMessage.rawMessages.push(rawMessage)
+}
+
 async function sendMessage() {
   if (!inputMessage.value.trim() || isProcessing.value) return
 
   const userText = inputMessage.value
-  messages.value.push({
-    role: 'user',
-    content: userText,
-    timestamp: new Date()
-  })
-
-  inputMessage.value = ''
-  isProcessing.value = true
-  scrollToBottom(true) // 用户发送消息时强制滚动
 
   // Send to Claude
   const userMessage = {
@@ -484,6 +728,20 @@ async function sendMessage() {
       content: [{ type: 'text', text: userText }]
     }
   }
+
+  // 创建显示消息并存储原始数据
+  const displayMessage = {
+    role: 'user',
+    content: userText,
+    timestamp: new Date(),
+    rawMessages: [userMessage]
+  }
+  messages.value.push(displayMessage)
+
+  inputMessage.value = ''
+  isProcessing.value = true
+  scrollToBottom(true) // 用户发送消息时强制滚动
+
   // 打印原始发送消息
   console.log('➡️ OUT [SEND_MESSAGE]:', 'user', userMessage)
 
@@ -881,7 +1139,8 @@ async function handleQuestionAnswer(requestId, answers) {
       questions: questionItems,
       userAnswers: answers, // 存储用户提交的答案
       collapsed: false,
-      timestamp: new Date()
+      timestamp: new Date(),
+      rawMessages: [question] // 存储原始请求
     }
     console.log('Creating question message:', { tool_use_id: question.tool_use_id, userAnswers: answers })
     messages.value.push(newMessage)
@@ -927,6 +1186,7 @@ async function handleQuestionAnswer(requestId, answers) {
         :key="index"
         class="message"
         :class="message.role"
+        @click="handleMessageClick($event, message)"
       >
         <!-- Tool use message -->
         <template v-if="message.role === 'tool_use'">
@@ -940,6 +1200,8 @@ async function handleQuestionAnswer(requestId, answers) {
               :is-executing="message.isExecuting"
               :collapsed="message.collapsed"
               :working-directory="workingDirectory"
+              :is-partial="message.isExecuting && Object.keys(message.toolInput || {}).length === 0"
+              :raw-messages="message.rawMessages || []"
               @toggle-collapse="() => handleToolToggleCollapse(message)"
             />
           </div>
@@ -1158,6 +1420,15 @@ async function handleQuestionAnswer(requestId, answers) {
       @answer="handleQuestionAnswer"
     />
   </Teleport>
+
+  <!-- Message Detail Dialog (Cmd+Click to view) -->
+  <Teleport to="body">
+    <MessageDetailDialog
+      v-if="selectedMessage"
+      :message="selectedMessage"
+      @close="closeMessageDetail"
+    />
+  </Teleport>
 </template>
 
 <style scoped>
@@ -1180,6 +1451,16 @@ async function handleQuestionAnswer(requestId, answers) {
   display: flex;
   margin-bottom: 16px;
   gap: 12px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.message:hover {
+  opacity: 0.85;
+}
+
+.message:active {
+  opacity: 0.75;
 }
 
 .message.user {

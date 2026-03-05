@@ -68,7 +68,6 @@ class ClaudeManager {
     try {
       this.claudePath = this.detectClaudePath()
     } catch (error) {
-      console.error('Failed to detect Claude path:', error.message)
       throw error
     }
 
@@ -111,15 +110,16 @@ class ClaudeManager {
         })
       })
 
-      // Emit init event after process starts
+      // Emit init event after process starts with current working directory
       this.handleMessage({
         type: 'system',
         subtype: 'init',
-        message: 'Claude CLI initialized'
+        cwd: this.workingDirectory,
+        session_id: null,
+        tools: []
       })
 
     } catch (error) {
-      console.error('Failed to start Claude CLI:', error)
       this.process = null
       throw error
     }
@@ -134,7 +134,6 @@ class ClaudeManager {
     // Handle stdout
     this.process.stdout.on('data', (data) => {
       const rawData = data.toString()
-      console.log('[ClaudeManager] stdout RAW:', JSON.stringify(rawData.substring(0, 500)))
       buffer += rawData
       const lines = buffer.split('\n')
       buffer = lines.pop() // Keep incomplete line
@@ -145,7 +144,7 @@ class ClaudeManager {
             const message = JSON.parse(line)
             this.handleMessage(message)
           } catch (error) {
-            console.error('JSON parse error:', line.substring(0, 200))
+            // Ignore JSON parse errors for incomplete lines
           }
         }
       })
@@ -154,10 +153,7 @@ class ClaudeManager {
     // Handle stderr - 系统状态消息
     this.process.stderr.on('data', (data) => {
       const errorMsg = data.toString()
-      console.log('[ClaudeManager] stderr RAW:', JSON.stringify(errorMsg))
       if (errorMsg.trim()) {
-        console.log('[ClaudeManager] stderr:', errorMsg.trim())
-
         // 将 stderr 消息发送到前端显示
         const statusHandlers = this.messageHandlers.get('cli-status') || []
         statusHandlers.forEach(handler => {
@@ -167,26 +163,20 @@ class ClaudeManager {
               message: errorMsg.trim()
             })
           } catch (error) {
-            console.error('Status handler error:', error)
+            // Ignore handler errors
           }
         })
-
-        // Check if this is a permission prompt
-        if (errorMsg.includes('Permission') || errorMsg.includes('Allow') || errorMsg.includes('Deny')) {
-          console.log('[ClaudeManager] This looks like a permission prompt!')
-        }
       }
     })
 
     // Handle exit
     this.process.on('exit', (code, signal) => {
-      console.log(`[ClaudeManager] Process exited: code=${code}, signal=${signal}`)
       this.process = null
     })
 
     // Handle error
     this.process.on('error', (error) => {
-      console.error('Claude process error:', error.message)
+      // Ignore error
     })
   }
 
@@ -194,9 +184,8 @@ class ClaudeManager {
    * Handle incoming messages from Claude CLI
    */
   handleMessage(message) {
-    // 打印完整的消息内容到 console
-    console.log('[ClaudeManager] ◀ RECEIVED MESSAGE:')
-    console.log(JSON.stringify(message, null, 2))
+    // 打印所有接收到的消息
+    console.log('[RECEIVED]', JSON.stringify(message, null, 2))
 
     // Handle stream_event (thinking_delta, text_delta, message_start, etc.)
     if (message.type === 'stream_event') {
@@ -206,14 +195,13 @@ class ClaudeManager {
 
     // Handle control_request (permission prompts when using --permission-prompt-tool stdio)
     if (message.type === 'control_request') {
-      console.log('[ClaudeManager] Control request:', message.request?.subtype)
       // Send to front-end for permission dialog
       const requestHandlers = this.messageHandlers.get('control_request') || []
       requestHandlers.forEach(handler => {
         try {
           handler(message)
         } catch (error) {
-          console.error('Handler error:', error)
+          // Ignore handler errors
         }
       })
       return
@@ -221,32 +209,42 @@ class ClaudeManager {
 
     // Handle user messages (which may contain tool_result from CLI)
     if (message.type === 'user') {
-      console.log('[ClaudeManager] User message received, checking for tool_result')
       // Check if this is a tool_result message from CLI
       if (message.message && message.message.content) {
         const toolResultContent = message.message.content.find(c => c.type === 'tool_result')
         if (toolResultContent) {
-          console.log('[ClaudeManager] Found tool_result in user message:', toolResultContent.tool_use_id)
           // Trigger tool_result event
           const toolResultHandlers = this.messageHandlers.get('tool_result') || []
           toolResultHandlers.forEach(handler => {
             try {
               handler(message)
             } catch (error) {
-              console.error('Tool result handler error:', error)
+              // Ignore handler errors
             }
           })
           return
         }
       }
       // If not a tool_result, treat as unknown message
-      console.log('[ClaudeManager] User message is not a tool_result, treating as unknown')
       const unknownHandlers = this.messageHandlers.get('unknown_message') || []
       unknownHandlers.forEach(handler => {
         try {
           handler(message)
         } catch (error) {
-          console.error('Unknown message handler error:', error)
+          // Ignore handler errors
+        }
+      })
+      return
+    }
+
+    // Handle result messages (contains usage information after message_stop)
+    if (message.type === 'result') {
+      const resultHandlers = this.messageHandlers.get('result') || []
+      resultHandlers.forEach(handler => {
+        try {
+          handler(message)
+        } catch (error) {
+          // Ignore handler errors
         }
       })
       return
@@ -259,18 +257,17 @@ class ClaudeManager {
         try {
           handler(message)
         } catch (error) {
-          console.error('Handler error:', error)
+          // Ignore handler errors
         }
       })
     } else {
       // 没有处理器的消息类型，发送到前端显示
-      console.log('[ClaudeManager] ⚠️ No handlers for message type:', message.type)
       const unknownHandlers = this.messageHandlers.get('unknown_message') || []
       unknownHandlers.forEach(handler => {
         try {
           handler(message)
         } catch (error) {
-          console.error('Unknown message handler error:', error)
+          // Ignore handler errors
         }
       })
     }
@@ -283,16 +280,13 @@ class ClaudeManager {
     const event = message.event
     if (!event) return
 
-    // 打印 stream event 详情
-    console.log(`[ClaudeManager] 📊 Stream event: ${event.type}`)
-
     // Send all stream events to front-end
     const streamHandlers = this.messageHandlers.get('stream_event') || []
     streamHandlers.forEach(handler => {
       try {
         handler(message)
       } catch (error) {
-        console.error('Stream event handler error:', error)
+        // Ignore handler errors
       }
     })
   }
@@ -305,19 +299,11 @@ class ClaudeManager {
    */
   sendControlResponse(requestId, approved, options = {}) {
     if (!this.process) {
-      console.error('[ClaudeManager] Cannot send control response: process is null')
       throw new Error('Claude process not running')
     }
     if (!this.process.stdin.writable) {
-      console.error('[ClaudeManager] Cannot send control response: stdin is not writable')
       throw new Error('Claude process stdin is not writable')
     }
-
-    console.log('[ClaudeManager] sendControlResponse called with:', {
-      requestId,
-      approved,
-      options: JSON.stringify(options, null, 2)
-    })
 
     // 构建响应内容 - 根据 VSCode 插件分析，需要包含:
     // - behavior: 'allow' 或 'deny'
@@ -343,12 +329,6 @@ class ClaudeManager {
     // 需要将所有建议都放在 updatedPermissions 数组中
     if (approved && options.permissionRules && Array.isArray(options.permissionRules) && options.permissionRules.length > 0) {
       responseData.updatedPermissions = options.permissionRules
-      console.log('[ClaudeManager] Processing permission rules:', {
-        count: options.permissionRules.length,
-        rules: JSON.stringify(options.permissionRules, null, 2)
-      })
-    } else if (approved) {
-      console.log('[ClaudeManager] No permission rules (single approval only)')
     }
 
     // 正确的格式：request_id 必须在 response 对象内部，并且需要 subtype
@@ -361,8 +341,6 @@ class ClaudeManager {
       }
     }
 
-    // 详细日志：显示完整的响应内容
-    console.log('[ClaudeManager] Sending FULL control_response:', JSON.stringify(responseMessage, null, 2))
     this.sendMessage(responseMessage)
   }
 
@@ -393,10 +371,10 @@ class ClaudeManager {
   sendMessage(message) {
     if (this.process && this.process.stdin.writable) {
       const jsonMessage = JSON.stringify(message) + '\n'
-      console.log('[ClaudeManager] Sending:', jsonMessage.substring(0, 200))
+      // 打印所有发送的消息
+      console.log('[SENT]', JSON.stringify(message, null, 2))
       this.process.stdin.write(jsonMessage)
     } else {
-      console.error('[ClaudeManager] Process not ready:', { hasProcess: !!this.process, writable: this.process?.stdin?.writable })
       throw new Error('Claude process not ready')
     }
   }

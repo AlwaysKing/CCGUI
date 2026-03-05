@@ -18,6 +18,8 @@ const questionActiveTabs = ref({}) // 存储每条问答消息的 active tab
 const workingDirectory = ref('') // 工作目录
 const selectedMessage = ref(null) // 当前选中的消息（用于显示详情）
 const currentTime = ref(Date.now()) // 用于实时更新消耗时间
+const envInfo = ref(null) // 环境信息（来自 system init）
+const showEnvDetail = ref(false) // 是否显示环境详情
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
 
@@ -34,6 +36,16 @@ onMounted(async () => {
   try {
     const info = await window.electronAPI.getClaudeInfo()
     workingDirectory.value = info.workingDirectory || ''
+  } catch (error) {
+    // Ignore error
+  }
+
+  // Get cached init info (for envbar display)
+  try {
+    const initInfo = await window.electronAPI.getInitInfo()
+    if (initInfo) {
+      envInfo.value = initInfo
+    }
   } catch (error) {
     // Ignore error
   }
@@ -80,6 +92,7 @@ onMounted(async () => {
             request_id: toolUseId,
             collapsed: false,
             timestamp: new Date(),
+            startTime: Date.now(),
             rawMessages: [message]
           })
           scrollToBottom()
@@ -91,6 +104,22 @@ onMounted(async () => {
 
   const resultUnsub = window.electronAPI.onClaudeResult((message) => {
     isProcessing.value = false
+
+    // 找到最后一个用户消息并更新统计信息
+    // result.usage 是这一轮请求的总消耗，result.num_turns 是轮次数量
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'user') {
+        const userMsg = messages.value[i]
+        // 更新统计信息
+        userMsg.duration = message.duration_ms || null
+        userMsg.numTurns = message.num_turns || null
+        userMsg.usage = message.usage || null
+        // 强制触发 Vue 响应式更新
+        messages.value[i] = { ...messages.value[i] }
+        break
+      }
+    }
+
     scrollToBottom()
   })
   unsubs.push(resultUnsub)
@@ -128,6 +157,7 @@ onMounted(async () => {
           isExecuting: true,
           request_id: toolUseId,
           timestamp: new Date(),
+          startTime: Date.now(),
           rawMessages: [message]
         })
         scrollToBottom()
@@ -175,6 +205,10 @@ onMounted(async () => {
           toolUseMsg.isExecuting = false
           toolUseMsg.isError = isError
           toolUseMsg.result = content || '(无输出)'
+          // 计算 duration
+          if (toolUseMsg.startTime) {
+            toolUseMsg.duration = Date.now() - toolUseMsg.startTime
+          }
         } else {
           // 如果没有找到对应的 tool_use 消息，添加为系统消息
           messages.value.push({
@@ -251,6 +285,7 @@ onMounted(async () => {
               request_id: message.request.tool_use_id,
               collapsed: false,
               timestamp: new Date(),
+              startTime: Date.now(),
               rawMessages: [message]
             })
             scrollToBottom()
@@ -290,6 +325,8 @@ onMounted(async () => {
   let currentContentBlockType = null // 当前正在处理的内容块类型
   let isUsingStreamEvents = false // 标记是否使用了流式事件
   let contentBlockIndexToId = new Map() // 追踪 content_block index 到 id 的映射
+  let currentTurnNumber = 0 // 当前 turn 编号
+  let hasSeenToolUseInCurrentTurn = false // 当前 turn 是否已经见过 tool_use
 
   const streamEventUnsub = window.electronAPI.onStreamEvent((message) => {
     const event = message.event
@@ -316,6 +353,8 @@ onMounted(async () => {
       currentAssistantMessageIndex = -1
       currentContentBlockType = null
       contentBlockIndexToId.clear() // 清除 index 到 id 的映射
+      currentTurnNumber = 0 // 重置 turn 编号
+      hasSeenToolUseInCurrentTurn = false // 重置 tool_use 标记
       // 标记正在使用流式事件（message_start 也是 stream_event 的一部分）
       isUsingStreamEvents = true
       // 隐藏单独的 typing indicator，因为我们会在消息内显示状态
@@ -334,6 +373,7 @@ onMounted(async () => {
         startTime: Date.now(), // 记录开始时间
         timestamp: new Date(),
         usage: initialUsage, // 初始 usage
+        turnNumber: 1, // 初始 turn 编号
         rawMessages: [message]
       })
       currentAssistantMessageIndex = messages.value.length - 1
@@ -347,17 +387,34 @@ onMounted(async () => {
       currentContentBlockType = contentBlock?.type
 
       if (contentBlock?.type === 'thinking') {
+        // 检测新 turn：如果之前已经见过 tool_use，现在又看到 thinking，说明是新 turn
+        if (hasSeenToolUseInCurrentTurn) {
+          currentTurnNumber++
+          hasSeenToolUseInCurrentTurn = false
+        }
         // 复用 message_start 创建的消息，添加 thinking
         const currentMsg = currentAssistantMessageIndex >= 0 ? messages.value[currentAssistantMessageIndex] : null
         if (currentMsg && currentMsg.role === 'assistant') {
           currentMsg.hasThinking = true
           currentMsg.thinkingCollapsed = false
+          // 更新当前 turn 编号
+          currentMsg.turnNumber = currentTurnNumber + 1
+          // 如果是第二个及之后的 turn，标记需要显示分割线
+          if (currentTurnNumber > 0) {
+            currentMsg.showTurnSeparator = true
+          }
         }
         scrollToBottom()
       } else if (contentBlock?.type === 'text') {
         // 复用 message_start 创建的消息
-        scrollToBottom(true)
+        scrollToBottom()
       } else if (contentBlock?.type === 'tool_use') {
+        // 标记当前 turn 已经见过 tool_use
+        hasSeenToolUseInCurrentTurn = true
+        // AskUserQuestion 由 control_request 处理，不在这里创建消息
+        if (contentBlock.name === 'AskUserQuestion') {
+          return
+        }
         // Start a new tool use message with partial data
         const toolUseData = contentBlock
         // 记录 index 到 id 的映射（用于后续 content_block_delta）
@@ -377,11 +434,13 @@ onMounted(async () => {
           thinking: '', // tool_use 也可能有 thinking
           hasThinking: false,
           timestamp: new Date(),
+          startTime: Date.now(),
           rawMessages: [message]
         }
         messages.value.push(newMessage)
-        currentAssistantMessageIndex = messages.value.length - 1
-        scrollToBottom(true)
+        // 注意：不更新 currentAssistantMessageIndex，因为它应该只指向 assistant 消息
+        // tool_use 消息的索引通过 contentBlockIndexToId 映射来追踪
+        scrollToBottom()
       }
       return
     }
@@ -413,8 +472,8 @@ onMounted(async () => {
           // 存储原始消息 - 使用 reactive 更新
           if (!msg.rawMessages) msg.rawMessages = []
           msg.rawMessages.push(message)
-          // 强制滚动到最新内容（使用 true 参数确保总是滚动）
-          scrollToBottom(true)
+          // 只有在用户位于底部时才滚动
+          scrollToBottom()
         }
       }
 
@@ -481,8 +540,8 @@ onMounted(async () => {
           // 存储原始消息 - 使用 reactive 更新
           if (!toolUseMsg.rawMessages) toolUseMsg.rawMessages = []
           toolUseMsg.rawMessages.push(message)
-          // 强制滚动确保实时显示
-          scrollToBottom(true)
+          // 只有在用户位于底部时才滚动
+          scrollToBottom()
         }
       }
 
@@ -512,8 +571,8 @@ onMounted(async () => {
             // 存储原始消息 - 使用 reactive 更新
             if (!toolUseMsg.rawMessages) toolUseMsg.rawMessages = []
             toolUseMsg.rawMessages.push(message)
-            // 强制滚动确保实时显示
-            scrollToBottom(true)
+            // 只有在用户位于底部时才滚动
+            scrollToBottom()
           } catch (error) {
             // Ignore parse errors for partial JSON
           }
@@ -545,6 +604,10 @@ onMounted(async () => {
           const toolUseMsg = messages.value[toolUseMsgIndex]
           // 重要：设置 isExecuting 为 false，表示数据已接收完毕
           toolUseMsg.isExecuting = false
+          // 计算 duration
+          if (toolUseMsg.startTime) {
+            toolUseMsg.duration = Date.now() - toolUseMsg.startTime
+          }
           // 强制触发 Vue 的响应式更新
           messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
         }
@@ -552,6 +615,21 @@ onMounted(async () => {
 
       // 重置当前内容块类型
       currentContentBlockType = null
+      return
+    }
+
+    // Handle message_delta - 包含 usage 更新
+    if (event.type === 'message_delta') {
+      // message_delta 中包含 usage 信息
+      const usage = event.usage || null
+      if (usage && currentAssistantMessageIndex >= 0) {
+        const currentMsg = messages.value[currentAssistantMessageIndex]
+        if (currentMsg && currentMsg.role === 'assistant') {
+          currentMsg.usage = usage
+          // 强制触发 Vue 响应式更新
+          messages.value[currentAssistantMessageIndex] = { ...messages.value[currentAssistantMessageIndex] }
+        }
+      }
       return
     }
 
@@ -602,6 +680,12 @@ onMounted(async () => {
   })
   unsubs.push(unknownMessageUnsub)
 
+  // Listen for Claude init (environment info)
+  const claudeInitUnsub = window.electronAPI.onClaudeInit((message) => {
+    envInfo.value = message
+  })
+  unsubs.push(claudeInitUnsub)
+
   unsubscribers = unsubs
 })
 
@@ -624,6 +708,12 @@ watch(() => messages.value, async (newMessages) => {
   const newLength = newMessages?.length || 0
 
   if (newLength > previousMessageCount && newLength > 1) {
+    // 检查用户是否在底部（在折叠前检查）
+    const container = messagesContainer.value
+    const wasNearBottom = container
+      ? container.scrollHeight - container.scrollTop - container.clientHeight < 50
+      : true
+
     // 等待 DOM 更新完成
     await nextTick()
 
@@ -655,6 +745,12 @@ watch(() => messages.value, async (newMessages) => {
         collapsedCount++
       }
     })
+
+    // 如果有折叠发生且用户之前在底部，折叠后保持在底部
+    if (collapsedCount > 0 && wasNearBottom) {
+      await nextTick()
+      scrollToBottom(true)
+    }
   }
   previousMessageCount = newLength
 }, { deep: true })
@@ -724,6 +820,7 @@ async function sendMessage() {
     role: 'user',
     content: userText,
     timestamp: new Date(),
+    startTime: Date.now(), // 记录开始时间，用于计算总耗时
     rawMessages: [userMessage]
   }
   messages.value.push(displayMessage)
@@ -894,6 +991,10 @@ async function handlePermissionDeny(requestId) {
     toolUseMsg.isExecuting = false
     toolUseMsg.isError = true
     toolUseMsg.result = '用户拒绝'
+    // 计算 duration
+    if (toolUseMsg.startTime) {
+      toolUseMsg.duration = Date.now() - toolUseMsg.startTime
+    }
   }
 
   try {
@@ -1149,6 +1250,61 @@ async function handleQuestionAnswer(requestId, answers) {
 
 <template>
   <div class="chat-window">
+    <!-- Environment Bar -->
+    <div v-if="envInfo" class="env-bar">
+      <div class="env-main">
+        <span class="env-item">
+          <span class="env-icon">📁</span>
+          <span class="env-label">{{ envInfo.cwd?.split('/').pop() || envInfo.cwd }}</span>
+        </span>
+        <span v-if="envInfo.model" class="env-item">
+          <span class="env-icon">🤖</span>
+          <span class="env-label">{{ envInfo.model }}</span>
+        </span>
+        <span v-if="envInfo.session_id" class="env-item">
+          <span class="env-icon">🔗</span>
+          <span class="env-label">{{ envInfo.session_id?.substring(0, 8) }}</span>
+        </span>
+        <span v-if="envInfo.tools?.length" class="env-item">
+          <span class="env-icon">🔧</span>
+          <span class="env-label">{{ envInfo.tools.length }} 工具</span>
+        </span>
+        <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">
+          {{ showEnvDetail ? '收起' : '详情' }}
+        </button>
+      </div>
+      <!-- 浮动详情面板 -->
+      <div v-if="showEnvDetail" class="env-detail-dropdown">
+        <div class="env-detail-row">
+          <span class="env-detail-label">工作目录</span>
+          <span class="env-detail-value">{{ envInfo.cwd }}</span>
+        </div>
+        <div v-if="envInfo.model" class="env-detail-row">
+          <span class="env-detail-label">模型</span>
+          <span class="env-detail-value">{{ envInfo.model }}</span>
+        </div>
+        <div v-if="envInfo.session_id" class="env-detail-row">
+          <span class="env-detail-label">会话 ID</span>
+          <span class="env-detail-value">{{ envInfo.session_id }}</span>
+        </div>
+        <div v-if="envInfo.plugins?.length" class="env-detail-row">
+          <span class="env-detail-label">插件</span>
+          <span class="env-detail-value tools-list">{{ envInfo.plugins.join(', ') }}</span>
+        </div>
+        <div v-if="envInfo.mcp_servers?.length" class="env-detail-row">
+          <span class="env-detail-label">MCP</span>
+          <span class="env-detail-value tools-list">{{ envInfo.mcp_servers.join(', ') }}</span>
+        </div>
+        <div v-if="envInfo.skills?.length" class="env-detail-row">
+          <span class="env-detail-label">技能</span>
+          <span class="env-detail-value tools-list">{{ envInfo.skills.join(', ') }}</span>
+        </div>
+        <div v-if="envInfo.tools?.length" class="env-detail-row env-tools">
+          <span class="env-detail-label">工具</span>
+          <span class="env-detail-value tools-list">{{ envInfo.tools.join(', ') }}</span>
+        </div>
+      </div>
+    </div>
     <div class="messages" ref="messagesContainer">
       <div
         v-for="(message, index) in messages"
@@ -1161,6 +1317,21 @@ async function handleQuestionAnswer(requestId, answers) {
         <template v-if="message.role === 'tool_use'">
           <div class="message-avatar">T</div>
           <div class="tool-use-message-wrapper">
+            <!-- Tool use 消息头部：时间、耗时 -->
+            <div v-if="message.timestamp || message.duration" class="message-header tool-use-header">
+              <span v-if="message.timestamp" class="header-time">
+                <span class="header-icon">🕐</span>
+                {{ new Date(message.timestamp).toLocaleTimeString() }}
+              </span>
+              <span v-if="message.duration" class="header-duration">
+                <span class="header-icon">⏳</span>
+                {{ formatDuration(message.duration) }}
+              </span>
+              <span v-else-if="message.isExecuting && message.startTime" class="header-duration streaming">
+                <span class="header-icon">⏳</span>
+                {{ formatDuration(currentTime - message.startTime) }}
+              </span>
+            </div>
             <ToolUseMessage
               :tool-name="message.toolName"
               :tool-input="message.toolInput"
@@ -1184,7 +1355,7 @@ async function handleQuestionAnswer(requestId, answers) {
               :class="{ 'answer-mismatch': message.resultReceived && !message.answersConsistent }"
             >
           <!-- Header with collapse button -->
-          <div class="question-message-header">
+          <div class="question-message-header" @click="toggleQuestionCollapse(index)">
             <div class="question-title">
               <span class="question-icon">❓</span>
               <span class="question-count" v-if="message.questions && message.questions.length > 1">{{ message.questions.length }} 个问题</span>
@@ -1192,27 +1363,19 @@ async function handleQuestionAnswer(requestId, answers) {
               <span v-if="message.resultReceived && message.answersConsistent" class="status-badge success">答案已确认</span>
               <span v-else-if="message.resultReceived && !message.answersConsistent" class="status-badge warning">答案不一致</span>
             </div>
-            <button
-              type="button"
-              class="collapse-button"
-              @click="toggleQuestionCollapse(index)"
-            >
-              {{ isQuestionCollapsed(index) ? '展开' : '折叠' }}
-            </button>
+            <span class="expand-icon">{{ isQuestionCollapsed(index) ? '▶' : '▼' }}</span>
           </div>
 
           <!-- Collapsed view: show only answers -->
           <div v-if="isQuestionCollapsed(index)" class="collapsed-answers">
-            <template
+            <div
               v-for="(q, qIdx) in message.questions"
               :key="qIdx"
+              class="collapsed-answer-item"
             >
-              <div class="collapsed-answer-item">
-                <span class="collapsed-question-label">{{ q.header }}:</span>
-                <span class="collapsed-answer-content">{{ q.selectedAnswer || '未选择' }}</span>
-              </div>
-              <span v-if="qIdx < message.questions.length - 1" class="collapsed-answer-separator">|</span>
-            </template>
+              <span class="collapsed-question-label">{{ q.header }}:</span>
+              <span class="collapsed-answer-content">{{ q.selectedAnswer || '未选择' }}</span>
+            </div>
           </div>
 
           <!-- Expanded view: show full content -->
@@ -1309,7 +1472,36 @@ async function handleQuestionAnswer(requestId, answers) {
           <div class="message-avatar" v-if="message.role !== 'status'">
             {{ message.role === 'user' ? 'U' : message.role === 'assistant' ? 'C' : 'S' }}
           </div>
-          <div class="message-content" :class="{ 'status-content': message.role === 'status' }">
+          <!-- User 消息特殊布局：头部在气泡外部 -->
+          <template v-if="message.role === 'user'">
+            <div class="message-user-container">
+              <div class="message-header user-header">
+                <span class="header-time">
+                  <span class="header-icon">🕐</span>
+                  {{ new Date(message.timestamp).toLocaleTimeString() }}
+                </span>
+                <span v-if="message.duration" class="header-duration">
+                  <span class="header-icon">⏳</span>
+                  {{ formatDuration(message.duration) }}
+                </span>
+                <span v-if="message.numTurns" class="header-turns">
+                  <span class="header-icon">🔄</span>
+                  {{ message.numTurns }} turns
+                </span>
+                <span v-if="message.usage && formatTokens(message.usage)" class="header-tokens">
+                  <span class="header-icon">⚡</span>
+                  {{ formatTokens(message.usage) }}
+                </span>
+              </div>
+              <div class="message-content user-content">
+                <div class="message-text">
+                  {{ message.content }}
+                </div>
+              </div>
+            </div>
+          </template>
+          <!-- Assistant 和其他消息保持原布局 -->
+          <div v-else class="message-content" :class="{ 'status-content': message.role === 'status' }">
             <!-- Assistant 消息头部：状态、时间、消耗 -->
             <div v-if="message.role === 'assistant'" class="message-header">
               <span v-if="message.isStreaming" class="header-status streaming">
@@ -1332,6 +1524,12 @@ async function handleQuestionAnswer(requestId, answers) {
                 {{ formatTokens(message.usage) }}
               </span>
             </div>
+            <!-- Turn 分割线 - 当有多个 turn 时显示 -->
+            <div v-if="message.role === 'assistant' && message.showTurnSeparator" class="turn-separator">
+              <div class="turn-separator-line"></div>
+              <span class="turn-separator-label">Turn {{ message.turnNumber || 2 }}</span>
+              <div class="turn-separator-line"></div>
+            </div>
             <!-- Thinking section - 显示在内容上方，可折叠 -->
             <div
               v-if="message.role === 'assistant' && message.hasThinking && message.thinking"
@@ -1341,21 +1539,21 @@ async function handleQuestionAnswer(requestId, answers) {
               <div class="thinking-header-inline" @click="message.thinkingCollapsed = !message.thinkingCollapsed">
                 <span class="thinking-icon">💭</span>
                 <span class="thinking-label">思考过程</span>
-                <span class="thinking-toggle">{{ message.thinkingCollapsed ? '▶' : '▼' }}</span>
                 <span v-if="message.thinkingCollapsed" class="thinking-preview">{{ message.thinking.substring(0, 50) }}...</span>
+                <span class="thinking-toggle">{{ message.thinkingCollapsed ? '▶' : '▼' }}</span>
               </div>
               <div v-if="!message.thinkingCollapsed" class="thinking-content-inline">{{ message.thinking }}</div>
             </div>
             <!-- 消息内容 - 只在有内容时显示 -->
             <div
-              v-if="message.content || (message.role === 'user')"
+              v-if="message.content"
               class="message-text"
               :class="{ 'status-text': message.role === 'status' }"
             >
               <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
               <div v-else>{{ message.content }}</div>
             </div>
-            <div class="message-time" v-if="message.role !== 'status' && message.role !== 'assistant'">
+            <div class="message-time" v-if="message.role !== 'status' && message.role !== 'assistant' && message.role !== 'user'">
               {{ new Date(message.timestamp).toLocaleTimeString() }}
             </div>
           </div>
@@ -1434,6 +1632,92 @@ async function handleQuestionAnswer(requestId, answers) {
   flex-direction: column;
 }
 
+/* Environment Bar */
+.env-bar {
+  position: relative;
+  background: #18181B;
+  border-bottom: 1px solid #27272A;
+  padding: 8px 16px;
+  font-size: 12px;
+}
+
+.env-main {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.env-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #71717A;
+}
+
+.env-icon {
+  font-size: 12px;
+}
+
+.env-label {
+  color: #A1A1AA;
+  font-family: ui-monospace, monospace;
+}
+
+.env-detail-btn {
+  margin-left: auto;
+  background: #27272A;
+  border: none;
+  color: #71717A;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.15s;
+}
+
+.env-detail-btn:hover {
+  background: #3F3F46;
+  color: #A1A1AA;
+}
+
+.env-detail-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #18181B;
+  border-bottom: 1px solid #27272A;
+  padding: 12px 16px;
+  z-index: 100;
+}
+
+.env-detail-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.env-detail-row:last-child {
+  margin-bottom: 0;
+}
+
+.env-detail-label {
+  color: #52525B;
+  min-width: 60px;
+  flex-shrink: 0;
+}
+
+.env-detail-value {
+  color: #A1A1AA;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.env-detail-value.tools-list {
+  line-height: 1.6;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -1504,6 +1788,14 @@ async function handleQuestionAnswer(requestId, answers) {
   border-bottom: 1px solid #27272A;
 }
 
+/* Tool use 消息头部样式 - 在气泡外面 */
+.message-header.tool-use-header {
+  padding: 0 0 6px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #27272A;
+  font-size: 11px;
+}
+
 .header-status {
   font-size: 13px;
   font-weight: 500;
@@ -1557,6 +1849,25 @@ async function handleQuestionAnswer(requestId, answers) {
   background: #1E1B4B;
 }
 
+/* 用户消息头部样式 */
+.message-header.user-header {
+  padding: 0 0 8px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #27272A;
+  flex-wrap: wrap;
+}
+
+.header-turns {
+  font-size: 11px;
+  color: #71717A;
+  background: #27272A;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .header-tokens {
   font-size: 11px;
   color: #71717A;
@@ -1574,6 +1885,27 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .message-content {
   max-width: 70%;
+}
+
+/* 用户消息容器：包含头部和气泡，右对齐 */
+.message-user-container {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: 70%;
+}
+
+/* 用户消息气泡：宽度适配内容 */
+.message-content.user-content {
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* 用户消息头部：右对齐 */
+.message-header.user-header {
+  justify-content: flex-end;
+  padding: 0 0 6px 0;
+  margin-bottom: 6px;
 }
 
 .question-message-wrapper {
@@ -1599,6 +1931,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .message.user .message-text {
   background: #3F3F46;
+  width: fit-content;
 }
 
 .message.assistant .message-text {
@@ -1607,6 +1940,29 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 /* Thinking section within assistant message - 低调但可读 */
+/* Turn 分割线样式 */
+.turn-separator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 12px 0;
+}
+
+.turn-separator-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #3F3F46, transparent);
+}
+
+.turn-separator-label {
+  font-size: 11px;
+  color: #71717A;
+  background: #27272A;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
 .thinking-section {
   background: #18181B;
   border: 1px solid #27272A;
@@ -1640,6 +1996,7 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .thinking-preview {
+  flex: 1;
   font-size: 11px;
   color: #71717A;
   font-style: italic;
@@ -1920,20 +2277,15 @@ async function handleQuestionAnswer(requestId, answers) {
   color: #FCD34D;
 }
 
-.collapse-button {
-  padding: 4px 12px;
-  background: transparent;
-  border: 1px solid #10B981;
-  border-radius: 4px;
-  color: #6EE7B7;
-  font-size: 11px;
-  font-weight: 500;
+.question-message-header .expand-icon {
+  font-size: 10px;
+  color: #71717A;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.15s;
 }
 
-.collapse-button:hover {
-  background: rgba(110, 231, 183, 0.1);
+.question-message-header .expand-icon:hover {
+  color: #A1A1AA;
 }
 
 /* Collapsed answers */
@@ -1941,40 +2293,35 @@ async function handleQuestionAnswer(requestId, answers) {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 16px;
-  padding: 14px 0;
+  gap: 8px;
+  padding: 6px 0;
   flex-wrap: wrap;
 }
 
 .collapsed-answer-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
+  gap: 8px;
+  padding: 4px 10px;
   background: rgba(59, 130, 246, 0.06);
-  border-radius: 6px;
+  border-radius: 4px;
   border: 1px solid rgba(59, 130, 246, 0.12);
 }
 
 .collapsed-question-label {
-  font-size: 12px;
+  font-size: 11px;
   color: #6EE7B7;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
 }
 
 .collapsed-answer-content {
-  font-size: 13px;
+  font-size: 12px;
   color: #F1F5F9;
   font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
   font-weight: 500;
 }
 
 .collapsed-answer-separator {
-  color: #475569;
-  font-size: 14px;
-  font-weight: 300;
   margin: 0 4px;
 }
 

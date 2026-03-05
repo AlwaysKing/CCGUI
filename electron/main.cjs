@@ -4,6 +4,7 @@ const { ClaudeManager } = require('./claude-manager')
 
 let mainWindow
 let claudeManager
+let cachedInitInfo = null // 缓存 init 信息
 
 /**
  * Create main application window
@@ -75,6 +76,7 @@ function initClaudeManager() {
   claudeManager.on('system', (message) => {
     console.log('[Claude Manager] system:', JSON.stringify(message, null, 2).substring(0, 500))
     if (message.subtype === 'init') {
+      cachedInitInfo = message // 缓存 init 信息
       mainWindow?.webContents.send('claude-init', message)
     } else {
       mainWindow?.webContents.send('system-message', message)
@@ -132,7 +134,7 @@ function sendSystemMessage(message) {
 
 // Send message to Claude
 ipcMain.handle('send-message', async (event, userMessage) => {
-  console.log('[IPC] send-message:', JSON.stringify(userMessage, null, 2).substring(0, 300))
+  console.log('[IPC] send-message:', JSON.stringify(userMessage, null, 2))
   claudeManager.sendMessage(userMessage)
   return { success: true }
 })
@@ -150,6 +152,11 @@ ipcMain.handle('get-claude-info', async () => {
 // Check if Claude is ready
 ipcMain.handle('is-claude-ready', async () => {
   return claudeManager?.isReady() || false
+})
+
+// Get cached init info
+ipcMain.handle('get-init-info', async () => {
+  return cachedInitInfo
 })
 
 // Handle tool result (permission response)

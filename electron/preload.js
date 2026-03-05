@@ -54,6 +54,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Get Claude info
   getClaudeInfo: () => ipcRenderer.invoke('get-claude-info'),
 
+  // Get cached init info
+  getInitInfo: () => ipcRenderer.invoke('get-init-info'),
+
   // Check if Claude is ready
   isClaudeReady: () => ipcRenderer.invoke('is-claude-ready'),
 

@@ -52,6 +52,11 @@ function handleSelect(questionIndex, optionIndex) {
   } else {
     // 单选模式：直接设置
     answers.value[questionIndex] = optionLabel
+    // 单选模式下，选择后自动跳转到下一个未回答的问题
+    const nextUnansweredIndex = questions.value.findIndex((q, idx) => !isQuestionAnswered(idx))
+    if (nextUnansweredIndex !== -1 && nextUnansweredIndex !== questionIndex) {
+      currentTabIndex.value = nextUnansweredIndex
+    }
   }
 }
 

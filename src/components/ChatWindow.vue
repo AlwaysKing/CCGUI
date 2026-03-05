@@ -22,6 +22,7 @@ const envInfo = ref(null) // 环境信息（来自 system init）
 const showEnvDetail = ref(false) // 是否显示环境详情
 const stickyUserMessage = ref(null) // 当前粘性显示的用户消息
 const stickyMessageIndex = ref(-1) // 当前粘性显示的消息索引
+const containerHeight = ref(400) // 聊天容器高度，用于限制粘性面板
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
 
@@ -33,6 +34,16 @@ onMounted(async () => {
   durationTimer = setInterval(() => {
     currentTime.value = Date.now()
   }, 100)
+
+  // 监听聊天容器高度变化
+  if (messagesContainer.value) {
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        containerHeight.value = entry.contentRect.height
+      }
+    })
+    resizeObserver.observe(messagesContainer.value)
+  }
 
   // Get working directory
   try {
@@ -105,8 +116,6 @@ onMounted(async () => {
   unsubs.push(msgUnsub)
 
   const resultUnsub = window.electronAPI.onClaudeResult((message) => {
-    isProcessing.value = false
-
     // 找到最后一个用户消息并更新统计信息
     // result.usage 是这一轮请求的总消耗，result.num_turns 是轮次数量
     for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -169,9 +178,6 @@ onMounted(async () => {
   unsubs.push(toolUnsub)
 
   const toolResultUnsub = window.electronAPI.onToolResult((message) => {
-    // Display tool result and reset processing state
-    isProcessing.value = false
-
     // 检查是否是 AskUserQuestion 的结果
     if (message.tool_use_result?.answers) {
       // tool_use_id 在 message.message.content 中
@@ -1453,38 +1459,64 @@ async function handleQuestionAnswer(requestId, answers) {
         </div>
       </div>
     </div>
-    <!-- 粘性头部 - 显示当前问题 -->
-    <div v-if="stickyUserMessage" class="sticky-header">
-      <div class="sticky-content">
-        <!-- 默认显示：截断的问题文本 -->
-        <div class="sticky-preview">{{ stickyUserMessage.content }}</div>
-        <!-- 悬停显示：完整格式 -->
-        <div class="sticky-expanded">
-          <div class="sticky-info">
-            <span class="sticky-time">
-              <span class="sticky-info-icon">🕐</span>
-              {{ stickyUserMessage.timestamp ? new Date(stickyUserMessage.timestamp).toLocaleTimeString() : '' }}
-            </span>
-            <span v-if="stickyUserMessage.duration" class="sticky-duration">
-              <span class="sticky-info-icon">⏳</span>
-              {{ formatDuration(stickyUserMessage.duration) }}
-            </span>
-            <span v-else-if="isStickyMessageProcessing && stickyUserMessage.startTime" class="sticky-duration streaming">
-              <span class="sticky-info-icon">⏳</span>
-              {{ formatDuration(currentTime - stickyUserMessage.startTime) }}
-            </span>
-            <span v-if="stickyUserMessage.numTurns" class="sticky-turns">
-              <span class="sticky-info-icon">🔄</span>
-              {{ stickyUserMessage.numTurns }}
-            </span>
+    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll">
+      <!-- 粘性头部 - 浮动在聊天内容上方 -->
+      <div v-if="stickyUserMessage" class="sticky-header">
+        <div class="sticky-content" :style="{ '--max-height': (containerHeight * 0.5) + 'px' }">
+          <!-- 折叠状态：简单信息 -->
+          <div class="sticky-collapsed">
+            <div class="sticky-info">
+              <span class="sticky-time">
+                <span class="sticky-info-icon">🕐</span>
+                {{ stickyUserMessage.timestamp ? new Date(stickyUserMessage.timestamp).toLocaleTimeString() : '' }}
+              </span>
+              <span v-if="stickyUserMessage.duration" class="sticky-duration">
+                <span class="sticky-info-icon">⏳</span>
+                {{ formatDuration(stickyUserMessage.duration) }}
+              </span>
+              <span v-else-if="isStickyMessageProcessing && stickyUserMessage.startTime" class="sticky-duration streaming">
+                <span class="sticky-info-icon">⏳</span>
+                {{ formatDuration(currentTime - stickyUserMessage.startTime) }}
+              </span>
+              <span v-if="stickyUserMessage.numTurns" class="sticky-turns">
+                <span class="sticky-info-icon">🔄</span>
+                {{ stickyUserMessage.numTurns }}
+              </span>
+              <span v-if="stickyUserMessage.usage && formatTokens(stickyUserMessage.usage)" class="sticky-usage">
+                <span class="sticky-info-icon">⚡</span>
+                {{ formatTokens(stickyUserMessage.usage) }}
+              </span>
+            </div>
+            <div class="sticky-text">{{ stickyUserMessage.content }}</div>
           </div>
-          <div class="sticky-text">{{ stickyUserMessage.content }}</div>
+          <!-- 展开状态：Markdown 渲染 -->
+          <div class="sticky-expanded">
+            <div class="sticky-info">
+              <span class="sticky-time">
+                <span class="sticky-info-icon">🕐</span>
+                {{ stickyUserMessage.timestamp ? new Date(stickyUserMessage.timestamp).toLocaleTimeString() : '' }}
+              </span>
+              <span v-if="stickyUserMessage.duration" class="sticky-duration">
+                <span class="sticky-info-icon">⏳</span>
+                {{ formatDuration(stickyUserMessage.duration) }}
+              </span>
+              <span v-else-if="isStickyMessageProcessing && stickyUserMessage.startTime" class="sticky-duration streaming">
+                <span class="sticky-info-icon">⏳</span>
+                {{ formatDuration(currentTime - stickyUserMessage.startTime) }}
+              </span>
+              <span v-if="stickyUserMessage.numTurns" class="sticky-turns">
+                <span class="sticky-info-icon">🔄</span>
+                {{ stickyUserMessage.numTurns }}
+              </span>
+              <span v-if="stickyUserMessage.usage && formatTokens(stickyUserMessage.usage)" class="sticky-usage">
+                <span class="sticky-info-icon">⚡</span>
+                {{ formatTokens(stickyUserMessage.usage) }}
+              </span>
+            </div>
+            <div class="sticky-text-md"><MarkdownRenderer :content="stickyUserMessage.content" /></div>
+          </div>
         </div>
       </div>
-    </div>
-      </div>
-    </div>
-    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll">
       <template v-for="(message, index) in messages" :key="index">
         <div
           class="message"
@@ -1921,56 +1953,61 @@ async function handleQuestionAnswer(requestId, answers) {
   line-height: 1.6;
 }
 
-/* 粘性头部 - iOS 风格 */
+/* 粘性头部 - 浮动在聊天内容上方 */
 .sticky-header {
   position: sticky;
   top: 0;
   z-index: 50;
-  background: linear-gradient(180deg, #18181B 0%, #18181B 80%, transparent 100%);
-  padding: 8px 16px 16px 16px;
-  margin-bottom: -8px;
   display: flex;
   justify-content: flex-end;
+  margin-right: -12px;
+  margin-top: -14px;
 }
 
 .sticky-content {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   background: #3F3F46;
   border-radius: 8px;
-  padding: 8px 12px;
+  padding: 4px 12px;
   max-width: 70%;
   flex-direction: column;
-  align-items: flex-end;
   gap: 4px;
+  transform: translateY(-6px);
 }
 
-/* 默认显示：截断的问题预览 */
-.sticky-preview {
-  font-size: 13px;
-  color: #F1F5F9;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 300px;
+/* 折叠状态：默认显示 */
+.sticky-collapsed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
 }
 
-/* 悬停时隐藏预览，显示完整内容 */
-.sticky-content:hover .sticky-preview {
-  display: none;
-}
-
-/* 展开内容：默认隐藏 */
 .sticky-expanded {
   display: none;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  max-height: calc(var(--max-height, 300px) - 50px);
+  overflow-y: auto;
+  width: 100%;
+}
+
+/* 悬停时：隐藏折叠，显示展开 */
+.sticky-content:hover .sticky-collapsed {
+  display: none;
+}
+
+.sticky-content:hover {
+  max-width: none;
+  max-height: var(--max-height, 300px);
+  padding: 12px;
 }
 
 .sticky-content:hover .sticky-expanded {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
 }
 
 .sticky-info {
@@ -1978,11 +2015,14 @@ async function handleQuestionAnswer(requestId, answers) {
   align-items: center;
   gap: 10px;
   font-size: 11px;
+  justify-content: flex-end;
+  width: 100%;
 }
 
 .sticky-time,
 .sticky-duration,
-.sticky-turns {
+.sticky-turns,
+.sticky-usage {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1997,16 +2037,24 @@ async function handleQuestionAnswer(requestId, answers) {
   font-size: 10px;
 }
 
+/* 折叠时的文本：单行截断 */
 .sticky-text {
   font-size: 13px;
   color: #F1F5F9;
-  word-break: break-word;
-  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
 }
 
-/* 粘性头部悬停效果 */
-.sticky-content:hover {
-  max-width: 70%;
+/* 展开时的文本：Markdown 渲染，添加滚动条 */
+.sticky-text-md {
+  font-size: 13px;
+  color: #F1F5F9;
+  word-break: break-word;
+  max-height: calc(var(--max-height, 300px) - 80px);
+  overflow-y: auto;
+  width: 100%;
 }
 
 /* 折叠的回答占位符 */
@@ -2042,6 +2090,7 @@ async function handleQuestionAnswer(requestId, answers) {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
+  position: relative;
   /* Modern scrollbar styling */
   scrollbar-width: thin;
   scrollbar-color: #52525B #18181B;

@@ -136,7 +136,7 @@ const props = defineProps({
     default: () => ({})
   },
   result: {
-    type: String,
+    type: [String, Array],
     default: ''
   },
   isError: {

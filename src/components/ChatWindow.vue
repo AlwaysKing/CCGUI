@@ -20,7 +20,6 @@ const selectedMessage = ref(null) // 当前选中的消息（用于显示详情�
 const currentTime = ref(Date.now()) // 用于实时更新消耗时间
 const envInfo = ref(null) // 环境信息（来自 system init）
 const showEnvDetail = ref(false) // 是否显示环境详情
-const stickyUserMessage = ref(null) // 当前粘性显示的用户消息
 const stickyMessageIndex = ref(-1) // 当前粘性显示的消息索引
 const containerHeight = ref(400) // 聊天容器高度，用于限制粘性面板
 let previousMessageCount = 0 // 追踪之前的消息数量
@@ -955,29 +954,25 @@ function updateStickyMessage() {
   // 只有当可见区域内没有用户消息时，才显示粘性头部
   if (hasVisibleUserMessage) {
     stickyMessageIndex.value = -1
-    stickyUserMessage.value = null
   } else if (currentStickyIndex >= 0) {
-    if (currentStickyIndex !== stickyMessageIndex.value) {
-      stickyMessageIndex.value = currentStickyIndex
-      stickyUserMessage.value = messages.value[currentStickyIndex]
-    }
+    stickyMessageIndex.value = currentStickyIndex
   } else {
     stickyMessageIndex.value = -1
-    stickyUserMessage.value = null
   }
 }
 
-// 判断粘性消息是否正在被回答
-const isStickyMessageProcessing = computed(() => {
-  if (!stickyUserMessage.value || !isProcessing.value) return false
-
-  // 检查粘性消息是否是最后一个用户消息
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    if (messages.value[i].role === 'user') {
-      return i === stickyMessageIndex.value
-    }
+// 通过索引获取粘性消息（确保响应式更新）
+const stickyMessage = computed(() => {
+  if (stickyMessageIndex.value >= 0 && stickyMessageIndex.value < messages.value.length) {
+    return messages.value[stickyMessageIndex.value]
   }
-  return false
+  return null
+})
+
+// 判断粘性消息是否正在被回答（基于消息是否有 duration）
+const isStickyMessageProcessing = computed(() => {
+  // 如果粘性消息存在且没有 duration，说明还在处理中
+  return !!(stickyMessage.value && !stickyMessage.value.duration)
 })
 
 // 判断是否是最后一个用户消息
@@ -1461,59 +1456,59 @@ async function handleQuestionAnswer(requestId, answers) {
     </div>
     <div class="messages" ref="messagesContainer" @scroll="handleUserScroll">
       <!-- 粘性头部 - 浮动在聊天内容上方 -->
-      <div v-if="stickyUserMessage" class="sticky-header">
+      <div v-if="stickyMessage" class="sticky-header">
         <div class="sticky-content" :style="{ '--max-height': (containerHeight * 0.5) + 'px' }">
           <!-- 折叠状态：简单信息 -->
           <div class="sticky-collapsed">
             <div class="sticky-info">
               <span class="sticky-time">
                 <span class="sticky-info-icon">🕐</span>
-                {{ stickyUserMessage.timestamp ? new Date(stickyUserMessage.timestamp).toLocaleTimeString() : '' }}
+                {{ stickyMessage.timestamp ? new Date(stickyMessage.timestamp).toLocaleTimeString() : '' }}
               </span>
-              <span v-if="stickyUserMessage.duration" class="sticky-duration">
+              <span v-if="stickyMessage.duration" class="sticky-duration">
                 <span class="sticky-info-icon">⏳</span>
-                {{ formatDuration(stickyUserMessage.duration) }}
+                {{ formatDuration(stickyMessage.duration) }}
               </span>
-              <span v-else-if="isStickyMessageProcessing && stickyUserMessage.startTime" class="sticky-duration streaming">
+              <span v-else-if="isStickyMessageProcessing && stickyMessage.startTime" class="sticky-duration streaming">
                 <span class="sticky-info-icon">⏳</span>
-                {{ formatDuration(currentTime - stickyUserMessage.startTime) }}
+                {{ formatDuration(currentTime - stickyMessage.startTime) }}
               </span>
-              <span v-if="stickyUserMessage.numTurns" class="sticky-turns">
+              <span v-if="stickyMessage.numTurns" class="sticky-turns">
                 <span class="sticky-info-icon">🔄</span>
-                {{ stickyUserMessage.numTurns }}
+                {{ stickyMessage.numTurns }}
               </span>
-              <span v-if="stickyUserMessage.usage && formatTokens(stickyUserMessage.usage)" class="sticky-usage">
+              <span v-if="stickyMessage.usage && formatTokens(stickyMessage.usage)" class="sticky-usage">
                 <span class="sticky-info-icon">⚡</span>
-                {{ formatTokens(stickyUserMessage.usage) }}
+                {{ formatTokens(stickyMessage.usage) }}
               </span>
             </div>
-            <div class="sticky-text">{{ stickyUserMessage.content }}</div>
+            <div class="sticky-text">{{ stickyMessage.content }}</div>
           </div>
           <!-- 展开状态：Markdown 渲染 -->
           <div class="sticky-expanded">
             <div class="sticky-info">
               <span class="sticky-time">
                 <span class="sticky-info-icon">🕐</span>
-                {{ stickyUserMessage.timestamp ? new Date(stickyUserMessage.timestamp).toLocaleTimeString() : '' }}
+                {{ stickyMessage.timestamp ? new Date(stickyMessage.timestamp).toLocaleTimeString() : '' }}
               </span>
-              <span v-if="stickyUserMessage.duration" class="sticky-duration">
+              <span v-if="stickyMessage.duration" class="sticky-duration">
                 <span class="sticky-info-icon">⏳</span>
-                {{ formatDuration(stickyUserMessage.duration) }}
+                {{ formatDuration(stickyMessage.duration) }}
               </span>
-              <span v-else-if="isStickyMessageProcessing && stickyUserMessage.startTime" class="sticky-duration streaming">
+              <span v-else-if="isStickyMessageProcessing && stickyMessage.startTime" class="sticky-duration streaming">
                 <span class="sticky-info-icon">⏳</span>
-                {{ formatDuration(currentTime - stickyUserMessage.startTime) }}
+                {{ formatDuration(currentTime - stickyMessage.startTime) }}
               </span>
-              <span v-if="stickyUserMessage.numTurns" class="sticky-turns">
+              <span v-if="stickyMessage.numTurns" class="sticky-turns">
                 <span class="sticky-info-icon">🔄</span>
-                {{ stickyUserMessage.numTurns }}
+                {{ stickyMessage.numTurns }}
               </span>
-              <span v-if="stickyUserMessage.usage && formatTokens(stickyUserMessage.usage)" class="sticky-usage">
+              <span v-if="stickyMessage.usage && formatTokens(stickyMessage.usage)" class="sticky-usage">
                 <span class="sticky-info-icon">⚡</span>
-                {{ formatTokens(stickyUserMessage.usage) }}
+                {{ formatTokens(stickyMessage.usage) }}
               </span>
             </div>
-            <div class="sticky-text-md"><MarkdownRenderer :content="stickyUserMessage.content" /></div>
+            <div class="sticky-text-md"><MarkdownRenderer :content="stickyMessage.content" /></div>
           </div>
         </div>
       </div>
@@ -1696,7 +1691,7 @@ async function handleQuestionAnswer(requestId, answers) {
                   <span class="header-icon">⏳</span>
                   {{ formatDuration(message.duration) }}
                 </span>
-                <span v-else-if="isProcessing && isLastUserMessage(index) && message.startTime" class="header-duration streaming">
+                <span v-else-if="!message.duration && isLastUserMessage(index) && message.startTime" class="header-duration streaming">
                   <span class="header-icon">⏳</span>
                   {{ formatDuration(currentTime - message.startTime) }}
                 </span>
@@ -2003,7 +1998,7 @@ async function handleQuestionAnswer(requestId, answers) {
 .sticky-content:hover {
   max-width: none;
   max-height: var(--max-height, 300px);
-  padding: 12px;
+  padding: 4px 12px;
 }
 
 .sticky-content:hover .sticky-expanded {

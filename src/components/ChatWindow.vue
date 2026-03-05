@@ -584,6 +584,12 @@ onMounted(async () => {
 
     // Handle content_block_stop
     if (event.type === 'content_block_stop') {
+      // 检查是否是 thinking block 结束
+      if (currentThinkingMessageIndex >= 0 && messages.value[currentThinkingMessageIndex]) {
+        console.log('💭 Thinking block completed')
+        currentThinkingMessageIndex = -1
+      }
+
       // 使用 event.index 从映射中获取 content_block_id
       const contentBlockId = contentBlockIndexToId.get(event.index)
       if (contentBlockId) {

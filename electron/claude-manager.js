@@ -78,8 +78,8 @@ class ClaudeManager {
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
       '--permission-prompt-tool', 'stdio',
-      '--max-thinking-tokens', '31999',
-      '--include-partial-messages'
+      '--include-partial-messages',
+      '--thinking', 'adaptive'
     ]
 
     try {

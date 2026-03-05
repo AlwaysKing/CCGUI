@@ -806,6 +806,13 @@ async function sendMessage() {
 
   const userText = inputMessage.value
 
+  // 折叠之前所有用户消息的回答
+  messages.value.forEach(msg => {
+    if (msg.role === 'user') {
+      msg.responseCollapsed = true
+    }
+  })
+
   // Send to Claude
   const userMessage = {
     type: 'user',
@@ -821,6 +828,7 @@ async function sendMessage() {
     content: userText,
     timestamp: new Date(),
     startTime: Date.now(), // 记录开始时间，用于计算总耗时
+    responseCollapsed: false, // 新消息的回答不折叠
     rawMessages: [userMessage]
   }
   messages.value.push(displayMessage)
@@ -1151,6 +1159,29 @@ function isQuestionCollapsed(messageIndex) {
   return message?.collapsed ?? true
 }
 
+// 判断某条消息是否因为前面的用户消息回答被折叠而应该隐藏
+// 返回 { collapsed: boolean, byUserIndex: number|null }
+function getResponseCollapseState(messageIndex) {
+  // 向前查找最近的用户消息
+  for (let i = messageIndex - 1; i >= 0; i--) {
+    if (messages.value[i].role === 'user') {
+      if (messages.value[i].responseCollapsed) {
+        return { collapsed: true, byUserIndex: i }
+      }
+      break // 找到最近的用户消息就停止
+    }
+  }
+  return { collapsed: false, byUserIndex: null }
+}
+
+// 切换用户消息的回答折叠状态
+function toggleResponseCollapse(messageIndex) {
+  const message = messages.value[messageIndex]
+  if (message && message.role === 'user') {
+    message.responseCollapsed = !message.responseCollapsed
+  }
+}
+
 // 比较两个答案对象是否一致
 function compareAnswers(userAnswers, receivedAnswers) {
   const userKeys = Object.keys(userAnswers)
@@ -1311,6 +1342,7 @@ async function handleQuestionAnswer(requestId, answers) {
         :key="index"
         class="message"
         :class="message.role"
+        :style="{ display: message.role !== 'user' && getResponseCollapseState(index).collapsed ? 'none' : '' }"
         @click="handleMessageClick($event, message)"
       >
         <!-- Tool use message -->
@@ -1492,6 +1524,15 @@ async function handleQuestionAnswer(requestId, answers) {
                   <span class="header-icon">⚡</span>
                   {{ formatTokens(message.usage) }}
                 </span>
+                <!-- 回答折叠/展开按钮 - 只有当有回答时才显示 -->
+                <button
+                  v-if="message.responseCollapsed !== undefined"
+                  class="response-toggle-btn"
+                  @click.stop="toggleResponseCollapse(index)"
+                  :title="message.responseCollapsed ? '展开回答' : '折叠回答'"
+                >
+                  {{ message.responseCollapsed ? '▶ 展开回答' : '▼ 折叠回答' }}
+                </button>
               </div>
               <div class="message-content user-content">
                 <div class="message-text">
@@ -1877,6 +1918,25 @@ async function handleQuestionAnswer(requestId, answers) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+/* 回答折叠/展开按钮 */
+.response-toggle-btn {
+  font-size: 11px;
+  color: #71717A;
+  background: transparent;
+  border: 1px solid #3F3F46;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-left: 8px;
+}
+
+.response-toggle-btn:hover {
+  background: #27272A;
+  color: #A1A1AA;
+  border-color: #52525B;
 }
 
 .header-icon {

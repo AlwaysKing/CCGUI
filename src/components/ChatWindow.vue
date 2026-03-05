@@ -311,7 +311,7 @@ onMounted(async () => {
 
   // Listen for stream events (thinking_delta, text_delta, etc.)
   let currentAssistantMessageIndex = -1
-  let currentThinkingMessageIndex = -1
+  let currentContentBlockType = null // 当前正在处理的内容块类型
   let isUsingStreamEvents = false // 标记是否使用了流式事件
   let contentBlockIndexToId = new Map() // 追踪 content_block index 到 id 的映射
 
@@ -328,7 +328,7 @@ onMounted(async () => {
     // Handle message_start - reset current message tracking
     if (event.type === 'message_start') {
       currentAssistantMessageIndex = -1
-      currentThinkingMessageIndex = -1
+      currentContentBlockType = null
       contentBlockIndexToId.clear() // 清除 index 到 id 的映射
       // 标记正在使用流式事件（message_start 也是 stream_event 的一部分）
       isUsingStreamEvents = true
@@ -338,26 +338,41 @@ onMounted(async () => {
     // Handle content_block_start
     if (event.type === 'content_block_start') {
       const contentBlock = event.content_block
+      currentContentBlockType = contentBlock?.type
+
       if (contentBlock?.type === 'thinking') {
-        // Start a new thinking message
-        messages.value.push({
-          role: 'thinking',
-          content: '',
-          timestamp: new Date(),
-          rawMessages: [message]
-        })
-        currentThinkingMessageIndex = messages.value.length - 1
-        scrollToBottom()
-      } else if (contentBlock?.type === 'text') {
-        // Start a new assistant text message
+        // Start a new assistant message with thinking
+        // thinking 和后续内容合并到同一个消息中
         messages.value.push({
           role: 'assistant',
           content: '',
+          thinking: '', // thinking 内容单独存储
+          hasThinking: true, // 标记有 thinking
           timestamp: new Date(),
           rawMessages: [message]
         })
         currentAssistantMessageIndex = messages.value.length - 1
-        console.log('📄 Text block started - creating assistant message at index:', currentAssistantMessageIndex)
+        console.log('💭 Thinking block started - creating assistant message at index:', currentAssistantMessageIndex)
+        scrollToBottom()
+      } else if (contentBlock?.type === 'text') {
+        // 检查上一个 assistant 消息是否只有 thinking（没有 content），如果是则复用
+        const lastMsg = currentAssistantMessageIndex >= 0 ? messages.value[currentAssistantMessageIndex] : null
+        if (lastMsg && lastMsg.role === 'assistant' && lastMsg.hasThinking && !lastMsg.content) {
+          // 复用现有消息，添加 text 内容
+          console.log('📄 Text block - reusing existing assistant message with thinking')
+        } else {
+          // Start a new assistant text message
+          messages.value.push({
+            role: 'assistant',
+            content: '',
+            thinking: '',
+            hasThinking: false,
+            timestamp: new Date(),
+            rawMessages: [message]
+          })
+          currentAssistantMessageIndex = messages.value.length - 1
+          console.log('📄 Text block started - creating new assistant message at index:', currentAssistantMessageIndex)
+        }
         scrollToBottom(true)
       } else if (contentBlock?.type === 'tool_use') {
         // Start a new tool use message with partial data
@@ -377,10 +392,13 @@ onMounted(async () => {
           isExecuting: true,
           request_id: toolUseData.id,
           collapsed: false,
+          thinking: '', // tool_use 也可能有 thinking
+          hasThinking: false,
           timestamp: new Date(),
           rawMessages: [message]
         }
         messages.value.push(newMessage)
+        currentAssistantMessageIndex = messages.value.length - 1
         console.log('🔧 Tool use block started:', {
           toolName: toolUseData.name,
           initialInput: newMessage.toolInput,
@@ -396,11 +414,12 @@ onMounted(async () => {
     if (event.type === 'content_block_delta') {
       const delta = event.delta
 
-      // Handle thinking_delta
+      // Handle thinking_delta - 更新 assistant 消息的 thinking 字段
       if (delta?.type === 'thinking_delta' && delta.thinking) {
-        if (currentThinkingMessageIndex >= 0 && messages.value[currentThinkingMessageIndex]) {
-          const msg = messages.value[currentThinkingMessageIndex]
-          msg.content += delta.thinking
+        if (currentAssistantMessageIndex >= 0 && messages.value[currentAssistantMessageIndex]) {
+          const msg = messages.value[currentAssistantMessageIndex]
+          msg.thinking = (msg.thinking || '') + delta.thinking
+          msg.hasThinking = true
           // 存储原始消息 - 使用 reactive 更新
           if (!msg.rawMessages) msg.rawMessages = []
           msg.rawMessages.push(message)
@@ -585,9 +604,8 @@ onMounted(async () => {
     // Handle content_block_stop
     if (event.type === 'content_block_stop') {
       // 检查是否是 thinking block 结束
-      if (currentThinkingMessageIndex >= 0 && messages.value[currentThinkingMessageIndex]) {
+      if (currentContentBlockType === 'thinking') {
         console.log('💭 Thinking block completed')
-        currentThinkingMessageIndex = -1
       }
 
       // 使用 event.index 从映射中获取 content_block_id
@@ -608,13 +626,16 @@ onMounted(async () => {
           console.log('⚠️ No tool use message found for content_block_stop:', contentBlockId, 'event.index:', event.index)
         }
       }
+
+      // 重置当前内容块类型
+      currentContentBlockType = null
       return
     }
 
     // Handle message_stop
     if (event.type === 'message_stop') {
       currentAssistantMessageIndex = -1
-      currentThinkingMessageIndex = -1
+      currentContentBlockType = null
       isProcessing.value = false
       isUsingStreamEvents = false // 重置流式事件标志
       console.log('📌 Message stream stopped')
@@ -1333,14 +1354,6 @@ async function handleQuestionAnswer(requestId, answers) {
             </div>
           </div>
         </template>
-        <!-- Thinking message -->
-        <div v-else-if="message.role === 'thinking'" class="thinking-message">
-          <div class="thinking-header">
-            <span class="thinking-icon">💭</span>
-            <span class="thinking-label">思考中</span>
-          </div>
-          <div class="thinking-content">{{ message.content }}</div>
-        </div>
         <!-- Unknown/unsupported message -->
         <div v-else-if="message.role === 'unknown'" class="unknown-message">
           <div class="unknown-header">
@@ -1349,12 +1362,21 @@ async function handleQuestionAnswer(requestId, answers) {
           </div>
           <pre class="unknown-content">{{ message.content }}</pre>
         </div>
-        <!-- Regular messages -->
+        <!-- Regular messages (user, assistant, status) -->
         <template v-else>
           <div class="message-avatar" v-if="message.role !== 'status'">
             {{ message.role === 'user' ? 'U' : message.role === 'assistant' ? 'C' : 'S' }}
           </div>
           <div class="message-content" :class="{ 'status-content': message.role === 'status' }">
+            <!-- Thinking section - 显示在内容上方 -->
+            <div v-if="message.role === 'assistant' && message.hasThinking && message.thinking" class="thinking-section">
+              <div class="thinking-header-inline">
+                <span class="thinking-icon">💭</span>
+                <span class="thinking-label">思考过程</span>
+              </div>
+              <div class="thinking-content-inline">{{ message.thinking }}</div>
+            </div>
+            <!-- 消息内容 -->
             <div class="message-text" :class="{ 'status-text': message.role === 'status' }">
               <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
               <div v-else>{{ message.content }}</div>
@@ -1536,6 +1558,48 @@ async function handleQuestionAnswer(requestId, answers) {
 .message.assistant .message-text {
   background: #27272A;
   border: 1px solid #3F3F46;
+}
+
+/* Thinking section within assistant message */
+.thinking-section {
+  background: linear-gradient(135deg, #1E293B 0%, #1E1E2E 100%);
+  border: 1px solid #334155;
+  border-left: 3px solid #6366F1;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.thinking-header-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.thinking-content-inline {
+  font-size: 13px;
+  color: #94A3B8;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Thinking scrollbar */
+.thinking-content-inline::-webkit-scrollbar {
+  width: 4px;
+}
+
+.thinking-content-inline::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.thinking-content-inline::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 2px;
 }
 
 .message.system .message-text {

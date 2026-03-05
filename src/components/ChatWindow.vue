@@ -17,12 +17,19 @@ const isDragOver = ref(false)
 const questionActiveTabs = ref({}) // 存储每条问答消息的 active tab
 const workingDirectory = ref('') // 工作目录
 const selectedMessage = ref(null) // 当前选中的消息（用于显示详情）
+const currentTime = ref(Date.now()) // 用于实时更新消耗时间
 let previousMessageCount = 0 // 追踪之前的消息数量
+let durationTimer = null // 消耗时间更新定时器
 
 // Store unsubscribe functions
 let unsubscribers = []
 
 onMounted(async () => {
+  // 启动消耗时间更新定时器
+  durationTimer = setInterval(() => {
+    currentTime.value = Date.now()
+  }, 100)
+
   // Get working directory
   try {
     const info = await window.electronAPI.getClaudeInfo()
@@ -325,13 +332,30 @@ onMounted(async () => {
     // 标记正在使用流式事件
     isUsingStreamEvents = true
 
-    // Handle message_start - reset current message tracking
+    // Handle message_start - 创建消息并显示"正在思考"状态
     if (event.type === 'message_start') {
       currentAssistantMessageIndex = -1
       currentContentBlockType = null
       contentBlockIndexToId.clear() // 清除 index 到 id 的映射
       // 标记正在使用流式事件（message_start 也是 stream_event 的一部分）
       isUsingStreamEvents = true
+      // 隐藏单独的 typing indicator，因为我们会在消息内显示状态
+      isProcessing.value = false
+
+      // 创建新的 assistant 消息，带有"正在思考"状态
+      messages.value.push({
+        role: 'assistant',
+        content: '',
+        thinking: '',
+        hasThinking: false,
+        isStreaming: true, // 正在流式传输
+        startTime: Date.now(), // 记录开始时间
+        timestamp: new Date(),
+        rawMessages: [message]
+      })
+      currentAssistantMessageIndex = messages.value.length - 1
+      console.log('🚀 Message started - creating assistant message with streaming state at index:', currentAssistantMessageIndex)
+      scrollToBottom()
       return
     }
 
@@ -341,38 +365,19 @@ onMounted(async () => {
       currentContentBlockType = contentBlock?.type
 
       if (contentBlock?.type === 'thinking') {
-        // Start a new assistant message with thinking
-        // thinking 和后续内容合并到同一个消息中
-        messages.value.push({
-          role: 'assistant',
-          content: '',
-          thinking: '', // thinking 内容单独存储
-          hasThinking: true, // 标记有 thinking
-          thinkingCollapsed: false, // thinking 折叠状态（流式时展开，完成后折叠）
-          timestamp: new Date(),
-          rawMessages: [message]
-        })
-        currentAssistantMessageIndex = messages.value.length - 1
-        console.log('💭 Thinking block started - creating assistant message at index:', currentAssistantMessageIndex)
+        // 复用 message_start 创建的消息，添加 thinking
+        const currentMsg = currentAssistantMessageIndex >= 0 ? messages.value[currentAssistantMessageIndex] : null
+        if (currentMsg && currentMsg.role === 'assistant') {
+          currentMsg.hasThinking = true
+          currentMsg.thinkingCollapsed = false
+          console.log('💭 Thinking block started - using existing message at index:', currentAssistantMessageIndex)
+        }
         scrollToBottom()
       } else if (contentBlock?.type === 'text') {
-        // 检查上一个 assistant 消息是否只有 thinking（没有 content），如果是则复用
-        const lastMsg = currentAssistantMessageIndex >= 0 ? messages.value[currentAssistantMessageIndex] : null
-        if (lastMsg && lastMsg.role === 'assistant' && lastMsg.hasThinking && !lastMsg.content) {
-          // 复用现有消息，添加 text 内容
-          console.log('📄 Text block - reusing existing assistant message with thinking')
-        } else {
-          // Start a new assistant text message
-          messages.value.push({
-            role: 'assistant',
-            content: '',
-            thinking: '',
-            hasThinking: false,
-            timestamp: new Date(),
-            rawMessages: [message]
-          })
-          currentAssistantMessageIndex = messages.value.length - 1
-          console.log('📄 Text block started - creating new assistant message at index:', currentAssistantMessageIndex)
+        // 复用 message_start 创建的消息
+        const currentMsg = currentAssistantMessageIndex >= 0 ? messages.value[currentAssistantMessageIndex] : null
+        if (currentMsg && currentMsg.role === 'assistant') {
+          console.log('📄 Text block - using existing assistant message')
         }
         scrollToBottom(true)
       } else if (contentBlock?.type === 'tool_use') {
@@ -642,6 +647,22 @@ onMounted(async () => {
 
     // Handle message_stop
     if (event.type === 'message_stop') {
+      // 更新当前消息的状态为完成
+      // 注意：需要找到所有正在流式传输的 assistant 消息并更新它们
+      messages.value.forEach((msg, idx) => {
+        if (msg.role === 'assistant' && msg.isStreaming) {
+          msg.isStreaming = false
+          msg.endTime = Date.now()
+          msg.duration = msg.endTime - msg.startTime
+          // 如果有 thinking，折叠它
+          if (msg.hasThinking) {
+            msg.thinkingCollapsed = true
+          }
+          console.log('📌 Message stopped at index:', idx, '- duration:', msg.duration, 'ms')
+          // 强制触发 Vue 响应式更新
+          messages.value[idx] = { ...messages.value[idx] }
+        }
+      })
       currentAssistantMessageIndex = -1
       currentContentBlockType = null
       isProcessing.value = false
@@ -672,6 +693,11 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  // Clean up duration timer
+  if (durationTimer) {
+    clearInterval(durationTimer)
+    durationTimer = null
+  }
   // Clean up listeners
   unsubscribers.forEach(unsub => {
     if (typeof unsub === 'function') {
@@ -735,6 +761,14 @@ function handleMessageClick(event, message) {
     event.stopPropagation()
     selectedMessage.value = message
   }
+}
+
+// 格式化消耗时间
+function formatDuration(ms) {
+  if (!ms) return ''
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
 }
 
 // 关闭消息详情弹窗
@@ -1383,6 +1417,19 @@ async function handleQuestionAnswer(requestId, answers) {
             {{ message.role === 'user' ? 'U' : message.role === 'assistant' ? 'C' : 'S' }}
           </div>
           <div class="message-content" :class="{ 'status-content': message.role === 'status' }">
+            <!-- Assistant 消息头部：状态、时间、消耗 -->
+            <div v-if="message.role === 'assistant'" class="message-header">
+              <span class="header-status" :class="{ 'streaming': message.isStreaming }">
+                {{ message.isStreaming ? '正在思考...' : '完成' }}
+              </span>
+              <span class="header-time">{{ new Date(message.timestamp).toLocaleTimeString() }}</span>
+              <span v-if="message.duration" class="header-duration">
+                {{ formatDuration(message.duration) }}
+              </span>
+              <span v-else-if="message.isStreaming" class="header-duration streaming">
+                {{ formatDuration(currentTime - message.startTime) }}
+              </span>
+            </div>
             <!-- Thinking section - 显示在内容上方，可折叠 -->
             <div
               v-if="message.role === 'assistant' && message.hasThinking && message.thinking"
@@ -1397,22 +1444,20 @@ async function handleQuestionAnswer(requestId, answers) {
               </div>
               <div v-if="!message.thinkingCollapsed" class="thinking-content-inline">{{ message.thinking }}</div>
             </div>
-            <!-- 消息内容 -->
-            <div class="message-text" :class="{ 'status-text': message.role === 'status' }">
+            <!-- 消息内容 - 只在有内容时显示 -->
+            <div
+              v-if="message.content || (message.role === 'user')"
+              class="message-text"
+              :class="{ 'status-text': message.role === 'status' }"
+            >
               <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
               <div v-else>{{ message.content }}</div>
             </div>
-            <div class="message-time" v-if="message.role !== 'status'">
+            <div class="message-time" v-if="message.role !== 'status' && message.role !== 'assistant'">
               {{ new Date(message.timestamp).toLocaleTimeString() }}
             </div>
           </div>
         </template>
-      </div>
-      <div v-if="isProcessing" class="message assistant typing">
-        <div class="message-avatar">C</div>
-        <div class="message-content">
-          <div class="typing-indicator">正在思考...</div>
-        </div>
       </div>
     </div>
     <div class="input-area">
@@ -1547,6 +1592,44 @@ async function handleQuestionAnswer(requestId, answers) {
   background: #3B82F6;
 }
 
+/* Assistant 消息头部样式 */
+.message-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 6px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #27272A;
+}
+
+.header-status {
+  font-size: 13px;
+  font-weight: 500;
+  color: #71717A;
+}
+
+.header-status.streaming {
+  color: #A78BFA;
+}
+
+.header-time {
+  font-size: 11px;
+  color: #52525B;
+}
+
+.header-duration {
+  font-size: 11px;
+  color: #52525B;
+  background: #27272A;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.header-duration.streaming {
+  color: #A78BFA;
+  background: #1E1B4B;
+}
+
 .message-content {
   max-width: 70%;
 }
@@ -1581,43 +1664,42 @@ async function handleQuestionAnswer(requestId, answers) {
   border: 1px solid #3F3F46;
 }
 
-/* Thinking section within assistant message - 低调样式 */
+/* Thinking section within assistant message - 低调但可读 */
 .thinking-section {
-  background: #1A1A1D;
-  border: 1px solid #2A2A2E;
-  border-left: 2px solid #3F3F46;
-  border-radius: 4px;
-  padding: 6px 10px;
-  margin-bottom: 8px;
+  background: #18181B;
+  border: 1px solid #27272A;
+  border-left: 3px solid #6366F1;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
   cursor: pointer;
   user-select: none;
   transition: all 0.2s ease;
-  opacity: 0.7;
 }
 
 .thinking-section:hover {
-  background: #1E1E22;
-  border-color: #3A3A3E;
-  opacity: 1;
+  background: #1F1F23;
+  border-color: #3F3F46;
+  border-left-color: #818CF8;
 }
 
 .thinking-header-inline {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   margin-bottom: 0;
 }
 
 .thinking-toggle {
-  font-size: 9px;
-  color: #52525B;
+  font-size: 10px;
+  color: #71717A;
   transition: transform 0.2s ease;
   margin-left: auto;
 }
 
 .thinking-preview {
   font-size: 11px;
-  color: #52525B;
+  color: #71717A;
   font-style: italic;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1626,15 +1708,15 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .thinking-content-inline {
   font-size: 12px;
-  color: #71717A;
-  line-height: 1.5;
+  color: #A1A1AA;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
   max-height: 250px;
   overflow-y: auto;
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid #27272A;
 }
 
@@ -1818,14 +1900,13 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .thinking-icon {
-  font-size: 12px;
-  opacity: 0.6;
+  font-size: 14px;
 }
 
 .thinking-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  color: #52525B;
+  color: #818CF8;
   text-transform: none;
   letter-spacing: 0;
 }

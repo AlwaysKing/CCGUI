@@ -1581,65 +1581,66 @@ async function handleQuestionAnswer(requestId, answers) {
   border: 1px solid #3F3F46;
 }
 
-/* Thinking section within assistant message */
+/* Thinking section within assistant message - 低调样式 */
 .thinking-section {
-  background: linear-gradient(135deg, #1E293B 0%, #1E1E2E 100%);
-  border: 1px solid #334155;
-  border-left: 3px solid #6366F1;
-  border-radius: 6px;
-  padding: 10px 14px;
-  margin-bottom: 12px;
+  background: #1A1A1D;
+  border: 1px solid #2A2A2E;
+  border-left: 2px solid #3F3F46;
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
   cursor: pointer;
   user-select: none;
   transition: all 0.2s ease;
+  opacity: 0.7;
 }
 
 .thinking-section:hover {
-  background: linear-gradient(135deg, #1E2D3B 0%, #1E1E2E 100%);
-  border-color: #475569;
+  background: #1E1E22;
+  border-color: #3A3A3E;
+  opacity: 1;
 }
 
 .thinking-header-inline {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 0;
 }
 
 .thinking-toggle {
-  font-size: 10px;
-  color: #94A3B8;
+  font-size: 9px;
+  color: #52525B;
   transition: transform 0.2s ease;
   margin-left: auto;
 }
 
 .thinking-preview {
-  font-size: 12px;
-  color: #64748B;
+  font-size: 11px;
+  color: #52525B;
   font-style: italic;
-  margin-top: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .thinking-content-inline {
-  font-size: 13px;
-  color: #94A3B8;
-  line-height: 1.6;
+  font-size: 12px;
+  color: #71717A;
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-  max-height: 300px;
+  max-height: 250px;
   overflow-y: auto;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #334155;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #27272A;
 }
 
 /* Thinking scrollbar */
 .thinking-content-inline::-webkit-scrollbar {
-  width: 4px;
+  width: 3px;
 }
 
 .thinking-content-inline::-webkit-scrollbar-track {
@@ -1647,7 +1648,7 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .thinking-content-inline::-webkit-scrollbar-thumb {
-  background: #475569;
+  background: #3F3F46;
   border-radius: 2px;
 }
 
@@ -1817,15 +1818,16 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .thinking-icon {
-  font-size: 14px;
+  font-size: 12px;
+  opacity: 0.6;
 }
 
 .thinking-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #93C5FD;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-size: 11px;
+  font-weight: 500;
+  color: #52525B;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .thinking-content {

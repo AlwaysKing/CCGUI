@@ -849,22 +849,55 @@ async function sendMessage() {
   }
 }
 
+// 记录用户是否主动滚动离开底部
+let userScrolledAway = false
+
 function scrollToBottom(forceScroll = false) {
-  nextTick(() => {
-    if (!messagesContainer.value) return
+  if (!messagesContainer.value) return
 
-    // 如果不强制滚动，检查当前是否接近底部
-    if (!forceScroll) {
-      const container = messagesContainer.value
-      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50
+  const container = messagesContainer.value
 
-      if (!isNearBottom) {
-        return
-      }
+  // 如果不强制滚动，检查当前是否接近底部
+  if (!forceScroll) {
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+
+    // 如果用户已经滚动离开底部，不要自动滚动
+    if (userScrolledAway && !isNearBottom) {
+      return
     }
 
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+    // 如果当前不在底部，也不滚动
+    if (!isNearBottom) {
+      return
+    }
+  }
+
+  // 重置用户滚动标记
+  userScrolledAway = false
+
+  // 使用多次 nextTick 确保 DOM 完全更新
+  nextTick(() => {
+    nextTick(() => {
+      if (messagesContainer.value) {
+        messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+      }
+    })
   })
+}
+
+// 处理用户滚动事件
+function handleUserScroll() {
+  if (!messagesContainer.value) return
+  const container = messagesContainer.value
+  const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+
+  // 如果用户滚动离开底部，设置标记
+  if (!isNearBottom) {
+    userScrolledAway = true
+  } else {
+    // 如果用户滚动到底部，重置标记
+    userScrolledAway = false
+  }
 }
 
 function handleEnterKey(event) {
@@ -1336,15 +1369,14 @@ async function handleQuestionAnswer(requestId, answers) {
         </div>
       </div>
     </div>
-    <div class="messages" ref="messagesContainer">
-      <div
-        v-for="(message, index) in messages"
-        :key="index"
-        class="message"
-        :class="message.role"
-        :style="{ display: message.role !== 'user' && getResponseCollapseState(index).collapsed ? 'none' : '' }"
-        @click="handleMessageClick($event, message)"
-      >
+    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll">
+      <template v-for="(message, index) in messages" :key="index">
+        <div
+          class="message"
+          :class="message.role"
+          :style="{ display: message.role !== 'user' && getResponseCollapseState(index).collapsed ? 'none' : '' }"
+          @click="handleMessageClick($event, message)"
+        >
         <!-- Tool use message -->
         <template v-if="message.role === 'tool_use'">
           <div class="message-avatar">T</div>
@@ -1524,7 +1556,7 @@ async function handleQuestionAnswer(requestId, answers) {
                   <span class="header-icon">⚡</span>
                   {{ formatTokens(message.usage) }}
                 </span>
-                <!-- 回答折叠/展开按钮 - 只有当有回答时才显示 -->
+                <!-- 回答折叠/展开按钮 -->
                 <button
                   v-if="message.responseCollapsed !== undefined"
                   class="response-toggle-btn"
@@ -1600,6 +1632,16 @@ async function handleQuestionAnswer(requestId, answers) {
           </div>
         </template>
       </div>
+      <!-- 折叠的回答占位符 - 显示在用户消息后面 -->
+      <div
+        v-if="message.role === 'user' && message.responseCollapsed"
+        class="collapsed-response-placeholder"
+        @click="toggleResponseCollapse(index)"
+      >
+        <span class="collapsed-icon">▶</span>
+        <span class="collapsed-text">回答已折叠，点击展开</span>
+      </div>
+      </template>
     </div>
     <div class="input-area">
       <textarea
@@ -1757,6 +1799,35 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .env-detail-value.tools-list {
   line-height: 1.6;
+}
+
+/* 折叠的回答占位符 */
+.collapsed-response-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  margin: 8px 0;
+  background: #1F1F23;
+  border: 1px dashed #3F3F46;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.collapsed-response-placeholder:hover {
+  background: #27272A;
+  border-color: #52525B;
+}
+
+.collapsed-icon {
+  font-size: 10px;
+  color: #71717A;
+}
+
+.collapsed-text {
+  font-size: 12px;
+  color: #71717A;
 }
 
 .messages {

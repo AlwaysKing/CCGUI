@@ -34,21 +34,16 @@ onMounted(async () => {
   try {
     const info = await window.electronAPI.getClaudeInfo()
     workingDirectory.value = info.workingDirectory || ''
-    console.log('Working directory:', workingDirectory.value)
   } catch (error) {
-    console.error('Failed to get working directory:', error)
+    // Ignore error
   }
 
   // Listen to Claude messages
   const unsubs = []
 
   const msgUnsub = window.electronAPI.onClaudeMessage((message) => {
-    // 打印原始消息
-    console.log('⬅️ IN [MESSAGE]:', message.type, message.message?.role || '', message)
-
     // 如果正在使用流式事件，跳过 onClaudeMessage 处理（避免重复）
     if (isUsingStreamEvents) {
-      console.log('  ↳ 跳过（正在使用流式事件）')
       return
     }
 
@@ -101,16 +96,11 @@ onMounted(async () => {
   unsubs.push(resultUnsub)
 
   const systemUnsub = window.electronAPI.onSystemMessage((message) => {
-    // 打印系统消息
-    console.log('⬅️ IN [SYSTEM]:', message.subtype || message.type || '', message)
+    // 系统消息处理
   })
   unsubs.push(systemUnsub)
 
   const toolUnsub = window.electronAPI.onToolUse((message) => {
-    // 打印 tool_use 消息
-    const toolName = message.message?.content?.find(c => c.type === 'tool_use')?.name || 'unknown'
-    console.log('⬅️ IN [TOOL_USE]:', toolName, message)
-
     // 显示工具使用消息
     if (message.message && message.message.content) {
       const toolUseContent = message.message.content.find(c => c.type === 'tool_use')
@@ -119,14 +109,12 @@ onMounted(async () => {
 
         // AskUserQuestion 由 control_request 处理，不在这里创建消息
         if (toolUseContent.name === 'AskUserQuestion') {
-          console.log('  ↳ 跳过（AskUserQuestion 由 control_request 处理）')
           return
         }
 
         // 检查是否已经显示过这个 tool_use（避免与 control_request 重复）
         const existingMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === toolUseId)
         if (existingMsg) {
-          console.log('  ↳ 跳过（已通过 control_request 显示）')
           return
         }
 
@@ -149,10 +137,6 @@ onMounted(async () => {
   unsubs.push(toolUnsub)
 
   const toolResultUnsub = window.electronAPI.onToolResult((message) => {
-    // 打印 tool_result 消息
-    const hasAnswers = !!message.tool_use_result?.answers
-    console.log('⬅️ IN [TOOL_RESULT]:', hasAnswers ? 'AskUserQuestion' : 'tool_result', message)
-
     // Display tool result and reset processing state
     isProcessing.value = false
 
@@ -163,8 +147,6 @@ onMounted(async () => {
       const toolUseId = toolResultContent?.tool_use_id || message.uuid
       const receivedAnswers = message.tool_use_result.answers
 
-      console.log('AskUserQuestion result:', { toolUseId, receivedAnswers })
-
       // 找到对应的问答消息
       const questionMsg = messages.value.find(m => m.role === 'question' && m.tool_use_id === toolUseId)
       if (questionMsg) {
@@ -172,13 +154,9 @@ onMounted(async () => {
         const userAnswers = questionMsg.userAnswers || {}
         const isConsistent = compareAnswers(userAnswers, receivedAnswers)
 
-        console.log('Question message found:', { userAnswers, isConsistent })
-
         questionMsg.resultReceived = true
         questionMsg.answersConsistent = isConsistent
         questionMsg.receivedAnswers = receivedAnswers
-      } else {
-        console.log('Question message not found for tool_use_id:', toolUseId)
       }
       scrollToBottom()
       return
@@ -215,10 +193,6 @@ onMounted(async () => {
 
   // Listen for tool_use requests (permission dialog or question dialog)
   const toolUseRequestUnsub = window.electronAPI.onToolUseRequest((message) => {
-    // 打印 tool_use_request 消息
-    const toolName = message.message?.content?.find(c => c.type === 'tool_use')?.name || 'unknown'
-    console.log('⬅️ IN [TOOL_USE_REQUEST]:', toolName, message)
-
     if (message.message && message.message.content) {
       const toolUseContent = message.message.content.find(c => c.type === 'tool_use')
       if (toolUseContent) {
@@ -245,8 +219,6 @@ onMounted(async () => {
 
   // Listen for control_request (for --permission-prompt-tool stdio)
   const controlRequestUnsub = window.electronAPI.onControlRequest((message) => {
-    // 打印原始 control_request
-    console.log('⬅️ IN [CONTROL_REQUEST]:', message.request?.subtype || '', message.request?.tool_name || '', message)
     if (message.request && message.request.subtype === 'can_use_tool') {
       // Check if this is an AskUserQuestion request
       if (message.request.tool_name === 'AskUserQuestion') {
@@ -300,9 +272,6 @@ onMounted(async () => {
 
   // Listen for CLI status messages (connection status, retries, errors)
   const cliStatusUnsub = window.electronAPI.onCliStatus((message) => {
-    // 打印 CLI 状态消息
-    console.log('⬅️ IN [CLI_STATUS]:', message.subtype || message.type || '', message)
-
     // 显示状态消息
     if (message.message) {
       messages.value.push({
@@ -323,14 +292,24 @@ onMounted(async () => {
   let contentBlockIndexToId = new Map() // 追踪 content_block index 到 id 的映射
 
   const streamEventUnsub = window.electronAPI.onStreamEvent((message) => {
-    // 打印所有 stream events 到 console
     const event = message.event
-    console.log('⬅️ IN [STREAM_EVENT]:', event?.type || 'unknown', message)
 
     if (!event) return
 
     // 标记正在使用流式事件
     isUsingStreamEvents = true
+
+    // 检查是否有 usage 信息并更新当前消息
+    // usage 可能在多个位置: message.usage, event.usage, event.message.usage, event.content_block.usage
+    const usage = message.usage || event.usage || event.message?.usage || event.content_block?.usage
+    if (usage && currentAssistantMessageIndex >= 0) {
+      const currentMsg = messages.value[currentAssistantMessageIndex]
+      if (currentMsg && currentMsg.role === 'assistant') {
+        currentMsg.usage = usage
+        // 强制触发 Vue 响应式更新
+        messages.value[currentAssistantMessageIndex] = { ...messages.value[currentAssistantMessageIndex] }
+      }
+    }
 
     // Handle message_start - 创建消息并显示"正在思考"状态
     if (event.type === 'message_start') {
@@ -342,6 +321,9 @@ onMounted(async () => {
       // 隐藏单独的 typing indicator，因为我们会在消息内显示状态
       isProcessing.value = false
 
+      // 从 message_start 中提取初始 usage 信息
+      const initialUsage = event.message?.usage || null
+
       // 创建新的 assistant 消息，带有"正在思考"状态
       messages.value.push({
         role: 'assistant',
@@ -351,10 +333,10 @@ onMounted(async () => {
         isStreaming: true, // 正在流式传输
         startTime: Date.now(), // 记录开始时间
         timestamp: new Date(),
+        usage: initialUsage, // 初始 usage
         rawMessages: [message]
       })
       currentAssistantMessageIndex = messages.value.length - 1
-      console.log('🚀 Message started - creating assistant message with streaming state at index:', currentAssistantMessageIndex)
       scrollToBottom()
       return
     }
@@ -370,15 +352,10 @@ onMounted(async () => {
         if (currentMsg && currentMsg.role === 'assistant') {
           currentMsg.hasThinking = true
           currentMsg.thinkingCollapsed = false
-          console.log('💭 Thinking block started - using existing message at index:', currentAssistantMessageIndex)
         }
         scrollToBottom()
       } else if (contentBlock?.type === 'text') {
         // 复用 message_start 创建的消息
-        const currentMsg = currentAssistantMessageIndex >= 0 ? messages.value[currentAssistantMessageIndex] : null
-        if (currentMsg && currentMsg.role === 'assistant') {
-          console.log('📄 Text block - using existing assistant message')
-        }
         scrollToBottom(true)
       } else if (contentBlock?.type === 'tool_use') {
         // Start a new tool use message with partial data
@@ -386,7 +363,6 @@ onMounted(async () => {
         // 记录 index 到 id 的映射（用于后续 content_block_delta）
         if (typeof event.index === 'number') {
           contentBlockIndexToId.set(event.index, toolUseData.id)
-          console.log('📍 Mapped index', event.index, 'to id', toolUseData.id)
         }
         // 创建消息对象，确保 toolInput 是一个新的对象引用
         const newMessage = {
@@ -405,12 +381,6 @@ onMounted(async () => {
         }
         messages.value.push(newMessage)
         currentAssistantMessageIndex = messages.value.length - 1
-        console.log('🔧 Tool use block started:', {
-          toolName: toolUseData.name,
-          initialInput: newMessage.toolInput,
-          contentBlockId: toolUseData.id,
-          messageIndex: messages.value.length - 1
-        })
         scrollToBottom(true)
       }
       return
@@ -440,13 +410,6 @@ onMounted(async () => {
           const prevContent = msg.content
           // 使用显式的 reactive 更新
           msg.content = prevContent + delta.text
-          console.log('📝 Text delta:', {
-            delta: delta.text,
-            prevContent: prevContent,
-            newContent: msg.content,
-            deltaLength: delta.text.length,
-            messageIndex: currentAssistantMessageIndex
-          })
           // 存储原始消息 - 使用 reactive 更新
           if (!msg.rawMessages) msg.rawMessages = []
           msg.rawMessages.push(message)
@@ -465,27 +428,8 @@ onMounted(async () => {
           m.role === 'tool_use' && m.request_id === contentBlockId
         )
 
-        console.log('🔍 Looking for tool use message:', {
-          eventIndex: event.index,
-          contentBlockId: contentBlockId,
-          foundIndex: toolUseMsgIndex,
-          totalMessages: messages.value.length,
-          toolUseMessages: messages.value.filter(m => m.role === 'tool_use').map(m => ({
-            name: m.toolName,
-            id: m.request_id,
-            isExecuting: m.isExecuting
-          }))
-        })
-
         if (toolUseMsgIndex >= 0 && toolUseMsgIndex < messages.value.length) {
           const toolUseMsg = messages.value[toolUseMsgIndex]
-          console.log('📥 Tool use delta received:', {
-            toolName: toolUseMsg.toolName,
-            contentBlockId: contentBlockId,
-            deltaInput: delta.input,
-            currentInputBefore: JSON.stringify(toolUseMsg.toolInput),
-            messageIndex: toolUseMsgIndex
-          })
 
           // 使用深度合并策略来更新 toolInput - 确保创建新的对象引用
           const currentInput = toolUseMsg.toolInput || {}
@@ -534,19 +478,11 @@ onMounted(async () => {
           // 强制触发 Vue 的响应式更新 - 创建新的消息对象
           messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
 
-          console.log('✅ Tool use delta merged:', {
-            toolName: toolUseMsg.toolName,
-            key: Object.keys(deltaInput)[0],
-            finalInput: JSON.stringify(toolUseMsg.toolInput)
-          })
-
           // 存储原始消息 - 使用 reactive 更新
           if (!toolUseMsg.rawMessages) toolUseMsg.rawMessages = []
           toolUseMsg.rawMessages.push(message)
           // 强制滚动确保实时显示
           scrollToBottom(true)
-        } else {
-          console.log('⚠️ No tool_use message found for delta:', contentBlockId, 'event.index:', event.index)
         }
       }
 
@@ -555,13 +491,6 @@ onMounted(async () => {
         // 使用 event.index 从映射中获取 content_block_id
         const contentBlockId = contentBlockIndexToId.get(event.index)
 
-        console.log('🔍 Looking for tool use message (input_json_delta):', {
-          eventIndex: event.index,
-          contentBlockId: contentBlockId,
-          totalMessages: messages.value.length,
-          partialJson: delta.partial_json
-        })
-
         // 找到对应的 tool use 消息
         const toolUseMsgIndex = messages.value.findLastIndex(m =>
           m.role === 'tool_use' && m.request_id === contentBlockId
@@ -569,13 +498,6 @@ onMounted(async () => {
 
         if (toolUseMsgIndex >= 0 && toolUseMsgIndex < messages.value.length) {
           const toolUseMsg = messages.value[toolUseMsgIndex]
-          console.log('📥 Input JSON delta received:', {
-            toolName: toolUseMsg.toolName,
-            contentBlockId: contentBlockId,
-            partialJson: delta.partial_json,
-            currentInputBefore: JSON.stringify(toolUseMsg.toolInput),
-            messageIndex: toolUseMsgIndex
-          })
 
           try {
             // 解析 partial_json
@@ -587,21 +509,14 @@ onMounted(async () => {
             // 强制触发 Vue 的响应式更新 - 创建新的消息对象
             messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
 
-            console.log('✅ Input JSON delta merged:', {
-              toolName: toolUseMsg.toolName,
-              finalInput: JSON.stringify(toolUseMsg.toolInput)
-            })
-
             // 存储原始消息 - 使用 reactive 更新
             if (!toolUseMsg.rawMessages) toolUseMsg.rawMessages = []
             toolUseMsg.rawMessages.push(message)
             // 强制滚动确保实时显示
             scrollToBottom(true)
           } catch (error) {
-            console.error('❌ Failed to parse partial_json:', error, delta.partial_json)
+            // Ignore parse errors for partial JSON
           }
-        } else {
-          console.log('⚠️ No tool use message found for input_json_delta:', contentBlockId, 'event.index:', event.index)
         }
       }
       return
@@ -611,12 +526,10 @@ onMounted(async () => {
     if (event.type === 'content_block_stop') {
       // 检查是否是 thinking block 结束 - 自动折叠 thinking
       if (currentContentBlockType === 'thinking') {
-        console.log('💭 Thinking block completed - auto collapsing')
         if (currentAssistantMessageIndex >= 0 && messages.value[currentAssistantMessageIndex]) {
           const msg = messages.value[currentAssistantMessageIndex]
           if (msg.hasThinking && msg.thinking) {
             msg.thinkingCollapsed = true
-            console.log('💭 Thinking auto collapsed')
           }
         }
       }
@@ -630,13 +543,10 @@ onMounted(async () => {
         )
         if (toolUseMsgIndex >= 0 && toolUseMsgIndex < messages.value.length) {
           const toolUseMsg = messages.value[toolUseMsgIndex]
-          console.log('✅ Tool use partial data completed for:', toolUseMsg.toolName, 'isExecuting was:', toolUseMsg.isExecuting)
           // 重要：设置 isExecuting 为 false，表示数据已接收完毕
           toolUseMsg.isExecuting = false
           // 强制触发 Vue 的响应式更新
           messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
-        } else {
-          console.log('⚠️ No tool use message found for content_block_stop:', contentBlockId, 'event.index:', event.index)
         }
       }
 
@@ -649,6 +559,9 @@ onMounted(async () => {
     if (event.type === 'message_stop') {
       // 更新当前消息的状态为完成
       // 注意：需要找到所有正在流式传输的 assistant 消息并更新它们
+      // 从 event.message 或 event 中提取 usage 信息
+      const usage = event.message?.usage || event.usage || null
+
       messages.value.forEach((msg, idx) => {
         if (msg.role === 'assistant' && msg.isStreaming) {
           msg.isStreaming = false
@@ -658,7 +571,10 @@ onMounted(async () => {
           if (msg.hasThinking) {
             msg.thinkingCollapsed = true
           }
-          console.log('📌 Message stopped at index:', idx, '- duration:', msg.duration, 'ms')
+          // 更新 usage 信息
+          if (usage) {
+            msg.usage = usage
+          }
           // 强制触发 Vue 响应式更新
           messages.value[idx] = { ...messages.value[idx] }
         }
@@ -667,7 +583,6 @@ onMounted(async () => {
       currentContentBlockType = null
       isProcessing.value = false
       isUsingStreamEvents = false // 重置流式事件标志
-      console.log('📌 Message stream stopped')
       return
     }
   })
@@ -675,8 +590,6 @@ onMounted(async () => {
 
   // Listen for unknown/unsupported message types
   const unknownMessageUnsub = window.electronAPI.onUnknownMessage((message) => {
-    console.log('⬅️ IN [UNKNOWN MESSAGE]:', message.type || 'unknown', message)
-
     // 在界面中显示未知消息
     messages.value.push({
       role: 'unknown',
@@ -709,10 +622,8 @@ onUnmounted(() => {
 // 监听消息变化，当有新消息时自动折叠之前已完成的消息
 watch(() => messages.value, async (newMessages) => {
   const newLength = newMessages?.length || 0
-  console.log('[watch] 消息数量变化:', previousMessageCount, '->', newLength)
 
   if (newLength > previousMessageCount && newLength > 1) {
-    console.log('[watch] 有新消息添加，准备自动折叠')
     // 等待 DOM 更新完成
     await nextTick()
 
@@ -729,26 +640,21 @@ watch(() => messages.value, async (newMessages) => {
 
       // 跳过手动展开的消息
       if (message.manuallyExpanded) {
-        console.log('[watch] 跳过手动展开的消息')
         return
       }
 
       // 折叠已完成的 tool_use 消息
       if (message.role === 'tool_use' && message.result && !message.isError && !message.isExecuting) {
-        console.log('[watch] 折叠 tool_use:', message.toolName)
         message.collapsed = true
         collapsedCount++
       }
 
       // 折叠已完成的 question 消息
       if (message.role === 'question' && message.resultReceived) {
-        console.log('[watch] 折叠 question')
         message.collapsed = true
         collapsedCount++
       }
     })
-
-    console.log('[watch] 折叠了', collapsedCount, '条已完成消息')
   }
   previousMessageCount = newLength
 }, { deep: true })
@@ -769,6 +675,21 @@ function formatDuration(ms) {
   if (ms < 1000) return `${ms}ms`
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
   return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
+}
+
+// 格式化 token 消耗
+function formatTokens(usage) {
+  if (!usage) return ''
+  const cache = usage.cache_read_input_tokens || 0
+  const input = usage.input_tokens || 0
+  const output = usage.output_tokens || 0
+  if (cache === 0 && input === 0 && output === 0) return ''
+
+  const parts = []
+  if (cache > 0) parts.push(`缓存:${cache}`)
+  if (input > 0) parts.push(`输入:${input}`)
+  if (output > 0) parts.push(`输出:${output}`)
+  return parts.join(' ')
 }
 
 // 关闭消息详情弹窗
@@ -811,13 +732,9 @@ async function sendMessage() {
   isProcessing.value = true
   scrollToBottom(true) // 用户发送消息时强制滚动
 
-  // 打印原始发送消息
-  console.log('➡️ OUT [SEND_MESSAGE]:', 'user', userMessage)
-
   try {
     await window.electronAPI.sendMessage(userMessage)
   } catch (error) {
-    console.error('Failed to send message:', error)
     isProcessing.value = false
     messages.value.push({
       role: 'system',
@@ -837,7 +754,6 @@ function scrollToBottom(forceScroll = false) {
       const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50
 
       if (!isNearBottom) {
-        console.log('[scrollToBottom] 滚动条不在底部，不自动滚动')
         return
       }
     }
@@ -938,7 +854,6 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
           }
         }
       }
-      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendControlResponse(requestId, true, options)
     } else {
@@ -949,12 +864,10 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
         content: '',
         is_error: false
       }
-      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendToolResult(requestId, '', false)
     }
   } catch (error) {
-    console.error('Failed to send approval:', error)
     // 找到对应的 tool_use 消息并更新状态
     // 对于 control_request，消息使用 tool_use_id 作为 request_id
     const searchId = controlRequest?.tool_use_id || requestId
@@ -1006,7 +919,6 @@ async function handlePermissionDeny(requestId) {
           }
         }
       }
-      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendControlResponse(requestId, false, options)
     } else {
@@ -1017,12 +929,10 @@ async function handlePermissionDeny(requestId) {
         content: 'Permission denied by user',
         is_error: true
       }
-      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendToolResult(requestId, 'Permission denied by user', true)
     }
   } catch (error) {
-    console.error('Failed to send denial:', error)
     if (toolUseMsg) {
       toolUseMsg.result = `发送拒绝响应失败: ${error.message}`
     }
@@ -1080,7 +990,6 @@ async function handlePermissionApproveAll(requestId) {
           }
         }
       }
-      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendControlResponse(requestId, true, options)
     } else {
@@ -1091,12 +1000,11 @@ async function handlePermissionApproveAll(requestId) {
         content: '',
         is_error: false
       }
-      console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
 
       await window.electronAPI.sendToolResult(requestId, '', false)
     }
   } catch (error) {
-    console.error('Failed to send approve all:', error)
+    // Ignore error
   }
 }
 
@@ -1218,7 +1126,6 @@ async function handleQuestionAnswer(requestId, answers) {
       timestamp: new Date(),
       rawMessages: [question] // 存储原始请求
     }
-    console.log('Creating question message:', { tool_use_id: question.tool_use_id, userAnswers: answers })
     messages.value.push(newMessage)
 
     scrollToBottom(true) // 用户提交答案时强制滚动
@@ -1233,23 +1140,9 @@ async function handleQuestionAnswer(requestId, answers) {
       }
     }
 
-    // 构建完整的响应消息用于日志
-    const responseMessage = {
-      type: 'control_response',
-      response: {
-        subtype: 'success',
-        request_id: requestId,
-        response: {
-          behavior: 'allow',
-          ...options
-        }
-      }
-    }
-    console.log('➡️ OUT [CONTROL_RESPONSE]:', responseMessage.response?.subtype || '', responseMessage)
-
     await window.electronAPI.sendControlResponse(requestId, true, options)
   } catch (error) {
-    console.error('Failed to send answer:', error)
+    // Ignore error
   }
 }
 </script>
@@ -1419,15 +1312,24 @@ async function handleQuestionAnswer(requestId, answers) {
           <div class="message-content" :class="{ 'status-content': message.role === 'status' }">
             <!-- Assistant 消息头部：状态、时间、消耗 -->
             <div v-if="message.role === 'assistant'" class="message-header">
-              <span class="header-status" :class="{ 'streaming': message.isStreaming }">
-                {{ message.isStreaming ? '正在思考...' : '完成' }}
+              <span v-if="message.isStreaming" class="header-status streaming">
+                <span class="loading-spinner"></span>
               </span>
-              <span class="header-time">{{ new Date(message.timestamp).toLocaleTimeString() }}</span>
+              <span class="header-time">
+                <span class="header-icon">🕐</span>
+                {{ new Date(message.timestamp).toLocaleTimeString() }}
+              </span>
               <span v-if="message.duration" class="header-duration">
+                <span class="header-icon">⏳</span>
                 {{ formatDuration(message.duration) }}
               </span>
               <span v-else-if="message.isStreaming" class="header-duration streaming">
+                <span class="header-icon">⏳</span>
                 {{ formatDuration(currentTime - message.startTime) }}
+              </span>
+              <span v-if="message.usage && formatTokens(message.usage)" class="header-tokens">
+                <span class="header-icon">⚡</span>
+                {{ formatTokens(message.usage) }}
               </span>
             </div>
             <!-- Thinking section - 显示在内容上方，可折叠 -->
@@ -1609,25 +1511,65 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .header-status.streaming {
-  color: #A78BFA;
+  display: inline-flex;
+  align-items: center;
+}
+
+.loading-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #3F3F46;
+  border-top-color: #A78BFA;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .header-time {
   font-size: 11px;
-  color: #52525B;
+  color: #71717A;
+  background: #27272A;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .header-duration {
   font-size: 11px;
-  color: #52525B;
+  color: #71717A;
   background: #27272A;
   padding: 2px 6px;
   border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .header-duration.streaming {
   color: #A78BFA;
   background: #1E1B4B;
+}
+
+.header-tokens {
+  font-size: 11px;
+  color: #71717A;
+  background: #27272A;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.header-icon {
+  font-size: 10px;
 }
 
 .message-content {
@@ -1909,6 +1851,7 @@ async function handleQuestionAnswer(requestId, answers) {
   color: #818CF8;
   text-transform: none;
   letter-spacing: 0;
+  white-space: nowrap;
 }
 
 .thinking-content {

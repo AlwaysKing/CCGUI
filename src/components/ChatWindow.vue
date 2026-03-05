@@ -348,6 +348,7 @@ onMounted(async () => {
           content: '',
           thinking: '', // thinking 内容单独存储
           hasThinking: true, // 标记有 thinking
+          thinkingCollapsed: false, // thinking 折叠状态（流式时展开，完成后折叠）
           timestamp: new Date(),
           rawMessages: [message]
         })
@@ -603,9 +604,16 @@ onMounted(async () => {
 
     // Handle content_block_stop
     if (event.type === 'content_block_stop') {
-      // 检查是否是 thinking block 结束
+      // 检查是否是 thinking block 结束 - 自动折叠 thinking
       if (currentContentBlockType === 'thinking') {
-        console.log('💭 Thinking block completed')
+        console.log('💭 Thinking block completed - auto collapsing')
+        if (currentAssistantMessageIndex >= 0 && messages.value[currentAssistantMessageIndex]) {
+          const msg = messages.value[currentAssistantMessageIndex]
+          if (msg.hasThinking && msg.thinking) {
+            msg.thinkingCollapsed = true
+            console.log('💭 Thinking auto collapsed')
+          }
+        }
       }
 
       // 使用 event.index 从映射中获取 content_block_id
@@ -1077,6 +1085,13 @@ function handleToolToggleCollapse(message) {
   }
 }
 
+// 切换 thinking 折叠状态
+function toggleThinkingCollapse(message) {
+  if (message) {
+    message.thinkingCollapsed = !message.thinkingCollapsed
+  }
+}
+
 // 切换问答消息的折叠状态
 function toggleQuestionCollapse(messageIndex) {
   const message = messages.value[messageIndex]
@@ -1368,13 +1383,19 @@ async function handleQuestionAnswer(requestId, answers) {
             {{ message.role === 'user' ? 'U' : message.role === 'assistant' ? 'C' : 'S' }}
           </div>
           <div class="message-content" :class="{ 'status-content': message.role === 'status' }">
-            <!-- Thinking section - 显示在内容上方 -->
-            <div v-if="message.role === 'assistant' && message.hasThinking && message.thinking" class="thinking-section">
-              <div class="thinking-header-inline">
+            <!-- Thinking section - 显示在内容上方，可折叠 -->
+            <div
+              v-if="message.role === 'assistant' && message.hasThinking && message.thinking"
+              class="thinking-section"
+              :class="{ 'thinking-collapsed': message.thinkingCollapsed }"
+            >
+              <div class="thinking-header-inline" @click="message.thinkingCollapsed = !message.thinkingCollapsed">
                 <span class="thinking-icon">💭</span>
                 <span class="thinking-label">思考过程</span>
+                <span class="thinking-toggle">{{ message.thinkingCollapsed ? '▶' : '▼' }}</span>
+                <span v-if="message.thinkingCollapsed" class="thinking-preview">{{ message.thinking.substring(0, 50) }}...</span>
               </div>
-              <div class="thinking-content-inline">{{ message.thinking }}</div>
+              <div v-if="!message.thinkingCollapsed" class="thinking-content-inline">{{ message.thinking }}</div>
             </div>
             <!-- 消息内容 -->
             <div class="message-text" :class="{ 'status-text': message.role === 'status' }">
@@ -1568,13 +1589,38 @@ async function handleQuestionAnswer(requestId, answers) {
   border-radius: 6px;
   padding: 10px 14px;
   margin-bottom: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+}
+
+.thinking-section:hover {
+  background: linear-gradient(135deg, #1E2D3B 0%, #1E1E2E 100%);
+  border-color: #475569;
 }
 
 .thinking-header-inline {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 0;
+}
+
+.thinking-toggle {
+  font-size: 10px;
+  color: #94A3B8;
+  transition: transform 0.2s ease;
+  margin-left: auto;
+}
+
+.thinking-preview {
+  font-size: 12px;
+  color: #64748B;
+  font-style: italic;
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .thinking-content-inline {
@@ -1584,8 +1630,11 @@ async function handleQuestionAnswer(requestId, answers) {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
-  max-height: 200px;
+  max-height: 300px;
   overflow-y: auto;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #334155;
 }
 
 /* Thinking scrollbar */

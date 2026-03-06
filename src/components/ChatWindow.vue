@@ -10,6 +10,7 @@ const messages = ref([])
 const inputMessage = ref('')
 const isProcessing = ref(false)
 const messagesContainer = ref(null)
+const inputArea = ref(null)
 const pendingPermission = ref(null)
 const pendingQuestion = ref(null)
 const pendingControlRequest = ref(null)
@@ -24,6 +25,10 @@ const stickyMessageIndex = ref(-1) // 当前粘性显示的消息索引
 const containerHeight = ref(400) // 聊天容器高度，用于限制粘性面板
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
+const inputHistory = [] // 输入历史记录
+let historyIndex = -1 // 当前历史索引，-1 表示不在浏览历史
+let isHistoryNavigation = false // 标记是否正在通过历史导航设置值
+const showHistoryPicker = ref(false) // 显示历史记录选择弹窗
 
 // Store unsubscribe functions
 let unsubscribers = []
@@ -132,6 +137,11 @@ onMounted(async () => {
 
     // 解锁输入框 - 在这里解锁确保和问答计时同步
     isProcessing.value = false
+
+    // 聚焦输入框
+    nextTick(() => {
+      inputArea.value?.focus()
+    })
 
     scrollToBottom()
   })
@@ -908,6 +918,16 @@ async function sendMessage() {
   }
   messages.value.push(displayMessage)
 
+  // 保存到历史记录（避免重复）
+  if (userText && (inputHistory.length === 0 || inputHistory[inputHistory.length - 1] !== userText)) {
+    inputHistory.push(userText)
+    // 限制历史记录数量
+    if (inputHistory.length > 100) {
+      inputHistory.shift()
+    }
+  }
+  historyIndex = -1 // 重置历史索引
+
   inputMessage.value = ''
   isProcessing.value = true
   scrollToBottom(true) // 用户发送消息时强制滚动
@@ -1070,6 +1090,87 @@ function handleEnterKey(event) {
   // Enter 发送消息
   event.preventDefault() // 阻止换行
   sendMessage()
+}
+
+// 处理输入框上下键历史导航
+function handleHistoryKey(event) {
+  // 如果输入框有内容且不在历史浏览模式，不触发历史导航
+  if (inputMessage.value.trim() && historyIndex === -1) {
+    return
+  }
+
+  // 如果没有历史记录，不处理
+  if (inputHistory.length === 0) {
+    return
+  }
+
+  if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    // 向上：浏览更早的历史（索引增大）
+    if (historyIndex < inputHistory.length - 1) {
+      historyIndex++
+      isHistoryNavigation = true
+      inputMessage.value = inputHistory[inputHistory.length - 1 - historyIndex]
+      isHistoryNavigation = false
+    }
+  } else if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    // 向下：浏览更新的历史（索引减小）
+    if (historyIndex > 0) {
+      historyIndex--
+      isHistoryNavigation = true
+      inputMessage.value = inputHistory[inputHistory.length - 1 - historyIndex]
+      isHistoryNavigation = false
+    } else if (historyIndex === 0) {
+      // 回到最新状态，清空输入框
+      historyIndex = -1
+      isHistoryNavigation = true
+      inputMessage.value = ''
+      isHistoryNavigation = false
+    }
+  }
+}
+
+// 处理用户手动输入，退出历史浏览模式
+function handleInputChange() {
+  if (!isHistoryNavigation && historyIndex !== -1) {
+    historyIndex = -1
+  }
+}
+
+// 打开历史记录选择弹窗
+function openHistoryPicker(event) {
+  // Escape 关闭弹窗
+  if (event.key === 'Escape' && showHistoryPicker.value) {
+    event.preventDefault()
+    closeHistoryPicker()
+    return
+  }
+
+  // Cmd+Up (Mac) 或 Ctrl+Up (Windows) 打开弹窗
+  if ((event.metaKey || event.ctrlKey) && event.key === 'ArrowUp') {
+    event.preventDefault()
+    if (inputHistory.length > 0) {
+      showHistoryPicker.value = true
+    }
+  }
+}
+
+// 关闭历史记录选择弹窗
+function closeHistoryPicker() {
+  showHistoryPicker.value = false
+}
+
+// 选择历史记录
+function selectHistory(item) {
+  isHistoryNavigation = true
+  inputMessage.value = item
+  isHistoryNavigation = false
+  historyIndex = -1
+  closeHistoryPicker()
+  nextTick(() => {
+    inputArea.value?.focus()
+  })
 }
 
 // 处理文件拖放
@@ -1916,9 +2017,31 @@ async function handleQuestionAnswer(requestId, answers) {
       </template>
     </div>
     <div class="input-area">
+      <!-- 历史记录选择弹窗 -->
+      <div v-if="showHistoryPicker" class="history-picker">
+        <div class="history-picker-header">
+          <span>历史记录</span>
+          <button class="history-picker-close" @click="closeHistoryPicker">×</button>
+        </div>
+        <div class="history-picker-list">
+          <div
+            v-for="(item, idx) in [...inputHistory].reverse()"
+            :key="idx"
+            class="history-picker-item"
+            @click="selectHistory(item)"
+          >
+            {{ item }}
+          </div>
+        </div>
+      </div>
       <textarea
+        ref="inputArea"
         v-model="inputMessage"
         @keydown.enter="handleEnterKey"
+        @keydown.up="handleHistoryKey"
+        @keydown.down="handleHistoryKey"
+        @keydown="openHistoryPicker"
+        @input="handleInputChange"
         @dragover.prevent
         @dragenter="handleDragEnter"
         @dragleave="handleDragLeave"
@@ -2635,7 +2758,73 @@ async function handleQuestionAnswer(requestId, answers) {
   font-style: italic;
 }
 
+.history-picker {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  max-height: 300px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.history-picker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #3F3F46;
+  font-size: 13px;
+  color: #A1A1AA;
+  font-weight: 500;
+}
+
+.history-picker-close {
+  background: none;
+  border: none;
+  color: #A1A1AA;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.history-picker-close:hover {
+  color: #E4E4E7;
+}
+
+.history-picker-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.history-picker-item {
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #E4E4E7;
+  font-size: 13px;
+  border-bottom: 1px solid #3F3F46;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-picker-item:last-child {
+  border-bottom: none;
+}
+
+.history-picker-item:hover {
+  background: #3F3F46;
+}
+
 .input-area {
+  position: relative;
   padding: 20px;
   border-top: 1px solid #3F3F46;
   display: flex;

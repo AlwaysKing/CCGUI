@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
@@ -27,6 +27,9 @@ const props = defineProps({
   }
 })
 
+const containerRef = ref(null)
+const copiedIndex = ref(-1)
+
 const renderedHtml = computed(() => {
   if (!props.content) return ''
   try {
@@ -36,10 +39,62 @@ const renderedHtml = computed(() => {
     return props.content
   }
 })
+
+// 为代码块添加复制按钮
+function addCopyButtons() {
+  if (!containerRef.value) return
+
+  const preElements = containerRef.value.querySelectorAll('pre')
+
+  preElements.forEach((pre, index) => {
+    // 检查是否已经添加过复制按钮
+    if (pre.querySelector('.code-copy-btn')) return
+
+    // 创建复制按钮
+    const copyBtn = document.createElement('button')
+    copyBtn.className = 'code-copy-btn'
+    copyBtn.textContent = '📋'
+    copyBtn.title = '复制代码'
+    copyBtn.onclick = async () => {
+      const code = pre.querySelector('code')?.textContent || pre.textContent
+      try {
+        await navigator.clipboard.writeText(code)
+        copyBtn.textContent = '✓'
+        copiedIndex.value = index
+        setTimeout(() => {
+          copyBtn.textContent = '📋'
+          copiedIndex.value = -1
+        }, 2000)
+      } catch (err) {
+        console.error('复制失败:', err)
+        copyBtn.textContent = '✗'
+        setTimeout(() => {
+          copyBtn.textContent = '📋'
+        }, 2000)
+      }
+    }
+
+    // 设置 pre 为相对定位
+    pre.style.position = 'relative'
+    pre.appendChild(copyBtn)
+  })
+}
+
+onMounted(() => {
+  nextTick(() => {
+    addCopyButtons()
+  })
+})
+
+watch(() => props.content, () => {
+  nextTick(() => {
+    addCopyButtons()
+  })
+})
 </script>
 
 <template>
-  <div class="markdown-content" v-html="renderedHtml"></div>
+  <div class="markdown-content" ref="containerRef" v-html="renderedHtml"></div>
 </template>
 
 <style scoped>
@@ -95,6 +150,7 @@ const renderedHtml = computed(() => {
   padding: 16px;
   overflow-x: auto;
   margin: 1em 0;
+  position: relative;
 }
 
 .markdown-content :deep(pre code) {
@@ -103,6 +159,29 @@ const renderedHtml = computed(() => {
   border-radius: 0;
   font-size: 0.875em;
   line-height: 1.5;
+}
+
+/* 代码块复制按钮 */
+.markdown-content :deep(.code-copy-btn) {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 12px;
+  background: rgba(63, 63, 70, 0.8);
+  border: none;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.2s;
+}
+
+.markdown-content :deep(pre:hover .code-copy-btn) {
+  opacity: 1;
+}
+
+.markdown-content :deep(.code-copy-btn:hover) {
+  background: rgba(82, 82, 91, 0.9);
 }
 
 .markdown-content :deep(ul),
@@ -165,16 +244,5 @@ const renderedHtml = computed(() => {
   border: none;
   border-top: 1px solid #3F3F46;
   margin: 2em 0;
-}
-
-/* Code block language label */
-.markdown-content :deep(pre)::before {
-  content: attr(data-language);
-  display: block;
-  font-size: 0.75em;
-  color: #6B7280;
-  margin-bottom: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 </style>

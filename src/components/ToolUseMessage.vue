@@ -415,6 +415,61 @@ const formattedResult = computed(() => {
 function toggleExpand() {
   emit('toggle-collapse')
 }
+
+// 复制功能
+import { ref } from 'vue'
+
+const copiedType = ref('') // 'header' | 'description' | 'content' | 'result'
+const copiedToolName = ref('')
+
+async function copyToClipboard(text, type) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedType.value = type
+    setTimeout(() => {
+      copiedType.value = ''
+    }, 2000)
+  } catch (err) {
+    console.error('复制失败:', err)
+  }
+}
+
+// 复制整个工具调用信息
+async function copyToolCall() {
+  let content = `Tool: ${props.toolName}\n`
+  if (primaryContent.value?.description) {
+    content += `\n说明:\n${primaryContent.value.description}\n`
+  }
+  if (primaryContent.value?.value) {
+    content += `\n${primaryContent.value.label}:\n${typeof primaryContent.value.value === 'string' ? primaryContent.value.value : JSON.stringify(primaryContent.value.value, null, 2)}\n`
+  }
+  if (formattedResult.value) {
+    content += `\n结果:\n${formattedResult.value}\n`
+  }
+  await copyToClipboard(content, 'header')
+}
+
+// 复制描述
+async function copyDescription() {
+  if (primaryContent.value?.description) {
+    await copyToClipboard(primaryContent.value.description, 'description')
+  }
+}
+
+// 复制主要内容
+async function copyContent() {
+  if (primaryContent.value?.value) {
+    const content = typeof primaryContent.value.value === 'string' ? primaryContent.value.value : JSON.stringify(primaryContent.value.value, null, 2)
+    await copyToClipboard(content, 'content')
+  }
+}
+
+// 复制结果
+async function copyResult() {
+  if (formattedResult.value) {
+    await copyToClipboard(formattedResult.value, 'result')
+  }
+}
 </script>
 
 <template>
@@ -431,7 +486,19 @@ function toggleExpand() {
         <span v-else-if="isError" class="status-badge error">失败</span>
         <span v-else-if="result" class="status-badge success">完成</span>
       </div>
-      <span class="expand-icon">{{ isExpanded ? '▼' : '▶' }}</span>
+      <div class="header-actions">
+        <!-- 复制按钮 -->
+        <button class="copy-btn" @click.stop="copyToolCall" :title="copiedType === 'header' ? '已复制' : '复制工具调用'">
+          <svg v-if="copiedType === 'header'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+          <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+        <span class="expand-icon">{{ isExpanded ? '▼' : '▶' }}</span>
+      </div>
     </div>
     <!-- 折叠时显示精简摘要 -->
     <div v-if="!isExpanded && collapsedSummary" class="collapsed-summary-line" :class="{ 'todo-collapsed': props.toolName === 'TodoWrite' }" @click="toggleExpand" v-html="collapsedSummary">
@@ -439,13 +506,24 @@ function toggleExpand() {
 
     <div v-if="isExpanded" class="tool-body">
       <!-- 描述 -->
-      <div v-if="primaryContent?.description" class="tool-section">
+      <div v-if="primaryContent?.description" class="tool-section has-copy">
         <div class="section-label">说明</div>
-        <div class="section-content description">{{ primaryContent.description }}</div>
+        <div class="section-content description">
+          <button class="section-copy-btn" @click.stop="copyDescription" :title="copiedType === 'description' ? '已复制' : '复制'">
+            <svg v-if="copiedType === 'description'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+          {{ primaryContent.description }}
+        </div>
       </div>
 
       <!-- 主要内容 -->
-      <div v-if="primaryContent" class="tool-section">
+      <div v-if="primaryContent" class="tool-section has-copy">
         <div class="section-label" :class="{ 'todo-label': props.toolName === 'TodoWrite' }">{{ primaryContent.label }}</div>
         <!-- TodoWrite 专用样式 -->
         <template v-if="props.toolName === 'TodoWrite'">
@@ -549,6 +627,15 @@ function toggleExpand() {
             </div>
             <!-- 命令显示 -->
             <div class="bash-command">
+              <button class="section-copy-btn" @click.stop="copyContent" :title="copiedType === 'content' ? '已复制' : '复制命令'">
+                <svg v-if="copiedType === 'content'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
               <div class="bash-command-header">
                 <span class="bash-prompt">$</span>
                 <span class="bash-cmd-text">{{ bashData.command }}</span>
@@ -636,14 +723,36 @@ function toggleExpand() {
           </div>
         </template>
         <template v-else>
-          <div class="section-content todo-list">{{ primaryContent.value }}</div>
+          <div class="section-content-wrapper">
+            <button class="section-copy-btn" @click.stop="copyContent" :title="copiedType === 'content' ? '已复制' : '复制'">
+              <svg v-if="copiedType === 'content'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+              <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+            <div class="section-content todo-list">{{ primaryContent.value }}</div>
+          </div>
         </template>
       </div>
 
       <!-- 结果 -->
       <div v-if="formattedResult" class="tool-section result-section">
         <div class="section-label">结果</div>
-        <pre class="section-content result" :class="{ 'error-text': isError }">{{ formattedResult }}</pre>
+        <div class="section-content-wrapper">
+          <button class="section-copy-btn" @click.stop="copyResult" :title="copiedType === 'result' ? '已复制' : '复制'">
+            <svg v-if="copiedType === 'result'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+          <pre class="section-content result" :class="{ 'error-text': isError }">{{ formattedResult }}</pre>
+        </div>
       </div>
     </div>
   </div>
@@ -785,6 +894,42 @@ function toggleExpand() {
   margin-left: 8px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.copy-btn {
+  font-size: 12px;
+  color: #71717A;
+  background: transparent;
+  border: none;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  opacity: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.copy-btn svg {
+  display: block;
+}
+
+.tool-header:hover .copy-btn {
+  opacity: 0.6;
+}
+
+.copy-btn:hover {
+  background: #27272A;
+  color: #A1A1AA;
+  opacity: 1 !important;
+}
+
 .tool-body {
   padding: 12px 14px;
   border-top: 1px solid #333;
@@ -820,6 +965,49 @@ function toggleExpand() {
   font-size: 12px;
   color: #D4D4D4;
   line-height: 1.5;
+  position: relative;
+}
+
+/* section 内容包装器 - 用于定位复制按钮 */
+.section-content-wrapper {
+  position: relative;
+}
+
+/* section 内的复制按钮 */
+.section-copy-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 12px;
+  color: #71717A;
+  background: rgba(39, 39, 42, 0.9);
+  border: none;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.section-copy-btn svg {
+  display: block;
+}
+
+.section-content-wrapper:hover .section-copy-btn,
+.section-content:hover .section-copy-btn,
+.bash-command:hover .section-copy-btn {
+  opacity: 0.6;
+}
+
+.section-copy-btn:hover {
+  opacity: 1 !important;
+  background: #27272A;
+  color: #A1A1AA;
 }
 
 .section-content.description {
@@ -1243,6 +1431,7 @@ function toggleExpand() {
 
 .bash-command {
   padding: 12px;
+  position: relative;
 }
 
 .bash-command-header {

@@ -778,6 +778,72 @@ function formatDuration(ms) {
   return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
 }
 
+// 复制消息内容
+const copiedMessageIndex = ref(-1)
+async function copyMessageContent(index) {
+  const message = messages.value[index]
+  if (!message) return
+
+  let content = ''
+  if (message.role === 'user') {
+    content = typeof message.content === 'string' ? message.content : message.content
+  } else if (message.role === 'assistant') {
+    content = typeof message.content === 'string' ? message.content : message.content
+  } else {
+    content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
+  }
+
+  try {
+    await navigator.clipboard.writeText(content)
+    copiedMessageIndex.value = index
+    setTimeout(() => {
+      copiedMessageIndex.value = -1
+    }, 2000)
+  } catch (err) {
+    console.error('复制失败:', err)
+  }
+}
+
+// 复制粘性窗口内容
+const stickyCopied = ref(false)
+async function copyStickyMessage() {
+  if (!stickyMessage.value) return
+
+  try {
+    await navigator.clipboard.writeText(stickyMessage.value.content)
+    stickyCopied.value = true
+    setTimeout(() => {
+      stickyCopied.value = false
+    }, 2000)
+  } catch (err) {
+    console.error('复制失败:', err)
+  }
+}
+
+// 复制问答内容
+async function copyQuestionContent(index) {
+  const message = messages.value[index]
+  if (!message || !message.questions) return
+
+  let content = '问答记录:\n\n'
+  message.questions.forEach((q, idx) => {
+    content += `【${q.header}】\n`
+    if (q.question) content += `问题: ${q.question}\n`
+    content += `答案: ${q.selectedAnswer || '未选择'}\n`
+    if (idx < message.questions.length - 1) content += '\n'
+  })
+
+  try {
+    await navigator.clipboard.writeText(content)
+    copiedMessageIndex.value = index
+    setTimeout(() => {
+      copiedMessageIndex.value = -1
+    }, 2000)
+  } catch (err) {
+    console.error('复制失败:', err)
+  }
+}
+
 // 格式化 token 消耗
 function formatTokens(usage) {
   if (!usage) return ''
@@ -1508,7 +1574,22 @@ async function handleQuestionAnswer(requestId, answers) {
                 {{ formatTokens(stickyMessage.usage) }}
               </span>
             </div>
-            <div class="sticky-text-md"><MarkdownRenderer :content="stickyMessage.content" /></div>
+            <div class="sticky-text-md">
+              <button
+                class="copy-btn bubble-copy-btn"
+                @click.stop="copyStickyMessage"
+                :title="stickyCopied ? '已复制' : '复制内容'"
+              >
+                <svg v-if="stickyCopied" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <svg v-else xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+              <MarkdownRenderer :content="stickyMessage.content" />
+            </div>
           </div>
         </div>
       </div>
@@ -1570,7 +1651,18 @@ async function handleQuestionAnswer(requestId, answers) {
               <span v-if="message.resultReceived && message.answersConsistent" class="status-badge success">答案已确认</span>
               <span v-else-if="message.resultReceived && !message.answersConsistent" class="status-badge warning">答案不一致</span>
             </div>
-            <span class="expand-icon">{{ isQuestionCollapsed(index) ? '▶' : '▼' }}</span>
+            <div class="header-actions">
+              <button class="copy-btn" @click.stop="copyQuestionContent(index)" :title="copiedMessageIndex === index ? '已复制' : '复制问答内容'">
+                <svg v-if="copiedMessageIndex === index" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+              <span class="expand-icon">{{ isQuestionCollapsed(index) ? '▶' : '▼' }}</span>
+            </div>
           </div>
 
           <!-- Collapsed view: show only answers -->
@@ -1715,6 +1807,20 @@ async function handleQuestionAnswer(requestId, answers) {
               </div>
               <div class="message-content user-content">
                 <div class="message-text">
+                  <!-- 复制按钮 -->
+                  <button
+                    class="copy-btn bubble-copy-btn"
+                    @click.stop="copyMessageContent(index)"
+                    :title="copiedMessageIndex === index ? '已复制' : '复制内容'"
+                  >
+                    <svg v-if="copiedMessageIndex === index" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                    <svg v-else xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  </button>
                   {{ message.content }}
                 </div>
               </div>
@@ -1770,6 +1876,21 @@ async function handleQuestionAnswer(requestId, answers) {
               class="message-text"
               :class="{ 'status-text': message.role === 'status' }"
             >
+              <!-- 复制按钮 (assistant 内容右上角) -->
+              <button
+                v-if="message.role === 'assistant'"
+                class="copy-btn bubble-copy-btn"
+                @click.stop="copyMessageContent(index)"
+                :title="copiedMessageIndex === index ? '已复制' : '复制内容'"
+              >
+                <svg v-if="copiedMessageIndex === index" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <svg v-else xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
               <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
               <div v-else>{{ message.content }}</div>
             </div>
@@ -2050,6 +2171,7 @@ async function handleQuestionAnswer(requestId, answers) {
   max-height: calc(var(--max-height, 300px) - 80px);
   overflow-y: auto;
   width: 100%;
+  position: relative;
 }
 
 /* 折叠的回答占位符 */
@@ -2262,12 +2384,56 @@ async function handleQuestionAnswer(requestId, answers) {
   border-color: #52525B;
 }
 
+/* 复制按钮 */
+.copy-btn {
+  font-size: 12px;
+  color: #71717A;
+  background: transparent;
+  border: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-left: 8px;
+  opacity: 0.6;
+}
+
+.copy-btn:hover {
+  background: #27272A;
+  color: #A1A1AA;
+  opacity: 1;
+}
+
+.copy-btn:active {
+  transform: scale(0.95);
+}
+
+/* 气泡内的复制按钮 - 右上角定位 */
+.bubble-copy-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  margin-left: 0;
+  opacity: 0;
+  z-index: 10;
+}
+
+.message-text:hover .bubble-copy-btn,
+.sticky-text-md:hover .bubble-copy-btn {
+  opacity: 0.6;
+}
+
+.bubble-copy-btn:hover {
+  opacity: 1 !important;
+}
+
 .header-icon {
   font-size: 10px;
 }
 
 .message-content {
   max-width: 70%;
+  position: relative;
 }
 
 /* 用户消息容器：包含头部和气泡，右对齐 */
@@ -2306,6 +2472,7 @@ async function handleQuestionAnswer(requestId, answers) {
   border-radius: 12px;
   line-height: 1.5;
   overflow-x: auto;
+  position: relative;
 }
 
 .message-text:not(:has(.markdown-content)) {
@@ -2628,6 +2795,44 @@ async function handleQuestionAnswer(requestId, answers) {
   margin-bottom: 12px;
   padding-bottom: 10px;
   border-bottom: 1px solid #3F3F46;
+}
+
+.question-message-header .header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.question-message-header .copy-btn {
+  font-size: 12px;
+  color: #71717A;
+  background: transparent;
+  border: none;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.question-message-header:hover .copy-btn {
+  opacity: 0.6;
+}
+
+.question-message-header .copy-btn:hover {
+  background: #27272A;
+  color: #A1A1AA;
+  opacity: 1 !important;
+}
+
+.question-message-header .header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .question-title {

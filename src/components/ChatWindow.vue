@@ -1,25 +1,36 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
+import { useSessionStore } from '../stores/useSessionStore'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import PermissionDialog from './PermissionDialog.vue'
 import AskUserQuestionDialog from './AskUserQuestionDialog.vue'
 import ToolUseMessage from './ToolUseMessage.vue'
 import MessageDetailDialog from './MessageDetailDialog.vue'
 
-const messages = ref([])
-const inputMessage = ref('')
-const isProcessing = ref(false)
+const sessionStore = useSessionStore()
+
+// 使用 SessionStore 的状态（只读 computed）
+const messages = computed(() => sessionStore.currentMessages)
+
+// UI 状态
+const pendingPermission = computed(() => sessionStore.currentSession?.pendingPermission)
+const pendingControlRequest = computed(() => sessionStore.currentSession?.pendingControlRequest)
+const pendingQuestion = computed(() => sessionStore.currentSession?.pendingQuestion)
+const envInfo = computed(() => sessionStore.currentSession?.envInfo)
+const inputMessage = computed({
+  get: () => sessionStore.inputMessage,
+  set: (val) => { sessionStore.inputMessage = val }
+})
+const isProcessing = computed(() => sessionStore.isProcessing)
 const messagesContainer = ref(null)
 const inputArea = ref(null)
-const pendingPermission = ref(null)
-const pendingQuestion = ref(null)
-const pendingControlRequest = ref(null)
+// pendingPermission and pendingControlRequest are now computed from sessionStore (defined above)
+// pendingQuestion is also now computed from sessionStore
 const isDragOver = ref(false)
 const questionActiveTabs = ref({}) // 存储每条问答消息的 active tab
 const workingDirectory = ref('') // 工作目录
 const selectedMessage = ref(null) // 当前选中的消息（用于显示详情）
 const currentTime = ref(Date.now()) // 用于实时更新消耗时间
-const envInfo = ref(null) // 环境信息（来自 system init）
 const showEnvDetail = ref(false) // 是否显示环境详情
 const stickyMessageIndex = ref(-1) // 当前粘性显示的消息索引
 const containerHeight = ref(400) // 聊天容器高度，用于限制粘性面板
@@ -29,11 +40,12 @@ const inputHistory = [] // 输入历史记录
 let historyIndex = -1 // 当前历史索引，-1 表示不在浏览历史
 let isHistoryNavigation = false // 标记是否正在通过历史导航设置值
 const showHistoryPicker = ref(false) // 显示历史记录选择弹窗
-
-// Store unsubscribe functions
-let unsubscribers = []
+// Note: isLoadingHistory removed - history is now loaded by SessionStore/SessionInstance
 
 onMounted(async () => {
+  // 启动 SessionStore 的事件监听器（监听后端的 session-event 统一通道）
+  sessionStore.startEventListener()
+
   // 启动消耗时间更新定时器
   durationTimer = setInterval(() => {
     currentTime.value = Date.now()
@@ -57,753 +69,12 @@ onMounted(async () => {
     // Ignore error
   }
 
-  // Get cached init info (for envbar display)
-  try {
-    const initInfo = await window.electronAPI.getInitInfo()
-    if (initInfo) {
-      envInfo.value = initInfo
-    }
-  } catch (error) {
-    // Ignore error
-  }
-
-  // Listen to Claude messages
-  const unsubs = []
-
-  const msgUnsub = window.electronAPI.onClaudeMessage((message) => {
-    // 如果正在使用流式事件，跳过 onClaudeMessage 处理（避免重复）
-    if (isUsingStreamEvents) {
-      return
-    }
-
-    // 处理非流式消息
-    if (message.message && message.message.content) {
-      // 处理文本内容
-      const textContent = message.message.content.find(c => c.type === 'text')
-      if (textContent) {
-        messages.value.push({
-          role: 'assistant',
-          content: textContent.text,
-          timestamp: new Date(),
-          rawMessages: [message]
-        })
-        scrollToBottom()
-      }
-
-      // 也处理 tool_use 内容（但排除 AskUserQuestion，它由 control_request 处理）
-      const toolUseContent = message.message.content.find(c => c.type === 'tool_use')
-      if (toolUseContent && toolUseContent.name !== 'AskUserQuestion') {
-        const toolUseId = toolUseContent.id
-
-        // 检查是否已经显示过这个 tool_use（避免与 control_request 重复）
-        const existingMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === toolUseId)
-        if (!existingMsg) {
-          // 添加工具使用消息
-          messages.value.push({
-            role: 'tool_use',
-            toolName: toolUseContent.name,
-            toolInput: toolUseContent.input,
-            result: '',
-            isError: false,
-            isExecuting: true,
-            request_id: toolUseId,
-            collapsed: false,
-            timestamp: new Date(),
-            startTime: Date.now(),
-            rawMessages: [message]
-          })
-          scrollToBottom()
-        }
-      }
-    }
-  })
-  unsubs.push(msgUnsub)
-
-  const resultUnsub = window.electronAPI.onClaudeResult((message) => {
-    // 找到最后一个用户消息并更新统计信息
-    // result.usage 是这一轮请求的总消耗，result.num_turns 是轮次数量
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      if (messages.value[i].role === 'user') {
-        const userMsg = messages.value[i]
-        // 更新统计信息
-        userMsg.duration = message.duration_ms || null
-        userMsg.numTurns = message.num_turns || null
-        userMsg.usage = message.usage || null
-        // 强制触发 Vue 响应式更新
-        messages.value[i] = { ...messages.value[i] }
-        break
-      }
-    }
-
-    // 解锁输入框 - 在这里解锁确保和问答计时同步
-    isProcessing.value = false
-
-    // 聚焦输入框
-    nextTick(() => {
-      inputArea.value?.focus()
-    })
-
-    scrollToBottom()
-  })
-  unsubs.push(resultUnsub)
-
-  const systemUnsub = window.electronAPI.onSystemMessage((message) => {
-    // 系统消息处理
-  })
-  unsubs.push(systemUnsub)
-
-  const toolUnsub = window.electronAPI.onToolUse((message) => {
-    // 显示工具使用消息
-    if (message.message && message.message.content) {
-      const toolUseContent = message.message.content.find(c => c.type === 'tool_use')
-      if (toolUseContent) {
-        const toolUseId = toolUseContent.id
-
-        // AskUserQuestion 由 control_request 处理，不在这里创建消息
-        if (toolUseContent.name === 'AskUserQuestion') {
-          return
-        }
-
-        // 检查是否已经显示过这个 tool_use（避免与 control_request 重复）
-        const existingMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === toolUseId)
-        if (existingMsg) {
-          return
-        }
-
-        // 添加工具使用消息
-        messages.value.push({
-          role: 'tool_use',
-          toolName: toolUseContent.name,
-          toolInput: toolUseContent.input,
-          result: '',
-          isError: false,
-          isExecuting: true,
-          request_id: toolUseId,
-          timestamp: new Date(),
-          startTime: Date.now(),
-          rawMessages: [message]
-        })
-        scrollToBottom()
-      }
-    }
-  })
-  unsubs.push(toolUnsub)
-
-  const toolResultUnsub = window.electronAPI.onToolResult((message) => {
-    // 检查是否是 AskUserQuestion 的结果
-    if (message.tool_use_result?.answers) {
-      // tool_use_id 在 message.message.content 中
-      const toolResultContent = message.message?.content?.find(c => c.type === 'tool_result')
-      const toolUseId = toolResultContent?.tool_use_id || message.uuid
-      const receivedAnswers = message.tool_use_result.answers
-
-      // 找到对应的问答消息
-      const questionMsg = messages.value.find(m => m.role === 'question' && m.tool_use_id === toolUseId)
-      if (questionMsg) {
-        // 比较答案
-        const userAnswers = questionMsg.userAnswers || {}
-        const isConsistent = compareAnswers(userAnswers, receivedAnswers)
-
-        questionMsg.resultReceived = true
-        questionMsg.answersConsistent = isConsistent
-        questionMsg.receivedAnswers = receivedAnswers
-      }
-      scrollToBottom()
-      return
-    }
-
-    if (message.message && message.message.content) {
-      const toolResultContent = message.message.content.find(c => c.type === 'tool_result')
-      if (toolResultContent) {
-        const isError = toolResultContent.is_error
-        const content = toolResultContent.content || ''
-        const toolUseId = toolResultContent.tool_use_id
-
-        // 找到对应的 tool_use 消息并更新结果
-        const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === toolUseId)
-        if (toolUseMsg) {
-          toolUseMsg.isExecuting = false
-          toolUseMsg.isError = isError
-          toolUseMsg.result = content || '(无输出)'
-          // 计算 duration
-          if (toolUseMsg.startTime) {
-            toolUseMsg.duration = Date.now() - toolUseMsg.startTime
-          }
-        } else {
-          // 如果没有找到对应的 tool_use 消息，添加为系统消息
-          messages.value.push({
-            role: 'status',
-            content: isError
-              ? `❌ ${toolUseId} 失败: ${content}`
-              : `✅ ${toolUseId} 完成: ${content || '(无输出)'}`,
-            timestamp: new Date()
-          })
-        }
-        scrollToBottom()
-      }
-    }
-  })
-  unsubs.push(toolResultUnsub)
-
-  // Listen for tool_use requests (permission dialog or question dialog)
-  const toolUseRequestUnsub = window.electronAPI.onToolUseRequest((message) => {
-    if (message.message && message.message.content) {
-      const toolUseContent = message.message.content.find(c => c.type === 'tool_use')
-      if (toolUseContent) {
-        if (toolUseContent.name === 'AskUserQuestion') {
-          // Show question dialog for AskUserQuestion
-          pendingQuestion.value = {
-            request_id: toolUseContent.id,
-            tool_use_id: toolUseContent.id, // 存储 tool_use_id 以便关联 tool_result
-            tool_name: toolUseContent.name,
-            tool_input: toolUseContent.input
-          }
-        } else {
-          // Show permission dialog for regular tools
-          pendingPermission.value = {
-            request_id: toolUseContent.id,
-            tool_name: toolUseContent.name,
-            tool_input: toolUseContent.input
-          }
-        }
-      }
-    }
-  })
-  unsubs.push(toolUseRequestUnsub)
-
-  // Listen for control_request (for --permission-prompt-tool stdio)
-  const controlRequestUnsub = window.electronAPI.onControlRequest((message) => {
-    if (message.request && message.request.subtype === 'can_use_tool') {
-      // Check if this is an AskUserQuestion request
-      if (message.request.tool_name === 'AskUserQuestion') {
-        // Show question dialog for AskUserQuestion
-        pendingQuestion.value = {
-          request_id: message.request_id,
-          tool_use_id: message.request.tool_use_id, // 存储 tool_use_id 以便关联 tool_result
-          tool_name: message.request.tool_name,
-          tool_input: message.request.input
-        }
-      } else {
-        // Clear any pending permission (control_request takes precedence)
-        pendingPermission.value = null
-
-        // 只有当 tool_use_id 存在时才创建 tool_use 消息
-        // 这样可以确保 request_id 与 onToolUse 中使用的 toolUseContent.id 一致
-        // 如果 tool_use_id 不存在，让 onToolUse 来创建消息
-        if (message.request.tool_use_id) {
-          // 检查是否已经存在相同的消息（避免重复）
-          const existingMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === message.request.tool_use_id)
-          if (!existingMsg) {
-            // Add tool use message to chat (显示工具使用，等待权限确认)
-            messages.value.push({
-              role: 'tool_use',
-              toolName: message.request.tool_name,
-              toolInput: message.request.input,
-              result: '',
-              isError: false,
-              isExecuting: true,
-              request_id: message.request.tool_use_id,
-              collapsed: false,
-              timestamp: new Date(),
-              startTime: Date.now(),
-              rawMessages: [message]
-            })
-            scrollToBottom()
-          }
-        }
-
-        // Show permission dialog for control_request
-        pendingControlRequest.value = {
-          request_id: message.request_id,
-          tool_name: message.request.tool_name,
-          tool_input: message.request.input,
-          permission_suggestions: message.request.permission_suggestions,
-          tool_use_id: message.request.tool_use_id
-        }
-      }
-    }
-  })
-  unsubs.push(controlRequestUnsub)
-
-  // Listen for CLI status messages (connection status, retries, errors)
-  const cliStatusUnsub = window.electronAPI.onCliStatus((message) => {
-    // 显示状态消息
-    if (message.message) {
-      messages.value.push({
-        role: 'status',
-        content: message.message,
-        timestamp: new Date(),
-        rawMessages: [message]
-      })
-      scrollToBottom()
-    }
-  })
-  unsubs.push(cliStatusUnsub)
-
-  // Listen for stream events (thinking_delta, text_delta, etc.)
-  let currentAssistantMessageIndex = -1
-  let currentContentBlockType = null // 当前正在处理的内容块类型
-  let isUsingStreamEvents = false // 标记是否使用了流式事件
-  let contentBlockIndexToId = new Map() // 追踪 content_block index 到 id 的映射
-  let currentTurnNumber = 0 // 当前 turn 编号
-  let hasSeenToolUseInCurrentTurn = false // 当前 turn 是否已经见过 tool_use
-
-  // 辅助函数：累加更新最后一个用户消息的 usage 统计
-  function accumulateUserMessageUsage(newUsage) {
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      if (messages.value[i].role === 'user') {
-        const userMsg = messages.value[i]
-        // 累加 usage
-        const currentUsage = userMsg.usage || { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }
-        userMsg.usage = {
-          input_tokens: (currentUsage.input_tokens || 0) + (newUsage.input_tokens || 0),
-          output_tokens: (currentUsage.output_tokens || 0) + (newUsage.output_tokens || 0),
-          cache_read_input_tokens: (currentUsage.cache_read_input_tokens || 0) + (newUsage.cache_read_input_tokens || 0)
-        }
-        // 强制触发 Vue 响应式更新
-        messages.value[i] = { ...messages.value[i] }
-        break
-      }
-    }
-  }
-
-  // 辅助函数：更新最后一个用户消息的 turn 数量
-  function updateUserMessageTurns(numTurns) {
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      if (messages.value[i].role === 'user') {
-        messages.value[i].numTurns = numTurns
-        // 强制触发 Vue 响应式更新
-        messages.value[i] = { ...messages.value[i] }
-        break
-      }
-    }
-  }
-
-  const streamEventUnsub = window.electronAPI.onStreamEvent((message) => {
-    const event = message.event
-
-    if (!event) return
-
-    // 标记正在使用流式事件
-    isUsingStreamEvents = true
-
-    // Handle turn_start - 统计 turn 数量
-    if (event.type === 'turn_start') {
-      currentTurnNumber++
-      updateUserMessageTurns(currentTurnNumber)
-      // 继续处理，因为 turn_start 可能也包含 usage
-    }
-
-    // 检查是否有 usage 信息并累加到用户消息
-    // usage 可能在多个位置: message.usage, event.usage, event.message.usage, event.content_block.usage
-    const usage = message.usage || event.usage || event.message?.usage || event.content_block?.usage
-    if (usage) {
-      // 累加更新用户消息的 usage 统计
-      accumulateUserMessageUsage(usage)
-    }
-
-    // 更新 assistant 消息的 usage（用于显示在回答气泡上）
-    if (usage && currentAssistantMessageIndex >= 0) {
-      const currentMsg = messages.value[currentAssistantMessageIndex]
-      if (currentMsg && currentMsg.role === 'assistant') {
-        currentMsg.usage = usage
-        // 强制触发 Vue 响应式更新
-        messages.value[currentAssistantMessageIndex] = { ...messages.value[currentAssistantMessageIndex] }
-      }
-      // 同时累加更新用户消息的 usage 统计
-      accumulateUserMessageUsage(usage)
-    }
-
-    // Handle message_start - 创建消息并显示"正在思考"状态
-    if (event.type === 'message_start') {
-      currentAssistantMessageIndex = -1
-      currentContentBlockType = null
-      contentBlockIndexToId.clear() // 清除 index 到 id 的映射
-      currentTurnNumber = 0 // 重置 turn 编号
-      hasSeenToolUseInCurrentTurn = false // 重置 tool_use 标记
-      // 标记正在使用流式事件（message_start 也是 stream_event 的一部分）
-      isUsingStreamEvents = true
-
-      // 从 message_start 中提取初始 usage 信息
-      const initialUsage = event.message?.usage || null
-
-      // 创建新的 assistant 消息，带有"正在思考"状态
-      messages.value.push({
-        role: 'assistant',
-        content: '',
-        thinking: '',
-        hasThinking: false,
-        isStreaming: true, // 正在流式传输
-        startTime: Date.now(), // 记录开始时间
-        timestamp: new Date(),
-        usage: initialUsage, // 初始 usage
-        turnNumber: 1, // 初始 turn 编号
-        rawMessages: [message]
-      })
-      currentAssistantMessageIndex = messages.value.length - 1
-
-      // 初始化用户消息的统计（默认 1 turn）
-      updateUserMessageTurns(1)
-      if (initialUsage) {
-        accumulateUserMessageUsage(initialUsage)
-      }
-
-      scrollToBottom()
-      return
-    }
-
-    // Handle content_block_start
-    if (event.type === 'content_block_start') {
-      const contentBlock = event.content_block
-      currentContentBlockType = contentBlock?.type
-
-      if (contentBlock?.type === 'thinking') {
-        // 检测新 turn：如果之前已经见过 tool_use，现在又看到 thinking，说明是新 turn
-        if (hasSeenToolUseInCurrentTurn) {
-          currentTurnNumber++
-          hasSeenToolUseInCurrentTurn = false
-          // 注意：turn 统计由 turn_start 事件处理
-        }
-        // 复用 message_start 创建的消息，添加 thinking
-        const currentMsg = currentAssistantMessageIndex >= 0 ? messages.value[currentAssistantMessageIndex] : null
-        if (currentMsg && currentMsg.role === 'assistant') {
-          currentMsg.hasThinking = true
-          currentMsg.thinkingCollapsed = false
-          // 更新当前 turn 编号
-          currentMsg.turnNumber = currentTurnNumber + 1
-          // 如果是第二个及之后的 turn，标记需要显示分割线
-          if (currentTurnNumber > 0) {
-            currentMsg.showTurnSeparator = true
-          }
-        }
-        scrollToBottom()
-      } else if (contentBlock?.type === 'text') {
-        // 复用 message_start 创建的消息
-        scrollToBottom()
-      } else if (contentBlock?.type === 'tool_use') {
-        // 标记当前 turn 已经见过 tool_use
-        hasSeenToolUseInCurrentTurn = true
-        // AskUserQuestion 由 control_request 处理，不在这里创建消息
-        if (contentBlock.name === 'AskUserQuestion') {
-          return
-        }
-        // Start a new tool use message with partial data
-        const toolUseData = contentBlock
-        // 记录 index 到 id 的映射（用于后续 content_block_delta）
-        if (typeof event.index === 'number') {
-          contentBlockIndexToId.set(event.index, toolUseData.id)
-        }
-        // 创建消息对象，确保 toolInput 是一个新的对象引用
-        const newMessage = {
-          role: 'tool_use',
-          toolName: toolUseData.name,
-          toolInput: toolUseData.input ? { ...toolUseData.input } : {}, // 初始输入（可能不完整）- 使用展开运算符确保新对象
-          result: '',
-          isError: false,
-          isExecuting: true,
-          request_id: toolUseData.id,
-          collapsed: false,
-          thinking: '', // tool_use 也可能有 thinking
-          hasThinking: false,
-          timestamp: new Date(),
-          startTime: Date.now(),
-          rawMessages: [message]
-        }
-        messages.value.push(newMessage)
-        // 注意：不更新 currentAssistantMessageIndex，因为它应该只指向 assistant 消息
-        // tool_use 消息的索引通过 contentBlockIndexToId 映射来追踪
-        scrollToBottom()
-      }
-      return
-    }
-
-    // Handle content_block_delta
-    if (event.type === 'content_block_delta') {
-      const delta = event.delta
-
-      // Handle thinking_delta - 更新 assistant 消息的 thinking 字段
-      if (delta?.type === 'thinking_delta' && delta.thinking) {
-        if (currentAssistantMessageIndex >= 0 && messages.value[currentAssistantMessageIndex]) {
-          const msg = messages.value[currentAssistantMessageIndex]
-          msg.thinking = (msg.thinking || '') + delta.thinking
-          msg.hasThinking = true
-          // 存储原始消息 - 使用 reactive 更新
-          if (!msg.rawMessages) msg.rawMessages = []
-          msg.rawMessages.push(message)
-          scrollToBottom()
-        }
-      }
-
-      // Handle text_delta
-      if (delta?.type === 'text_delta' && delta.text) {
-        if (currentAssistantMessageIndex >= 0 && messages.value[currentAssistantMessageIndex]) {
-          const msg = messages.value[currentAssistantMessageIndex]
-          const prevContent = msg.content
-          // 使用显式的 reactive 更新
-          msg.content = prevContent + delta.text
-          // 存储原始消息 - 使用 reactive 更新
-          if (!msg.rawMessages) msg.rawMessages = []
-          msg.rawMessages.push(message)
-          // 只有在用户位于底部时才滚动
-          scrollToBottom()
-        }
-      }
-
-      // Handle tool_use_delta - 处理工具调用的部分数据
-      if (delta?.type === 'tool_use_delta' && delta.input) {
-        // 使用 event.index 从映射中获取 content_block_id
-        const contentBlockId = contentBlockIndexToId.get(event.index)
-
-        // 找到最近创建的 tool use 消息（使用索引方式确保 reactivity）
-        const toolUseMsgIndex = messages.value.findLastIndex(m =>
-          m.role === 'tool_use' && m.request_id === contentBlockId
-        )
-
-        if (toolUseMsgIndex >= 0 && toolUseMsgIndex < messages.value.length) {
-          const toolUseMsg = messages.value[toolUseMsgIndex]
-
-          // 使用深度合并策略来更新 toolInput - 确保创建新的对象引用
-          const currentInput = toolUseMsg.toolInput || {}
-          const deltaInput = delta.input
-
-          // 创建新的 toolInput 对象来确保 Vue reactivity
-          const newToolInput = { ...currentInput }
-
-          // 深度合并输入数据，根据不同类型采用不同策略
-          Object.keys(deltaInput).forEach(key => {
-            const currentValue = currentInput[key]
-            const deltaValue = deltaInput[key]
-
-            // 如果值不存在，直接赋值
-            if (currentValue === undefined || currentValue === null) {
-              newToolInput[key] = deltaValue
-            }
-            // 如果是对象（非数组），递归合并
-            else if (typeof currentValue === 'object' && !Array.isArray(currentValue)) {
-              newToolInput[key] = { ...currentValue, ...deltaValue }
-            }
-            // 字符串：追加（如果部分内容）
-            else if (typeof currentValue === 'string' && typeof deltaValue === 'string') {
-              // 对于字符串，只在 deltaValue 包含新内容时才追加
-              // 避免重复追加相同的内容
-              if (!currentValue.includes(deltaValue) || deltaValue.length > currentValue.length) {
-                newToolInput[key] = deltaValue
-              }
-            }
-            // 数组：如果不是完整替换，则追加
-            else if (Array.isArray(currentValue) && Array.isArray(deltaValue)) {
-              // 简单的数组合并策略：如果 delta 是更大/更完整的数组，则替换
-              if (deltaValue.length >= currentValue.length) {
-                newToolInput[key] = deltaValue
-              }
-            }
-            // 其他情况：直接覆盖
-            else {
-              newToolInput[key] = deltaValue
-            }
-          })
-
-          // 更新消息的 toolInput 为新对象，确保 Vue reactivity
-          toolUseMsg.toolInput = newToolInput
-
-          // 强制触发 Vue 的响应式更新 - 创建新的消息对象
-          messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
-
-          // 存储原始消息 - 使用 reactive 更新
-          if (!toolUseMsg.rawMessages) toolUseMsg.rawMessages = []
-          toolUseMsg.rawMessages.push(message)
-          // 只有在用户位于底部时才滚动
-          scrollToBottom()
-        }
-      }
-
-      // Handle input_json_delta - 处理工具调用的 JSON 部分数据（Claude API 使用这种格式）
-      if (delta?.type === 'input_json_delta' && delta.partial_json) {
-        // 使用 event.index 从映射中获取 content_block_id
-        const contentBlockId = contentBlockIndexToId.get(event.index)
-
-        // 找到对应的 tool use 消息
-        const toolUseMsgIndex = messages.value.findLastIndex(m =>
-          m.role === 'tool_use' && m.request_id === contentBlockId
-        )
-
-        if (toolUseMsgIndex >= 0 && toolUseMsgIndex < messages.value.length) {
-          const toolUseMsg = messages.value[toolUseMsgIndex]
-
-          try {
-            // 解析 partial_json
-            const parsedInput = JSON.parse(delta.partial_json)
-
-            // 直接替换 toolInput 为解析后的对象（确保新对象引用）
-            toolUseMsg.toolInput = { ...parsedInput }
-
-            // 强制触发 Vue 的响应式更新 - 创建新的消息对象
-            messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
-
-            // 存储原始消息 - 使用 reactive 更新
-            if (!toolUseMsg.rawMessages) toolUseMsg.rawMessages = []
-            toolUseMsg.rawMessages.push(message)
-            // 只有在用户位于底部时才滚动
-            scrollToBottom()
-          } catch (error) {
-            // Ignore parse errors for partial JSON
-          }
-        }
-      }
-      return
-    }
-
-    // Handle content_block_stop
-    if (event.type === 'content_block_stop') {
-      // 检查是否是 thinking block 结束 - 自动折叠 thinking
-      if (currentContentBlockType === 'thinking') {
-        if (currentAssistantMessageIndex >= 0 && messages.value[currentAssistantMessageIndex]) {
-          const msg = messages.value[currentAssistantMessageIndex]
-          if (msg.hasThinking && msg.thinking) {
-            msg.thinkingCollapsed = true
-          }
-        }
-      }
-
-      // 使用 event.index 从映射中获取 content_block_id
-      const contentBlockId = contentBlockIndexToId.get(event.index)
-      if (contentBlockId) {
-        // 标记 tool_use 消息部分数据接收完成 - 使用索引方式
-        const toolUseMsgIndex = messages.value.findLastIndex(m =>
-          m.role === 'tool_use' && m.isExecuting && m.request_id === contentBlockId
-        )
-        if (toolUseMsgIndex >= 0 && toolUseMsgIndex < messages.value.length) {
-          const toolUseMsg = messages.value[toolUseMsgIndex]
-          // 重要：设置 isExecuting 为 false，表示数据已接收完毕
-          toolUseMsg.isExecuting = false
-          // 计算 duration
-          if (toolUseMsg.startTime) {
-            toolUseMsg.duration = Date.now() - toolUseMsg.startTime
-          }
-          // 强制触发 Vue 的响应式更新
-          messages.value[toolUseMsgIndex] = { ...messages.value[toolUseMsgIndex] }
-        }
-      }
-
-      // 重置当前内容块类型
-      currentContentBlockType = null
-      return
-    }
-
-    // Handle message_delta - 包含 usage 更新
-    if (event.type === 'message_delta') {
-      // message_delta 中包含 usage 信息
-      const usage = event.usage || null
-      if (usage && currentAssistantMessageIndex >= 0) {
-        const currentMsg = messages.value[currentAssistantMessageIndex]
-        if (currentMsg && currentMsg.role === 'assistant') {
-          currentMsg.usage = usage
-          // 强制触发 Vue 响应式更新
-          messages.value[currentAssistantMessageIndex] = { ...messages.value[currentAssistantMessageIndex] }
-        }
-      }
-      return
-    }
-
-    // Handle message_stop
-    if (event.type === 'message_stop') {
-      // 更新当前消息的状态为完成
-      // 注意：需要找到所有正在流式传输的 assistant 消息并更新它们
-      // 从 event.message 或 event 中提取 usage 信息
-      const usage = event.message?.usage || event.usage || null
-
-      messages.value.forEach((msg, idx) => {
-        if (msg.role === 'assistant' && msg.isStreaming) {
-          msg.isStreaming = false
-          msg.endTime = Date.now()
-          msg.duration = msg.endTime - msg.startTime
-          // 如果有 thinking，折叠它
-          if (msg.hasThinking) {
-            msg.thinkingCollapsed = true
-          }
-          // 更新 usage 信息
-          if (usage) {
-            msg.usage = usage
-          }
-          // 强制触发 Vue 响应式更新
-          messages.value[idx] = { ...messages.value[idx] }
-        }
-      })
-      currentAssistantMessageIndex = -1
-      currentContentBlockType = null
-      // 注意：不在这里设置 isProcessing.value = false
-      // 应该等 onClaudeResult 事件来解锁，确保和问答计时同步
-      isUsingStreamEvents = false // 重置流式事件标志
-      return
-    }
-  })
-  unsubs.push(streamEventUnsub)
-
-  // Listen for unknown/unsupported message types
-  const unknownMessageUnsub = window.electronAPI.onUnknownMessage((message) => {
-    // 在界面中显示未知消息
-    messages.value.push({
-      role: 'unknown',
-      messageType: message.type,
-      content: JSON.stringify(message, null, 2),
-      timestamp: new Date(),
-      rawMessages: [message]
-    })
-    scrollToBottom()
-  })
-  unsubs.push(unknownMessageUnsub)
-
-  // Listen for Claude init (environment info)
-  const claudeInitUnsub = window.electronAPI.onClaudeInit((message) => {
-    envInfo.value = message
-  })
-  unsubs.push(claudeInitUnsub)
-
-  // Listen for control_response (e.g., interrupt confirmation)
-  const controlResponseUnsub = window.electronAPI.onControlResponse((message) => {
-    console.log('[Control Response]', message)
-    // 处理打断成功响应
-    if (message.response?.subtype === 'success' && message.response?.request_id?.startsWith('interrupt_')) {
-      // 重置处理状态
-      isProcessing.value = false
-    }
-  })
-  unsubs.push(controlResponseUnsub)
-
-  // Listen for interrupt messages (user interrupted the response)
-  const interruptUnsub = window.electronAPI.onInterrupt((message) => {
-    console.log('[Interrupt]', message)
-    // 更新所有正在流式传输的 assistant 消息状态
-    messages.value.forEach((msg, idx) => {
-      if (msg.role === 'assistant' && msg.isStreaming) {
-        msg.isStreaming = false
-        msg.endTime = Date.now()
-        msg.duration = msg.endTime - msg.startTime
-        // 如果有 thinking，折叠它
-        if (msg.hasThinking) {
-          msg.thinkingCollapsed = true
-        }
-        // 强制触发 Vue 响应式更新
-        messages.value[idx] = { ...messages.value[idx] }
-      }
-    })
-    // 重置当前消息索引
-    currentAssistantMessageIndex = -1
-    currentContentBlockType = null
-    // 添加系统消息显示打断
-    messages.value.push({
-      role: 'system',
-      content: '⏹️ 已打断',
-      timestamp: new Date()
-    })
-    // 重置处理状态
-    isProcessing.value = false
-    scrollToBottom()
-  })
-  unsubs.push(interruptUnsub)
-
-  unsubscribers = unsubs
+  // 注意：所有事件现在通过 SessionStore 的 session-event 通道处理
+  // 不再需要旧的事件监听器（onClaudeMessage, onStreamEvent 等）
 })
+
+// Note: Session history is now loaded by SessionStore/SessionInstance
+// The messages computed property automatically reflects sessionStore.currentMessages
 
 onUnmounted(() => {
   // Clean up duration timer
@@ -811,13 +82,63 @@ onUnmounted(() => {
     clearInterval(durationTimer)
     durationTimer = null
   }
-  // Clean up listeners
-  unsubscribers.forEach(unsub => {
-    if (typeof unsub === 'function') {
-      unsub()
-    }
-  })
+  // Stop SessionStore event listener
+  sessionStore.stopEventListener()
 })
+
+// 监听流式更新（消息内容变化导致高度增加）
+// 使用 sync flush 在 DOM 更新前记录状态
+let wasNearBottomBeforeStreaming = true
+watch(() => {
+  // 检查是否有正在流式更新的消息
+  if (!messages.value) return null
+  const hasStreaming = messages.value.some(m => m.isStreaming)
+  return hasStreaming
+}, (hasStreaming) => {
+  if (hasStreaming && messagesContainer.value) {
+    // 在 DOM 更新前检查滚动位置
+    const container = messagesContainer.value
+    wasNearBottomBeforeStreaming = container.scrollHeight - container.scrollTop - container.clientHeight < 150
+  }
+}, { immediate: false, flush: 'sync' })
+
+// 在 DOM 更新后处理流式更新的滚动
+watch(() => {
+  // 检查是否有正在流式更新的消息
+  if (!messages.value) return null
+  const hasStreaming = messages.value.some(m => m.isStreaming)
+  return hasStreaming
+}, async (hasStreaming) => {
+  if (hasStreaming && wasNearBottomBeforeStreaming) {
+    // 等待 DOM 更新
+    await nextTick()
+    // 如果之前在底部，强制滚动
+    scrollToBottom(true)
+  }
+}, { immediate: false, deep: true })
+
+// 监听消息内容变化（流式更新），处理高度变化
+watch(() => messages.value, async (newMessages) => {
+  if (!newMessages || newMessages.length === 0) return
+
+  // 检查是否有正在流式更新的消息
+  const hasStreamingMessage = newMessages.some(m => m.isStreaming || m.isExecuting)
+  if (!hasStreamingMessage) return
+
+  // 在 DOM 更新前检查用户是否在底部
+  const container = messagesContainer.value
+  if (!container) return
+
+  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150
+
+  // 等待 DOM 更新
+  await nextTick()
+
+  // 如果用户之前在底部，自动滚动到底部
+  if (wasNearBottom) {
+    scrollToBottom(true)
+  }
+}, { deep: true, immediate: false })
 
 // 监听消息变化，当有新消息时自动折叠之前已完成的消息
 watch(() => messages.value, async (newMessages) => {
@@ -870,6 +191,18 @@ watch(() => messages.value, async (newMessages) => {
   }
   previousMessageCount = newLength
 }, { deep: true })
+
+// 监听 session 切换，自动滚动到底部
+watch(() => sessionStore.currentSessionId, async (newSessionId, oldSessionId) => {
+  if (newSessionId && newSessionId !== oldSessionId) {
+    // 等待 DOM 更新
+    await nextTick()
+    // 切换 session 时强制滚动到底部
+    setTimeout(() => {
+      scrollToBottom(true)
+    }, 100)
+  }
+})
 
 // 处理消息点击（Cmd+点击显示详情）
 function handleMessageClick(event, message) {
@@ -995,26 +328,6 @@ async function sendMessage() {
     }
   })
 
-  // Send to Claude
-  const userMessage = {
-    type: 'user',
-    message: {
-      role: 'user',
-      content: [{ type: 'text', text: userText }]
-    }
-  }
-
-  // 创建显示消息并存储原始数据
-  const displayMessage = {
-    role: 'user',
-    content: userText,
-    timestamp: new Date(),
-    startTime: Date.now(), // 记录开始时间，用于计算总耗时
-    responseCollapsed: false, // 新消息的回答不折叠
-    rawMessages: [userMessage]
-  }
-  messages.value.push(displayMessage)
-
   // 保存到历史记录（避免重复）
   if (userText && (inputHistory.length === 0 || inputHistory[inputHistory.length - 1] !== userText)) {
     inputHistory.push(userText)
@@ -1026,13 +339,12 @@ async function sendMessage() {
   historyIndex = -1 // 重置历史索引
 
   inputMessage.value = ''
-  isProcessing.value = true
   scrollToBottom(true) // 用户发送消息时强制滚动
 
   try {
-    await window.electronAPI.sendMessage(userMessage)
+    // 使用 SessionStore 发送消息（会自动处理 sessionId）
+    await sessionStore.sendMessage(userText)
   } catch (error) {
-    isProcessing.value = false
     messages.value.push({
       role: 'system',
       content: `Error: ${error.message}`,
@@ -1067,12 +379,26 @@ function scrollToBottom(forceScroll = false) {
   // 重置用户滚动标记
   userScrolledAway = false
 
-  // 使用多次 nextTick 确保 DOM 完全更新
+  // 使用 requestAnimationFrame 确保在下一帧渲染后滚动
+  // 这能更好地处理高高度元素的异步渲染
+  const doScroll = () => {
+    if (messagesContainer.value) {
+      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+    }
+  }
+
+  // 立即滚动一次
+  doScroll()
+
+  // 等待 DOM 完全更新后再滚动一次（处理异步渲染的高高度元素）
   nextTick(() => {
-    nextTick(() => {
-      if (messagesContainer.value) {
-        messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-      }
+    requestAnimationFrame(() => {
+      doScroll()
+
+      // 再延迟一点时间，确保所有内容都已渲染完成
+      setTimeout(() => {
+        doScroll()
+      }, 100)
     })
   })
 }
@@ -1238,7 +564,7 @@ function handleInputChange() {
 // 处理打断请求
 async function handleInterrupt() {
   try {
-    await window.electronAPI.sendInterrupt()
+    await sessionStore.sendInterrupt()
   } catch (error) {
     console.error('发送打断请求失败:', error)
   }
@@ -1319,8 +645,8 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
   const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
-  pendingPermission.value = null
-  pendingControlRequest.value = null
+  // 清除权限请求（使用 sessionStore 方法）
+  sessionStore.clearPendingPermissions()
 
   // 注意: 工具刚刚被批准，还没有执行完成，所以 isExecuting 应该保持 true
   // 工具执行完成后会通过 toolResult 事件来更新状态
@@ -1338,8 +664,15 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
       }
 
       // 传递工具的输入参数作为 updatedInput
-      if (controlRequest.tool_input) {
-        options.updatedInput = JSON.parse(JSON.stringify(controlRequest.tool_input))
+      // 支持多种字段名：input, tool_input, toolInput
+      const toolInput = controlRequest.input || controlRequest.tool_input || controlRequest.toolInput
+      if (toolInput) {
+        options.updatedInput = typeof toolInput === 'string' ? JSON.parse(toolInput) : JSON.parse(JSON.stringify(toolInput))
+      }
+
+      // 如果仍然没有 updatedInput，使用空对象（某些工具可能没有输入）
+      if (!options.updatedInput) {
+        options.updatedInput = {}
       }
 
       // 构建完整的响应消息用于日志
@@ -1355,7 +688,7 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
         }
       }
 
-      await window.electronAPI.sendControlResponse(requestId, true, options)
+      await sessionStore.sendControlResponse(requestId, true, options)
     } else {
       // Regular tool_use permission
       const responseMessage = {
@@ -1365,7 +698,7 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
         is_error: false
       }
 
-      await window.electronAPI.sendToolResult(requestId, '', false)
+      await sessionStore.sendToolResult(requestId, '', false)
     }
   } catch (error) {
     // 找到对应的 tool_use 消息并更新状态
@@ -1383,8 +716,8 @@ async function handlePermissionDeny(requestId) {
   const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
-  pendingPermission.value = null
-  pendingControlRequest.value = null
+  // 清除权限请求（使用 sessionStore 方法）
+  sessionStore.clearPendingPermissions()
 
   // 找到对应的 tool_use 消息并更新状态
   // 对于 control_request，消息使用 tool_use_id 作为 request_id
@@ -1404,7 +737,7 @@ async function handlePermissionDeny(requestId) {
     // Check if this is a control_request (for --permission-prompt-tool stdio)
     if (controlRequest && controlRequest.request_id === requestId) {
       const options = {
-        reason: 'Permission denied by user'
+        message: 'Permission denied by user'
       }
       // 添加 toolUseID (从 controlRequest.tool_use_id 获取)
       if (controlRequest.tool_use_id) {
@@ -1424,7 +757,7 @@ async function handlePermissionDeny(requestId) {
         }
       }
 
-      await window.electronAPI.sendControlResponse(requestId, false, options)
+      await sessionStore.sendControlResponse(requestId, false, options)
     } else {
       // Regular tool_use permission
       const responseMessage = {
@@ -1434,7 +767,7 @@ async function handlePermissionDeny(requestId) {
         is_error: true
       }
 
-      await window.electronAPI.sendToolResult(requestId, 'Permission denied by user', true)
+      await sessionStore.sendToolResult(requestId, 'Permission denied by user', true)
     }
   } catch (error) {
     if (toolUseMsg) {
@@ -1447,8 +780,8 @@ async function handlePermissionApproveAll(requestId) {
   const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
-  pendingPermission.value = null
-  pendingControlRequest.value = null
+  // 清除权限请求（使用 sessionStore 方法）
+  sessionStore.clearPendingPermissions()
 
   if (permission || controlRequest) {
     const toolName = permission?.tool_name || controlRequest?.tool_name
@@ -1476,8 +809,16 @@ async function handlePermissionApproveAll(requestId) {
         // 传递完整的 permission_suggestions 数组
         options.permissionRules = JSON.parse(JSON.stringify(controlRequest.permission_suggestions))
       }
-      if (controlRequest.tool_input) {
-        options.updatedInput = JSON.parse(JSON.stringify(controlRequest.tool_input))
+
+      // 支持多种字段名：input, tool_input, toolInput
+      const toolInput = controlRequest.input || controlRequest.tool_input || controlRequest.toolInput
+      if (toolInput) {
+        options.updatedInput = typeof toolInput === 'string' ? JSON.parse(toolInput) : JSON.parse(JSON.stringify(toolInput))
+      }
+
+      // 如果仍然没有 updatedInput，使用空对象
+      if (!options.updatedInput) {
+        options.updatedInput = {}
       }
 
       // 构建完整的响应消息用于日志
@@ -1495,7 +836,7 @@ async function handlePermissionApproveAll(requestId) {
         }
       }
 
-      await window.electronAPI.sendControlResponse(requestId, true, options)
+      await sessionStore.sendControlResponse(requestId, true, options)
     } else {
       // Regular tool_use permission
       const responseMessage = {
@@ -1505,7 +846,7 @@ async function handlePermissionApproveAll(requestId) {
         is_error: false
       }
 
-      await window.electronAPI.sendToolResult(requestId, '', false)
+      await sessionStore.sendToolResult(requestId, '', false)
     }
   } catch (error) {
     // Ignore error
@@ -1619,12 +960,44 @@ function isOptionSelected(question, optionLabel) {
 }
 
 async function handleQuestionAnswer(requestId, answers) {
+  console.log('[ChatWindow] handleQuestionAnswer called, requestId:', requestId, 'answers:', answers)
   const question = pendingQuestion.value
-  pendingQuestion.value = null
+  console.log('[ChatWindow] question:', question ? 'exists' : 'null')
+  if (question) {
+    console.log('[ChatWindow] question.tool_use_id:', question.tool_use_id)
+    console.log('[ChatWindow] question.toolUseId:', question.toolUseId)
+    console.log('[ChatWindow] question.id:', question.id)
+    console.log('[ChatWindow] question.request_id:', question.request_id)
+    console.log('[ChatWindow] Full question object:', JSON.stringify(question, null, 2))
+  }
+  sessionStore.clearPendingQuestion()
 
   if (question) {
-    // answers 是一个对象 { "问题": "答案" }
-    const questionsData = question.tool_input?.questions || []
+    // 获取 tool_use_id - 支持多种可能的字段名
+    const toolUseId = question.tool_use_id || question.toolUseId || question.id || requestId
+    console.log('[ChatWindow] Using toolUseId:', toolUseId)
+
+    // 获取问题数据 - 支持多种字段名格式
+    let toolInput = question.input || question.tool_input || question.toolInput
+
+    // 如果 toolInput 是字符串，尝试解析为 JSON
+    if (typeof toolInput === 'string') {
+      try {
+        toolInput = JSON.parse(toolInput)
+        console.log('[ChatWindow] Parsed toolInput for questions')
+      } catch (e) {
+        console.log('[ChatWindow] Failed to parse toolInput:', e.message)
+      }
+    }
+
+    let questionsData = []
+    if (toolInput && toolInput.questions) {
+      questionsData = toolInput.questions
+    } else if (question.questions) {
+      questionsData = question.questions
+    }
+
+    console.log('[ChatWindow] questionsData count:', questionsData.length)
 
     // 构建问题列表用于显示
     const questionItems = questionsData.map((questionData, index) => {
@@ -1644,11 +1017,15 @@ async function handleQuestionAnswer(requestId, answers) {
     })
 
     // 添加一个包含所有问题的问答消息
+    // 注意：resultReceived 将在收到 tool_result 后设置为 true
     const newMessage = {
       role: 'question',
-      tool_use_id: question.tool_use_id, // 存储 tool_use_id 以便关联 tool_result
+      tool_use_id: toolUseId, // 存储 tool_use_id 以便关联 tool_result
       questions: questionItems,
       userAnswers: answers, // 存储用户提交的答案
+      resultReceived: false, // 等待 tool_result 确认
+      answersConsistent: true, // 默认一致，收到 tool_result 后会更新
+      receivedAnswers: null, // 收到 tool_result 后会填充
       collapsed: false,
       timestamp: new Date(),
       rawMessages: [question] // 存储原始请求
@@ -1656,20 +1033,26 @@ async function handleQuestionAnswer(requestId, answers) {
     messages.value.push(newMessage)
 
     scrollToBottom(true) // 用户提交答案时强制滚动
-  }
 
-  try {
-    // 对于 AskUserQuestion，发送 control_response 并包含所有答案
-    // 答案格式：{ "问题": "答案" }
-    const options = {
-      updatedInput: {
-        answers: answers
+    // 发送 control_response 必须在 if (question) 块内部
+    // 因为需要访问 toolUseId
+    try {
+      // 对于 AskUserQuestion，发送 control_response 并包含所有答案
+      // 答案格式：{ "问题": "答案" }
+      const options = {
+        toolUseID: toolUseId, // 必须传递 toolUseID 以便关联响应
+        updatedInput: {
+          answers: answers
+        }
       }
-    }
 
-    await window.electronAPI.sendControlResponse(requestId, true, options)
-  } catch (error) {
-    // Ignore error
+      console.log('[ChatWindow] Sending control response with options:', JSON.stringify(options, null, 2))
+      await sessionStore.sendControlResponse(requestId, true, options)
+    } catch (error) {
+      console.error('[ChatWindow] Failed to send control response:', error)
+    }
+  } else {
+    console.warn('[ChatWindow] handleQuestionAnswer: question is null, cannot send response')
   }
 }
 </script>
@@ -2201,10 +1584,14 @@ async function handleQuestionAnswer(requestId, answers) {
       </button>
     </div>
 
-  </div>
+    <!-- Ask User Question Dialog - 在聊天窗口内部 -->
+    <AskUserQuestionDialog
+      v-if="pendingQuestion"
+      :request="pendingQuestion"
+      @answer="handleQuestionAnswer"
+    />
 
-  <!-- Permission Dialog for tool_use -->
-  <Teleport to="body">
+    <!-- Permission Dialog for tool_use - 在聊天窗口内部 -->
     <PermissionDialog
       v-if="pendingPermission"
       :request="pendingPermission"
@@ -2212,10 +1599,8 @@ async function handleQuestionAnswer(requestId, answers) {
       @deny="handlePermissionDeny"
       @approve-all="handlePermissionApproveAll"
     />
-  </Teleport>
 
-  <!-- Permission Dialog for control_request (--permission-prompt-tool stdio) -->
-  <Teleport to="body">
+    <!-- Permission Dialog for control_request (--permission-prompt-tool stdio) - 在聊天窗口内部 -->
     <PermissionDialog
       v-if="pendingControlRequest"
       :request="pendingControlRequest"
@@ -2223,16 +1608,7 @@ async function handleQuestionAnswer(requestId, answers) {
       @deny="handlePermissionDeny"
       @approve-all="handlePermissionApproveAll"
     />
-  </Teleport>
-
-  <!-- Ask User Question Dialog -->
-  <Teleport to="body">
-    <AskUserQuestionDialog
-      v-if="pendingQuestion"
-      :request="pendingQuestion"
-      @answer="handleQuestionAnswer"
-    />
-  </Teleport>
+  </div>
 
   <!-- Message Detail Dialog (Cmd+Click to view) -->
   <Teleport to="body">
@@ -2246,6 +1622,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
 <style scoped>
 .chat-window {
+  position: relative; /* 为 PermissionDialog 提供定位基准 */
   height: 100%;
   display: flex;
   flex-direction: column;

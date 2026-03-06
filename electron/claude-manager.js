@@ -1,18 +1,21 @@
 const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 
 /**
  * Claude CLI Manager
  * Manages communication with Claude CLI using stream-json format
  */
 class ClaudeManager {
-  constructor() {
+  constructor(workingDirectory = null, sessionId = null, isNewSession = true) {
     this.process = null
     this.messageHandlers = new Map()
     this.claudePath = null
     this.pendingPermissions = new Map()
-    this.workingDirectory = process.cwd()
+    this.workingDirectory = workingDirectory || process.cwd()
+    this.sessionId = sessionId
+    this.isNewSession = isNewSession
   }
 
   /**
@@ -20,6 +23,27 @@ class ClaudeManager {
    */
   getWorkingDirectory() {
     return this.workingDirectory
+  }
+
+  /**
+   * Get session file path
+   */
+  getSessionFilePath() {
+    if (!this.sessionId || !this.workingDirectory) return null
+
+    // Encode path to match Claude's format
+    let encodedPath = this.workingDirectory
+    if (process.platform === 'win32') {
+      encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
+    } else {
+      encodedPath = encodedPath.replace(/\//g, '-')
+    }
+    if (encodedPath.startsWith('-')) {
+      encodedPath = encodedPath.slice(1)
+    }
+    const projectId = '-' + encodedPath
+
+    return path.join(os.homedir(), '.claude', 'projects', projectId, `${this.sessionId}.jsonl`)
   }
 
   /**
@@ -81,9 +105,22 @@ class ClaudeManager {
       '--max-thinking-tokens', '31999'
     ]
 
+    // Add session-id to resume or create session
+    if (this.sessionId) {
+      if (this.isNewSession) {
+        // New session: use --session-id to create a new session with specific ID
+        args.push('--session-id', this.sessionId)
+        console.log(`[ClaudeManager] Creating new session with ID: ${this.sessionId}`)
+      } else {
+        // Existing session: use --resume to resume the session
+        args.push('--resume', this.sessionId)
+        console.log(`[ClaudeManager] Resuming session with ID: ${this.sessionId}`)
+      }
+    }
+
     try {
       this.process = spawn(this.claudePath, args, {
-        cwd: process.cwd(),
+        cwd: this.workingDirectory,
         env: {
           ...process.env,
           CLAUDE_CODE_ENABLE_TELEMETRY: '0',

@@ -1,10 +1,11 @@
 const { app, BrowserWindow, ipcMain, session } = require('electron')
 const path = require('path')
-const { ClaudeManager } = require('./claude-manager')
+const fs = require('fs')
+const os = require('os')
+const { SessionManager } = require('./session-manager')
 
 let mainWindow
-let claudeManager
-let cachedInitInfo = null // 缓存 init 信息
+let sessionManager
 
 /**
  * Create main application window
@@ -39,8 +40,8 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
-  // Initialize Claude Manager
-  initClaudeManager()
+  // Initialize Session Manager with callback to send events to renderer
+  initSessionManager()
 
   mainWindow.on('closed', () => {
     mainWindow = null
@@ -48,148 +49,556 @@ function createWindow() {
 }
 
 /**
- * Initialize Claude Manager and setup event handlers
+ * Initialize Session Manager
  */
-function initClaudeManager() {
-  claudeManager = new ClaudeManager()
-
-  // Start Claude CLI
-  claudeManager.start().catch((error) => {
-    console.error('Failed to start Claude:', error)
-    sendSystemMessage({
-      type: 'error',
-      message: `Failed to start Claude: ${error.message}`
-    })
-  })
-
-  // Handle assistant messages
-  claudeManager.on('assistant', (message) => {
-    mainWindow?.webContents.send('claude-message', message)
-  })
-
-  // Handle result messages
-  claudeManager.on('result', (message) => {
-    mainWindow?.webContents.send('claude-result', message)
-  })
-
-  // Handle system messages
-  claudeManager.on('system', (message) => {
-    console.log('[Claude Manager] system:', JSON.stringify(message, null, 2).substring(0, 500))
-    if (message.subtype === 'init') {
-      cachedInitInfo = message // 缓存 init 信息
-      mainWindow?.webContents.send('claude-init', message)
-    } else {
-      mainWindow?.webContents.send('system-message', message)
+function initSessionManager() {
+  // Create callback to send events to renderer
+  const sendToRenderer = (sessionId, eventType, data) => {
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send('session-event', {
+        sessionId,
+        eventType,
+        data
+      })
     }
-  })
+  }
 
-  // Handle tool_use messages
-  claudeManager.on('tool_use', (message) => {
-    mainWindow?.webContents.send('tool-use', message)
-  })
+  // Create SessionManager instance
+  sessionManager = new SessionManager(sendToRenderer)
 
-  // Handle tool_result messages
-  claudeManager.on('tool_result', (message) => {
-    mainWindow?.webContents.send('tool-result', message)
-  })
-
-  // Handle tool_use requests (for permission dialog)
-  claudeManager.on('tool_use_request', (message) => {
-    console.log('[Claude Manager] tool_use_request:', JSON.stringify(message, null, 2).substring(0, 500))
-    mainWindow?.webContents.send('tool-use-request', message)
-  })
-
-  // Handle control_request (for permission prompts with --permission-prompt-tool stdio)
-  claudeManager.on('control_request', (message) => {
-    console.log('[Claude Manager] control_request:', JSON.stringify(message, null, 2).substring(0, 800))
-    // Forward to renderer for permission dialog
-    mainWindow?.webContents.send('control-request', message)
-  })
-
-  // Handle control_response (for interrupt confirmation, etc.)
-  claudeManager.on('control_response', (message) => {
-    console.log('[Claude Manager] control_response:', JSON.stringify(message, null, 2))
-    mainWindow?.webContents.send('control-response', message)
-  })
-
-  // Handle interrupt messages (user interrupted the response)
-  claudeManager.on('interrupt', (message) => {
-    console.log('[Claude Manager] interrupt:', JSON.stringify(message, null, 2))
-    mainWindow?.webContents.send('interrupt', message)
-  })
-
-  // Handle CLI status messages (stderr output like connection status, retries, etc.)
-  claudeManager.on('cli-status', (message) => {
-    mainWindow?.webContents.send('cli-status', message)
-  })
-
-  // Handle stream events (thinking_delta, text_delta, etc.)
-  claudeManager.on('stream_event', (message) => {
-    mainWindow?.webContents.send('stream-event', message)
-  })
-
-  // Handle unknown/unsupported message types
-  claudeManager.on('unknown_message', (message) => {
-    console.log('[Claude Manager] ⚠️ Unknown message type:', message.type)
-    mainWindow?.webContents.send('unknown-message', message)
-  })
+  // All done,  console.log('[Main] SessionManager initialized')
 }
 
-/**
- * Send system message to renderer
- */
-function sendSystemMessage(message) {
-  mainWindow?.webContents.send('system-message', message)
-}
 
-// IPC Handlers
 
-// Send message to Claude
-ipcMain.handle('send-message', async (event, userMessage) => {
-  console.log('[IPC] send-message:', JSON.stringify(userMessage, null, 2))
-  claudeManager.sendMessage(userMessage)
-  return { success: true }
+// ============================================
+// Session IPC Handlers
+// ============================================
+
+// Frontend log handler - 将前端日志打印到后端终端
+ipcMain.on('frontend-log', (event, args) => {
+  console.log('[Frontend]', ...args)
 })
 
-// Get Claude info
-ipcMain.handle('get-claude-info', async () => {
-  return {
-    version: '1.0.0',
-    tools: ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep'],
-    isReady: claudeManager?.isReady() || false,
-    workingDirectory: claudeManager?.getWorkingDirectory() || process.cwd()
+// Select/Activate a session - creates SessionInstance and returns state
+ipcMain.handle('select-session', async (event, { sessionId, projectId, projectPath }) => {
+  console.log('[IPC] select-session:', { sessionId, projectId, projectPath })
+
+  try {
+    // Get or create the session instance
+    const sessionInstance = await sessionManager.getOrCreateSession(sessionId, projectPath, true)
+
+    // Return the session state
+    return {
+      success: true,
+      state: sessionInstance.getState()
+    }
+  } catch (error) {
+    console.error('[IPC] select-session error:', error)
+    return { success: false, error: error.message }
   }
 })
 
-// Check if Claude is ready
-ipcMain.handle('is-claude-ready', async () => {
-  return claudeManager?.isReady() || false
+// Get session state
+ipcMain.handle('get-session-state', async (event, { sessionId }) => {
+  const state = sessionManager.getSessionState(sessionId)
+  return state
 })
 
-// Get cached init info
-ipcMain.handle('get-init-info', async () => {
-  return cachedInitInfo
-})
-
-// Handle tool result (permission response)
-ipcMain.handle('send-tool-result', async (event, toolUseId, content, isError) => {
-  console.log('[IPC] send-tool-result:', { toolUseId, content: content?.substring(0, 100), isError })
-  claudeManager?.sendToolResult(toolUseId, content, isError)
+// Update session UI state
+ipcMain.handle('update-session-ui-state', async (event, { sessionId, state }) => {
+  sessionManager.updateSessionUIState(sessionId, state)
   return { success: true }
 })
 
-// Handle control response (for --permission-prompt-tool stdio)
-ipcMain.handle('send-control-response', async (event, requestId, approved, options) => {
-  console.log('[IPC] send-control-response:', { requestId, approved, options })
-  claudeManager?.sendControlResponse(requestId, approved, options)
+// Send message
+ipcMain.handle('send-message', async (event, { sessionId, message, content }) => {
+  console.log('[IPC] send-message:', { sessionId, contentLength: content?.length || message?.length })
+
+  try {
+    // Support both 'content' (new) and 'message' (legacy) parameters
+    const messageContent = content || message
+    await sessionManager.sendMessage(sessionId, messageContent)
+    return { success: true }
+  } catch (error) {
+    console.error('[IPC] send-message error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Send control response (for permission prompts)
+ipcMain.handle('send-control-response', async (event, { sessionId, requestId, approved, options }) => {
+  console.log('[IPC] send-control-response:', { sessionId, requestId, approved })
+
+  try {
+    await sessionManager.sendControlResponse(sessionId, requestId, approved, options)
+    return { success: true }
+  } catch (error) {
+    console.error('[IPC] send-control-response error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Send interrupt
+ipcMain.handle('send-interrupt', async (event, options) => {
+  const sessionId = options?.sessionId
+  console.log('[IPC] send-interrupt:', sessionId)
+
+  // If no sessionId, try to get the current active session
+  if (!sessionId) {
+    const activeSessions = sessionManager.getActiveSessionIds()
+    if (activeSessions.length > 0) {
+      // Use the first active session
+      const activeSessionId = activeSessions[0]
+      console.log('[IPC] send-interrupt: using active session', activeSessionId)
+      try {
+        await sessionManager.sendInterrupt(activeSessionId)
+        return { success: true }
+      } catch (error) {
+        console.error('[IPC] send-interrupt error:', error)
+        return { success: false, error: error.message }
+      }
+    }
+    return { success: false, error: 'No active session' }
+  }
+
+  try {
+    await sessionManager.sendInterrupt(sessionId)
+    return { success: true }
+  } catch (error) {
+    console.error('[IPC] send-interrupt error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// ============================================
+// Legacy IPC Handlers (向后兼容)
+// ============================================
+
+// Get Claude info (legacy)
+ipcMain.handle('get-claude-info', async (event, options) => {
+  const sessionId = options?.sessionId
+
+  // Safely get session if sessionId is provided and sessionManager is initialized
+  let session = null
+  if (sessionId && sessionManager) {
+    session = sessionManager.getSession(sessionId)
+  }
+
+  return {
+    version: '1.0.0',
+    tools: ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep'],
+    isReady: session?.isClaudeReady?.() || false,
+    workingDirectory: session?.projectPath || process.cwd()
+  }
+})
+
+// Get init info (legacy) - returns env info from active session
+ipcMain.handle('get-init-info', async (event, options) => {
+  const sessionId = options?.sessionId
+
+  // Try to get env info from the specified session or any active session
+  if (sessionManager) {
+    const session = sessionId
+      ? sessionManager.getSession(sessionId)
+      : sessionManager.sessions.values().next().value
+
+    if (session?.envInfo) {
+      return session.envInfo
+    }
+  }
+
+  return null
+})
+
+// Check if Claude is ready (legacy)
+ipcMain.handle('is-claude-ready', async (event, options) => {
+  const sessionId = options?.sessionId
+
+  if (!sessionManager) {
+    return false
+  }
+
+  const session = sessionId ? sessionManager.getSession(sessionId) : null
+  return session?.isClaudeReady?.() || false
+})
+
+// Send tool result (legacy - for permission approval)
+ipcMain.handle('send-tool-result', async (event, { sessionId, toolUseId, content, isError }) => {
+  console.log('[IPC] send-tool-result:', { sessionId, toolUseId, isError })
+
+  try {
+    const session = sessionManager.getSession(sessionId)
+    if (!session) {
+      return { success: false, error: 'Session not found' }
+    }
+
+    // Use ClaudeManager's sendToolResult method
+    if (session.claudeManager) {
+      session.claudeManager.sendToolResult(toolUseId, content, isError)
+    }
+    return { success: true }
+  } catch (error) {
+    console.error('[IPC] send-tool-result error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Start session (legacy - for backwards compatibility)
+ipcMain.handle('start-session', async (event, { sessionId, projectPath }) => {
+  console.log('[IPC] start-session (legacy):', { sessionId, projectPath })
+
+  try {
+    // Use select-session internally
+    const session = await sessionManager.getOrCreateSession(sessionId, projectPath, true)
+    return { success: true, sessionId }
+  } catch (error) {
+    console.error('[IPC] start-session error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Close session
+ipcMain.handle('close-session', async (event, { sessionId }) => {
+  console.log('[IPC] close-session:', sessionId)
+  sessionManager.closeSession(sessionId)
   return { success: true }
 })
 
-// Handle interrupt request
-ipcMain.handle('send-interrupt', async () => {
-  console.log('[IPC] send-interrupt')
-  claudeManager?.sendInterrupt()
+// ============================================
+// Project & Session Management IPC Handlers
+// ============================================
+
+/**
+ * Get the Claude projects directory path
+ */
+function getClaudeProjectsDir() {
+  return path.join(os.homedir(), '.claude', 'projects')
+}
+
+/**
+ * Decode project directory name back to original path
+ * e.g., '-Users-alwaysking-Desktop-CCGUI' -> '/Users/alwaysking/Desktop/CCGUI'
+ */
+function decodeProjectPath(encodedName) {
+  let decoded = encodedName.startsWith('-') ? encodedName.slice(1) : encodedName
+  if (process.platform === 'win32') {
+    decoded = decoded.replace(/^([A-Za-z])-/, '$1:/')
+    decoded = decoded.slice(2).replace(/-/g, '/')
+  } else {
+    decoded = '/' + decoded.replace(/-/g, '/')
+  }
+  return decoded
+}
+
+/**
+ * Scan all projects from ~/.claude/projects directory
+ */
+async function scanProjects() {
+  const projectsDir = getClaudeProjectsDir()
+
+  if (!fs.existsSync(projectsDir)) {
+    console.log('[Projects] Projects directory does not exist:', projectsDir)
+    return []
+  }
+
+  const entries = fs.readdirSync(projectsDir, { withFileTypes: true })
+  const projects = []
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+
+    const projectPath = decodeProjectPath(entry.name)
+    const fullProjectDir = path.join(projectsDir, entry.name)
+
+    const files = fs.readdirSync(fullProjectDir)
+    const sessionFiles = files.filter(f => f.endsWith('.jsonl') && !fs.statSync(path.join(fullProjectDir, f)).isDirectory())
+
+    let lastActiveAt = null
+    try {
+      const stats = fs.statSync(fullProjectDir)
+      lastActiveAt = stats.mtime.toISOString()
+    } catch (e) {
+      // Ignore stat errors
+    }
+
+    const name = path.basename(projectPath)
+
+    projects.push({
+      id: entry.name,
+      name,
+      path: projectPath,
+      sessionCount: sessionFiles.length,
+      lastActiveAt
+    })
+  }
+
+  projects.sort((a, b) => {
+    if (!a.lastActiveAt) return 1
+    if (!b.lastActiveAt) return -1
+    return new Date(b.lastActiveAt) - new Date(a.lastActiveAt)
+  })
+
+  console.log(`[Projects] Found ${projects.length} projects`)
+  return projects
+}
+
+/**
+ * Get sessions for a specific project
+ */
+async function getProjectSessions(projectId) {
+  const projectsDir = getClaudeProjectsDir()
+  const projectDir = path.join(projectsDir, projectId)
+
+  if (!fs.existsSync(projectDir)) {
+    console.log('[Sessions] Project directory does not exist:', projectDir)
+    return []
+  }
+
+  const files = fs.readdirSync(projectDir)
+  const sessions = []
+
+  for (const file of files) {
+    if (!file.endsWith('.jsonl')) continue
+
+    const filePath = path.join(projectDir, file)
+    const stat = fs.statSync(filePath)
+
+    const sessionId = file.replace('.jsonl', '')
+
+    let preview = ''
+    let messageCount = 0
+
+    try {
+      // Only read content if file is not empty
+      if (stat.size > 0) {
+        const content = fs.readFileSync(filePath, 'utf-8')
+        const lines = content.trim().split('\n')
+        messageCount = lines.length
+
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const data = JSON.parse(line)
+            if (data.type === 'user' && data.message?.content) {
+              const msgContent = data.message.content
+              if (Array.isArray(msgContent)) {
+                const textContent = msgContent.find(c => c.type === 'text')
+                if (textContent?.text) {
+                  preview = textContent.text.slice(0, 100)
+                  break
+                }
+              } else if (typeof msgContent === 'string') {
+                preview = msgContent.slice(0, 100)
+                break
+              }
+            }
+          } catch (e) {
+            // Skip invalid JSON lines
+          }
+        }
+      }
+    } catch (e) {
+      console.log('[Sessions] Error reading session file:', e.message)
+    }
+
+    sessions.push({
+      id: sessionId,
+      projectId,
+      name: `会话 ${sessions.length + 1}`,
+      preview,
+      createdAt: stat.birthtime.toISOString(),
+      updatedAt: stat.mtime.toISOString(),
+      messageCount,
+      status: 'idle'
+    })
+  }
+
+  sessions.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+
+  console.log(`[Sessions] Found ${sessions.length} sessions for project ${projectId}`)
+  return sessions
+}
+
+// Get all projects
+ipcMain.handle('get-projects', async () => {
+  return scanProjects()
+})
+
+// Add a new project (by path)
+ipcMain.handle('add-project', async (event, { projectPath }) => {
+  const name = path.basename(projectPath)
+
+  let encodedPath = projectPath
+  if (process.platform === 'win32') {
+    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
+  } else {
+    encodedPath = encodedPath.replace(/\//g, '-')
+  }
+  if (encodedPath.startsWith('-')) {
+    encodedPath = encodedPath.slice(1)
+  }
+  const encodedName = '-' + encodedPath
+
+  return {
+    id: encodedName,
+    name,
+    path: projectPath,
+    sessionCount: 0,
+    lastActiveAt: new Date().toISOString()
+  }
+})
+
+// Remove a project
+ipcMain.handle('remove-project', async (event, { projectId }) => {
+  const projectsDir = getClaudeProjectsDir()
+  const projectDir = path.join(projectsDir, projectId)
+
+  if (fs.existsSync(projectDir)) {
+    fs.rmSync(projectDir, { recursive: true })
+    console.log('[Projects] Removed project:', projectId)
+  }
+
   return { success: true }
+})
+
+// Get sessions for a project
+ipcMain.handle('get-sessions', async (event, { projectId }) => {
+  return getProjectSessions(projectId)
+})
+
+// Get running sessions
+ipcMain.handle('get-running-sessions', async () => {
+  if (!sessionManager) {
+    return []
+  }
+
+  const runningSessionIds = []
+  for (const [sessionId, session] of sessionManager.sessions) {
+    if (session.isClaudeReady()) {
+      runningSessionIds.push(sessionId)
+    }
+  }
+  return runningSessionIds
+})
+
+// Create a new session
+ipcMain.handle('create-session', async (event, { projectId, name }) => {
+  const projectsDir = getClaudeProjectsDir()
+  const projectDir = path.join(projectsDir, projectId)
+
+  if (!fs.existsSync(projectDir)) {
+    fs.mkdirSync(projectDir, { recursive: true })
+  }
+
+  const sessionId = require('crypto').randomUUID()
+  const sessionFile = path.join(projectDir, `${sessionId}.jsonl`)
+
+  // Create empty file - will be deleted before first use if still empty
+  fs.writeFileSync(sessionFile, '')
+
+  return {
+    id: sessionId,
+    projectId,
+    name: name || `新会话`,
+    preview: '',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    messageCount: 0,
+    status: 'idle'
+  }
+})
+
+// Delete a session
+ipcMain.handle('delete-session', async (event, { sessionId, projectId }) => {
+  // Also close the session instance if it's open
+  sessionManager.closeSession(sessionId)
+
+  const projectsDir = getClaudeProjectsDir()
+  const sessionFile = path.join(projectsDir, projectId, `${sessionId}.jsonl`)
+
+  if (fs.existsSync(sessionFile)) {
+    fs.unlinkSync(sessionFile)
+    console.log('[Sessions] Deleted session:', sessionId)
+  }
+
+  return { success: true }
+})
+
+// Open a session (returns session info for compatibility)
+ipcMain.handle('open-session', async (event, { sessionId }) => {
+  const projectsDir = getClaudeProjectsDir()
+
+  if (!fs.existsSync(projectsDir)) {
+    return null
+  }
+
+  const projectDirs = fs.readdirSync(projectsDir, { withFileTypes: true })
+    .filter(e => e.isDirectory())
+    .map(e => e.name)
+
+  for (const projectId of projectDirs) {
+    const sessionFile = path.join(projectsDir, projectId, `${sessionId}.jsonl`)
+    if (fs.existsSync(sessionFile)) {
+      const stat = fs.statSync(sessionFile)
+      const projectPath = decodeProjectPath(projectId)
+
+      return {
+        id: sessionId,
+        projectId,
+        projectPath,
+        name: `会话`,
+        createdAt: stat.birthtime.toISOString(),
+        updatedAt: stat.mtime.toISOString(),
+        status: 'idle'
+      }
+    }
+  }
+
+  return null
+})
+
+// Rename a project
+ipcMain.handle('rename-project', async (event, { projectId, name }) => {
+  return { success: true }
+})
+
+// Rename a session
+ipcMain.handle('rename-session', async (event, { sessionId, name }) => {
+  return { success: true }
+})
+
+// Get session messages (for backwards compatibility, but prefer select-session)
+ipcMain.handle('get-session-messages', async (event, { sessionId, projectId }) => {
+  const projectsDir = getClaudeProjectsDir()
+  const projectDir = path.join(projectsDir, projectId)
+  const sessionFile = path.join(projectDir, `${sessionId}.jsonl`)
+
+  if (!fs.existsSync(sessionFile)) {
+    console.log('[Sessions] Session file does not exist:', sessionFile)
+    return []
+  }
+
+  try {
+    const content = fs.readFileSync(sessionFile, 'utf-8')
+    const lines = content.trim().split('\n').filter(line => line.trim())
+    const messages = []
+
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line)
+        messages.push(data)
+      } catch (e) {
+        // Skip invalid JSON lines
+      }
+    }
+
+    console.log(`[Sessions] Loaded ${messages.length} messages for session ${sessionId}`)
+    return messages
+  } catch (e) {
+    console.error('[Sessions] Error reading session file:', e.message)
+    return []
+  }
 })
 
 // App lifecycle
@@ -211,8 +620,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  // Cleanup on quit
-  if (claudeManager) {
-    claudeManager.stop()
+  if (sessionManager) {
+    sessionManager.closeAll()
   }
 })

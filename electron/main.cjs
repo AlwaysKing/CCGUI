@@ -106,6 +106,18 @@ function initClaudeManager() {
     mainWindow?.webContents.send('control-request', message)
   })
 
+  // Handle control_response (for interrupt confirmation, etc.)
+  claudeManager.on('control_response', (message) => {
+    console.log('[Claude Manager] control_response:', JSON.stringify(message, null, 2))
+    mainWindow?.webContents.send('control-response', message)
+  })
+
+  // Handle interrupt messages (user interrupted the response)
+  claudeManager.on('interrupt', (message) => {
+    console.log('[Claude Manager] interrupt:', JSON.stringify(message, null, 2))
+    mainWindow?.webContents.send('interrupt', message)
+  })
+
   // Handle CLI status messages (stderr output like connection status, retries, etc.)
   claudeManager.on('cli-status', (message) => {
     mainWindow?.webContents.send('cli-status', message)
@@ -170,6 +182,13 @@ ipcMain.handle('send-tool-result', async (event, toolUseId, content, isError) =>
 ipcMain.handle('send-control-response', async (event, requestId, approved, options) => {
   console.log('[IPC] send-control-response:', { requestId, approved, options })
   claudeManager?.sendControlResponse(requestId, approved, options)
+  return { success: true }
+})
+
+// Handle interrupt request
+ipcMain.handle('send-interrupt', async () => {
+  console.log('[IPC] send-interrupt')
+  claudeManager?.sendInterrupt()
   return { success: true }
 })
 

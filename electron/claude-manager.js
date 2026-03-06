@@ -207,6 +207,19 @@ class ClaudeManager {
       return
     }
 
+    // Handle control_response (e.g., interrupt confirmation)
+    if (message.type === 'control_response') {
+      const responseHandlers = this.messageHandlers.get('control_response') || []
+      responseHandlers.forEach(handler => {
+        try {
+          handler(message)
+        } catch (error) {
+          // Ignore handler errors
+        }
+      })
+      return
+    }
+
     // Handle user messages (which may contain tool_result from CLI)
     if (message.type === 'user') {
       // Check if this is a tool_result message from CLI
@@ -224,8 +237,25 @@ class ClaudeManager {
           })
           return
         }
+
+        // Check if this is an interrupt message
+        const interruptContent = message.message.content.find(c =>
+          c.type === 'text' && c.text === '[Request interrupted by user]'
+        )
+        if (interruptContent) {
+          // Trigger interrupt event
+          const interruptHandlers = this.messageHandlers.get('interrupt') || []
+          interruptHandlers.forEach(handler => {
+            try {
+              handler(message)
+            } catch (error) {
+              // Ignore handler errors
+            }
+          })
+          return
+        }
       }
-      // If not a tool_result, treat as unknown message
+      // If not a tool_result or interrupt, treat as unknown message
       const unknownHandlers = this.messageHandlers.get('unknown_message') || []
       unknownHandlers.forEach(handler => {
         try {
@@ -377,6 +407,20 @@ class ClaudeManager {
     } else {
       throw new Error('Claude process not ready')
     }
+  }
+
+  /**
+   * Send interrupt request to stop current generation
+   */
+  sendInterrupt() {
+    const interruptMessage = {
+      type: 'control_request',
+      request: {
+        subtype: 'interrupt'
+      },
+      request_id: `interrupt_${Date.now()}`
+    }
+    this.sendMessage(interruptMessage)
   }
 
   /**

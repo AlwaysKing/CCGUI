@@ -66,6 +66,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Send control response (for --permission-prompt-tool stdio permission approval)
   sendControlResponse: (requestId, approved, options) => ipcRenderer.invoke('send-control-response', requestId, approved, options),
 
+  // Send interrupt request to stop current generation
+  sendInterrupt: () => ipcRenderer.invoke('send-interrupt'),
+
   // Listen to tool_use requests (for permission dialog)
   onToolUseRequest: (callback) => {
     const listener = (event, message) => callback(message)
@@ -78,6 +81,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (event, message) => callback(message)
     ipcRenderer.on('control-request', listener)
     return () => ipcRenderer.removeListener('control-request', listener)
+  },
+
+  // Listen to control_response (for interrupt confirmation, etc.)
+  onControlResponse: (callback) => {
+    const listener = (event, message) => callback(message)
+    ipcRenderer.on('control-response', listener)
+    return () => ipcRenderer.removeListener('control-response', listener)
+  },
+
+  // Listen to interrupt messages (user interrupted the response)
+  onInterrupt: (callback) => {
+    const listener = (event, message) => callback(message)
+    ipcRenderer.on('interrupt', listener)
+    return () => ipcRenderer.removeListener('interrupt', listener)
   },
 
   // Listen to CLI status messages (connection status, retries, errors, etc.)

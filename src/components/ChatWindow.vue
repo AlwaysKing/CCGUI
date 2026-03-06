@@ -759,6 +759,32 @@ onMounted(async () => {
   })
   unsubs.push(claudeInitUnsub)
 
+  // Listen for control_response (e.g., interrupt confirmation)
+  const controlResponseUnsub = window.electronAPI.onControlResponse((message) => {
+    console.log('[Control Response]', message)
+    // 处理打断成功响应
+    if (message.response?.subtype === 'success' && message.response?.request_id?.startsWith('interrupt_')) {
+      // 重置处理状态
+      isProcessing.value = false
+    }
+  })
+  unsubs.push(controlResponseUnsub)
+
+  // Listen for interrupt messages (user interrupted the response)
+  const interruptUnsub = window.electronAPI.onInterrupt((message) => {
+    console.log('[Interrupt]', message)
+    // 添加系统消息显示打断
+    messages.value.push({
+      role: 'system',
+      content: '⏹️ 已打断',
+      timestamp: new Date()
+    })
+    // 重置处理状态
+    isProcessing.value = false
+    scrollToBottom()
+  })
+  unsubs.push(interruptUnsub)
+
   unsubscribers = unsubs
 })
 
@@ -1189,6 +1215,15 @@ function handleHistoryKey(event) {
 function handleInputChange() {
   if (!isHistoryNavigation && historyIndex !== -1) {
     historyIndex = -1
+  }
+}
+
+// 处理打断请求
+async function handleInterrupt() {
+  try {
+    await window.electronAPI.sendInterrupt()
+  } catch (error) {
+    console.error('发送打断请求失败:', error)
   }
 }
 
@@ -1918,13 +1953,37 @@ async function handleQuestionAnswer(requestId, answers) {
           </div>
         </template>
         <!-- Unknown/unsupported message -->
-        <div v-else-if="message.role === 'unknown'" class="unknown-message">
-          <div class="unknown-header">
-            <span class="unknown-icon">⚠️</span>
-            <span class="unknown-label">暂未支持的消息类型: {{ message.messageType }}</span>
+        <template v-else-if="message.role === 'unknown'">
+          <div class="message-avatar">?</div>
+          <div class="message-content-wrapper">
+            <div class="message-header">
+              <span class="header-time">
+                <span class="header-icon">🕐</span>
+                {{ new Date(message.timestamp).toLocaleTimeString() }}
+              </span>
+            </div>
+            <div class="message-text unknown-message">
+              <button
+                class="copy-btn bubble-copy-btn"
+                @click.stop="copyMessageContent(index)"
+                :title="copiedMessageIndex === index ? '已复制' : '复制内容'"
+              >
+                <svg v-if="copiedMessageIndex === index" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <svg v-else xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1 2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+              <div class="unknown-header">
+                <span class="unknown-icon">⚠️</span>
+                <span class="unknown-label">暂未支持的消息类型: {{ message.messageType }}</span>
+              </div>
+              <pre class="unknown-content">{{ message.content }}</pre>
+            </div>
           </div>
-          <pre class="unknown-content">{{ message.content }}</pre>
-        </div>
+        </template>
         <!-- Regular messages (user, assistant, status) -->
         <template v-else>
           <div class="message-avatar" v-if="message.role !== 'status'">
@@ -2106,11 +2165,19 @@ async function handleQuestionAnswer(requestId, answers) {
         :disabled="isProcessing || pendingPermission !== null || pendingControlRequest !== null"
       />
       <button
+        v-if="!isProcessing"
         @click="sendMessage"
         :disabled="!inputMessage.trim() || isProcessing || pendingPermission !== null || pendingControlRequest !== null"
         class="send-button"
       >
         发送
+      </button>
+      <button
+        v-else
+        @click="handleInterrupt"
+        class="interrupt-button"
+      >
+        打断
       </button>
     </div>
 
@@ -2930,6 +2997,40 @@ async function handleQuestionAnswer(requestId, answers) {
 .send-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.interrupt-button {
+  padding: 12px 24px;
+  background: #EF4444;
+  border: none;
+  border-radius: 8px;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  align-self: flex-end;
+  transition: background 0.2s;
+}
+
+.interrupt-button:hover {
+  background: #DC2626;
+}
+
+.interrupt-button {
+  padding: 12px 24px;
+  background: #DC2626;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+  white-space: nowrap;
+  align-self: flex-end;
+}
+
+.interrupt-button:hover {
+  background: #B91C1C;
 }
 
 /* Modern scrollbar styles for Webkit browsers */

@@ -14,6 +14,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    title: 'Claude Code GUI',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

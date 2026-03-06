@@ -13,6 +13,10 @@ const props = defineProps({
   runningSessions: {
     type: Set,
     default: () => new Set()
+  },
+  projectPath: {
+    type: String,
+    default: ''
   }
 })
 
@@ -76,12 +80,19 @@ function formatTime(date) {
 function getSessionName(session) {
   return session.name || session.id.slice(0, 8)
 }
+
+function getProjectName(path) {
+  if (!path) return '会话'
+  // 提取路径最后一部分作为项目名称
+  const parts = path.split('/').filter(p => p)
+  return parts[parts.length - 1] || '会话'
+}
 </script>
 
 <template>
   <aside class="session-sidebar">
     <div class="sidebar-header">
-      <span class="sidebar-title">会话</span>
+      <span class="sidebar-title" :title="projectPath">{{ getProjectName(projectPath) }}</span>
       <div class="header-actions">
         <button class="add-btn" @click="emit('newSession')" title="新建会话">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -110,6 +121,7 @@ function getSessionName(session) {
 
         <div class="session-info">
           <span class="session-name">{{ getSessionName(session) }}</span>
+          <span class="session-id">{{ session.id.slice(0, 8) }}</span>
           <span v-if="session.preview" class="session-preview">{{ session.preview }}</span>
           <span class="session-meta">
             {{ session.messageCount || 0 }} 条消息 · {{ formatTime(session.updatedAt) }}
@@ -174,6 +186,11 @@ function getSessionName(session) {
   color: #9CA3AF;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  cursor: pointer;
 }
 
 .header-actions {
@@ -255,6 +272,12 @@ function getSessionName(session) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.session-id {
+  font-size: 11px;
+  color: #6B7280;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
 }
 
 .session-preview {

@@ -9,6 +9,14 @@ import MessageDetailDialog from './MessageDetailDialog.vue'
 
 const sessionStore = useSessionStore()
 
+// Props
+const props = defineProps({
+  sidebarCollapsed: {
+    type: Boolean,
+    default: false
+  }
+})
+
 // 使用 SessionStore 的状态（只读 computed）
 const messages = computed(() => sessionStore.currentMessages)
 
@@ -1060,7 +1068,7 @@ async function handleQuestionAnswer(requestId, answers) {
 <template>
   <div class="chat-window">
     <!-- Environment Bar -->
-    <div v-if="envInfo" class="env-bar">
+    <div v-if="envInfo" class="env-bar" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
       <div class="env-main">
         <span class="env-item">
           <span class="env-icon">📁</span>
@@ -1635,6 +1643,11 @@ async function handleQuestionAnswer(requestId, answers) {
   border-bottom: 1px solid #27272A;
   padding: 8px 16px;
   font-size: 12px;
+  transition: padding-left 0.2s ease;
+}
+
+.env-bar.sidebar-collapsed {
+  padding-left: 52px;
 }
 
 .env-main {

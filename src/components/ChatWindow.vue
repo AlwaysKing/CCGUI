@@ -130,6 +130,9 @@ onMounted(async () => {
       }
     }
 
+    // 解锁输入框 - 在这里解锁确保和问答计时同步
+    isProcessing.value = false
+
     scrollToBottom()
   })
   unsubs.push(resultUnsub)
@@ -664,7 +667,8 @@ onMounted(async () => {
       })
       currentAssistantMessageIndex = -1
       currentContentBlockType = null
-      isProcessing.value = false
+      // 注意：不在这里设置 isProcessing.value = false
+      // 应该等 onClaudeResult 事件来解锁，确保和问答计时同步
       isUsingStreamEvents = false // 重置流式事件标志
       return
     }

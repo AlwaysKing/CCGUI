@@ -348,6 +348,37 @@ onMounted(async () => {
   let currentTurnNumber = 0 // 当前 turn 编号
   let hasSeenToolUseInCurrentTurn = false // 当前 turn 是否已经见过 tool_use
 
+  // 辅助函数：累加更新最后一个用户消息的 usage 统计
+  function accumulateUserMessageUsage(newUsage) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'user') {
+        const userMsg = messages.value[i]
+        // 累加 usage
+        const currentUsage = userMsg.usage || { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }
+        userMsg.usage = {
+          input_tokens: (currentUsage.input_tokens || 0) + (newUsage.input_tokens || 0),
+          output_tokens: (currentUsage.output_tokens || 0) + (newUsage.output_tokens || 0),
+          cache_read_input_tokens: (currentUsage.cache_read_input_tokens || 0) + (newUsage.cache_read_input_tokens || 0)
+        }
+        // 强制触发 Vue 响应式更新
+        messages.value[i] = { ...messages.value[i] }
+        break
+      }
+    }
+  }
+
+  // 辅助函数：更新最后一个用户消息的 turn 数量
+  function updateUserMessageTurns(numTurns) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'user') {
+        messages.value[i].numTurns = numTurns
+        // 强制触发 Vue 响应式更新
+        messages.value[i] = { ...messages.value[i] }
+        break
+      }
+    }
+  }
+
   const streamEventUnsub = window.electronAPI.onStreamEvent((message) => {
     const event = message.event
 
@@ -356,9 +387,22 @@ onMounted(async () => {
     // 标记正在使用流式事件
     isUsingStreamEvents = true
 
-    // 检查是否有 usage 信息并更新当前消息
+    // Handle turn_start - 统计 turn 数量
+    if (event.type === 'turn_start') {
+      currentTurnNumber++
+      updateUserMessageTurns(currentTurnNumber)
+      // 继续处理，因为 turn_start 可能也包含 usage
+    }
+
+    // 检查是否有 usage 信息并累加到用户消息
     // usage 可能在多个位置: message.usage, event.usage, event.message.usage, event.content_block.usage
     const usage = message.usage || event.usage || event.message?.usage || event.content_block?.usage
+    if (usage) {
+      // 累加更新用户消息的 usage 统计
+      accumulateUserMessageUsage(usage)
+    }
+
+    // 更新 assistant 消息的 usage（用于显示在回答气泡上）
     if (usage && currentAssistantMessageIndex >= 0) {
       const currentMsg = messages.value[currentAssistantMessageIndex]
       if (currentMsg && currentMsg.role === 'assistant') {
@@ -366,6 +410,8 @@ onMounted(async () => {
         // 强制触发 Vue 响应式更新
         messages.value[currentAssistantMessageIndex] = { ...messages.value[currentAssistantMessageIndex] }
       }
+      // 同时累加更新用户消息的 usage 统计
+      accumulateUserMessageUsage(usage)
     }
 
     // Handle message_start - 创建消息并显示"正在思考"状态
@@ -395,6 +441,13 @@ onMounted(async () => {
         rawMessages: [message]
       })
       currentAssistantMessageIndex = messages.value.length - 1
+
+      // 初始化用户消息的统计（默认 1 turn）
+      updateUserMessageTurns(1)
+      if (initialUsage) {
+        accumulateUserMessageUsage(initialUsage)
+      }
+
       scrollToBottom()
       return
     }
@@ -409,6 +462,7 @@ onMounted(async () => {
         if (hasSeenToolUseInCurrentTurn) {
           currentTurnNumber++
           hasSeenToolUseInCurrentTurn = false
+          // 注意：turn 统计由 turn_start 事件处理
         }
         // 复用 message_start 创建的消息，添加 thinking
         const currentMsg = currentAssistantMessageIndex >= 0 ? messages.value[currentAssistantMessageIndex] : null

@@ -773,6 +773,23 @@ onMounted(async () => {
   // Listen for interrupt messages (user interrupted the response)
   const interruptUnsub = window.electronAPI.onInterrupt((message) => {
     console.log('[Interrupt]', message)
+    // 更新所有正在流式传输的 assistant 消息状态
+    messages.value.forEach((msg, idx) => {
+      if (msg.role === 'assistant' && msg.isStreaming) {
+        msg.isStreaming = false
+        msg.endTime = Date.now()
+        msg.duration = msg.endTime - msg.startTime
+        // 如果有 thinking，折叠它
+        if (msg.hasThinking) {
+          msg.thinkingCollapsed = true
+        }
+        // 强制触发 Vue 响应式更新
+        messages.value[idx] = { ...messages.value[idx] }
+      }
+    })
+    // 重置当前消息索引
+    currentAssistantMessageIndex = -1
+    currentContentBlockType = null
     // 添加系统消息显示打断
     messages.value.push({
       role: 'system',
@@ -2176,8 +2193,11 @@ async function handleQuestionAnswer(requestId, answers) {
         v-else
         @click="handleInterrupt"
         class="interrupt-button"
+        title="打断"
       >
-        打断
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+          <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+        </svg>
       </button>
     </div>
 
@@ -3001,7 +3021,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .interrupt-button {
   padding: 12px 24px;
-  background: #EF4444;
+  background: #F97316;
   border: none;
   border-radius: 8px;
   color: white;
@@ -3009,28 +3029,13 @@ async function handleQuestionAnswer(requestId, answers) {
   cursor: pointer;
   align-self: flex-end;
   transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .interrupt-button:hover {
-  background: #DC2626;
-}
-
-.interrupt-button {
-  padding: 12px 24px;
-  background: #DC2626;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.2s;
-  white-space: nowrap;
-  align-self: flex-end;
-}
-
-.interrupt-button:hover {
-  background: #B91C1C;
+  background: #EA580C;
 }
 
 /* Modern scrollbar styles for Webkit browsers */

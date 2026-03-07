@@ -228,8 +228,20 @@ class SessionInstance {
       logger.info(`[SessionInstance] Claude started for session ${this.id}`)
 
       // 启动成功后立即更新 envInfo 并发送到前端
+      const pid = this.claudeManager.getPid()
+      logger.info(`[SessionInstance] Claude PID: ${pid}, current envInfo:`, this.envInfo)
+
       if (this.envInfo) {
-        this.envInfo.claudePid = this.claudeManager.getPid()
+        this.envInfo.claudePid = pid
+        logger.info(`[SessionInstance] Emitting env-info with PID:`, this.envInfo)
+        this.emit('env-info', this.envInfo)
+      } else {
+        logger.warn(`[SessionInstance] envInfo is null, creating basic envInfo`)
+        this.envInfo = {
+          cwd: this.projectPath,
+          session_id: this.id,
+          claudePid: pid
+        }
         this.emit('env-info', this.envInfo)
       }
 
@@ -450,11 +462,17 @@ class SessionInstance {
    */
   handleSystemMessage(message) {
     if (message.subtype === 'init') {
-      // 添加 PID 到 envInfo
+      const currentPid = this.claudeManager?.getPid()
+      logger.info(`[SessionInstance] System init received, current PID: ${currentPid}`)
+      logger.info(`[SessionInstance] System init message:`, message)
+
+      // 合并 envInfo，保留 PID
       this.envInfo = {
         ...message,
-        claudePid: this.claudeManager?.getPid() || null
+        claudePid: currentPid || this.envInfo?.claudePid || null
       }
+
+      logger.info(`[SessionInstance] Updated envInfo:`, this.envInfo)
       this.emit('env-info', this.envInfo)
     } else {
       this.emit('system-message', message)

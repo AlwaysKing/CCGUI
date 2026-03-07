@@ -53,23 +53,41 @@ function addCopyButtons() {
     // 创建复制按钮
     const copyBtn = document.createElement('button')
     copyBtn.className = 'code-copy-btn'
-    copyBtn.textContent = '📋'
     copyBtn.title = '复制代码'
+
+    // 使用 SVG 图标
+    copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+    </svg>`
+
     copyBtn.onclick = async () => {
       const code = pre.querySelector('code')?.textContent || pre.textContent
       try {
         await navigator.clipboard.writeText(code)
-        copyBtn.textContent = '✓'
+        // 显示成功图标
+        copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>`
         copiedIndex.value = index
         setTimeout(() => {
-          copyBtn.textContent = '📋'
+          // 恢复原图标
+          copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>`
           copiedIndex.value = -1
         }, 2000)
       } catch (err) {
         console.error('复制失败:', err)
-        copyBtn.textContent = '✗'
+        // 显示失败图标
+        copyBtn.innerHTML = `✗`
         setTimeout(() => {
-          copyBtn.textContent = '📋'
+          // 恢复原图标
+          copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>`
         }, 2000)
       }
     }
@@ -166,22 +184,32 @@ watch(() => props.content, () => {
   position: absolute;
   top: 8px;
   right: 8px;
-  font-size: 12px;
-  background: rgba(63, 63, 70, 0.8);
+  color: #71717A;
+  background: rgba(39, 39, 42, 0.9);
   border: none;
   border-radius: 4px;
-  padding: 4px 8px;
+  padding: 4px;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.2s, background 0.2s;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.markdown-content :deep(.code-copy-btn svg) {
+  display: block;
 }
 
 .markdown-content :deep(pre:hover .code-copy-btn) {
-  opacity: 1;
+  opacity: 0.6;
 }
 
 .markdown-content :deep(.code-copy-btn:hover) {
-  background: rgba(82, 82, 91, 0.9);
+  opacity: 1 !important;
+  background: #27272A;
+  color: #A1A1AA;
 }
 
 .markdown-content :deep(ul),

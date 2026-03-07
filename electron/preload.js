@@ -153,5 +153,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   // Logging API (前端日志打印到后端终端)
   // ============================================
-  log: (...args) => ipcRenderer.send('frontend-log', args)
+  log: (...args) => ipcRenderer.send('frontend-log', args),
+
+  // ============================================
+  // File Logging API (新的文件日志系统)
+  // ============================================
+  ensureLogDir: (options) => ipcRenderer.invoke('ensure-log-dir', options),
+  writeAppLog: (options) => ipcRenderer.invoke('write-app-log', options),
+  writeStreamLog: (options) => ipcRenderer.invoke('write-stream-log', options)
 })

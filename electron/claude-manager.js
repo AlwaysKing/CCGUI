@@ -2,6 +2,7 @@ const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const logger = require('./logger')
 
 /**
  * Claude CLI Manager
@@ -110,11 +111,11 @@ class ClaudeManager {
       if (this.isNewSession) {
         // New session: use --session-id to create a new session with specific ID
         args.push('--session-id', this.sessionId)
-        console.log(`[ClaudeManager] Creating new session with ID: ${this.sessionId}`)
+        logger.info(`[ClaudeManager] Creating new session with ID: ${this.sessionId}`)
       } else {
         // Existing session: use --resume to resume the session
         args.push('--resume', this.sessionId)
-        console.log(`[ClaudeManager] Resuming session with ID: ${this.sessionId}`)
+        logger.info(`[ClaudeManager] Resuming session with ID: ${this.sessionId}`)
       }
     }
 
@@ -221,6 +222,10 @@ class ClaudeManager {
    * Handle incoming messages from Claude CLI
    */
   handleMessage(message) {
+    // 记录接收到的消息到数据流日志
+    if (this.sessionId) {
+      logger.logReceive(this.sessionId, message)
+    }
     // 打印所有接收到的消息
     console.log('[RECEIVED]', JSON.stringify(message, null, 2))
 
@@ -438,7 +443,11 @@ class ClaudeManager {
   sendMessage(message) {
     if (this.process && this.process.stdin.writable) {
       const jsonMessage = JSON.stringify(message) + '\n'
-      // 打印所有发送的消息
+      // 记录发送的消息到数据流日志
+      if (this.sessionId) {
+        logger.logSend(this.sessionId, message)
+      }
+      // 同时保留控制台输出（方便调试）
       console.log('[SENT]', JSON.stringify(message, null, 2))
       this.process.stdin.write(jsonMessage)
     } else {

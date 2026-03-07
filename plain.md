@@ -1,926 +1,299 @@
-# Claude Code GUI 开发阶段规划
+# CCGUI 多会话管理功能开发计划
 
-> 渐进式开发路线，从 MVP 到完整功能
+## 功能概述
 
----
+实现多项目、多会话管理功能，支持：
+- 项目管理：切换、新建、删除项目
+- 会话管理：创建、删除、切换会话
+- 多会话并行：每个会话独立运行 Claude 实例
+- 历史加载：从 jsonl 文件恢复会话历史
+- 后台运行：会话可在后台持续运行
 
-## 开发原则
-
-1. **MVP 优先** - 最快实现可用功能
-2. **渐进增强** - 每个阶段都是可用的版本
-3. **架构预留** - 为 MCP 等高级功能预留接口
-4. **持续交付** - 每个阶段都能测试和演示
-
----
-
-## 阶段概览
-
-| 阶段 | 目标 | 核心功能 | 预计时间 | 优先级 |
-|------|------|----------|----------|--------|
-| Phase 0 | 项目初始化 | 基础环境搭建 | 30分钟 | 🔴 必须 |
-| Phase 1 | MVP 对话 | 基础对话功能 | 2-3小时 | 🔴 必须 |
-| Phase 2 | 工具展示 | 工具调用显示 | 1-2小时 | 🟡 重要 |
-| Phase 3 | 工具详情 | 工具执行详情 | 1-2小时 | 🟡 重要 |
-| Phase 4 | 文件浏览 | 文件浏览器 | 2小时 | 🟢 可选 |
-| Phase 5 | 高级功能 | MCP、会话管理等 | 按需 | ⚪ 未来 |
-
----
-
-## Phase 0: 项目初始化 (30分钟)
-
-### 目标
-搭建基础开发环境，确保项目可以运行
-
-### 任务清单
-
-#### 环境准备
-- [x] 创建 Electron + Vue3 项目
-- [x] 配置开发环境
-- [x] 测试项目启动
-
-#### Claude CLI 准备
-- [ ] 验证 Claude CLI 可用性
-- [ ] 测试基础启动命令
-- [ ] 创建版本检测工具函数
-
-#### 项目结构
-- [ ] 创建目录结构
-- [ ] 配置 ESLint/Prettier（可选）
-- [ ] 设置 Git 忽略文件
-
-### 可交付成果
-- ✅ 能启动的 Electron 应用
-- ✅ 验证 Claude CLI 可用
-- ✅ 基础项目结构
-
-### 验收标准
-```bash
-# 1. 启动应用
-npm run dev
-
-# 2. 验证 Claude CLI
-~/Library/Developer/Xcode/CodingAssistant/Agents/Versions/*/claude --help
-
-# 3. 显示基础界面
-# 显示 "Claude Code GUI" 标题
-```
-
----
-
-## Phase 1: MVP 对话功能 (2-3小时) ⭐ 核心阶段
-
-### 目标
-实现最简单的对话功能：发送消息 → 接收回复 → 显示
-
-### 核心功能
-1. **基础通信** - Electron 与 Claude CLI 的 stream-json 通信
-2. **简单界面** - 只有一个聊天窗口
-3. **消息显示** - 用户消息 + Claude 回复
-
-### 架构设计
-
-```
-┌─────────────────────────────────────┐
-│         Claude GUI 窗口             │
-├─────────────────────────────────────┤
-│                                     │
-│  ┌───────────────────────────────┐ │
-│  │                               │ │
-│  │      消息显示区域             │ │
-│  │    (滚动列表)                 │ │
-│  │                               │ │
-│  │  User: 帮我创建一个文件       │ │
-│  │  Claude: 好的，我来帮你...    │ │
-│  │                               │ │
-│  └───────────────────────────────┘ │
-│                                     │
-│  ┌───────────────────────────────┐ │
-│  │ [输入框]              [发送]  │ │
-│  └───────────────────────────────┘ │
-│                                     │
-└─────────────────────────────────────┘
-```
-
-### 任务清单
-
-#### 后端 (Electron Main)
-
-**1.1 Claude CLI 管理器**
-```javascript
-// electron/claude-manager.js
-class ClaudeManager {
-  constructor() {
-    this.process = null
-    this.messageHandlers = new Map()
-  }
-
-  // 启动 Claude CLI
-  async start() {
-    const claudePath = detectClaudePath()
-    const args = [
-      '-p',
-      '--output-format', 'stream-json',
-      '--input-format', 'stream-json',
-      '--verbose',
-      '--settings', JSON.stringify({
-        env: {
-          CLAUDE_CODE_ENABLE_TELEMETRY: '0',
-          DISABLE_TELEMETRY: '1'
-        },
-        hasCompletedOnboarding: true
-      }),
-      '--allowedTools', 'Bash,Read,Edit,Write,Glob,Grep'
-    ]
-
-    this.process = spawn(claudePath, args, {
-      cwd: process.cwd()
-    })
-
-    this.setupStdioHandlers()
-  }
-
-  // 设置 stdio 处理
-  setupStdioHandlers() {
-    let buffer = ''
-
-    this.process.stdout.on('data', (data) => {
-      buffer += data.toString()
-      const lines = buffer.split('\n')
-      buffer = lines.pop() // 保留不完整的行
-
-      lines.forEach(line => {
-        if (line.trim()) {
-          try {
-            const message = JSON.parse(line)
-            this.handleMessage(message)
-          } catch (error) {
-            console.error('JSON parse error:', error)
-          }
-        }
-      })
-    })
-
-    this.process.stderr.on('data', (data) => {
-      console.error('Claude CLI error:', data.toString())
-    })
-
-    this.process.on('exit', (code) => {
-      console.log('Claude CLI exited:', code)
-    })
-  }
-
-  // 处理消息
-  handleMessage(message) {
-    const handlers = this.messageHandlers.get(message.type) || []
-    handlers.forEach(handler => handler(message))
-  }
-
-  // 发送消息
-  sendMessage(message) {
-    if (this.process && this.process.stdin.writable) {
-      this.process.stdin.write(JSON.stringify(message) + '\n')
-    }
-  }
-
-  // 注册消息处理器
-  on(messageType, handler) {
-    if (!this.messageHandlers.has(messageType)) {
-      this.messageHandlers.set(messageType, [])
-    }
-    this.messageHandlers.get(messageType).push(handler)
-  }
-}
-
-module.exports = { ClaudeManager }
-```
-
-**1.2 IPC 通信设置**
-```javascript
-// electron/main.cjs
-const { app, BrowserWindow, ipcMain } = require('electron')
-const path = require('path')
-const { ClaudeManager } = require('./claude-manager')
-
-let mainWindow
-let claudeManager
-
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js')
-    }
-  })
-
-  mainWindow.loadFile('index.html')
-
-  // 初始化 Claude Manager
-  claudeManager = new ClaudeManager()
-  claudeManager.start()
-
-  // 注册消息处理器
-  claudeManager.on('assistant', (message) => {
-    mainWindow.webContents.send('claude-message', message)
-  })
-
-  claudeManager.on('result', (message) => {
-    mainWindow.webContents.send('claude-result', message)
-  })
-
-  claudeManager.on('system', (message) => {
-    if (message.subtype === 'init') {
-      mainWindow.webContents.send('claude-init', message)
-    }
-  })
-}
-
-// IPC 处理器
-ipcMain.handle('send-message', async (event, userMessage) => {
-  claudeManager.sendMessage(userMessage)
-})
-
-ipcMain.handle('get-claude-info', async () => {
-  return {
-    version: '1.0.0',
-    tools: ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep']
-  }
-})
-
-app.whenReady().then(createWindow)
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
-})
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow()
-  }
-})
-```
-
-**1.3 Preload 脚本**
-```javascript
-// electron/preload.js
-const { contextBridge, ipcRenderer } = require('electron')
-
-contextBridge.exposeInMainWorld('electronAPI', {
-  sendMessage: (message) => ipcRenderer.invoke('send-message', message),
-  onClaudeMessage: (callback) => {
-    ipcRenderer.on('claude-message', (event, message) => callback(message))
-  },
-  onClaudeResult: (callback) => {
-    ipcRenderer.on('claude-result', (event, message) => callback(message))
-  },
-  onClaudeInit: (callback) => {
-    ipcRenderer.on('claude-init', (event, message) => callback(message))
-  },
-  getClaudeInfo: () => ipcRenderer.invoke('get-claude-info')
-})
-```
-
-#### 前端 (Vue3)
-
-**1.4 主界面组件**
-```vue
-<!-- src/App.vue -->
-<script setup>
-import { ref, onMounted, nextTick } from 'vue'
-import ChatWindow from './components/ChatWindow.vue'
-
-const isClaudeReady = ref(false)
-
-onMounted(async () => {
-  // 等待 Claude 初始化
-  window.electronAPI.onClaudeInit((message) => {
-    isClaudeReady.value = true
-    console.log('Claude initialized:', message)
-  })
-})
-</script>
-
-<template>
-  <div class="app-container">
-    <header class="app-header">
-      <h1>Claude Code GUI</h1>
-      <div class="status" :class="{ ready: isClaudeReady }">
-        {{ isClaudeReady ? '● 已连接' : '○ 连接中...' }}
-      </div>
-    </header>
-    <main class="app-main">
-      <ChatWindow v-if="isClaudeReady" />
-      <div v-else class="loading">
-        <p>正在连接 Claude...</p>
-      </div>
-    </main>
-  </div>
-</template>
-
-<style scoped>
-.app-container {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background: #1E1E1E;
-  color: #E4E4E7;
-}
-
-.app-header {
-  padding: 16px 24px;
-  border-bottom: 1px solid #3F3F46;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.app-header h1 {
-  margin: 0;
-  font-size: 20px;
-  color: #F97316;
-}
-
-.status {
-  font-size: 14px;
-  color: #6B7280;
-}
-
-.status.ready {
-  color: #10B981;
-}
-
-.app-main {
-  flex: 1;
-  overflow: hidden;
-}
-
-.loading {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #6B7280;
-}
-</style>
-```
-
-**1.5 聊天窗口组件**
-```vue
-<!-- src/components/ChatWindow.vue -->
-<script setup>
-import { ref, onMounted } from 'vue'
-
-const messages = ref([])
-const inputMessage = ref('')
-const isProcessing = ref(false)
-const messagesContainer = ref(null)
-
-onMounted(() => {
-  // 监听 Claude 消息
-  window.electronAPI.onClaudeMessage((message) => {
-    if (message.message && message.message.content) {
-      const textContent = message.message.content.find(c => c.type === 'text')
-      if (textContent) {
-        messages.value.push({
-          role: 'assistant',
-          content: textContent.text,
-          timestamp: new Date()
-        })
-      }
-    }
-  })
-
-  // 监听最终结果
-  window.electronAPI.onClaudeResult((message) => {
-    isProcessing.value = false
-    scrollToBottom()
-  })
-})
-
-async function sendMessage() {
-  if (!inputMessage.value.trim() || isProcessing.value) return
-
-  const userText = inputMessage.value
-  messages.value.push({
-    role: 'user',
-    content: userText,
-    timestamp: new Date()
-  })
-
-  inputMessage.value = ''
-  isProcessing.value = true
-  scrollToBottom()
-
-  // 发送到 Claude
-  await window.electronAPI.sendMessage({
-    type: 'user',
-    message: {
-      role: 'user',
-      content: [{ type: 'text', text: userText }]
-    }
-  })
-}
-
-function scrollToBottom() {
-  setTimeout(() => {
-    if (messagesContainer.value) {
-      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-    }
-  }, 100)
-}
-</script>
-
-<template>
-  <div class="chat-window">
-    <div class="messages" ref="messagesContainer">
-      <div
-        v-for="(message, index) in messages"
-        :key="index"
-        class="message"
-        :class="message.role"
-      >
-        <div class="message-avatar">
-          {{ message.role === 'user' ? 'U' : 'C' }}
-        </div>
-        <div class="message-content">
-          <div class="message-text">{{ message.content }}</div>
-          <div class="message-time">
-            {{ new Date(message.timestamp).toLocaleTimeString() }}
-          </div>
-        </div>
-      </div>
-      <div v-if="isProcessing" class="message assistant typing">
-        <div class="message-avatar">C</div>
-        <div class="message-content">
-          <div class="typing-indicator">正在思考...</div>
-        </div>
-      </div>
-    </div>
-    <div class="input-area">
-      <textarea
-        v-model="inputMessage"
-        @keydown.enter.prevent="sendMessage"
-        placeholder="输入消息... (Enter 发送)"
-        rows="3"
-        :disabled="isProcessing"
-      />
-      <button
-        @click="sendMessage"
-        :disabled="!inputMessage.trim() || isProcessing"
-        class="send-button"
-      >
-        发送
-      </button>
-    </div>
-  </div>
-</template>
-
-<style scoped>
-.chat-window {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-}
-
-.message {
-  display: flex;
-  margin-bottom: 16px;
-  gap: 12px;
-}
-
-.message.user {
-  flex-direction: row-reverse;
-}
-
-.message-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: bold;
-  flex-shrink: 0;
-}
-
-.message.user .message-avatar {
-  background: #3F3F46;
-}
-
-.message.assistant .message-avatar {
-  background: #F97316;
-}
-
-.message-content {
-  max-width: 70%;
-}
-
-.message-text {
-  padding: 12px 16px;
-  border-radius: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-
-.message.user .message-text {
-  background: #3F3F46;
-}
-
-.message.assistant .message-text {
-  background: #27272A;
-  border: 1px solid #3F3F46;
-}
-
-.message-time {
-  font-size: 12px;
-  color: #6B7280;
-  margin-top: 4px;
-}
-
-.message.user .message-time {
-  text-align: right;
-}
-
-.typing-indicator {
-  color: #6B7280;
-  font-style: italic;
-}
-
-.input-area {
-  padding: 20px;
-  border-top: 1px solid #3F3F46;
-  display: flex;
-  gap: 12px;
-}
-
-.input-area textarea {
-  flex: 1;
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 8px;
-  padding: 12px;
-  color: #E4E4E7;
-  font-size: 14px;
-  resize: none;
-  font-family: inherit;
-}
-
-.input-area textarea:focus {
-  outline: none;
-  border-color: #F97316;
-}
-
-.input-area textarea:disabled {
-  opacity: 0.5;
-}
-
-.send-button {
-  padding: 12px 24px;
-  background: #F97316;
-  border: none;
-  border-radius: 8px;
-  color: white;
-  font-weight: bold;
-  cursor: pointer;
-  align-self: flex-end;
-}
-
-.send-button:hover:not(:disabled) {
-  background: #EA580C;
-}
-
-.send-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-</style>
-```
-
-### 可交付成果
-- ✅ 能启动 Claude CLI
-- ✅ 能发送消息
-- ✅ 能接收文本回复
-- ✅ 基础聊天界面
-
-### 验收标准
-```bash
-# 1. 启动应用
-npm run dev
-
-# 2. 测试对话
-输入: "你好"
-输出: "你好！有什么可以帮助你的吗？"
-
-# 3. 测试工具调用
-输入: "列出当前目录的文件"
-输出: 显示文件列表（作为文本）
-```
-
-### 保留扩展点
-```javascript
-// 1. 消息结构支持扩展
-{
-  role: 'assistant',
-  content: [
-    { type: 'text', text: '...' },
-    // 预留：工具调用
-    // { type: 'tool_use', ... }
-  ]
-}
-
-// 2. ClaudeManager 支持 MCP 配置
-class ClaudeManager {
-  constructor(mcpConfig = null) {
-    this.mcpConfig = mcpConfig // 预留
-  }
-
-  // 预留：添加 MCP 工具
-  addMCPTools(tools) { ... }
-}
-
-// 3. IPC 预留高级功能
-ipcMain.handle('configure-mcp', ...)
-ipcMain.handle('manage-session', ...)
-```
-
----
-
-## Phase 2: 工具调用展示 (1-2小时)
-
-### 目标
-识别并显示 Claude 的工具调用，即使不展示详细信息
-
-### 核心功能
-1. **工具识别** - 解析 tool_use 类型的内容
-2. **简化展示** - 显示工具名称和状态
-3. **状态跟踪** - 运行中/成功/失败
-
-### 界面改进
-
-```
-┌─────────────────────────────────────┐
-│  User: 帮我创建一个 test.txt 文件   │
-│                                     │
-│  Claude: 好的，我来帮你创建文件      │
-│                                     │
-│  ┌─────────────────────────────┐   │
-│  │ 🔧 Bash - 运行中...          │   │  ← 新增
-│  └─────────────────────────────┘   │
-│                                     │
-│  ┌─────────────────────────────┐   │
-│  │ ✅ Bash - 完成               │   │
-│  └─────────────────────────────┘   │
-│                                     │
-│  Claude: 文件创建成功！            │
-└─────────────────────────────────────┘
-```
-
-### 任务清单
-
-- [ ] 修改消息解析逻辑，识别 tool_use 类型
-- [ ] 创建 ToolUseIndicator 组件
-- [ ] 添加工具状态跟踪（running/success/error）
-- [ ] 匹配 tool_use 和 tool_result
-
-### 可交付成果
-- ✅ 显示工具调用状态
-- ✅ 区分文本回复和工具调用
-- ✅ 基础的状态指示器
-
----
-
-## Phase 3: 工具执行详情 (1-2小时)
-
-### 目标
-展示工具调用的详细信息
-
-### 核心功能
-1. **工具输入** - 显示命令或参数
-2. **工具输出** - 显示执行结果
-3. **可展开** - 点击查看详情
-
-### 界面改进
-
-```
-┌─────────────────────────────────────┐
-│  ✅ Bash                            │
-│  ─────────────────────────────────  │
-│  💻 命令:                           │
-│  echo "Hello World" > test.txt      │
-│                                     │
-│  📤 输出:                           │
-│  (命令执行成功，无输出)             │
-│                                     │
-│  [收起]                             │
-└─────────────────────────────────────┘
-```
-
-### 任务清单
-
-- [ ] 创建 ToolUseCard 组件
-- [ ] 显示工具输入参数
-- [ ] 显示工具执行结果
-- [ ] 添加展开/收起动画
-- [ ] 美化代码显示
-
-### 可交付成果
-- ✅ 完整的工具调用卡片
-- ✅ 可查看命令和输出
-- ✅ 支持代码复制
-
----
-
-## Phase 4: 文件浏览器 (2小时)
-
-### 目标
-添加项目文件浏览功能
-
-### 核心功能
-1. **文件树** - 显示项目结构
-2. **文件查看** - 点击查看文件内容
-3. **与工具联动** - Read/Edit 工具结果显示
+## 架构设计
 
 ### 界面布局
 
 ```
-┌──────────────┬──────────────────────┐
-│              │                      │
-│  文件树      │    聊天区域          │
-│              │                      │
-│ 📁 src/      │  User: 读取文件      │
-│   📄 a.js    │                      │
-│   📄 b.js    │  ✅ Read             │
-│ 📁 dist/     │  📄 文件内容...      │
-│ 📄 pkg.json  │                      │
-│              │                      │
-└──────────────┴──────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Header (项目名称 + 全局操作)                                │
+├──────────┬──────────┬────────────────────────────────────────┤
+│          │          │                                        │
+│  项目    │  会话    │           聊天区域                      │
+│  导航    │  列表    │                                        │
+│          │          │                                        │
+│  [+]新建 │  [+]新建  │    消息列表 / 历史记录                  │
+│  项目    │  会话    │                                        │
+│          │          │                                        │
+│  项目1 ● │  会话1 ● │    ───────────────────                 │
+│  项目2   │  会话2   │                                        │
+│  项目3   │  会话3   │    输入框                              │
+│          │          │                                        │
+├──────────┴──────────┴────────────────────────────────────────┤
+│  StatusBar (当前状态)                                        │
+└─────────────────────────────────────────────────────────────┘
+
+图例: ● = 运行中的会话
 ```
 
-### 任务清单
-
-- [ ] 创建 FileBrowser 组件
-- [ ] 实现文件树数据结构
-- [ ] 添加文件展开/折叠
-- [ ] 集成 Read 工具结果
-- [ ] 优化布局
-
----
-
-## Phase 5: 高级功能 (按需开发)
-
-### 5.1 MCP 支持
-- MCP 配置界面
-- 自定义工具注册
-- MCP 服务器管理
-
-### 5.2 会话管理
-- 会话历史保存
-- 会话搜索
-- 导出/导入
-
-### 5.3 设置配置
-- Claude 路径配置
-- 工具白名单配置
-- 界面主题设置
-
-### 5.4 高级功能
-- 多会话支持
-- 文件编辑集成
-- 代码预览增强
-
----
-
-## 文件结构规划
+### 后端架构
 
 ```
-CCGUI/
-├── electron/
-│   ├── main.cjs                 # 主进程入口
-│   ├── preload.js               # Preload 脚本
-│   ├── claude-manager.js        # Claude CLI 管理器 ⭐
-│   └── mcp-manager.js           # MCP 管理器 (预留)
-│
-├── src/
-│   ├── App.vue                  # 根组件
-│   ├── main.js                  # Vue 入口
-│   │
-│   ├── components/
-│   │   ├── ChatWindow.vue       # 聊天窗口 ⭐ Phase 1
-│   │   ├── MessageItem.vue      # 消息项 ⭐ Phase 1
-│   │   ├── ToolUseIndicator.vue # 工具指示器 Phase 2
-│   │   ├── ToolUseCard.vue      # 工具卡片 Phase 3
-│   │   ├── FileBrowser.vue      # 文件浏览器 Phase 4
-│   │   └── SettingsPanel.vue    # 设置面板 Phase 5
-│   │
-│   ├── composables/
-│   │   ├── useClaude.js         # Claude 通信逻辑 ⭐
-│   │   ├── useMessages.js       # 消息状态管理
-│   │   └── useFileSystem.js     # 文件系统操作
-│   │
-│   └── styles/
-│       └── main.css             # 全局样式
-│
-├── package.json
-├── vite.config.js
-└── README.md
+electron/
+├── main.cjs                    # 主进程入口 (修改)
+├── preload.js                  # 预加载脚本 (修改)
+├── claude-manager.js           # 单个 Claude 实例管理 (修改)
+├── session-manager.js          # 会话管理器 (新建)
+├── project-manager.js          # 项目管理器 (新建)
+└── store.js                    # 状态存储 (新建)
 ```
 
-**⭐ = Phase 1 必须创建**
+### 前端架构
 
----
+```
+src/
+├── App.vue                     # 根组件 (修改)
+├── components/
+│   ├── layout/
+│   │   ├── AppLayout.vue       # 三栏布局 (新建)
+│   │   ├── ProjectSidebar.vue  # 项目导航 (新建)
+│   │   ├── SessionSidebar.vue  # 会话列表 (新建)
+│   │   └── Header.vue          # 顶部栏 (新建)
+│   ├── chat/
+│   │   ├── ChatWindow.vue      # 聊天窗口 (修改)
+│   │   ├── MessageList.vue     # 消息列表 (新建)
+│   │   └── InputBox.vue        # 输入框 (新建)
+│   └── dialogs/
+│       ├── NewProjectDialog.vue    # 新建项目对话框 (新建)
+│       ├── NewSessionDialog.vue    # 新建会话对话框 (新建)
+│       └── ConfirmDialog.vue       # 确认对话框 (新建)
+└── stores/
+    └── useAppStore.js          # Pinia 状态管理 (新建)
+```
 
-## 开发建议
+## 开发阶段
 
-### Phase 1 重点关注
+### 阶段 1: 后端基础设施 (Day 1)
 
-1. **先通信后界面**
-   - 先确保 Electron 能启动 Claude CLI
-   - 确保 stream-json 解析正确
-   - 再做前端界面
+#### 1.1 创建 store.js - 持久化存储
+- [ ] 项目列表存储
+- [ ] 当前项目/会话状态
+- [ ] 窗口布局配置
 
-2. **简化消息处理**
-   - Phase 1 只处理 text 类型
-   - tool_use 先转换成简单文本显示
-   - Phase 2 再完善
+#### 1.2 创建 project-manager.js - 项目管理
+- [ ] 扫描 ~/.claude/projects/ 获取项目列表
+- [ ] 从项目路径提取项目名称
+- [ ] 新建项目（选择目录）
+- [ ] 删除项目（仅从列表移除，不删除数据）
 
-3. **错误处理**
-   - Claude CLI 启动失败的处理
-   - 消息解析失败的处理
-   - 网络错误的提示
+#### 1.3 创建 session-manager.js - 会话管理
+- [ ] 获取项目下的所有会话
+- [ ] 解析 jsonl 文件提取会话元数据
+- [ ] 解析 jsonl 加载历史消息
+- [ ] 创建新会话（生成 UUID）
+- [ ] 删除会话（删除 jsonl 文件）
 
-### 代码复用建议
+#### 1.4 修改 claude-manager.js
+- [ ] 支持 --resume 参数启动
+- [ ] 支持指定会话 ID
+- [ ] 添加实例 ID 标识
+- [ ] 添加运行状态
+
+### 阶段 2: 多实例管理 (Day 2)
+
+#### 2.1 创建会话实例池
+- [ ] 管理多个 ClaudeManager 实例
+- [ ] 按需启动/停止实例
+- [ ] 实例状态追踪（idle/running/error）
+
+#### 2.2 IPC 接口扩展
+- [ ] `get-projects` - 获取项目列表
+- [ ] `get-sessions` - 获取会话列表
+- [ ] `create-session` - 创建新会话
+- [ ] `delete-session` - 删除会话
+- [ ] `switch-session` - 切换会话
+- [ ] `get-session-history` - 获取历史消息
+- [ ] `get-session-status` - 获取会话状态
+
+#### 2.3 消息路由
+- [ ] 按会话 ID 路由消息到正确的前端
+- [ ] 广播状态更新到所有渲染进程
+
+### 阶段 3: 前端布局重构 (Day 3)
+
+#### 3.1 三栏布局
+- [ ] AppLayout.vue - 响应式三栏布局
+- [ ] 左侧项目导航栏 (可折叠)
+- [ ] 中间会话列表栏 (可折叠)
+- [ ] 右侧聊天区域
+
+#### 3.2 项目导航组件
+- [ ] 项目列表展示
+- [ ] 当前项目高亮
+- [ ] 新建项目按钮
+- [ ] 项目右键菜单（删除/重命名）
+
+#### 3.3 会话列表组件
+- [ ] 会话列表展示
+- [ ] 运行状态标识 (绿色圆点)
+- [ ] 会话预览（第一条消息）
+- [ ] 最后活跃时间
+- [ ] 新建会话按钮
+- [ ] 会话右键菜单（删除/重命名）
+
+### 阶段 4: 聊天功能适配 (Day 4)
+
+#### 4.1 消息历史加载
+- [ ] 从 jsonl 解析历史消息
+- [ ] 渲染历史消息到界面
+- [ ] 滚动到最新位置
+
+#### 4.2 ChatWindow 适配
+- [ ] 接收会话 ID 作为 prop
+- [ ] 订阅对应会话的消息事件
+- [ ] 发送消息时指定会话 ID
+
+#### 4.3 多标签/多窗口支持
+- [ ] 同时显示多个会话（标签页或分屏）
+- [ ] 后台会话消息通知
+- [ ] 切换会话保持状态
+
+### 阶段 5: 状态管理与优化 (Day 5)
+
+#### 5.1 Pinia 状态管理
+- [ ] 项目列表状态
+- [ ] 会话列表状态
+- [ ] 当前活跃会话
+- [ ] 运行中会话集合
+
+#### 5.2 状态持久化
+- [ ] 保存窗口布局
+- [ ] 保存最后打开的会话
+- [ ] 启动时恢复状态
+
+#### 5.3 用户体验优化
+- [ ] 加载状态指示
+- [ ] 错误处理与提示
+- [ ] 快捷键支持
+- [ ] 拖拽调整栏宽
+
+## 数据结构定义
+
+### 项目 (Project)
 
 ```javascript
-// 创建可复用的工具函数
-// src/utils/claude-helpers.js
-
-export function detectClaudePath() {
-  // 版本检测逻辑
-}
-
-export function parseStreamMessage(line) {
-  // 消息解析逻辑
-}
-
-export function formatMessage(message) {
-  // 消息格式化逻辑
+{
+  id: string,           // 项目 ID (路径 hash)
+  name: string,         // 项目名称
+  path: string,         // 项目路径
+  claudePath: string,   // ~/.claude/projects/ 下的目录名
+  sessionCount: number, // 会话数量
+  lastActiveAt: Date    // 最后活跃时间
 }
 ```
 
-### 调试技巧
+### 会话 (Session)
 
 ```javascript
-// 在 ClaudeManager 中添加日志
-class ClaudeManager {
-  handleMessage(message) {
-    console.log('📨 Claude message:', message.type, message)
-    // ...
-  }
+{
+  id: string,           // 会话 ID (UUID)
+  projectId: string,    // 所属项目 ID
+  name: string,         // 会话名称 (可编辑)
+  preview: string,      // 预览文本 (第一条消息)
+  createdAt: Date,      // 创建时间
+  updatedAt: Date,      // 更新时间
+  messageCount: number, // 消息数量
+  status: 'idle' | 'running' | 'error'  // 运行状态
 }
-
-// 在 Vue DevTools 中查看状态
-const messages = ref([])
-window.__MESSAGES__ = messages // 用于调试
 ```
+
+### 会话实例 (SessionInstance)
+
+```javascript
+{
+  sessionId: string,
+  manager: ClaudeManager,  // Claude 实例
+  status: 'idle' | 'running' | 'error',
+  lastActivity: Date,
+  error: string | null
+}
+```
+
+## IPC 接口规范
+
+### 渲染进程 -> 主进程
+
+| 通道 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `get-projects` | - | `Project[]` | 获取项目列表 |
+| `add-project` | `{ path: string }` | `Project` | 添加项目 |
+| `remove-project` | `{ projectId: string }` | `{ success: boolean }` | 移除项目 |
+| `get-sessions` | `{ projectId: string }` | `Session[]` | 获取会话列表 |
+| `create-session` | `{ projectId: string, name?: string }` | `Session` | 创建会话 |
+| `delete-session` | `{ sessionId: string }` | `{ success: boolean }` | 删除会话 |
+| `open-session` | `{ sessionId: string }` | `Session` | 打开/切换会话 |
+| `close-session` | `{ sessionId: string }` | `{ success: boolean }` | 关闭会话 |
+| `get-session-history` | `{ sessionId: string }` | `Message[]` | 获取历史 |
+| `send-message` | `{ sessionId: string, content: string }` | `{ success: boolean }` | 发送消息 |
+
+### 主进程 -> 渲染进程
+
+| 通道 | 数据 | 说明 |
+|------|------|------|
+| `session-status-changed` | `{ sessionId, status }` | 会话状态变化 |
+| `session-message` | `{ sessionId, message }` | 会话消息 |
+| `session-result` | `{ sessionId, result }` | 会话结果 |
+| `session-stream-event` | `{ sessionId, event }` | 流式事件 |
+| `session-control-request` | `{ sessionId, request }` | 权限请求 |
+| `sessions-updated` | `Session[]` | 会话列表更新 |
+
+## 实施顺序
+
+1. **阶段 1.3 + 1.4**: session-manager.js + claude-manager.js 修改
+2. **阶段 1.1 + 1.2**: store.js + project-manager.js
+3. **阶段 2**: 多实例管理与 IPC 扩展
+4. **阶段 3**: 前端布局重构
+5. **阶段 4**: 聊天功能适配
+6. **阶段 5**: 状态管理与优化
 
 ---
 
-## 下一步行动
+## 当前任务
 
-### 立即开始 Phase 0 + Phase 1
+### ✅ 后端核心功能已完成
 
-```bash
-# 1. 创建 claude-manager.js
-touch electron/claude-manager.js
+- session-manager.js - 会话管理器
+- project-manager.js - 项目管理器
+- store.js - 持久化存储
+- main.cjs - 主进程（集成多会话支持）
+- preload.js - 新 IPC 接口
 
-# 2. 更新 main.cjs
-# 添加 IPC 处理器
+- claude-manager.js - 支持 --resume 参数
 
-# 3. 创建 ChatWindow.vue
-touch src/components/ChatWindow.vue
+### ✅ 塑前端已完成
+- useAppStore.js - Pinia 状态管理
+- AppLayout.vue - 三栏布局
+- ProjectSidebar.vue - 项目导航
+- SessionSidebar.vue - 会话列表
+- Header.vue - 顶部栏
+- NewProjectDialog.vue - 新建项目对话框
+- NewSessionDialog.vue - 新建会话对话框
+- ConfirmDialog.vue - 确认对话框
+- RenameDialog.vue - 重命名对话框
+- ChatWindow.vue - 适配多会话（保持兼容)
+- App.vue - 支持多会话/单会话模式切换
+- main.js - 集成 Pinia
 
-# 4. 测试启动
-npm run dev
-```
+- 全局样式优化
+- 键盘快捷键支持 (Cmd+N 新建会话, Cmd+Shift+N 新建项目, Cmd+B 切换侧边栏, Cmd+1 切换项目侧边栏, Cmd+2 切换会话侧边栏)
+    - 侧边栏状态持久化 (localStorage)
+    - 加载状态指示
+    - 错误处理
+    - 右键菜单（重命名/删除)
+    - 拖拽调整栏宽
 
-### 关键文件创建顺序
+    - 侧边栏折叠/展开按钮
 
-1. `electron/claude-manager.js` - Claude 通信核心
-2. `electron/main.cjs` - 更新 IPC 逻辑
-3. `electron/preload.js` - 暴露 API
-4. `src/components/ChatWindow.vue` - 聊天界面
-5. `src/App.vue` - 更新主界面
+### ✅ 下一步
 
----
-
-*准备开始 Phase 1 了吗？我可以帮你创建这些文件！*
+1. 后端 IPC 接口完善：`rename-project`, `rename-session`, `select-directory`
+2. 运行应用测试多会会功能

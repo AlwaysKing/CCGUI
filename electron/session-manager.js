@@ -1,4 +1,5 @@
 const { SessionInstance } = require('./session-instance')
+const logger = require('./logger')
 
 /**
  * SessionManager
@@ -37,7 +38,7 @@ class SessionManager {
       return null
     }
 
-    console.log(`[SessionManager] Creating session ${sessionId} for project ${projectPath}`)
+    logger.info(`[SessionManager] Creating session ${sessionId} for project ${projectPath}`)
 
     // 创建新的 SessionInstance
     const session = new SessionInstance(sessionId, projectPath, this.sendToRenderer)
@@ -125,7 +126,7 @@ class SessionManager {
   closeSession(sessionId) {
     const session = this.sessions.get(sessionId)
     if (session) {
-      console.log(`[SessionManager] Closing session ${sessionId}`)
+      logger.info(`[SessionManager] Closing session ${sessionId}`)
       session.stop()
       this.sessions.delete(sessionId)
     }
@@ -143,7 +144,7 @@ class SessionManager {
    */
   closeAll() {
     for (const [sessionId, session] of this.sessions) {
-      console.log(`[SessionManager] Closing session ${sessionId}`)
+      logger.info(`[SessionManager] Closing session ${sessionId}`)
       session.stop()
     }
     this.sessions.clear()

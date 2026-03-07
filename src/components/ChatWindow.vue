@@ -1644,10 +1644,12 @@ async function handleQuestionAnswer(requestId, answers) {
   padding: 8px 16px;
   font-size: 12px;
   transition: padding-left 0.2s ease;
+  /* -webkit-app-region: drag; */
+  cursor: move;
 }
 
 .env-bar.sidebar-collapsed {
-  padding-left: 52px;
+  padding-left: 120px;
 }
 
 .env-main {
@@ -1677,11 +1679,12 @@ async function handleQuestionAnswer(requestId, answers) {
   background: #27272A;
   border: none;
   color: #71717A;
-  padding: 4px 10px;
-  border-radius: 4px;
   cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 4px;
   font-size: 11px;
-  transition: all 0.15s;
+  transition: all 0.2s;
+  -webkit-app-region: no-drag;
 }
 
 .env-detail-btn:hover {
@@ -1698,6 +1701,7 @@ async function handleQuestionAnswer(requestId, answers) {
   border-bottom: 1px solid #27272A;
   padding: 12px 16px;
   z-index: 100;
+  -webkit-app-region: no-drag;
 }
 
 .env-detail-row {
@@ -2054,6 +2058,7 @@ async function handleQuestionAnswer(requestId, answers) {
   transition: all 0.15s;
   margin-left: 8px;
   opacity: 0.6;
+  -webkit-app-region: no-drag;
 }
 
 .copy-btn:hover {
@@ -2360,6 +2365,7 @@ async function handleQuestionAnswer(requestId, answers) {
   border-top: 1px solid #3F3F46;
   display: flex;
   gap: 12px;
+  -webkit-app-region: no-drag;
 }
 
 .input-area textarea {
@@ -2398,6 +2404,7 @@ async function handleQuestionAnswer(requestId, answers) {
   font-weight: bold;
   cursor: pointer;
   align-self: flex-end;
+  -webkit-app-region: no-drag;
 }
 
 .send-button:hover:not(:disabled) {
@@ -2422,6 +2429,7 @@ async function handleQuestionAnswer(requestId, answers) {
   display: flex;
   align-items: center;
   justify-content: center;
+  -webkit-app-region: no-drag;
 }
 
 .interrupt-button:hover {

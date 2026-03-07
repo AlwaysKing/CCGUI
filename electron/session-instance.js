@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const os = require('os')
 const { ClaudeManager } = require('./claude-manager')
+const logger = require('./logger')
 
 /**
  * SessionInstance
@@ -75,7 +76,7 @@ class SessionInstance {
   async loadHistory() {
     const sessionFile = this.getSessionFilePath()
     if (!sessionFile || !fs.existsSync(sessionFile)) {
-      console.log(`[SessionInstance] No history file for session ${this.id}`)
+      logger.info(`[SessionInstance] No history file for session ${this.id}`)
       return
     }
 
@@ -93,9 +94,9 @@ class SessionInstance {
         }
       }
 
-      console.log(`[SessionInstance] Loaded ${this.rawMessages.length} messages for session ${this.id}`)
+      logger.info(`[SessionInstance] Loaded ${this.rawMessages.length} messages for session ${this.id}`)
     } catch (e) {
-      console.error(`[SessionInstance] Error loading history:`, e.message)
+      logger.error(`[SessionInstance] Error loading history: ${e.message}`)
     }
   }
 
@@ -192,7 +193,7 @@ class SessionInstance {
       return true
     }
 
-    console.log(`[SessionInstance] Starting Claude for session ${this.id}`)
+    logger.info(`[SessionInstance] Starting Claude for session ${this.id}`)
 
     // 判断是否是新会话
     // 策略：如果文件存在且为空，删除后使用 --session-id 创建新会话
@@ -204,7 +205,7 @@ class SessionInstance {
       const stat = fs.statSync(sessionFile)
       if (stat.size === 0) {
         // 文件为空，删除后作为新会话处理
-        console.log(`[SessionInstance] Empty session file found, deleting: ${sessionFile}`)
+        logger.info(`[SessionInstance] Empty session file found, deleting: ${sessionFile}`)
         fs.unlinkSync(sessionFile)
         isNewSession = true
       } else {
@@ -218,10 +219,10 @@ class SessionInstance {
 
     try {
       await this.claudeManager.start()
-      console.log(`[SessionInstance] Claude started for session ${this.id}`)
+      logger.info(`[SessionInstance] Claude started for session ${this.id}`)
       return true
     } catch (e) {
-      console.error(`[SessionInstance] Failed to start Claude:`, e.message)
+      logger.error(`[SessionInstance] Failed to start Claude: ${e.message}`)
       this.claudeManager = null
       throw e
     }
@@ -367,16 +368,16 @@ class SessionInstance {
    * 这里只处理非流式情况或更新已有消息
    */
   handleAssistantMessage(message) {
-    console.log('[SessionInstance] handleAssistantMessage called, currentStreamingAssistantId:', this.currentStreamingAssistantId)
+    logger.debug('[SessionInstance] handleAssistantMessage called', { currentStreamingAssistantId: this.currentStreamingAssistantId })
 
     // 如果有正在流式传输的消息，跳过（前端已经通过流式事件创建了消息）
     // 注意：不要在这里清除标记，因为可能有多个 assistant 消息
     if (this.currentStreamingAssistantId) {
-      console.log('[SessionInstance] Skipping assistant message, streaming in progress')
+      logger.debug('[SessionInstance] Skipping assistant message, streaming in progress')
       return
     }
 
-    console.log('[SessionInstance] Creating new assistant message (no streaming detected)')
+    logger.debug('[SessionInstance] Creating new assistant message (no streaming detected)')
 
     const content = message.message?.content
     if (Array.isArray(content)) {
@@ -533,7 +534,7 @@ class SessionInstance {
    */
   stop() {
     if (this.claudeManager) {
-      console.log(`[SessionInstance] Stopping Claude for session ${this.id}`)
+      logger.info(`[SessionInstance] Stopping Claude for session ${this.id}`)
       this.claudeManager.stop()
       this.claudeManager = null
     }

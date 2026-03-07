@@ -153,6 +153,15 @@ onUnmounted(() => {
 
 <template>
   <div class="workspace-layout">
+    <!-- Draggable Title Bar Area -->
+    <div
+      class="titlebar-drag-area"
+      :style="{
+        left: sidebarCollapsed ? '140px' : `${sidebarWidth + 140}px`,
+        right: '60px'
+      }"
+    ></div>
+
     <div class="workspace-body">
       <!-- Session Sidebar -->
       <SessionSidebar
@@ -242,6 +251,15 @@ onUnmounted(() => {
   flex-direction: column;
   background: #1E1E1E;
   color: #E4E4E7;
+  position: relative;
+}
+
+.titlebar-drag-area {
+  position: absolute;
+  top: 0;
+  height: 60px;
+  -webkit-app-region: drag;
+  z-index: 999;
 }
 
 .workspace-body {
@@ -264,7 +282,7 @@ onUnmounted(() => {
 
 .expand-btn-floating {
   position: absolute;
-  left: 8px;
+  left: 80px;
   top: 8px;
   width: 28px;
   height: 28px;
@@ -279,6 +297,7 @@ onUnmounted(() => {
   transition: all 0.2s;
   z-index: 100;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  -webkit-app-region: no-drag;
 }
 
 .expand-btn-floating:hover {

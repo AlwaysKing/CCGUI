@@ -3,6 +3,10 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { SessionManager } = require('./session-manager')
+const logger = require('./logger')
+
+// 初始化日志系统
+logger.initialize()
 
 let mainWindow
 let sessionManager
@@ -15,6 +19,8 @@ function createWindow() {
     width: 1200,
     height: 800,
     title: 'Claude Code GUI',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -78,12 +84,73 @@ function initSessionManager() {
 
 // Frontend log handler - 将前端日志打印到后端终端
 ipcMain.on('frontend-log', (event, args) => {
-  console.log('[Frontend]', ...args)
+  const message = args.map(arg =>
+    typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+  ).join(' ')
+  logger.info(`[Frontend] ${message}`)
+})
+
+// Ensure log directory exists
+ipcMain.handle('ensure-log-dir', async (event, { baseDir = '/tmp/ccgui' }) => {
+  logger.info('[IPC] ensure-log-dir called', { baseDir })
+  try {
+    // 日志模块已经在 initialize() 中创建了目录，但我们可以再次确保
+    const fs = require('fs')
+    const path = require('path')
+
+    const appLogDir = path.dirname(path.join(baseDir, 'app.log'))
+    const streamLogDir = path.join(baseDir, 'stream')
+
+    if (!fs.existsSync(appLogDir)) {
+      fs.mkdirSync(appLogDir, { recursive: true })
+    }
+    if (!fs.existsSync(streamLogDir)) {
+      fs.mkdirSync(streamLogDir, { recursive: true })
+    }
+
+    logger.info(`[Log] Log directories created at ${baseDir}`)
+    return { success: true, baseDir }
+  } catch (error) {
+    logger.error('[IPC] ensure-log-dir error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Write application log
+ipcMain.handle('write-app-log', async (event, { entry }) => {
+  try {
+    // 解析日志条目并写入
+    const logEntry = JSON.parse(entry)
+    const { level, message, data } = logEntry
+
+    // 使用日志模块写入
+    logger.writeAppLog(level, message, data)
+    return { success: true }
+  } catch (error) {
+    logger.error('[IPC] write-app-log error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Write stream log for a session
+ipcMain.handle('write-stream-log', async (event, { sessionId, entry }) => {
+  try {
+    // 解析流日志条目并写入
+    const streamEntry = JSON.parse(entry)
+    const { direction, data } = streamEntry
+
+    // 使用日志模块写入
+    logger.writeStreamLog(sessionId, direction, data)
+    return { success: true }
+  } catch (error) {
+    logger.error('[IPC] write-stream-log error:', error)
+    return { success: false, error: error.message }
+  }
 })
 
 // Select/Activate a session - creates SessionInstance and returns state
 ipcMain.handle('select-session', async (event, { sessionId, projectId, projectPath }) => {
-  console.log('[IPC] select-session:', { sessionId, projectId, projectPath })
+  logger.info('[IPC] select-session:', { sessionId, projectId, projectPath })
 
   try {
     // Get or create the session instance
@@ -95,7 +162,7 @@ ipcMain.handle('select-session', async (event, { sessionId, projectId, projectPa
       state: sessionInstance.getState()
     }
   } catch (error) {
-    console.error('[IPC] select-session error:', error)
+    logger.error('[IPC] select-session error:', error)
     return { success: false, error: error.message }
   }
 })
@@ -114,7 +181,7 @@ ipcMain.handle('update-session-ui-state', async (event, { sessionId, state }) =>
 
 // Send message
 ipcMain.handle('send-message', async (event, { sessionId, message, content }) => {
-  console.log('[IPC] send-message:', { sessionId, contentLength: content?.length || message?.length })
+  logger.info('[IPC] send-message:', { sessionId, contentLength: content?.length || message?.length })
 
   try {
     // Support both 'content' (new) and 'message' (legacy) parameters
@@ -122,20 +189,20 @@ ipcMain.handle('send-message', async (event, { sessionId, message, content }) =>
     await sessionManager.sendMessage(sessionId, messageContent)
     return { success: true }
   } catch (error) {
-    console.error('[IPC] send-message error:', error)
+    logger.error('[IPC] send-message error:', error)
     return { success: false, error: error.message }
   }
 })
 
 // Send control response (for permission prompts)
 ipcMain.handle('send-control-response', async (event, { sessionId, requestId, approved, options }) => {
-  console.log('[IPC] send-control-response:', { sessionId, requestId, approved })
+  logger.info('[IPC] send-control-response:', { sessionId, requestId, approved })
 
   try {
     await sessionManager.sendControlResponse(sessionId, requestId, approved, options)
     return { success: true }
   } catch (error) {
-    console.error('[IPC] send-control-response error:', error)
+    logger.error('[IPC] send-control-response error:', error)
     return { success: false, error: error.message }
   }
 })
@@ -143,7 +210,7 @@ ipcMain.handle('send-control-response', async (event, { sessionId, requestId, ap
 // Send interrupt
 ipcMain.handle('send-interrupt', async (event, options) => {
   const sessionId = options?.sessionId
-  console.log('[IPC] send-interrupt:', sessionId)
+  logger.info('[IPC] send-interrupt:', sessionId)
 
   // If no sessionId, try to get the current active session
   if (!sessionId) {
@@ -151,12 +218,12 @@ ipcMain.handle('send-interrupt', async (event, options) => {
     if (activeSessions.length > 0) {
       // Use the first active session
       const activeSessionId = activeSessions[0]
-      console.log('[IPC] send-interrupt: using active session', activeSessionId)
+      logger.info('[IPC] send-interrupt: using active session', activeSessionId)
       try {
         await sessionManager.sendInterrupt(activeSessionId)
         return { success: true }
       } catch (error) {
-        console.error('[IPC] send-interrupt error:', error)
+        logger.error('[IPC] send-interrupt error:', error)
         return { success: false, error: error.message }
       }
     }
@@ -167,7 +234,7 @@ ipcMain.handle('send-interrupt', async (event, options) => {
     await sessionManager.sendInterrupt(sessionId)
     return { success: true }
   } catch (error) {
-    console.error('[IPC] send-interrupt error:', error)
+    logger.error('[IPC] send-interrupt error:', error)
     return { success: false, error: error.message }
   }
 })
@@ -226,7 +293,7 @@ ipcMain.handle('is-claude-ready', async (event, options) => {
 
 // Send tool result (legacy - for permission approval)
 ipcMain.handle('send-tool-result', async (event, { sessionId, toolUseId, content, isError }) => {
-  console.log('[IPC] send-tool-result:', { sessionId, toolUseId, isError })
+  logger.info('[IPC] send-tool-result:', { sessionId, toolUseId, isError })
 
   try {
     const session = sessionManager.getSession(sessionId)
@@ -240,28 +307,28 @@ ipcMain.handle('send-tool-result', async (event, { sessionId, toolUseId, content
     }
     return { success: true }
   } catch (error) {
-    console.error('[IPC] send-tool-result error:', error)
+    logger.error('[IPC] send-tool-result error:', error)
     return { success: false, error: error.message }
   }
 })
 
 // Start session (legacy - for backwards compatibility)
 ipcMain.handle('start-session', async (event, { sessionId, projectPath }) => {
-  console.log('[IPC] start-session (legacy):', { sessionId, projectPath })
+  logger.info('[IPC] start-session (legacy):', { sessionId, projectPath })
 
   try {
     // Use select-session internally
     const session = await sessionManager.getOrCreateSession(sessionId, projectPath, true)
     return { success: true, sessionId }
   } catch (error) {
-    console.error('[IPC] start-session error:', error)
+    logger.error('[IPC] start-session error:', error)
     return { success: false, error: error.message }
   }
 })
 
 // Close session
 ipcMain.handle('close-session', async (event, { sessionId }) => {
-  console.log('[IPC] close-session:', sessionId)
+  logger.info('[IPC] close-session:', sessionId)
   sessionManager.closeSession(sessionId)
   return { success: true }
 })
@@ -299,7 +366,7 @@ async function scanProjects() {
   const projectsDir = getClaudeProjectsDir()
 
   if (!fs.existsSync(projectsDir)) {
-    console.log('[Projects] Projects directory does not exist:', projectsDir)
+    logger.info('[Projects] Projects directory does not exist:', projectsDir)
     return []
   }
 
@@ -340,7 +407,7 @@ async function scanProjects() {
     return new Date(b.lastActiveAt) - new Date(a.lastActiveAt)
   })
 
-  console.log(`[Projects] Found ${projects.length} projects`)
+  logger.info(`[Projects] Found ${projects.length} projects`)
   return projects
 }
 
@@ -352,7 +419,7 @@ async function getProjectSessions(projectId) {
   const projectDir = path.join(projectsDir, projectId)
 
   if (!fs.existsSync(projectDir)) {
-    console.log('[Sessions] Project directory does not exist:', projectDir)
+    logger.info('[Sessions] Project directory does not exist:', projectDir)
     return []
   }
 
@@ -400,7 +467,7 @@ async function getProjectSessions(projectId) {
         }
       }
     } catch (e) {
-      console.log('[Sessions] Error reading session file:', e.message)
+      logger.warn('[Sessions] Error reading session file:', e.message)
     }
 
     sessions.push({
@@ -417,7 +484,7 @@ async function getProjectSessions(projectId) {
 
   sessions.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
 
-  console.log(`[Sessions] Found ${sessions.length} sessions for project ${projectId}`)
+  logger.info(`[Sessions] Found ${sessions.length} sessions for project ${projectId}`)
   return sessions
 }
 
@@ -457,7 +524,7 @@ ipcMain.handle('remove-project', async (event, { projectId }) => {
 
   if (fs.existsSync(projectDir)) {
     fs.rmSync(projectDir, { recursive: true })
-    console.log('[Projects] Removed project:', projectId)
+    logger.info('[Projects] Removed project:', projectId)
   }
 
   return { success: true }

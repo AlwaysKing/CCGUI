@@ -16,6 +16,7 @@
   "dependencies": {
     "highlight.js": "^11.11.1",
     "marked": "^17.0.3",
+    "pinia": "^3.0.4",
     "vue": "^3.4.0"
   },
   "devDependencies": {

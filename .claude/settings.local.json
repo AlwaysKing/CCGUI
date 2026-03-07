@@ -49,7 +49,26 @@
       "Grep(*)",
       "Bash(/opt/homebrew/bin/claude --print --verbose --output-format stream-json --input-format stream-json --permission-prompt-tool stdio)",
       "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/claude --print --verbose --output-format stream-json --input-format stream-json --permission-prompt-tool stdio)",
-      "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/claude --help)"
+      "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/claude --help)",
+      "Bash(xxd)",
+      "Bash(./node_modules/electron/dist/Electron.app/Contents/MacOS/Electron electron/test-main.cjs)",
+      "Bash(./node_modules/electron/dist/Electron.app/Contents/MacOS/Electron -e \"console.log\\(process.versions\\)\")",
+      "Bash(/Users/alwaysking/Desktop/CCGUI/electron/test-minimal.cjs:*)",
+      "Bash(./node_modules/electron/dist/Electron.app/Contents/MacOS/Electron --version)",
+      "Bash(xxd /Users/alwaysking/Desktop/CCGUI/src/components/ChatWindow.vue)",
+      "Read(//Users/alwaysking/.vscode/extensions/**)",
+      "Bash('behavior\\\\ | 'destination' ' /Users/alwaysking/.vscode/extensions/anthropic.claude-code-2.1.63-darwin-arm64/webview/index.js)",
+      "Bash(git commit:*)",
+      "Bash(git tag -a v0.1.0 -m \"Release v0.1.0 - 为ToolUse消息添加头像和蓝色边框样式\")",
+      "Bash(rm -rf /Users/alwaysking/Desktop/xxx/* /Users/alwaysking/Desktop/xxx/.*)",
+      "Read(//Users/alwaysking/Desktop/xxx/**)",
+      "Bash(curl -s \"http://worldtimeapi.org/api/ip\")",
+      "Bash(curl -sI google.com)",
+      "Read(//private/tmp/**)"
+    ],
+    "additionalDirectories": [
+      "/Users/alwaysking/Desktop/CCGUI/node_modules",
+      "/Users/alwaysking/AKProject/CCGUI/src"
     ]
   }
 }

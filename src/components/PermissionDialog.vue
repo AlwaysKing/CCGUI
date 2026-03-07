@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 
 const props = defineProps({
   request: {
@@ -10,16 +10,45 @@ const props = defineProps({
 
 const emit = defineEmits(['approve', 'deny', 'approve-all'])
 
-const toolName = computed(() => props.request?.tool_name || 'Unknown')
-const toolInput = computed(() => {
-  if (!props.request?.tool_input) return null
+/**
+ * 日志工具 - 将日志发送到后端终端
+ */
+function log(...args) {
+  if (window.electronAPI?.log) {
+    window.electronAPI.log(...args)
+  }
+  console.log(...args)
+}
+
+onMounted(() => {
   try {
-    if (typeof props.request.tool_input === 'string') {
-      return JSON.parse(props.request.tool_input)
+    log('[PermissionDialog] Full request object:', JSON.stringify(props.request, null, 2))
+  } catch (e) {
+    log('[PermissionDialog] Cannot serialize request')
+    log('[PermissionDialog] request keys:', Object.keys(props.request || {}).join(', '))
+    log('[PermissionDialog] tool_name:', props.request?.tool_name)
+    log('[PermissionDialog] toolName:', props.request?.toolName)
+    log('[PermissionDialog] tool_input:', props.request?.tool_input)
+    log('[PermissionDialog] toolInput:', props.request?.toolInput)
+    log('[PermissionDialog] input:', props.request?.input)
+  }
+})
+
+// 支持多种字段名格式 (tool_name/toolName)
+const toolName = computed(() => props.request?.tool_name || props.request?.toolName || 'Unknown')
+
+// 支持多种字段名格式 (input/tool_input/toolInput)
+const toolInput = computed(() => {
+  // 按优先级检查多种可能的字段名
+  const input = props.request?.input || props.request?.tool_input || props.request?.toolInput
+  if (!input) return null
+  try {
+    if (typeof input === 'string') {
+      return JSON.parse(input)
     }
-    return props.request.tool_input
+    return input
   } catch {
-    return props.request.tool_input
+    return input
   }
 })
 
@@ -28,9 +57,10 @@ const displayDetail = computed(() => {
   if (!toolInput.value) return null
 
   const input = toolInput.value
+  const name = toolName.value
 
   // Bash 工具显示命令
-  if (props.request?.tool_name === 'Bash' && input.command) {
+  if (name === 'Bash' && input.command) {
     return {
       label: '命令',
       value: input.command,
@@ -39,7 +69,7 @@ const displayDetail = computed(() => {
   }
 
   // Read 工具显示文件路径
-  if (props.request?.tool_name === 'Read' && input.file_path) {
+  if (name === 'Read' && input.file_path) {
     return {
       label: '文件',
       value: input.file_path
@@ -47,7 +77,7 @@ const displayDetail = computed(() => {
   }
 
   // Write/Edit 工具显示文件路径
-  if ((props.request?.tool_name === 'Write' || props.request?.tool_name === 'Edit') && input.file_path) {
+  if ((name === 'Write' || name === 'Edit') && input.file_path) {
     return {
       label: '文件',
       value: input.file_path
@@ -55,7 +85,7 @@ const displayDetail = computed(() => {
   }
 
   // Glob 工具显示模式
-  if (props.request?.tool_name === 'Glob' && input.pattern) {
+  if (name === 'Glob' && input.pattern) {
     return {
       label: '模式',
       value: input.pattern
@@ -63,7 +93,7 @@ const displayDetail = computed(() => {
   }
 
   // Grep 工具显示搜索模式
-  if (props.request?.tool_name === 'Grep' && input.pattern) {
+  if (name === 'Grep' && input.pattern) {
     return {
       label: '搜索',
       value: input.pattern,
@@ -113,7 +143,7 @@ function handleApproveAll() {
         </div>
 
         <div class="permission-description" v-else>
-          {{ request.tool_input?.description || 'Claude 需要使用此工具' }}
+          {{ (toolInput?.description || request.input?.description || request.tool_input?.description || request.toolInput?.description) || 'Claude 需要使用此工具' }}
         </div>
       </div>
 
@@ -134,7 +164,7 @@ function handleApproveAll() {
 
 <style scoped>
 .permission-dialog-overlay {
-  position: fixed;
+  position: absolute;
   bottom: 120px;
   left: 50%;
   transform: translateX(-50%);

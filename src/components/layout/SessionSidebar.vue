@@ -169,15 +169,17 @@ function getProjectName(path) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  -webkit-app-region: no-drag;
 }
 
 .sidebar-header {
-  padding: 12px 16px;
+  padding: 12px 16px 12px 140px;
   border-bottom: 1px solid #3F3F46;
   display: flex;
   justify-content: space-between;
   align-items: center;
   flex-shrink: 0;
+  -webkit-app-region: no-drag;
 }
 
 .sidebar-title {

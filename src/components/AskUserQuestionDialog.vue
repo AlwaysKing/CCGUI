@@ -14,10 +14,38 @@ const questions = ref([])
 const answers = ref({})
 const currentTabIndex = ref(0)
 
+/**
+ * 日志工具 - 将日志发送到后端终端
+ */
+function log(...args) {
+  if (window.electronAPI?.log) {
+    window.electronAPI.log(...args)
+  }
+  console.log(...args)
+}
+
 onMounted(() => {
+  // 详细记录原始请求的所有字段
+  log('[AskUserQuestionDialog] request keys:', Object.keys(props.request))
+
   // Parse the questions from tool input
-  if (props.request.tool_input && props.request.tool_input.questions) {
-    questions.value = props.request.tool_input.questions
+  // 支持多种可能的字段名格式：input, tool_input, toolInput
+  let toolInput = props.request.input || props.request.tool_input || props.request.toolInput
+
+  // 如果 toolInput 是字符串，尝试解析为 JSON
+  if (typeof toolInput === 'string') {
+    try {
+      toolInput = JSON.parse(toolInput)
+      log('[AskUserQuestionDialog] Parsed input as JSON, keys:', toolInput ? Object.keys(toolInput).join(', ') : 'null')
+    } catch (e) {
+      log('[AskUserQuestionDialog] Failed to parse input as JSON:', e.message)
+    }
+  }
+
+  log('[AskUserQuestionDialog] toolInput after parse:', typeof toolInput, toolInput ? 'exists' : 'null/undefined')
+
+  if (toolInput && toolInput.questions) {
+    questions.value = toolInput.questions
     // Initialize answers based on multiSelect
     questions.value.forEach((q, index) => {
       if (q.multiSelect) {
@@ -26,7 +54,19 @@ onMounted(() => {
         answers.value[index] = null // 单选初始化为 null
       }
     })
+  } else if (props.request.questions) {
+    // 直接在 request 上有 questions
+    questions.value = props.request.questions
+    questions.value.forEach((q, index) => {
+      if (q.multiSelect) {
+        answers.value[index] = []
+      } else {
+        answers.value[index] = null
+      }
+    })
   }
+
+  log('[AskUserQuestionDialog] questions count:', questions.value.length)
 })
 
 const currentQuestion = computed(() => {
@@ -94,7 +134,11 @@ function handleSubmit() {
     answersMap[q.question] = answer
   })
 
-  emit('answer', props.request.request_id, answersMap)
+  // 支持多种字段名：request_id, tool_use_id
+  const requestId = props.request.request_id || props.request.tool_use_id
+  log('[AskUserQuestionDialog] Submitting answers, requestId:', requestId, 'answers:', answersMap)
+
+  emit('answer', requestId, answersMap)
 }
 
 function switchTab(index) {
@@ -181,8 +225,8 @@ const isAllAnswered = computed(() => {
 
 <style scoped>
 .question-dialog-overlay {
-  position: fixed;
-  bottom: 120px;
+  position: absolute;
+  bottom: 80px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 99999;

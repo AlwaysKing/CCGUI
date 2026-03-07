@@ -126,6 +126,18 @@ onMounted(() => {
   align-items: center;
   padding: 48px 32px;
   overflow-y: auto;
+  position: relative;
+}
+
+.welcome-page::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  -webkit-app-region: drag;
+  z-index: 999;
 }
 
 .welcome-header {

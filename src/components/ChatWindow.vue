@@ -17,6 +17,9 @@ const props = defineProps({
   }
 })
 
+// Emits
+const emit = defineEmits(['toggleSidebar'])
+
 // 使用 SessionStore 的状态（只读 computed）
 const messages = computed(() => sessionStore.currentMessages)
 
@@ -1067,21 +1070,35 @@ async function handleQuestionAnswer(requestId, answers) {
 
 <template>
   <div class="chat-window">
-    <!-- Environment Bar -->
-    <div v-if="envInfo" class="env-bar" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-      <div class="env-main">
-        <span class="env-item">
-          <span class="env-icon">📁</span>
-          <span class="env-label">{{ envInfo.cwd?.split('/').pop() || envInfo.cwd }}</span>
-        </span>
-        <span v-if="envInfo.model" class="env-item">
-          <span class="env-icon">🤖</span>
-          <span class="env-label">{{ envInfo.model }}</span>
-        </span>
-        <span v-if="envInfo.session_id" class="env-item">
-          <span class="env-icon">🔗</span>
-          <span class="env-label">{{ envInfo.session_id?.substring(0, 8) }}</span>
-        </span>
+    <!-- Top Bar: Expand Button + Environment Bar -->
+    <div v-if="envInfo || sidebarCollapsed" class="top-bar" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+      <!-- Expand Button (when sidebar collapsed) -->
+      <button
+        v-if="sidebarCollapsed"
+        class="expand-btn-top"
+        @click="emit('toggleSidebar')"
+        title="展开侧边栏"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
+
+      <!-- Environment Bar -->
+      <div v-if="envInfo" class="env-bar" :class="{ 'with-expand-btn': sidebarCollapsed }">
+        <div class="env-main">
+          <span class="env-item">
+            <span class="env-icon">📁</span>
+            <span class="env-label">{{ envInfo.cwd?.split('/').pop() || envInfo.cwd }}</span>
+          </span>
+          <span v-if="envInfo.model" class="env-item">
+            <span class="env-icon">🤖</span>
+            <span class="env-label">{{ envInfo.model }}</span>
+          </span>
+          <span v-if="envInfo.session_id" class="env-item">
+            <span class="env-icon">🔗</span>
+            <span class="env-label">{{ envInfo.session_id?.substring(0, 8) }}</span>
+          </span>
         <span v-if="envInfo.tools?.length" class="env-item">
           <span class="env-icon">🔧</span>
           <span class="env-label">{{ envInfo.tools.length }} 工具</span>
@@ -1121,6 +1138,7 @@ async function handleQuestionAnswer(requestId, answers) {
           <span class="env-detail-value tools-list">{{ envInfo.tools.join(', ') }}</span>
         </div>
       </div>
+    </div>
     </div>
     <div class="messages" ref="messagesContainer" @scroll="handleUserScroll">
       <!-- 粘性头部 - 浮动在聊天内容上方 -->
@@ -1636,20 +1654,54 @@ async function handleQuestionAnswer(requestId, answers) {
   flex-direction: column;
 }
 
-/* Environment Bar */
-.env-bar {
-  position: relative;
+/* Top Bar: Expand Button + Environment Bar */
+.top-bar {
+  display: flex;
+  align-items: stretch;
   background: #18181B;
   border-bottom: 1px solid #27272A;
+  -webkit-app-region: drag;
+}
+
+.top-bar.sidebar-collapsed {
+  /* 折叠时为红绿灯留出空间 */
+  padding-left: 52px;
+}
+
+/* Expand Button in Top Bar */
+.expand-btn-top {
+  width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-right: 1px solid #27272A;
+  color: #71717A;
+  cursor: pointer;
+  transition: all 0.2s;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+  margin-left: -52px; /* 负边距使其回到红绿灯区域 */
+}
+
+.expand-btn-top:hover {
+  background: #27272A;
+  color: #A1A1AA;
+}
+
+/* Environment Bar */
+.env-bar {
+  flex: 1;
+  position: relative;
+  background: transparent;
   padding: 9.25px 16px;
   font-size: 12px;
-  transition: padding-left 0.2s ease;
-  /* -webkit-app-region: drag; */
   cursor: move;
 }
 
-.env-bar.sidebar-collapsed {
-  padding-left: 120px;
+.env-bar.with-expand-btn {
+  /* 当有展开按钮时的样式调整 */
 }
 
 .env-main {

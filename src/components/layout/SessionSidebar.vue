@@ -184,6 +184,10 @@ function getProjectName(path) {
   justify-content: space-between;
   align-items: center;
   flex-shrink: 0;
+  -webkit-app-region: drag;
+}
+
+.sidebar-header-row1 button {
   -webkit-app-region: no-drag;
 }
 

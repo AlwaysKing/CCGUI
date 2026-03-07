@@ -153,12 +153,13 @@ onUnmounted(() => {
 
 <template>
   <div class="workspace-layout">
-    <!-- Draggable Title Bar Area -->
+    <!-- Draggable Title Bar Area - 只在没有选择 session 时显示 -->
     <div
+      v-if="!store.currentSession"
       class="titlebar-drag-area"
       :style="{
-        left: sidebarCollapsed ? '140px' : `${sidebarWidth + 140}px`,
-        right: '60px'
+        left: sidebarCollapsed ? '140px' : `${sidebarWidth}px`,
+        right: 0
       }"
     ></div>
 
@@ -185,21 +186,13 @@ onUnmounted(() => {
         @mousedown="startResize"
       />
 
-      <!-- Expand Button (when collapsed) - 绝对定位 -->
-      <button
-        v-show="sidebarCollapsed"
-        class="expand-btn-floating"
-        @click="toggleSidebar"
-        title="展开侧边栏"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="9 18 15 12 9 6"/>
-        </svg>
-      </button>
-
       <!-- Main Content -->
       <main class="main-content">
-        <ChatWindow v-if="store.currentSession" :sidebar-collapsed="sidebarCollapsed" />
+        <ChatWindow
+          v-if="store.currentSession"
+          :sidebar-collapsed="sidebarCollapsed"
+          @toggleSidebar="toggleSidebar"
+        />
         <div v-else class="empty-state" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
           <div class="empty-icon">
             <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
@@ -278,33 +271,6 @@ onUnmounted(() => {
 
 .resize-handle:hover {
   background: #F97316;
-}
-
-.expand-btn-floating {
-  position: absolute;
-  left: 80px;
-  top: 8px;
-  width: 28px;
-  height: 28px;
-  background: #18181B;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
-  color: #9CA3AF;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-  z-index: 100;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  -webkit-app-region: no-drag;
-}
-
-.expand-btn-floating:hover {
-  background: #374151;
-  color: #E5E7EB;
-  border-color: #F97316;
-  z-index: 101;
 }
 
 .main-content {

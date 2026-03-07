@@ -511,6 +511,13 @@ export const useSessionStore = defineStore('session', () => {
           return
         }
         const toolUseData = contentBlock
+        log('[SessionStore] content_block_start tool_use:', {
+          toolName: toolUseData.name,
+          toolUseId: toolUseData.id,
+          inputKeys: toolUseData.input ? Object.keys(toolUseData.input) : [],
+          input: toolUseData.input,
+          fullEvent: event
+        })
         if (typeof event.index === 'number') {
           session.contentBlockIndexToId.set(event.index, toolUseData.id)
         }
@@ -519,6 +526,7 @@ export const useSessionStore = defineStore('session', () => {
           role: 'tool_use',
           toolName: toolUseData.name,
           toolInput: toolUseData.input ? { ...toolUseData.input } : {},
+          toolInputBuffer: '', // 用于累积 input_json_delta 片段
           result: '',
           isError: false,
           isExecuting: true,
@@ -568,11 +576,35 @@ export const useSessionStore = defineStore('session', () => {
 
         if (toolUseMsgIndex >= 0) {
           const toolUseMsg = session.messages[toolUseMsgIndex]
+
+          // 累积 partial_json 片段
+          if (!toolUseMsg.toolInputBuffer) {
+            toolUseMsg.toolInputBuffer = ''
+          }
+          toolUseMsg.toolInputBuffer += delta.partial_json
+
+          log('[SessionStore] input_json_delta:', {
+            contentBlockId,
+            toolUseMsgIndex,
+            partial_json: delta.partial_json,
+            bufferLength: toolUseMsg.toolInputBuffer.length,
+            currentToolInput: toolUseMsg.toolInput,
+            toolName: toolUseMsg.toolName
+          })
+
+          // 尝试解析累积的缓冲区
           try {
-            const parsedInput = JSON.parse(delta.partial_json)
+            const parsedInput = JSON.parse(toolUseMsg.toolInputBuffer)
             toolUseMsg.toolInput = { ...parsedInput }
+            log('[SessionStore] Updated toolInput from buffer:', {
+              toolUseId: contentBlockId,
+              parsedInputKeys: Object.keys(parsedInput),
+              newToolInput: toolUseMsg.toolInput,
+              buffer: toolUseMsg.toolInputBuffer
+            })
           } catch (e) {
-            // JSON 还不完整，忽略
+            // JSON 还不完整，忽略 - 继续累积
+            log('[SessionStore] JSON not complete yet, buffer length:', toolUseMsg.toolInputBuffer.length)
           }
         }
       }
@@ -714,21 +746,59 @@ export const useSessionStore = defineStore('session', () => {
    * 处理工具使用
    */
   function handleToolUse(session, data) {
-    // 添加工具使用消息
-    if (data.message?.content) {
-      const toolUseContent = data.message.content.find(c => c.type === 'tool_use')
+    log('[SessionStore] handleToolUse called:', {
+      dataKeys: Object.keys(data),
+      hasMessage: !!data.message,
+      hasContent: !!data.content,
+      messageContentKeys: data.message?.content ? data.message.content.map(c => c.type) : [],
+      directContentKeys: data.content ? data.content.map(c => c.type) : []
+    })
+
+    // 支持两种格式：data.message.content 或 data.content
+    const content = data.message?.content || data.content
+    if (content) {
+      const toolUseContent = content.find(c => c.type === 'tool_use')
       if (toolUseContent) {
-        session.messages.push({
-          id: toolUseContent.id || `tool-${Date.now()}`,
-          role: 'tool_use',
+        log('[SessionStore] toolUseContent found:', {
           toolName: toolUseContent.name,
-          toolInput: toolUseContent.input,
-          result: '',
-          isError: false,
-          isExecuting: true,
-          timestamp: new Date(),
-          startTime: Date.now()
+          toolUseId: toolUseContent.id,
+          inputKeys: toolUseContent.input ? Object.keys(toolUseContent.input) : [],
+          input: toolUseContent.input
         })
+        // 查找是否已存在相同的 tool_use 消息（通过 id 或 request_id 匹配）
+        const existingMsgIndex = session.messages.findIndex(m =>
+          (m.role === 'tool_use' && m.id === toolUseContent.id) ||
+          (m.role === 'tool_use' && m.request_id === toolUseContent.id)
+        )
+
+        if (existingMsgIndex >= 0) {
+          // 更新现有消息
+          const existingMsg = session.messages[existingMsgIndex]
+          log('[SessionStore] Updating existing tool_use message:', {
+            index: existingMsgIndex,
+            existingToolInput: existingMsg.toolInput,
+            newToolInput: toolUseContent.input
+          })
+          existingMsg.toolInput = toolUseContent.input || {}
+          existingMsg.toolName = toolUseContent.name
+          existingMsg.isExecuting = true
+          // 保留其他字段（如 startTime, timestamp 等）
+        } else {
+          // 创建新消息（如果流式传输没有创建）
+          log('[SessionStore] Creating new tool_use message (no streamed version found)')
+          session.messages.push({
+            id: toolUseContent.id || `tool-${Date.now()}`,
+            role: 'tool_use',
+            toolName: toolUseContent.name,
+            toolInput: toolUseContent.input,
+            toolInputBuffer: '', // 用于一致性，虽然可能不需要
+            result: '',
+            isError: false,
+            isExecuting: true,
+            timestamp: new Date(),
+            startTime: Date.now()
+          })
+        }
       }
     }
   }

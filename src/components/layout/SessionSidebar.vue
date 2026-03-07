@@ -10,9 +10,9 @@ const props = defineProps({
     type: Object,
     default: null
   },
-  runningSessions: {
-    type: Set,
-    default: () => new Set()
+  sessionStatuses: {
+    type: Object,
+    default: () => ({})
   },
   projectPath: {
     type: String,
@@ -20,7 +20,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'close', 'start'])
 
 const contextMenu = ref({
   show: false,
@@ -57,12 +57,39 @@ function handleDelete() {
   closeContextMenu()
 }
 
+function handleStart() {
+  if (contextMenu.value.session) {
+    emit('start', contextMenu.value.session)
+  }
+  closeContextMenu()
+}
+
+function handleClose() {
+  if (contextMenu.value.session) {
+    emit('close', contextMenu.value.session)
+  }
+  closeContextMenu()
+}
+
 function closeContextMenu() {
   contextMenu.value.show = false
 }
 
-function isRunning(sessionId) {
-  return props.runningSessions.has(sessionId)
+function getSessionStatus(sessionId) {
+  const status = props.sessionStatuses[sessionId]
+  if (!status || !status.ready) return 'inactive'
+  if (status.processing || status.streaming) return 'streaming'
+  return 'ready'
+}
+
+function isSessionRunning(sessionId) {
+  const status = props.sessionStatuses[sessionId]
+  return status && status.ready
+}
+
+function isSessionInactive(sessionId) {
+  const status = props.sessionStatuses[sessionId]
+  return !status || !status.ready
 }
 
 function formatTime(date) {
@@ -103,7 +130,12 @@ function getProjectName(path) {
     </div>
     <!-- 第二行：项目名称 | 新建按钮 -->
     <div class="sidebar-header-row2">
-      <span class="sidebar-title" :title="projectPath">{{ getProjectName(projectPath) }}</span>
+      <div class="sidebar-title" :title="projectPath" @click="emit('switchProject')">
+        <svg class="switch-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+        <span class="project-name">{{ getProjectName(projectPath) }}</span>
+      </div>
       <button class="add-btn" @click="emit('newSession')" title="新建会话">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="12" y1="5" x2="12" y2="19"/>
@@ -121,7 +153,7 @@ function getProjectName(path) {
         @click="handleSelect(session)"
         @contextmenu="handleContextMenu($event, session)"
       >
-        <div class="session-status" :class="{ running: isRunning(session.id) }" />
+        <div class="session-status" :class="getSessionStatus(session.id)" />
 
         <div class="session-info">
           <span class="session-name">{{ getSessionName(session) }}</span>
@@ -131,6 +163,19 @@ function getProjectName(path) {
             {{ session.messageCount || 0 }} 条消息 · {{ formatTime(session.updatedAt) }}
           </span>
         </div>
+
+        <!-- Three-dot menu button -->
+        <button
+          class="session-menu-btn"
+          @click.stop="handleContextMenu($event, session)"
+          title="更多操作"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="12" cy="5" r="2"/>
+            <circle cx="12" cy="12" r="2"/>
+            <circle cx="12" cy="19" r="2"/>
+          </svg>
+        </button>
       </div>
 
       <div v-if="sessions.length === 0" class="empty-list">
@@ -146,6 +191,32 @@ function getProjectName(path) {
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
     >
+      <!-- Start session option - only show when session is inactive -->
+      <button
+        v-if="isSessionInactive(contextMenu.session?.id)"
+        class="menu-item success"
+        @click="handleStart"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        启动会话
+      </button>
+
+      <!-- Close session option - only show when session is running -->
+      <button
+        v-if="isSessionRunning(contextMenu.session?.id)"
+        class="menu-item warning"
+        @click="handleClose"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="15" y1="9" x2="9" y2="15"/>
+          <line x1="9" y1="9" x2="15" y2="15"/>
+        </svg>
+        关闭会话
+      </button>
+
       <button class="menu-item" @click="handleRename">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
@@ -229,16 +300,41 @@ function getProjectName(path) {
 }
 
 .sidebar-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #9CA3AF;
-  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 20px;
+  font-weight: 700;
+  color: #60A5FA;
   letter-spacing: 0.5px;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
   cursor: pointer;
+  transition: color 0.2s;
+  flex: 1;
+  min-width: 0;
+}
+
+.project-name {
+  height: 20px;
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+}
+
+.switch-icon {
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.sidebar-title:hover {
+  color: #93C5FD;
+}
+
+.sidebar-title:hover .switch-icon {
+  opacity: 1;
 }
 
 .add-btn {
@@ -248,6 +344,7 @@ function getProjectName(path) {
   color: #6B7280;
   cursor: pointer;
   border-radius: 4px;
+  flex-shrink: 0;
 }
 
 .add-btn:hover {
@@ -269,6 +366,7 @@ function getProjectName(path) {
   border-radius: 6px;
   cursor: pointer;
   transition: background 0.15s;
+  position: relative;
 }
 
 .session-item:hover {
@@ -279,24 +377,62 @@ function getProjectName(path) {
   background: #374151;
 }
 
+/* Three-dot menu button - 默认隐藏 */
+.session-menu-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: #6B7280;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.session-menu-btn:hover {
+  background: #4B5563;
+  color: #D1D5DB;
+}
+
+/* Hover 时显示菜单按钮 */
+.session-item:hover .session-menu-btn {
+  opacity: 1;
+}
+
+/* Active 时也显示菜单按钮 */
+.session-item.active .session-menu-btn {
+  opacity: 1;
+}
+
 .session-status {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #4B5563;
+  background: #4B5563;  /* 灰色 - inactive */
   margin-top: 4px;
   flex-shrink: 0;
 }
 
-.session-status.running {
-  background: #10B981;
+.session-status.ready {
+  background: #10B981;  /* 绿色 - ready */
   box-shadow: 0 0 6px #10B981;
-  animation: pulse 2s infinite;
+}
+
+.session-status.streaming {
+  background: #10B981;  /* 闪烁绿色 - streaming */
+  box-shadow: 0 0 8px #10B981;
+  animation: pulse 1s infinite;
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+  50% { opacity: 0.4; }
 }
 
 .session-info {
@@ -379,6 +515,22 @@ function getProjectName(path) {
 
 .menu-item:hover {
   background: #4B5563;
+}
+
+.menu-item.warning {
+  color: #F59E0B;
+}
+
+.menu-item.warning:hover {
+  background: #78350F;
+}
+
+.menu-item.success {
+  color: #10B981;
+}
+
+.menu-item.success:hover {
+  background: #064E3B;
 }
 
 .menu-item.danger {

@@ -1201,7 +1201,7 @@ async function handleQuestionAnswer(requestId, answers) {
       <div v-if="envInfo" class="env-bar" :class="{ 'with-expand-btn': sidebarCollapsed }">
         <div class="env-main">
           <span class="env-item">
-            <span class="env-icon">⚡</span>
+            <span class="env-icon">⚙️</span>
             <span class="env-label">{{ envInfo.claudePid || '未启动' }}</span>
           </span>
           <span v-if="isDifferentFromProject" class="env-item env-item-highlight">

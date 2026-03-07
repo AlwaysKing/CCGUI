@@ -1641,7 +1641,7 @@ async function handleQuestionAnswer(requestId, answers) {
   position: relative;
   background: #18181B;
   border-bottom: 1px solid #27272A;
-  padding: 8px 16px;
+  padding: 9.25px 16px;
   font-size: 12px;
   transition: padding-left 0.2s ease;
   /* -webkit-app-region: drag; */

@@ -91,21 +91,25 @@ function getProjectName(path) {
 
 <template>
   <aside class="session-sidebar">
-    <div class="sidebar-header">
+    <!-- 第一行：红绿灯占位 | Logo | 折叠按钮 -->
+    <div class="sidebar-header-row1">
+      <div class="traffic-light-placeholder"></div>
+      <span class="app-logo">CCGUI</span>
+      <button class="toggle-btn" @click="emit('toggle')" title="折叠">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+      </button>
+    </div>
+    <!-- 第二行：项目名称 | 新建按钮 -->
+    <div class="sidebar-header-row2">
       <span class="sidebar-title" :title="projectPath">{{ getProjectName(projectPath) }}</span>
-      <div class="header-actions">
-        <button class="add-btn" @click="emit('newSession')" title="新建会话">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="5" x2="12" y2="19"/>
-            <line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-        </button>
-        <button class="toggle-btn" @click="emit('toggle')" title="折叠">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="15 18 9 12 15 6"/>
-          </svg>
-        </button>
-      </div>
+      <button class="add-btn" @click="emit('newSession')" title="新建会话">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"/>
+          <line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+      </button>
     </div>
 
     <div class="session-list">
@@ -172,8 +176,46 @@ function getProjectName(path) {
   -webkit-app-region: no-drag;
 }
 
-.sidebar-header {
-  padding: 12px 16px 12px 140px;
+/* 第一行：红绿灯占位 | Logo | 折叠按钮 */
+.sidebar-header-row1 {
+  padding: 8px 16px;
+  border-bottom: 1px solid #3F3F46;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+
+.traffic-light-placeholder {
+  width: 52px;
+  /* 为红绿灯留出空间 */
+}
+
+.app-logo {
+  font-size: 16px;
+  font-weight: 700;
+  color: #F97316;
+  letter-spacing: 0.5px;
+}
+
+.toggle-btn {
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: #6B7280;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.toggle-btn:hover {
+  background: #374151;
+  color: #D1D5DB;
+}
+
+/* 第二行：项目名称 | 新建按钮 */
+.sidebar-header-row2 {
+  padding: 8px 16px;
   border-bottom: 1px solid #3F3F46;
   display: flex;
   justify-content: space-between;
@@ -195,13 +237,7 @@ function getProjectName(path) {
   cursor: pointer;
 }
 
-.header-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.add-btn,
-.toggle-btn {
+.add-btn {
   padding: 4px;
   background: transparent;
   border: none;
@@ -210,8 +246,7 @@ function getProjectName(path) {
   border-radius: 4px;
 }
 
-.add-btn:hover,
-.toggle-btn:hover {
+.add-btn:hover {
   background: #374151;
   color: #D1D5DB;
 }

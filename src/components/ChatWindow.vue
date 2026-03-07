@@ -1200,7 +1200,7 @@ async function handleQuestionAnswer(requestId, answers) {
       <!-- Environment Bar -->
       <div v-if="envInfo" class="env-bar" :class="{ 'with-expand-btn': sidebarCollapsed }">
         <div class="env-main">
-          <span class="env-item" :class="{ 'env-item-highlight': !envInfo.claudePid }">
+          <span class="env-item">
             <span class="env-icon">⚡</span>
             <span class="env-label">{{ envInfo.claudePid || '未启动' }}</span>
           </span>

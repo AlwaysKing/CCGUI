@@ -226,6 +226,13 @@ class SessionInstance {
     try {
       await this.claudeManager.start()
       logger.info(`[SessionInstance] Claude started for session ${this.id}`)
+
+      // 启动成功后立即更新 envInfo 并发送到前端
+      if (this.envInfo) {
+        this.envInfo.claudePid = this.claudeManager.getPid()
+        this.emit('env-info', this.envInfo)
+      }
+
       return true
     } catch (e) {
       logger.error(`[SessionInstance] Failed to start Claude: ${e.message}`)

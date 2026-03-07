@@ -35,7 +35,8 @@ class SessionInstance {
     // 环境信息（先用已知信息初始化，收到 system init 后更新）
     this.envInfo = {
       cwd: projectPath,
-      session_id: sessionId
+      session_id: sessionId,
+      claudePid: null
     }
 
     // 流式消息跟踪（用于去重）
@@ -161,6 +162,11 @@ class SessionInstance {
    * 获取会话状态（用于前端同步）
    */
   getState() {
+    // 更新 envInfo 中的 PID
+    if (this.envInfo) {
+      this.envInfo.claudePid = this.claudeManager?.getPid() || null
+    }
+
     return {
       id: this.id,
       projectPath: this.projectPath,
@@ -437,8 +443,12 @@ class SessionInstance {
    */
   handleSystemMessage(message) {
     if (message.subtype === 'init') {
-      this.envInfo = message
-      this.emit('env-info', message)
+      // 添加 PID 到 envInfo
+      this.envInfo = {
+        ...message,
+        claudePid: this.claudeManager?.getPid() || null
+      }
+      this.emit('env-info', this.envInfo)
     } else {
       this.emit('system-message', message)
     }
@@ -538,6 +548,14 @@ class SessionInstance {
       this.claudeManager.stop()
       this.claudeManager = null
     }
+  }
+
+  /**
+   * 启动 Claude 实例
+   */
+  async start() {
+    logger.info(`[SessionInstance] Starting Claude via public start() method for session ${this.id}`)
+    return this.startClaude()
   }
 
   /**

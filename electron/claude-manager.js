@@ -508,6 +508,13 @@ class ClaudeManager {
   isReady() {
     return this.process !== null && this.process.stdin.writable
   }
+
+  /**
+   * Get Claude process PID
+   */
+  getPid() {
+    return this.process?.pid || null
+  }
 }
 
 module.exports = { ClaudeManager }

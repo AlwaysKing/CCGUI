@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import { useSessionStore } from '../stores/useSessionStore'
+import { useAppStore } from '../stores/useAppStore'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import PermissionDialog from './PermissionDialog.vue'
 import AskUserQuestionDialog from './AskUserQuestionDialog.vue'
@@ -8,6 +9,7 @@ import ToolUseMessage from './ToolUseMessage.vue'
 import MessageDetailDialog from './MessageDetailDialog.vue'
 
 const sessionStore = useSessionStore()
+const appStore = useAppStore()
 
 // Props
 const props = defineProps({
@@ -31,6 +33,33 @@ const envInfo = computed(() => sessionStore.currentSession?.envInfo)
 const inputMessage = computed({
   get: () => sessionStore.inputMessage,
   set: (val) => { sessionStore.inputMessage = val }
+})
+
+// 检查工作目录是否与项目路径一致
+const isDifferentFromProject = computed(() => {
+  const cwd = envInfo.value?.cwd
+  const projectPath = appStore.currentProject?.path
+  if (!cwd || !projectPath) return false
+  return cwd !== projectPath
+})
+
+// 统计 MCP 服务器状态
+const mcpStatusSummary = computed(() => {
+  const servers = envInfo.value?.mcp_servers
+  if (!servers || !Array.isArray(servers) || servers.length === 0) {
+    return null
+  }
+
+  const connected = servers.filter(s => s.status?.toLowerCase() === 'connected').length
+  const failed = servers.filter(s => ['failed', 'error'].includes(s.status?.toLowerCase())).length
+  const other = servers.length - connected - failed
+
+  return {
+    total: servers.length,
+    connected,
+    failed,
+    other
+  }
 })
 const isProcessing = computed(() => sessionStore.isProcessing)
 const messagesContainer = ref(null)
@@ -312,6 +341,90 @@ function formatTokens(usage) {
   if (input > 0) parts.push(`输入:${input}`)
   if (output > 0) parts.push(`输出:${output}`)
   return parts.join(' ')
+}
+
+// 格式化 MCP 服务器列表
+function formatMcpServers(servers) {
+  if (!servers || !Array.isArray(servers)) return ''
+  return servers.map(server => {
+    // 如果是字符串，直接使用
+    if (typeof server === 'string') return server
+
+    // 如果是对象，尝试多个可能的字段名
+    if (typeof server === 'object' && server !== null) {
+      // 尝试常见的字段名：name, id, server_name, host, url
+      const name = server.name || server.server_name || server.id || server.host || server.url
+
+      // 提取状态并添加图标
+      let statusIcon = ''
+      if (server.status) {
+        switch (server.status.toLowerCase()) {
+          case 'connected':
+            statusIcon = ' ✓'  // 绿色对勾
+            break
+          case 'failed':
+          case 'error':
+            statusIcon = ' ✗'  // 红色叉号
+            break
+          case 'connecting':
+          case 'loading':
+            statusIcon = ' ⏳'  // 沙漏
+            break
+          case 'disconnected':
+            statusIcon = ' ○'  // 空心圆
+            break
+          default:
+            statusIcon = ` [${server.status}]`
+        }
+      }
+
+      if (name) return String(name) + statusIcon
+
+      // 如果没有任何已知字段，提取所有值并用 - 连接
+      const values = Object.values(server).filter(v => typeof v === 'string' || typeof v === 'number')
+      if (values.length > 0) return values.slice(0, 2).join(' - ') + statusIcon
+
+      // 最后兜底：JSON 序列化（但移除大括号使其更简洁）
+      try {
+        const json = JSON.stringify(server)
+        return (json.length > 30 ? json.substring(0, 30) + '...' : json) + statusIcon
+      } catch (e) {
+        return 'MCP Server' + statusIcon
+      }
+    }
+
+    return String(server)
+  }).join(', ')
+}
+
+// 格式化技能列表
+function formatSkills(skills) {
+  if (!skills || !Array.isArray(skills)) return ''
+  return skills.map(skill => {
+    // 如果是字符串，直接使用
+    if (typeof skill === 'string') return skill
+
+    // 如果是对象，尝试多个可能的字段名
+    if (typeof skill === 'object' && skill !== null) {
+      // 尝试常见的字段名：name, id, skill_name
+      const name = skill.name || skill.skill_name || skill.id
+      if (name) return String(name)
+
+      // 如果没有任何已知字段，提取所有值并用 - 连接
+      const values = Object.values(skill).filter(v => typeof v === 'string' || typeof v === 'number')
+      if (values.length > 0) return values.slice(0, 2).join(' - ')
+
+      // 最后兜底：JSON 序列化
+      try {
+        const json = JSON.stringify(skill)
+        return json.length > 30 ? json.substring(0, 30) + '...' : json
+      } catch (e) {
+        return 'Skill'
+      }
+    }
+
+    return String(skill)
+  }).join(', ')
 }
 
 // 关闭消息详情弹窗
@@ -1087,7 +1200,11 @@ async function handleQuestionAnswer(requestId, answers) {
       <!-- Environment Bar -->
       <div v-if="envInfo" class="env-bar" :class="{ 'with-expand-btn': sidebarCollapsed }">
         <div class="env-main">
-          <span class="env-item">
+          <span class="env-item" :class="{ 'env-item-highlight': !envInfo.claudePid }">
+            <span class="env-icon">⚡</span>
+            <span class="env-label">{{ envInfo.claudePid || '未启动' }}</span>
+          </span>
+          <span v-if="isDifferentFromProject" class="env-item env-item-highlight">
             <span class="env-icon">📁</span>
             <span class="env-label">{{ envInfo.cwd?.split('/').pop() || envInfo.cwd }}</span>
           </span>
@@ -1103,6 +1220,20 @@ async function handleQuestionAnswer(requestId, answers) {
           <span class="env-icon">🔧</span>
           <span class="env-label">{{ envInfo.tools.length }} 工具</span>
         </span>
+        <span v-if="envInfo.skills?.length" class="env-item">
+          <span class="env-icon">⚡</span>
+          <span class="env-label">{{ envInfo.skills.length }} 技能</span>
+        </span>
+        <span v-if="envInfo.mcp_servers?.length" class="env-item">
+          <span class="env-icon">🔌</span>
+          <span class="env-label">
+            {{ envInfo.mcp_servers.length }} MCP
+            <span v-if="mcpStatusSummary" class="mcp-status-summary">
+              <span v-if="mcpStatusSummary.connected > 0" class="mcp-status-ok">{{ mcpStatusSummary.connected }}✓</span>
+              <span v-if="mcpStatusSummary.failed > 0" class="mcp-status-fail">{{ mcpStatusSummary.failed }}✗</span>
+            </span>
+          </span>
+        </span>
         <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">
           {{ showEnvDetail ? '收起' : '详情' }}
         </button>
@@ -1111,7 +1242,7 @@ async function handleQuestionAnswer(requestId, answers) {
       <div v-if="showEnvDetail" class="env-detail-dropdown">
         <div class="env-detail-row">
           <span class="env-detail-label">工作目录</span>
-          <span class="env-detail-value">{{ envInfo.cwd }}</span>
+          <span class="env-detail-value" :class="{ 'highlight-value': isDifferentFromProject }">{{ envInfo.cwd }}</span>
         </div>
         <div v-if="envInfo.model" class="env-detail-row">
           <span class="env-detail-label">模型</span>
@@ -1127,11 +1258,11 @@ async function handleQuestionAnswer(requestId, answers) {
         </div>
         <div v-if="envInfo.mcp_servers?.length" class="env-detail-row">
           <span class="env-detail-label">MCP</span>
-          <span class="env-detail-value tools-list">{{ envInfo.mcp_servers.join(', ') }}</span>
+          <span class="env-detail-value tools-list">{{ formatMcpServers(envInfo.mcp_servers) }}</span>
         </div>
         <div v-if="envInfo.skills?.length" class="env-detail-row">
           <span class="env-detail-label">技能</span>
-          <span class="env-detail-value tools-list">{{ envInfo.skills.join(', ') }}</span>
+          <span class="env-detail-value tools-list">{{ formatSkills(envInfo.skills) }}</span>
         </div>
         <div v-if="envInfo.tools?.length" class="env-detail-row env-tools">
           <span class="env-detail-label">工具</span>
@@ -1726,6 +1857,35 @@ async function handleQuestionAnswer(requestId, answers) {
   font-family: ui-monospace, monospace;
 }
 
+.env-item-highlight {
+  background: rgba(251, 191, 36, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: 4px;
+  padding: 2px 8px;
+  margin: -2px -8px;
+}
+
+.env-item-highlight .env-label {
+  color: #FCD34D;
+  font-weight: 500;
+}
+
+/* MCP 状态统计样式 */
+.mcp-status-summary {
+  margin-left: 6px;
+  font-size: 10px;
+}
+
+.mcp-status-ok {
+  color: #10B981;
+  margin-right: 4px;
+}
+
+.mcp-status-fail {
+  color: #EF4444;
+  margin-right: 4px;
+}
+
 .env-detail-btn {
   margin-left: auto;
   background: #27272A;
@@ -1754,6 +1914,7 @@ async function handleQuestionAnswer(requestId, answers) {
   padding: 12px 16px;
   z-index: 100;
   -webkit-app-region: no-drag;
+  cursor: default;
 }
 
 .env-detail-row {
@@ -1777,10 +1938,18 @@ async function handleQuestionAnswer(requestId, answers) {
   font-family: ui-monospace, monospace;
   font-size: 11px;
   word-break: break-all;
+  cursor: text;
 }
 
 .env-detail-value.tools-list {
   line-height: 1.6;
+}
+
+.env-detail-value.highlight {
+  color: #FCD34D;
+  background: rgba(251, 191, 36, 0.1);
+  padding: 2px 6px;
+  border-radius: 3px;
 }
 
 /* 粘性头部 - 浮动在聊天内容上方 */
@@ -1875,6 +2044,7 @@ async function handleQuestionAnswer(requestId, answers) {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 300px;
+  cursor: text;
 }
 
 /* 展开时的文本：Markdown 渲染，添加滚动条 */
@@ -1886,6 +2056,7 @@ async function handleQuestionAnswer(requestId, answers) {
   overflow-y: auto;
   width: 100%;
   position: relative;
+  cursor: text;
 }
 
 /* 折叠的回答占位符 */
@@ -1931,16 +2102,7 @@ async function handleQuestionAnswer(requestId, answers) {
   display: flex;
   margin-bottom: 16px;
   gap: 12px;
-  cursor: pointer;
   transition: opacity 0.15s;
-}
-
-.message:hover {
-  opacity: 0.85;
-}
-
-.message:active {
-  opacity: 0.75;
 }
 
 .message.user {
@@ -2188,6 +2350,7 @@ async function handleQuestionAnswer(requestId, answers) {
   line-height: 1.5;
   overflow-x: auto;
   position: relative;
+  cursor: text;
 }
 
 .message-text:not(:has(.markdown-content)) {
@@ -2282,6 +2445,7 @@ async function handleQuestionAnswer(requestId, answers) {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid #27272A;
+  cursor: text;
 }
 
 /* Thinking scrollbar */
@@ -2864,6 +3028,7 @@ async function handleQuestionAnswer(requestId, answers) {
   padding: 10px 12px;
   background: #18181B;
   border-radius: 6px;
+  cursor: text;
 }
 
 .question-options {
@@ -2923,6 +3088,7 @@ async function handleQuestionAnswer(requestId, answers) {
   flex-shrink: 0;
   font-weight: 500;
   line-height: 1.5;
+  cursor: text;
 }
 
 .option-item.selected .option-text {
@@ -3102,5 +3268,6 @@ async function handleQuestionAnswer(requestId, answers) {
   margin: 0;
   max-height: 300px;
   overflow: auto;
+  cursor: text;
 }
 </style>

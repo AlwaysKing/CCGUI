@@ -20,7 +20,7 @@ const props = defineProps({
 })
 
 // Emits
-const emit = defineEmits(['toggleSidebar'])
+const emit = defineEmits(['toggleSidebar', 'startSession', 'closeSession'])
 
 // 使用 SessionStore 的状态（只读 computed）
 const messages = computed(() => sessionStore.currentMessages)
@@ -251,6 +251,21 @@ function handleMessageClick(event, message) {
     event.preventDefault()
     event.stopPropagation()
     selectedMessage.value = message
+  }
+}
+
+// 处理 PID 点击（启动/关闭 Claude）
+function handlePidClick() {
+  const currentSession = sessionStore.currentSession
+  if (!currentSession) return
+
+  // 根据 PID 状态决定操作
+  if (envInfo.value?.claudePid) {
+    // 有关闭 Claude
+    emit('closeSession', { id: currentSession.id })
+  } else {
+    // 有启动 Claude
+    emit('startSession', { id: currentSession.id })
   }
 }
 
@@ -1200,7 +1215,7 @@ async function handleQuestionAnswer(requestId, answers) {
       <!-- Environment Bar -->
       <div v-if="envInfo" class="env-bar" :class="{ 'with-expand-btn': sidebarCollapsed }">
         <div class="env-main">
-          <span class="env-item">
+          <span class="env-item env-item-clickable" @click="handlePidClick" :title="envInfo.claudePid ? '点击关闭 Claude' : '点击启动 Claude'">
             <span class="env-icon">⚙️</span>
             <span class="env-label">{{ envInfo.claudePid || '未启动' }}</span>
           </span>
@@ -1796,12 +1811,17 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .top-bar.sidebar-collapsed {
   /* 折叠时为红绿灯留出空间 */
-  padding-left: 52px;
+  padding-left: 80px;
 }
 
 /* Expand Button in Top Bar */
 .expand-btn-top {
-  width: 44px;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: #6B7280;
+  border-radius: 4px;
+  align-self: center;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1813,12 +1833,12 @@ async function handleQuestionAnswer(requestId, answers) {
   transition: all 0.2s;
   -webkit-app-region: no-drag;
   flex-shrink: 0;
-  margin-left: -52px; /* 负边距使其回到红绿灯区域 */
+  /* 不使用负边距，让按钮在红绿灯区域右侧正常显示 */
 }
 
 .expand-btn-top:hover {
-  background: #27272A;
-  color: #A1A1AA;
+  background: #374151;
+  color: #D1D5DB;
 }
 
 /* Environment Bar */
@@ -1868,6 +1888,23 @@ async function handleQuestionAnswer(requestId, answers) {
 .env-item-highlight .env-label {
   color: #FCD34D;
   font-weight: 500;
+}
+
+.env-item-clickable {
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-radius: 4px;
+  padding: 2px 8px;
+  margin: -2px -8px;
+  -webkit-app-region: no-drag;
+}
+
+.env-item-clickable:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.env-item-clickable:active {
+  background: rgba(255, 255, 255, 0.15);
 }
 
 /* MCP 状态统计样式 */

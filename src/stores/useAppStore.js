@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useSessionStore } from './useSessionStore'
+import { logger } from '../utils/logger'
 
 // Local storage keys
 const STORAGE_KEYS = {
@@ -34,7 +35,7 @@ export const useAppStore = defineStore('app', () => {
   const sessions = ref([])
   const currentProject = ref(null)
   const currentSession = ref(null) // 会话元信息（从文件系统扫描）
-  const runningSessions = ref(new Set()) // 正在运行的 session IDs
+  const sessionStatuses = ref({}) // session 状态对象：{ ready, processing, streaming }
   const sidebarCollapsed = ref(loadFromStorage(STORAGE_KEYS.SIDEBAR_STATE, {
     project: false,
     session: false
@@ -50,7 +51,30 @@ export const useAppStore = defineStore('app', () => {
   // Computed
   const currentProjectSessions = computed(() => {
     if (!currentProject.value) return []
-    return sessions.value.filter(s => s.projectId === currentProject.value.id)
+
+    // 基础数据：从文件系统扫描的session列表
+    const baseSessions = sessions.value.filter(s => s.projectId === currentProject.value.id)
+
+    // 合并运行时的实时数据
+    return baseSessions.map(session => {
+      const runtimeStatus = sessionStatuses.value[session.id]
+      if (runtimeStatus) {
+        // 如果session正在运行，使用内存中的实时数据
+        return {
+          ...session,
+          messageCount: runtimeStatus.messageCount ?? session.messageCount,
+          updatedAt: runtimeStatus.updatedAt ?? session.updatedAt,
+          status: runtimeStatus.processing || runtimeStatus.streaming ? 'processing' : 'ready'
+        }
+      }
+      // 否则使用文件扫描的静态数据
+      return session
+    })
+  })
+
+  // 检查是否有正在处理的 session
+  const hasProcessingSessions = computed(() => {
+    return Object.values(sessionStatuses.value).some(s => s.processing || s.streaming)
   })
 
   // Actions - Projects
@@ -62,7 +86,7 @@ export const useAppStore = defineStore('app', () => {
       projects.value = result
     } catch (e) {
       error.value = e.message
-      console.error('Failed to fetch projects:', e)
+      logger.error('Failed to fetch projects', { error: e.message })
     } finally {
       isLoading.value = false
     }
@@ -77,18 +101,18 @@ export const useAppStore = defineStore('app', () => {
       return newProject
     } catch (e) {
       error.value = e.message
-      console.error('Failed to add project:', e)
+      logger.error('Failed to add project', { error: e.message })
       throw e
     } finally {
       isLoading.value = false
     }
   }
 
-  async function removeProject(projectId) {
+  async function removeProject(projectId, deleteFolder = false) {
     try {
       isLoading.value = true
       error.value = null
-      await window.electronAPI.removeProject({ projectId })
+      await window.electronAPI.removeProject({ projectId, deleteFolder })
       projects.value = projects.value.filter(p => p.id !== projectId)
       if (currentProject.value?.id === projectId) {
         currentProject.value = null
@@ -97,7 +121,7 @@ export const useAppStore = defineStore('app', () => {
       }
     } catch (e) {
       error.value = e.message
-      console.error('Failed to remove project:', e)
+      logger.error('Failed to remove project', { error: e.message })
       throw e
     } finally {
       isLoading.value = false
@@ -121,7 +145,7 @@ export const useAppStore = defineStore('app', () => {
       await fetchRunningSessions()
     } catch (e) {
       error.value = e.message
-      console.error('Failed to fetch sessions:', e)
+      logger.error('Failed to fetch sessions', { error: e.message })
     } finally {
       isLoading.value = false
     }
@@ -129,10 +153,10 @@ export const useAppStore = defineStore('app', () => {
 
   async function fetchRunningSessions() {
     try {
-      const runningIds = await window.electronAPI.getRunningSessions()
-      runningSessions.value = new Set(runningIds)
+      const statuses = await window.electronAPI.getRunningSessions()
+      sessionStatuses.value = statuses
     } catch (e) {
-      console.error('Failed to fetch running sessions:', e)
+      logger.error('Failed to fetch running sessions', { error: e.message })
     }
   }
 
@@ -145,7 +169,7 @@ export const useAppStore = defineStore('app', () => {
       return newSession
     } catch (e) {
       error.value = e.message
-      console.error('Failed to create session:', e)
+      logger.error('Failed to create session', { error: e.message })
       throw e
     } finally {
       isLoading.value = false
@@ -170,7 +194,7 @@ export const useAppStore = defineStore('app', () => {
       }
     } catch (e) {
       error.value = e.message
-      console.error('Failed to delete session:', e)
+      logger.error('Failed to delete session', { error: e.message })
       throw e
     } finally {
       isLoading.value = false
@@ -200,7 +224,7 @@ export const useAppStore = defineStore('app', () => {
       return session
     } catch (e) {
       error.value = e.message
-      console.error('Failed to select session:', e)
+      logger.error('Failed to select session', { error: e.message })
       throw e
     } finally {
       isLoading.value = false
@@ -221,7 +245,7 @@ export const useAppStore = defineStore('app', () => {
       }
     } catch (e) {
       error.value = e.message
-      console.error('Failed to rename project:', e)
+      logger.error('Failed to rename project', { error: e.message })
       throw e
     } finally {
       isLoading.value = false
@@ -242,7 +266,7 @@ export const useAppStore = defineStore('app', () => {
       }
     } catch (e) {
       error.value = e.message
-      console.error('Failed to rename session:', e)
+      logger.error('Failed to rename session', { error: e.message })
       throw e
     } finally {
       isLoading.value = false
@@ -264,13 +288,14 @@ export const useAppStore = defineStore('app', () => {
     sessions,
     currentProject,
     currentSession,
-    runningSessions,
+    sessionStatuses,
     sidebarCollapsed,
     isLoading,
     error,
 
     // Computed
     currentProjectSessions,
+    hasProcessingSessions,
 
     // Actions
     fetchProjects,

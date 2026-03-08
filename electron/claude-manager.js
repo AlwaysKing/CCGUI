@@ -209,6 +209,15 @@ class ClaudeManager {
 
     // Handle exit
     this.process.on('exit', (code, signal) => {
+      // Emit exit event so SessionInstance can update envInfo
+      const exitHandlers = this.messageHandlers.get('exit') || []
+      exitHandlers.forEach(handler => {
+        try {
+          handler({ code, signal })
+        } catch (error) {
+          // Ignore handler errors
+        }
+      })
       this.process = null
     })
 

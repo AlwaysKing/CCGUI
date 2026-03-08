@@ -75,6 +75,18 @@ class SessionManager {
   }
 
   /**
+   * 启动会话（启动 Claude 进程）
+   */
+  async startSession(sessionId) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return session.start()
+  }
+
+  /**
    * 更新会话 UI 状态
    */
   updateSessionUIState(sessionId, state) {
@@ -90,7 +102,8 @@ class SessionManager {
   async sendMessage(sessionId, content) {
     const session = this.sessions.get(sessionId)
     if (!session) {
-      throw new Error(`Session ${sessionId} not found`)
+      logger.warn(`[SessionManager] Session ${sessionId} not found, message may have been sent after session closed`)
+      return
     }
 
     return session.sendMessage(content)
@@ -102,7 +115,8 @@ class SessionManager {
   async sendControlResponse(sessionId, requestId, approved, options = {}) {
     const session = this.sessions.get(sessionId)
     if (!session) {
-      throw new Error(`Session ${sessionId} not found`)
+      logger.warn(`[SessionManager] Session ${sessionId} not found, control response may have been sent after session closed`)
+      return
     }
 
     return session.sendControlResponse(requestId, approved, options)
@@ -114,7 +128,8 @@ class SessionManager {
   async sendInterrupt(sessionId) {
     const session = this.sessions.get(sessionId)
     if (!session) {
-      throw new Error(`Session ${sessionId} not found`)
+      logger.warn(`[SessionManager] Session ${sessionId} not found, interrupt may have been sent after session closed`)
+      return
     }
 
     return session.sendInterrupt()

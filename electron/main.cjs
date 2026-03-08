@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session } = require('electron')
+const { app, BrowserWindow, ipcMain, session, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -7,6 +7,9 @@ const logger = require('./logger')
 
 // 初始化日志系统
 logger.initialize()
+
+// Determine if running in development mode
+const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 let mainWindow
 let sessionManager
@@ -39,7 +42,6 @@ function createWindow() {
   })
 
   // Load app
-  const isDev = true
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
     mainWindow.webContents.openDevTools()
@@ -319,6 +321,11 @@ ipcMain.handle('start-session', async (event, { sessionId, projectPath }) => {
   try {
     // Use select-session internally
     const session = await sessionManager.getOrCreateSession(sessionId, projectPath, true)
+
+    // Start Claude process
+    await session.start()
+
+    logger.info('[IPC] start-session completed:', { sessionId, ready: session.isClaudeReady() })
     return { success: true, sessionId }
   } catch (error) {
     logger.error('[IPC] start-session error:', error)
@@ -518,13 +525,33 @@ ipcMain.handle('add-project', async (event, { projectPath }) => {
 })
 
 // Remove a project
-ipcMain.handle('remove-project', async (event, { projectId }) => {
+ipcMain.handle('remove-project', async (event, { projectId, deleteFolder }) => {
   const projectsDir = getClaudeProjectsDir()
   const projectDir = path.join(projectsDir, projectId)
 
+  // Get project metadata to find the actual project path
+  let projectPath = null
+  const projects = await scanProjects()
+  const project = projects.find(p => p.id === projectId)
+  if (project) {
+    projectPath = project.path
+  }
+
+  // Delete CCGUI project data
   if (fs.existsSync(projectDir)) {
     fs.rmSync(projectDir, { recursive: true })
-    logger.info('[Projects] Removed project:', projectId)
+    logger.info('[Projects] Removed project data:', projectId)
+  }
+
+  // Delete actual project folder if requested
+  if (deleteFolder && projectPath && fs.existsSync(projectPath)) {
+    try {
+      fs.rmSync(projectPath, { recursive: true })
+      logger.info('[Projects] Removed project folder:', projectPath)
+    } catch (error) {
+      logger.error('[Projects] Failed to remove project folder:', { error: error.message, projectPath })
+      throw new Error(`删除项目文件夹失败: ${error.message}`)
+    }
   }
 
   return { success: true }
@@ -535,19 +562,28 @@ ipcMain.handle('get-sessions', async (event, { projectId }) => {
   return getProjectSessions(projectId)
 })
 
-// Get running sessions
+// Get running sessions with full status
 ipcMain.handle('get-running-sessions', async () => {
   if (!sessionManager) {
-    return []
+    return {}
   }
 
-  const runningSessionIds = []
+  const sessionStatuses = {}
   for (const [sessionId, session] of sessionManager.sessions) {
-    if (session.isClaudeReady()) {
-      runningSessionIds.push(sessionId)
+    // 获取消息数量和最后更新时间
+    const messages = session.messages || []
+    const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null
+
+    sessionStatuses[sessionId] = {
+      ready: session.isClaudeReady(),
+      processing: session.isProcessing,
+      streaming: session.currentStreamingAssistantId !== null,
+      // 添加实时统计信息
+      messageCount: messages.length,
+      updatedAt: lastMessage?.timestamp || new Date().toISOString()
     }
   }
-  return runningSessionIds
+  return sessionStatuses
 })
 
 // Create a new session
@@ -635,6 +671,82 @@ ipcMain.handle('rename-project', async (event, { projectId, name }) => {
 ipcMain.handle('rename-session', async (event, { sessionId, name }) => {
   return { success: true }
 })
+
+// Open project in new window
+ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
+  try {
+    // Get project info
+    const projects = await scanProjects()
+    const project = projects.find(p => p.id === projectId)
+
+    if (!project) {
+      throw new Error('Project not found')
+    }
+
+    // Create new BrowserWindow with same config as main window
+    const newWindow = new BrowserWindow({
+      width: 1200,
+      height: 800,
+      minWidth: 800,
+      minHeight: 600,
+      title: `CCGUI - ${project.name}`,
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 16, y: 16 },
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    })
+
+    // Store window-project mapping
+    newWindow.projectId = projectId
+
+    // Load app with project ID
+    if (isDev) {
+      const url = `http://localhost:5173/?projectId=${encodeURIComponent(projectId)}`
+      logger.info('[Window] Loading URL in new window', { url })
+      newWindow.loadURL(url)
+    } else {
+      // In production, use loadURL with file:// protocol and query params
+      const indexPath = path.join(__dirname, '../dist/index.html')
+      newWindow.loadURL(`file://${indexPath}?projectId=${encodeURIComponent(projectId)}`)
+    }
+
+    // Handle window close
+    newWindow.on('closed', () => {
+      logger.info('[Window] Closed window', { projectId })
+    })
+
+    logger.info('[Window] Created new window', { projectName: project.name, projectId })
+
+    return { success: true, windowId: newWindow.id }
+  } catch (error) {
+    logger.error('[Window] Failed to create new window', { error: error.message })
+    throw error
+  }
+})
+
+// Check if project folder exists
+ipcMain.handle('check-project-exists', async (event, { projectPath }) => {
+  try {
+    const exists = fs.existsSync(projectPath)
+    return { exists }
+  } catch (error) {
+    logger.error('[Project] Failed to check if project exists', { error: error.message, projectPath })
+    return { exists: false }
+  }
+})
+
+// Select directory dialog
+ipcMain.handle('select-directory', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory'],
+    title: '选择项目目录'
+  })
+  return result
+})
+
 
 // Get session messages (for backwards compatibility, but prefer select-session)
 ipcMain.handle('get-session-messages', async (event, { sessionId, projectId }) => {

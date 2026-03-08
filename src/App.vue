@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from './stores/useAppStore'
+import { logger } from './utils/logger'
 import WelcomePage from './components/pages/WelcomePage.vue'
 import WorkspaceLayout from './components/layout/WorkspaceLayout.vue'
 
@@ -19,19 +20,46 @@ onMounted(async () => {
   const isDev = import.meta.env.DEV
   const forceMultiSession = localStorage.getItem('ccgui_force_multi_session') === 'true'
 
-  console.log('App mounted:', { isDev, forceMultiSession, hasAPI: !!window.electronAPI?.getProjects })
+  logger.info('App mounted', { isDev, forceMultiSession, hasAPI: !!window.electronAPI?.getProjects })
+
+  // Check URL params for projectId (for new window)
+  const searchString = window.location.search
+  logger.info('Checking URL params', { search: searchString, href: window.location.href })
+
+  const urlParams = new URLSearchParams(searchString)
+  const projectId = urlParams.get('projectId')
+
+  if (projectId) {
+    logger.info('Opening project from URL param', { projectId })
+    try {
+      // Fetch projects first
+      await store.fetchProjects()
+      logger.info('Projects loaded', { count: store.projects.length })
+
+      // Find and select the project
+      const project = store.projects.find(p => p.id === projectId)
+      if (project) {
+        store.selectProject(project)
+        logger.info('Project selected successfully', { projectName: project.name, projectId })
+      } else {
+        logger.error('Project not found', { projectId, availableProjects: store.projects.map(p => ({ id: p.id, name: p.name })) })
+      }
+    } catch (error) {
+      logger.error('Failed to load project', { projectId, error: error.message })
+    }
+  }
 
   // Get Claude info
   try {
     const info = await window.electronAPI.getClaudeInfo()
-    console.log('Claude info:', info)
+    logger.info('Claude info retrieved', info)
   } catch (error) {
-    console.error('Failed to get Claude info:', error)
+    logger.error('Failed to get Claude info', { error: error.message })
   }
 
   // Wait for Claude initialization
   initUnsub = window.electronAPI.onClaudeInit((message) => {
-    console.log('Claude initialized:', message)
+    logger.info('Claude initialized', message)
     isClaudeReady.value = true
   })
 })

@@ -549,4 +549,108 @@ function getProjectName(path) {
   bottom: 0;
   z-index: 999;
 }
+
+/* Confirmation Dialog */
+.confirm-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.confirm-dialog {
+  background: #2D2D2D;
+  border: 1px solid #3F3F46;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 480px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.confirm-dialog-content {
+  padding: 32px 24px;
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.confirm-dialog-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-dialog-text {
+  flex: 1;
+}
+
+.confirm-dialog-text h3 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #E5E7EB;
+}
+
+.confirm-dialog-text p {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #9CA3AF;
+  line-height: 1.5;
+}
+
+.confirm-dialog-text p:last-child {
+  margin: 0;
+}
+
+.confirm-dialog-text strong {
+  color: #F4F4F5;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.confirm-dialog-actions {
+  padding: 16px 24px;
+  border-top: 1px solid #3F3F46;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.confirm-dialog-btn {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.confirm-dialog-btn.cancel {
+  background: #374151;
+  color: #D1D5DB;
+}
+
+.confirm-dialog-btn.cancel:hover {
+  background: #4B5563;
+}
+
+.confirm-dialog-btn.confirm {
+  background: #EF4444;
+  color: white;
+}
+
+.confirm-dialog-btn.confirm:hover {
+  background: #DC2626;
+}
+
 </style>

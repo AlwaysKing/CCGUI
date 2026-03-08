@@ -33,6 +33,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Close session
   closeSession: (options) => ipcRenderer.invoke('close-session', options),
 
+  // Start session (initialize Claude process without sending message)
+  startSession: (options) => ipcRenderer.invoke('start-session', options),
+
   // Listen to session events (统一的事件通道 - 新架构推荐使用)
   // 回调函数接收: { sessionId, eventType, data }
   onSessionEvent: (callback) => {
@@ -145,6 +148,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   renameSession: (options) => ipcRenderer.invoke('rename-session', options),
   getSessionMessages: (options) => ipcRenderer.invoke('get-session-messages', options),
   getRunningSessions: () => ipcRenderer.invoke('get-running-sessions'),
+  openProjectInNewWindow: (options) => ipcRenderer.invoke('open-project-in-new-window', options),
+  checkProjectExists: (options) => ipcRenderer.invoke('check-project-exists', options),
+  selectDirectory: () => ipcRenderer.invoke('select-directory'),
 
   // Platform info
   platform: process.platform,

@@ -1,18 +1,26 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
+import { useSessionStore } from '../../stores/useSessionStore'
+import { logger } from '../../utils/logger'
 import SessionSidebar from './SessionSidebar.vue'
 import ChatWindow from '../ChatWindow.vue'
 import NewSessionDialog from '../dialogs/NewSessionDialog.vue'
 import ConfirmDialog from '../dialogs/ConfirmDialog.vue'
 import RenameDialog from '../dialogs/RenameDialog.vue'
+import ProjectSwitchDialog from '../dialogs/ProjectSwitchDialog.vue'
+import SwitchConfirmDialog from '../dialogs/SwitchConfirmDialog.vue'
 
 const store = useAppStore()
+const sessionStore = useSessionStore()
 
 // Dialog states
 const showNewSessionDialog = ref(false)
 const showConfirmDialog = ref(false)
 const showRenameDialog = ref(false)
+const showProjectSwitchDialog = ref(false)
+const showSwitchConfirmDialog = ref(false)
+const selectedProject = ref(null)
 const confirmDialogConfig = ref({
   title: '',
   message: '',
@@ -99,11 +107,174 @@ async function handleRenameConfirm(newName) {
   showRenameDialog.value = false
 }
 
-// Go back to welcome page
-function goBack() {
-  store.currentProject = null
-  store.currentSession = null
-  store.sessions = []
+async function handleCloseSession(session) {
+  // 获取会话的完整状态
+  const sessionState = sessionStore.sessions.get(session.id)
+
+  // 如果正在处理，显示确认对话框
+  if (sessionState?.isProcessing) {
+    confirmDialogConfig.value = {
+      title: '确认关闭',
+      message: '会话正在处理中，关闭将中断当前操作。确定要关闭吗？',
+      onConfirm: () => {
+        performCloseSession(session, sessionState)
+        showConfirmDialog.value = false
+      }
+    }
+    showConfirmDialog.value = true
+  } else {
+    // 不在处理中，直接关闭
+    await performCloseSession(session, sessionState)
+  }
+}
+
+async function performCloseSession(session, sessionState) {
+  try {
+    // 如果正在处理，添加中断消息并停止计时
+    if (sessionState?.isProcessing) {
+      // 停止所有正在执行的工具和流式传输
+      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
+        const msg = sessionState.messages[i]
+
+        // 停止流式传输的 assistant 消息
+        if (msg.isStreaming) {
+          msg.isStreaming = false
+          if (msg.startTime && !msg.duration) {
+            msg.duration = Date.now() - msg.startTime
+          }
+        }
+
+        // 停止正在执行的工具
+        if (msg.isExecuting) {
+          msg.isExecuting = false
+          if (msg.startTime && !msg.duration) {
+            msg.duration = Date.now() - msg.startTime
+          }
+        }
+      }
+
+      // 添加中断消息
+      sessionState.messages.push({
+        id: `interrupt-${Date.now()}`,
+        role: 'system',
+        content: '已中断',
+        timestamp: new Date()
+      })
+
+      // 停止处理状态
+      sessionState.isProcessing = false
+    }
+
+    // 关闭 Claude 进程
+    await window.electronAPI.closeSession({ sessionId: session.id })
+    logger.info('[Workspace] Claude process closed for session:', session.id)
+  } catch (e) {
+    logger.error('[Workspace] Failed to close Claude process:', { error: e.message })
+    alert('关闭 Claude 进程失败: ' + e.message)
+  }
+}
+
+async function handleStartSession(session) {
+  try {
+    // 启动 Claude 进程（不发送消息）
+    await window.electronAPI.startSession({
+      sessionId: session.id,
+      projectPath: store.currentProject?.path
+    })
+    logger.info('[Workspace] Claude process started for session:', session.id)
+
+    // 立即刷新运行状态
+    await store.fetchRunningSessions()
+  } catch (e) {
+    logger.error('[Workspace] Failed to start Claude process:', { error: e.message })
+    alert('启动 Claude 进程失败: ' + e.message)
+  }
+}
+
+// Project switching handlers
+function handleSwitchProject() {
+  showProjectSwitchDialog.value = true
+}
+
+function handleProjectSelected(project) {
+  // If selected current project, just close dialog
+  if (project.id === store.currentProject?.id) {
+    showProjectSwitchDialog.value = false
+    return
+  }
+
+  selectedProject.value = project
+  showProjectSwitchDialog.value = false
+  showSwitchConfirmDialog.value = true
+}
+
+async function handleReplaceProject() {
+  try {
+    // Close all current sessions
+    for (const session of store.sessions) {
+      await sessionStore.closeSession(session.id)
+    }
+
+    // Switch project
+    store.selectProject(selectedProject.value)
+
+    showSwitchConfirmDialog.value = false
+    selectedProject.value = null
+  } catch (e) {
+    logger.error('Failed to switch project', { error: e.message })
+    alert('切换项目失败: ' + e.message)
+  }
+}
+
+async function handleNewWindow() {
+  try {
+    await window.electronAPI.openProjectInNewWindow({
+      projectId: selectedProject.value.id
+    })
+
+    showSwitchConfirmDialog.value = false
+    selectedProject.value = null
+  } catch (e) {
+    logger.error('Failed to open new window', { error: e.message })
+    alert('打开新窗口失败: ' + e.message)
+  }
+}
+
+async function handleGoHomeFromDialog(hasRunningSessions) {
+  // If there are running sessions, show confirmation
+  if (hasRunningSessions) {
+    confirmDialogConfig.value = {
+      title: '返回首页',
+      message: '当前有正在运行的会话，返回首页将中断这些操作。确定要返回吗？',
+      onConfirm: async () => {
+        await performGoHome()
+        showConfirmDialog.value = false
+      }
+    }
+    showConfirmDialog.value = true
+  } else {
+    // No running sessions, go home directly
+    await performGoHome()
+  }
+}
+
+async function performGoHome() {
+  try {
+    // Close all sessions
+    for (const session of store.sessions) {
+      await sessionStore.closeSession(session.id)
+    }
+
+    // Clear current project to return to welcome page
+    store.currentProject = null
+    store.currentSession = null
+
+    showProjectSwitchDialog.value = false
+    logger.info('[Workspace] Returned to home page')
+  } catch (e) {
+    logger.error('[Workspace] Failed to go home', { error: e.message })
+    alert('返回首页失败: ' + e.message)
+  }
 }
 
 // Handle session selection
@@ -114,7 +285,7 @@ async function handleSelectSession(sessionId) {
     try {
       await store.selectSession(session)
     } catch (e) {
-      console.error('Failed to select session:', e)
+      logger.error('Failed to select session', { error: e.message, sessionId })
       alert('打开会话失败: ' + e.message)
     }
   }
@@ -131,20 +302,21 @@ onMounted(async () => {
   window.addEventListener('mousemove', handleResize)
   window.addEventListener('mouseup', stopResize)
 
-  // Periodically update running sessions
-  const updateInterval = setInterval(() => {
+  // Periodically update running sessions status (every 2 seconds)
+  // This also fetches messageCount and updatedAt from memory
+  const updateRunningInterval = setInterval(() => {
     store.fetchRunningSessions()
-  }, 2000) // Update every 2 seconds
+  }, 2000)
 
   // Store interval ID for cleanup
-  window.runningSessionsInterval = updateInterval
+  window.runningSessionsInterval = updateRunningInterval
 })
 
 onUnmounted(() => {
   window.removeEventListener('mousemove', handleResize)
   window.removeEventListener('mouseup', stopResize)
 
-  // Clear running sessions update interval
+  // Clear interval
   if (window.runningSessionsInterval) {
     clearInterval(window.runningSessionsInterval)
   }
@@ -170,13 +342,16 @@ onUnmounted(() => {
         :style="{ width: `${sidebarWidth}px` }"
         :sessions="store.currentProjectSessions"
         :current-session="store.currentSession"
-        :running-sessions="store.runningSessions"
+        :session-statuses="store.sessionStatuses"
         :project-path="store.currentProject?.path"
         @select="handleSelectSession"
         @delete="handleDeleteSession"
-        @rename="handleRenameSession"
-        @new-session="handleNewSession"
+        @start="handleStartSession"
+        @close="handleCloseSession"
+        @newSession="handleNewSession"
         @toggle="toggleSidebar"
+        @rename="handleRenameSession"
+        @switchProject="handleSwitchProject"
       />
 
       <!-- Resize Handle -->
@@ -192,21 +367,38 @@ onUnmounted(() => {
           v-if="store.currentSession"
           :sidebar-collapsed="sidebarCollapsed"
           @toggleSidebar="toggleSidebar"
+          @startSession="handleStartSession"
+          @closeSession="handleCloseSession"
         />
-        <div v-else class="empty-state" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-          <div class="empty-icon">
-            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            </svg>
+        <div v-else class="empty-state-wrapper">
+          <!-- Top Bar when sidebar collapsed -->
+          <div v-if="sidebarCollapsed" class="empty-top-bar">
+            <button
+              class="expand-btn-empty"
+              @click="toggleSidebar"
+              title="展开侧边栏"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </button>
           </div>
-          <p>选择或创建一个会话开始聊天</p>
-          <button class="start-btn" @click="handleNewSession">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="12" y1="5" x2="12" y2="19"/>
-              <line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-            新建会话
-          </button>
+
+          <div class="empty-state">
+            <div class="empty-icon">
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+            </div>
+            <p>选择或创建一个会话开始聊天</p>
+            <button class="start-btn" @click="handleNewSession">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              新建会话
+            </button>
+          </div>
         </div>
       </main>
     </div>
@@ -233,6 +425,23 @@ onUnmounted(() => {
       :initial-name="renameDialogConfig.initialName"
       @close="showRenameDialog = false"
       @confirm="handleRenameConfirm"
+    />
+
+    <ProjectSwitchDialog
+      v-if="showProjectSwitchDialog"
+      :currentProjectId="store.currentProject?.id"
+      @close="showProjectSwitchDialog = false"
+      @select="handleProjectSelected"
+      @goHome="handleGoHomeFromDialog"
+    />
+
+    <SwitchConfirmDialog
+      v-if="showSwitchConfirmDialog"
+      :projectName="selectedProject?.name"
+      :hasRunningSessions="store.hasProcessingSessions"
+      @close="showSwitchConfirmDialog = false"
+      @replace="handleReplaceProject"
+      @newWindow="handleNewWindow"
     />
   </div>
 </template>
@@ -280,6 +489,45 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
+.empty-state-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.empty-top-bar {
+  display: flex;
+  align-items: stretch;
+  padding-left: 80px;
+  -webkit-app-region: drag;
+  height: 41.5px;
+}
+
+.expand-btn-empty {
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: #6B7280;
+  border-radius: 4px;
+align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-right: 1px solid #27272A;
+  cursor: pointer;
+  transition: all 0.2s;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+.expand-btn-empty:hover {
+  background: #374151;
+  color: #D1D5DB;
+}
+
 .empty-state {
   flex: 1;
   display: flex;
@@ -288,11 +536,6 @@ onUnmounted(() => {
   justify-content: center;
   color: #6B7280;
   gap: 16px;
-  transition: padding-left 0.2s ease;
-}
-
-.empty-state.sidebar-collapsed {
-  padding-left: 52px;
 }
 
 .empty-icon {

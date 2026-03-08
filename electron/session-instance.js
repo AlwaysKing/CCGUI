@@ -147,9 +147,19 @@ class SessionInstance {
       }
     }
 
-    // 处理 system init - 完全替换环境信息
+    // 处理 system init - 增量更新环境信息，过滤掉 null 值
     if (data.type === 'system' && data.subtype === 'init') {
-      this.envInfo = data
+      const filteredData = {}
+      for (const [key, value] of Object.entries(data)) {
+        if (value !== null) {
+          filteredData[key] = value
+        }
+      }
+
+      this.envInfo = {
+        ...this.envInfo,
+        ...filteredData
+      }
       if (sendToFrontend) {
         this.emit('env-info', this.envInfo)
       }
@@ -313,6 +323,17 @@ class SessionInstance {
     manager.on('unknown_message', (message) => {
       this.emit('unknown-message', message)
     })
+
+    // Process exit
+    manager.on('exit', ({ code, signal }) => {
+      logger.info(`[SessionInstance] Claude process exited for session ${this.id}, code: ${code}, signal: ${signal}`)
+      // Update envInfo to clear PID
+      if (this.envInfo) {
+        this.envInfo.claudePid = null
+        logger.info(`[SessionInstance] Emitting env-info with cleared PID:`, this.envInfo)
+        this.emit('env-info', this.envInfo)
+      }
+    })
   }
 
   /**
@@ -466,9 +487,17 @@ class SessionInstance {
       logger.info(`[SessionInstance] System init received, current PID: ${currentPid}`)
       logger.info(`[SessionInstance] System init message:`, message)
 
-      // 合并 envInfo，保留 PID
+      // 增量更新 envInfo，过滤掉 null 值，避免覆盖现有字段
+      const filteredMessage = {}
+      for (const [key, value] of Object.entries(message)) {
+        if (value !== null) {
+          filteredMessage[key] = value
+        }
+      }
+
       this.envInfo = {
-        ...message,
+        ...this.envInfo,
+        ...filteredMessage,
         claudePid: currentPid || this.envInfo?.claudePid || null
       }
 

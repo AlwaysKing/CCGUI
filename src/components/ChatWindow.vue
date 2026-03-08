@@ -79,6 +79,7 @@ const messagesHeight = ref(null) // 消息区域高度，null 表示自动
 const isResizing = ref(false) // 是否正在调整大小
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
+let previousWindowHeight = null // 上一次窗口高度
 const inputHistory = [] // 输入历史记录
 let historyIndex = -1 // 当前历史索引，-1 表示不在浏览历史
 let isHistoryNavigation = false // 标记是否正在通过历史导航设置值
@@ -115,6 +116,12 @@ onMounted(async () => {
   durationTimer = setInterval(() => {
     currentTime.value = Date.now()
   }, 100)
+
+  // 记录初始窗口高度
+  previousWindowHeight = window.innerHeight
+
+  // 监听窗口大小变化，将高度变化全部作用到 messages 区域
+  window.addEventListener('resize', handleWindowResize)
 
   // 监听聊天容器高度变化
   if (messagesContainer.value) {
@@ -165,6 +172,8 @@ onUnmounted(() => {
   sessionStore.stopEventListener()
   // 清理点击外部监听器
   document.removeEventListener('click', handleClickOutsidePermissionMenu)
+  // 清理窗口大小变化监听器
+  window.removeEventListener('resize', handleWindowResize)
 })
 
 // 点击外部关闭权限菜单
@@ -788,6 +797,25 @@ function handleInputChange() {
   if (!isHistoryNavigation && historyIndex !== -1) {
     historyIndex = -1
   }
+}
+
+// 处理窗口大小变化，将高度变化全部作用到 messages 区域
+function handleWindowResize() {
+  const currentHeight = window.innerHeight
+  const delta = currentHeight - previousWindowHeight
+
+  // 更新上一次窗口高度
+  previousWindowHeight = currentHeight
+
+  // 如果有用户手动设置的高度，则调整它
+  if (messagesHeight.value) {
+    // 解析当前高度值
+    const currentMessagesHeight = parseInt(messagesHeight.value)
+    // 计算新的高度
+    const newHeight = Math.max(200, currentMessagesHeight + delta)
+    messagesHeight.value = newHeight + 'px'
+  }
+  // 如果没有设置高度（自动模式），则不需要处理，让 flex 布局自动调整
 }
 
 // 开始调整大小

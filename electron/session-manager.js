@@ -136,6 +136,32 @@ class SessionManager {
   }
 
   /**
+   * 发送控制请求（主动请求，如切换权限模式）
+   */
+  async sendControlRequest(sessionId, request) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      logger.warn(`[SessionManager] Session ${sessionId} not found, control request may have been sent after session closed`)
+      return
+    }
+
+    return session.sendControlRequest(request)
+  }
+
+  /**
+   * 设置权限模式
+   */
+  async setPermissionMode(sessionId, mode) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      logger.warn(`[SessionManager] Session ${sessionId} not found`)
+      return
+    }
+
+    return session.setPermissionMode(mode)
+  }
+
+  /**
    * 关闭会话
    */
   closeSession(sessionId) {

@@ -266,6 +266,32 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
+   * 发送控制请求（主动请求，如切换权限模式）
+   */
+  async function sendControlRequest(request) {
+    const session = currentSession.value
+    if (!session) return
+
+    await window.electronAPI.sendControlRequest({
+      sessionId: session.id,
+      request
+    })
+  }
+
+  /**
+   * 设置权限模式
+   */
+  async function setPermissionMode(mode) {
+    const session = currentSession.value
+    if (!session) return
+
+    await window.electronAPI.setPermissionMode({
+      sessionId: session.id,
+      mode
+    })
+  }
+
+  /**
    * 处理从后端收到的事件
    */
   function handleSessionEvent(event) {
@@ -1013,6 +1039,8 @@ export const useSessionStore = defineStore('session', () => {
     sendControlResponse,
     sendToolResult,
     sendInterrupt,
+    sendControlRequest,
+    setPermissionMode,
     startEventListener,
     stopEventListener,
     clearAll,

@@ -30,6 +30,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Send interrupt request
   sendInterrupt: (options) => ipcRenderer.invoke('send-interrupt', options),
 
+  // Send control request (主动请求，如切换权限模式)
+  sendControlRequest: (options) => ipcRenderer.invoke('send-control-request', options),
+
+  // Set permission mode
+  setPermissionMode: (options) => ipcRenderer.invoke('set-permission-mode', options),
+
   // Close session
   closeSession: (options) => ipcRenderer.invoke('close-session', options),
 
@@ -151,6 +157,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openProjectInNewWindow: (options) => ipcRenderer.invoke('open-project-in-new-window', options),
   checkProjectExists: (options) => ipcRenderer.invoke('check-project-exists', options),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
+  updateWindowTitle: (options) => ipcRenderer.invoke('update-window-title', options),
 
   // Platform info
   platform: process.platform,

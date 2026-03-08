@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useAppStore } from './stores/useAppStore'
 import { logger } from './utils/logger'
 import WelcomePage from './components/pages/WelcomePage.vue'
@@ -13,6 +13,25 @@ let initUnsub = null
 // 当前视图: 'welcome' | 'workspace'
 const currentView = computed(() => {
   return store.currentProject ? 'workspace' : 'welcome'
+})
+
+// 更新窗口标题
+async function updateWindowTitle() {
+  try {
+    const title = currentView.value === 'welcome'
+      ? 'CCGUI - 首页'
+      : `CCGUI - ${store.currentProject?.name || '未知项目'}`
+
+    await window.electronAPI?.updateWindowTitle({ title })
+    logger.info('Window title updated', { title, view: currentView.value })
+  } catch (error) {
+    logger.error('Failed to update window title', { error: error.message })
+  }
+}
+
+// 监听视图变化更新标题
+watch(currentView, () => {
+  updateWindowTitle()
 })
 
 onMounted(async () => {
@@ -48,6 +67,9 @@ onMounted(async () => {
       logger.error('Failed to load project', { projectId, error: error.message })
     }
   }
+
+  // Update window title on mount
+  updateWindowTitle()
 
   // Get Claude info
   try {

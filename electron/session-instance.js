@@ -25,6 +25,7 @@ class SessionInstance {
     this.historyIndex = -1    // 历史浏览索引
 
     // 权限相关
+    this.permissionMode = 'default'  // 权限模式
     this.pendingPermission = null      // 待处理的工具权限请求
     this.pendingControlRequest = null  // 待处理的控制请求（AskUserQuestion 等）
     this.pendingToolResults = new Map() // 待处理的工具结果
@@ -230,7 +231,12 @@ class SessionInstance {
       }
     }
 
-    this.claudeManager = new ClaudeManager(this.projectPath, this.id, isNewSession)
+    this.claudeManager = new ClaudeManager(
+      this.projectPath,
+      this.id,
+      isNewSession,
+      this.permissionMode // 传递权限模式
+    )
     this.setupClaudeHandlers()
 
     try {
@@ -582,6 +588,38 @@ class SessionInstance {
     }
 
     this.claudeManager.sendInterrupt()
+  }
+
+  /**
+   * 发送控制请求（主动请求，如切换权限模式）
+   */
+  async sendControlRequest(request) {
+    if (!this.claudeManager) {
+      throw new Error('Claude not started')
+    }
+
+    this.claudeManager.sendControlRequest(request)
+  }
+
+  /**
+   * 设置权限模式
+   */
+  async setPermissionMode(mode) {
+    logger.info(`[SessionInstance] Setting permission mode to: ${mode}`)
+
+    // 保存权限模式
+    this.permissionMode = mode
+
+    // 如果 Claude 已启动，发送 control_request
+    if (this.claudeManager && this.claudeManager.isReady()) {
+      await this.sendControlRequest({
+        subtype: 'set_permission_mode',
+        mode: mode
+      })
+      logger.info(`[SessionInstance] Sent permission mode change to Claude: ${mode}`)
+    } else {
+      logger.info(`[SessionInstance] Claude not ready, will apply permission mode on start: ${mode}`)
+    }
   }
 
   /**

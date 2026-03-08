@@ -8,8 +8,8 @@ const logger = require('./logger')
 // 初始化日志系统
 logger.initialize()
 
-// Determine if running in development mode
-const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+// Global isDev flag - will be set before creating windows
+let isDev = process.env.NODE_ENV === 'development'
 
 let mainWindow
 let sessionManager
@@ -21,7 +21,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: 'Claude Code GUI',
+    title: 'CCGUI - 首页',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
@@ -237,6 +237,32 @@ ipcMain.handle('send-interrupt', async (event, options) => {
     return { success: true }
   } catch (error) {
     logger.error('[IPC] send-interrupt error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Send control request (主动请求，如切换权限模式)
+ipcMain.handle('send-control-request', async (event, { sessionId, request }) => {
+  logger.info('[IPC] send-control-request:', { sessionId, request })
+
+  try {
+    await sessionManager.sendControlRequest(sessionId, request)
+    return { success: true }
+  } catch (error) {
+    logger.error('[IPC] send-control-request error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Set permission mode
+ipcMain.handle('set-permission-mode', async (event, { sessionId, mode }) => {
+  logger.info('[IPC] set-permission-mode:', { sessionId, mode })
+
+  try {
+    await sessionManager.setPermissionMode(sessionId, mode)
+    return { success: true }
+  } catch (error) {
+    logger.error('[IPC] set-permission-mode error:', error)
     return { success: false, error: error.message }
   }
 })
@@ -747,6 +773,17 @@ ipcMain.handle('select-directory', async () => {
   return result
 })
 
+// Update window title
+ipcMain.handle('update-window-title', async (event, { title }) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (window) {
+    window.setTitle(title)
+    logger.info('[Window] Updated window title:', title)
+    return { success: true }
+  }
+  return { success: false, error: 'Window not found' }
+})
+
 
 // Get session messages (for backwards compatibility, but prefer select-session)
 ipcMain.handle('get-session-messages', async (event, { sessionId, projectId }) => {
@@ -781,10 +818,186 @@ ipcMain.handle('get-session-messages', async (event, { sessionId, projectId }) =
   }
 })
 
+// ============================================
+// macOS Dock Support
+// ============================================
+
+/**
+ * Handle drag folder to dock icon
+ */
+app.on('open-file', (event, filePath) => {
+  event.preventDefault()
+
+  logger.info('[Dock] File/folder dropped to dock icon:', filePath)
+
+  // Check if it's a directory
+  try {
+    const stats = fs.statSync(filePath)
+    if (!stats.isDirectory()) {
+      logger.info('[Dock] Not a directory, ignoring:', filePath)
+      return
+    }
+  } catch (error) {
+    logger.error('[Dock] Error checking path:', error)
+    return
+  }
+
+  // Check if there's already a window with this project
+  const existingWindow = findWindowByProjectPath(filePath)
+  if (existingWindow) {
+    logger.info('[Dock] Found existing window for project, focusing it')
+    existingWindow.focus()
+    return
+  }
+
+  // Create project ID from path
+  const projectId = encodeProjectPath(filePath)
+
+  // Open in new window
+  openProjectWindow(projectId, path.basename(filePath))
+})
+
+/**
+ * Find window by project path
+ */
+function findWindowByProjectPath(projectPath) {
+  const windows = BrowserWindow.getAllWindows()
+  for (const win of windows) {
+    if (win.projectPath === projectPath) {
+      return win
+    }
+  }
+  return null
+}
+
+/**
+ * Encode project path to project ID
+ */
+function encodeProjectPath(projectPath) {
+  let encodedPath = projectPath
+  if (process.platform === 'win32') {
+    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
+  } else {
+    encodedPath = encodedPath.replace(/\//g, '-')
+  }
+  if (encodedPath.startsWith('-')) {
+    encodedPath = encodedPath.slice(1)
+  }
+  return '-' + encodedPath
+}
+
+/**
+ * Open project window (new or existing)
+ */
+function openProjectWindow(projectId, projectName) {
+  // Create new BrowserWindow
+  const newWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
+    title: `CCGUI - ${projectName}`,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 16 },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  // Store project info
+  newWindow.projectId = projectId
+  newWindow.projectName = projectName
+
+  // Load app with project ID
+  if (isDev) {
+    const url = `http://localhost:5173/?projectId=${encodeURIComponent(projectId)}`
+    logger.info('[Window] Loading URL in new window', { url })
+    newWindow.loadURL(url)
+  } else {
+    const indexPath = path.join(__dirname, '../dist/index.html')
+    newWindow.loadURL(`file://${indexPath}?projectId=${encodeURIComponent(projectId)}`)
+  }
+
+  newWindow.on('closed', () => {
+    logger.info('[Window] Closed window', { projectId })
+  })
+
+  logger.info('[Window] Created new window for project', { projectName, projectId })
+
+  return newWindow
+}
+
+/**
+ * Setup dock menu (macOS only)
+ */
+function setupDockMenu() {
+  if (process.platform !== 'darwin') {
+    return
+  }
+
+  const { Menu } = require('electron')
+
+  const dockMenuTemplate = [
+    {
+      label: '新建窗口',
+      click: () => {
+        logger.info('[Dock] New Window clicked')
+        createNewWindow()
+      }
+    }
+  ]
+
+  const dockMenu = Menu.buildFromTemplate(dockMenuTemplate)
+  app.dock.setMenu(dockMenu)
+
+  logger.info('[Dock] Dock menu setup completed')
+}
+
+/**
+ * Create new empty window (hello page)
+ */
+function createNewWindow() {
+  const newWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
+    title: 'CCGUI - 首页',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 16 },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  // Load app without project ID (shows hello page)
+  if (isDev) {
+    newWindow.loadURL('http://localhost:5173')
+  } else {
+    const indexPath = path.join(__dirname, '../dist/index.html')
+    newWindow.loadURL(`file://${indexPath}`)
+  }
+
+  newWindow.on('closed', () => {
+    logger.info('[Window] Closed new window')
+  })
+
+  return newWindow
+}
+
 // App lifecycle
 
 app.whenReady().then(() => {
+  // Update isDev flag now that app is ready
+  isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+  logger.info('[App] Development mode:', isDev)
+
   createWindow()
+  setupDockMenu()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

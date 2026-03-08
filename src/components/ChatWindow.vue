@@ -67,6 +67,7 @@ const inputArea = ref(null)
 // pendingPermission and pendingControlRequest are now computed from sessionStore (defined above)
 // pendingQuestion is also now computed from sessionStore
 const isDragOver = ref(false)
+const isInputFocused = ref(false) // 输入框是否聚焦
 const questionActiveTabs = ref({}) // 存储每条问答消息的 active tab
 const workingDirectory = ref('') // 工作目录
 const selectedMessage = ref(null) // 当前选中的消息（用于显示详情）
@@ -81,6 +82,28 @@ let historyIndex = -1 // 当前历史索引，-1 表示不在浏览历史
 let isHistoryNavigation = false // 标记是否正在通过历史导航设置值
 const showHistoryPicker = ref(false) // 显示历史记录选择弹窗
 // Note: isLoadingHistory removed - history is now loaded by SessionStore/SessionInstance
+
+// 权限模式
+const permissionMode = ref('default') // 当前权限模式
+const showPermissionMenu = ref(false) // 是否显示权限菜单
+const permissionModes = [
+  { value: 'default', label: '默认', icon: '💡' },
+  { value: 'acceptEdits', label: '允许编辑', icon: '✏️' },
+  { value: 'plan', label: '计划模式', icon: '📋' },
+  { value: 'bypassPermissions', label: '全部允许', icon: '✅' }
+]
+
+// 当前权限模式的标签（带图标）
+const currentModeLabel = computed(() => {
+  const mode = permissionModes.find(m => m.value === permissionMode.value)
+  return mode ? `${mode.icon} ${mode.label}` : '💡 默认'
+})
+
+// 当前权限模式的描述
+const currentModeDescription = computed(() => {
+  const mode = permissionModes.find(m => m.value === permissionMode.value)
+  return mode?.description || '每次都询问'
+})
 
 onMounted(async () => {
   // 启动 SessionStore 的事件监听器（监听后端的 session-event 统一通道）
@@ -111,6 +134,9 @@ onMounted(async () => {
 
   // 注意：所有事件现在通过 SessionStore 的 session-event 通道处理
   // 不再需要旧的事件监听器（onClaudeMessage, onStreamEvent 等）
+
+  // 点击外部关闭权限菜单
+  document.addEventListener('click', handleClickOutsidePermissionMenu)
 })
 
 // Note: Session history is now loaded by SessionStore/SessionInstance
@@ -124,7 +150,17 @@ onUnmounted(() => {
   }
   // Stop SessionStore event listener
   sessionStore.stopEventListener()
+  // 清理点击外部监听器
+  document.removeEventListener('click', handleClickOutsidePermissionMenu)
 })
+
+// 点击外部关闭权限菜单
+function handleClickOutsidePermissionMenu(event) {
+  const wrapper = document.querySelector('.permission-mode-wrapper')
+  if (wrapper && !wrapper.contains(event.target)) {
+    showPermissionMenu.value = false
+  }
+}
 
 // 监听流式更新（消息内容变化导致高度增加）
 // 使用 sync flush 在 DOM 更新前记录状态
@@ -997,6 +1033,58 @@ function switchQuestionTab(messageIndex, tabIndex) {
   questionActiveTabs.value[messageIndex] = tabIndex
 }
 
+// 处理权限模式切换
+async function handlePermissionModeChange(mode) {
+  if (mode === permissionMode.value) return
+
+  const previousMode = permissionMode.value
+  permissionMode.value = mode
+
+  const modeLabel = permissionModes.find(m => m.value === mode)?.label || mode
+
+  try {
+    // 调用 sessionStore 的 setPermissionMode
+    // 后端会自动判断：
+    // - 如果 Claude 已启动，发送 control_request
+    // - 如果 Claude 未启动，保存模式，启动时应用
+    await sessionStore.setPermissionMode(mode)
+
+    // 添加系统消息提示
+    const isClaudeReady = envInfo.value?.claudePid != null
+    if (isClaudeReady) {
+      messages.value.push({
+        role: 'system',
+        content: `🔄 权限模式已切换: ${modeLabel}`,
+        timestamp: new Date()
+      })
+    } else {
+      messages.value.push({
+        role: 'system',
+        content: `💡 权限模式已设置为: ${modeLabel} (将在 Claude 启动时生效)`,
+        timestamp: new Date()
+      })
+    }
+    scrollToBottom()
+  } catch (error) {
+    // 恢复之前的模式
+    permissionMode.value = previousMode
+    console.error('Failed to set permission mode:', error)
+
+    messages.value.push({
+      role: 'system',
+      content: `❌ 设置权限模式失败: ${error.message}`,
+      timestamp: new Date()
+    })
+    scrollToBottom()
+  }
+}
+
+// 选择权限模式（从菜单）
+function selectPermissionMode(mode) {
+  showPermissionMenu.value = false
+  handlePermissionModeChange(mode)
+}
+
 // 获取问答消息的 active tab
 function getQuestionActiveTab(messageIndex) {
   return questionActiveTabs.value[messageIndex] ?? 0
@@ -1701,41 +1789,80 @@ async function handleQuestionAnswer(requestId, answers) {
       </div>
       </template>
     </div>
+
     <div class="input-area">
-      <!-- 历史记录选择弹窗 -->
-      <div v-if="showHistoryPicker" class="history-picker">
-        <div class="history-picker-header">
-          <span>历史记录</span>
-          <button class="history-picker-close" @click="closeHistoryPicker">×</button>
-        </div>
-        <div class="history-picker-list">
-          <div
-            v-for="(item, idx) in [...inputHistory].reverse()"
-            :key="idx"
-            class="history-picker-item"
-            @click="selectHistory(item)"
-          >
-            {{ item }}
+      <!-- 输入框容器（包含切换按钮和文本框） -->
+      <div class="input-container" :class="{ focused: isInputFocused }">
+        <!-- 权限模式切换按钮 -->
+        <div class="input-toolbar">
+          <div class="permission-mode-wrapper">
+            <button
+              @click="showPermissionMenu = !showPermissionMenu"
+              class="permission-mode-btn"
+              :title="`权限模式: ${currentModeDescription}`"
+              :disabled="isProcessing"
+            >
+              {{ currentModeLabel }}
+            </button>
+
+            <!-- 权限模式菜单 -->
+            <div v-if="showPermissionMenu" class="permission-menu">
+              <button
+                v-for="mode in permissionModes"
+                :key="mode.value"
+                class="permission-menu-item"
+                :class="{ active: permissionMode === mode.value }"
+                @click="selectPermissionMode(mode.value)"
+              >
+                <span class="permission-menu-icon">{{ mode.icon }}</span>
+                <span class="permission-menu-label">{{ mode.label }}</span>
+                <span v-if="permissionMode === mode.value" class="permission-menu-check">✓</span>
+              </button>
+            </div>
           </div>
         </div>
+
+        <!-- 历史记录选择弹窗 -->
+        <div v-if="showHistoryPicker" class="history-picker">
+          <div class="history-picker-header">
+            <span>历史记录</span>
+            <button class="history-picker-close" @click="closeHistoryPicker">×</button>
+          </div>
+          <div class="history-picker-list">
+            <div
+              v-for="(item, idx) in [...inputHistory].reverse()"
+              :key="idx"
+              class="history-picker-item"
+              @click="selectHistory(item)"
+            >
+              {{ item }}
+            </div>
+          </div>
+        </div>
+
+        <!-- 文本输入框 -->
+        <textarea
+          ref="inputArea"
+          v-model="inputMessage"
+          @keydown.enter="handleEnterKey"
+          @keydown.up="handleHistoryKey"
+          @keydown.down="handleHistoryKey"
+          @keydown="openHistoryPicker"
+          @input="handleInputChange"
+          @focus="isInputFocused = true"
+          @blur="isInputFocused = false"
+          @dragover.prevent
+          @dragenter="handleDragEnter"
+          @dragleave="handleDragLeave"
+          @drop="handleFileDrop"
+          :class="{ 'drag-over': isDragOver }"
+          placeholder="输入消息... (Enter 发送, Shift+Enter 换行，可拖拽文件)"
+          rows="3"
+          :disabled="isProcessing || pendingPermission !== null || pendingControlRequest !== null"
+        />
       </div>
-      <textarea
-        ref="inputArea"
-        v-model="inputMessage"
-        @keydown.enter="handleEnterKey"
-        @keydown.up="handleHistoryKey"
-        @keydown.down="handleHistoryKey"
-        @keydown="openHistoryPicker"
-        @input="handleInputChange"
-        @dragover.prevent
-        @dragenter="handleDragEnter"
-        @dragleave="handleDragLeave"
-        @drop="handleFileDrop"
-        :class="{ 'drag-over': isDragOver }"
-        placeholder="输入消息... (Enter 发送, Shift+Enter 换行，可拖拽文件)"
-        rows="3"
-        :disabled="isProcessing || pendingPermission !== null || pendingControlRequest !== null"
-      />
+
+      <!-- 发送/打断按钮 -->
       <button
         v-if="!isProcessing"
         @click="sendMessage"
@@ -2621,31 +2748,56 @@ async function handleQuestionAnswer(requestId, answers) {
   -webkit-app-region: no-drag;
 }
 
-.input-area textarea {
+/* 输入框容器 */
+.input-container {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   background: #27272A;
   border: 1px solid #3F3F46;
   border-radius: 8px;
+  transition: border-color 0.2s;
+}
+
+.input-container.focused {
+  border-color: #F97316;
+}
+
+/* 工具栏（包含权限模式按钮） */
+.input-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: transparent;
+  border-bottom: 1px solid #3F3F46;
+  border-radius: 8px 8px 0 0;
+}
+
+.input-container textarea {
+  flex: 1;
+  background: transparent;
+  border: none;
   padding: 12px;
   color: #E4E4E7;
   font-size: 14px;
   resize: none;
   font-family: inherit;
+  min-height: 60px;
+  max-height: 200px;
+  border-radius: 0 0 8px 8px;
 }
 
-.input-area textarea:focus {
+.input-container textarea:focus {
   outline: none;
-  border-color: #F97316;
 }
 
-.input-area textarea:disabled {
+.input-container textarea:disabled {
   opacity: 0.5;
 }
 
-.input-area textarea.drag-over {
-  border-color: #F97316;
+.input-container textarea.drag-over {
   background: rgba(249, 115, 22, 0.1);
-  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.2);
 }
 
 .send-button {
@@ -2656,7 +2808,6 @@ async function handleQuestionAnswer(requestId, answers) {
   color: white;
   font-weight: bold;
   cursor: pointer;
-  align-self: flex-end;
   -webkit-app-region: no-drag;
 }
 
@@ -2669,6 +2820,103 @@ async function handleQuestionAnswer(requestId, answers) {
   cursor: not-allowed;
 }
 
+/* 权限模式按钮 */
+.permission-mode-btn {
+  min-width: 90px;
+  padding: 2px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: #A1A1AA;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  text-align: left;
+  -webkit-app-region: no-drag;
+}
+
+.permission-mode-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.permission-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 权限模式包装器（用于定位菜单） */
+.permission-mode-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+/* 权限模式菜单 */
+.permission-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 120px;
+  z-index: 1000;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+
+/* 权限菜单项 */
+.permission-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  text-align: left;
+  -webkit-app-region: no-drag;
+}
+
+.permission-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.permission-menu-item.active {
+  background: rgba(249, 115, 22, 0.1);
+  color: #F97316;
+}
+
+.permission-menu-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.permission-menu-label {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.permission-menu-check {
+  font-size: 12px;
+  color: #F97316;
+  flex-shrink: 0;
+}
+
 .interrupt-button {
   padding: 12px 24px;
   background: #F97316;
@@ -2677,7 +2925,6 @@ async function handleQuestionAnswer(requestId, answers) {
   color: white;
   font-weight: bold;
   cursor: pointer;
-  align-self: flex-end;
   transition: background 0.2s;
   display: flex;
   align-items: center;
@@ -3307,4 +3554,6 @@ async function handleQuestionAnswer(requestId, answers) {
   overflow: auto;
   cursor: text;
 }
+
+
 </style>

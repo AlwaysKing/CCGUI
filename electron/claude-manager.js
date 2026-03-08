@@ -9,7 +9,7 @@ const logger = require('./logger')
  * Manages communication with Claude CLI using stream-json format
  */
 class ClaudeManager {
-  constructor(workingDirectory = null, sessionId = null, isNewSession = true) {
+  constructor(workingDirectory = null, sessionId = null, isNewSession = true, permissionMode = 'default') {
     this.process = null
     this.messageHandlers = new Map()
     this.claudePath = null
@@ -17,6 +17,7 @@ class ClaudeManager {
     this.workingDirectory = workingDirectory || process.cwd()
     this.sessionId = sessionId
     this.isNewSession = isNewSession
+    this.permissionMode = permissionMode // 权限模式
   }
 
   /**
@@ -105,6 +106,12 @@ class ClaudeManager {
       '--include-partial-messages',
       '--max-thinking-tokens', '31999'
     ]
+
+    // Add permission mode if not default
+    if (this.permissionMode && this.permissionMode !== 'default') {
+      args.push('--permission-mode', this.permissionMode)
+      logger.info(`[ClaudeManager] Setting permission mode: ${this.permissionMode}`)
+    }
 
     // Add session-id to resume or create session
     if (this.sessionId) {
@@ -476,6 +483,18 @@ class ClaudeManager {
       request_id: `interrupt_${Date.now()}`
     }
     this.sendMessage(interruptMessage)
+  }
+
+  /**
+   * Send control request (主动请求，如切换权限模式)
+   */
+  sendControlRequest(request) {
+    const controlRequestMessage = {
+      type: 'control_request',
+      request: request,
+      request_id: `control_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    }
+    this.sendMessage(controlRequestMessage)
   }
 
   /**

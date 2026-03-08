@@ -75,6 +75,8 @@ const currentTime = ref(Date.now()) // 用于实时更新消耗时间
 const showEnvDetail = ref(false) // 是否显示环境详情
 const stickyMessageIndex = ref(-1) // 当前粘性显示的消息索引
 const containerHeight = ref(400) // 聊天容器高度，用于限制粘性面板
+const messagesHeight = ref(null) // 消息区域高度，null 表示自动
+const isResizing = ref(false) // 是否正在调整大小
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
 const inputHistory = [] // 输入历史记录
@@ -123,6 +125,17 @@ onMounted(async () => {
     })
     resizeObserver.observe(messagesContainer.value)
   }
+
+  // 点击外部关闭操作菜单
+  document.addEventListener('click', (event) => {
+    if (openActionMenuIndex.value !== -1) {
+      const target = event.target
+      // 检查点击是否在菜单容器外
+      if (!target.closest('.action-menu-container')) {
+        closeActionMenu()
+      }
+    }
+  })
 
   // Get working directory
   try {
@@ -315,6 +328,26 @@ function formatDuration(ms) {
 
 // 复制消息内容
 const copiedMessageIndex = ref(-1)
+const openActionMenuIndex = ref(-1) // 当前打开的操作菜单索引
+
+// Rewind 确认对话框状态
+const showRewindDialog = ref(false)
+const rewindPreviewData = ref(null)
+const rewindTargetMessageId = ref(null)
+const rewindTargetMessageIndex = ref(null)
+const rewindCollapsedStates = ref({}) // 存储每个 rewind-notice 的折叠状态
+
+// 切换 rewind-notice 的折叠状态
+function toggleRewindCollapse(messageId) {
+  rewindCollapsedStates.value[messageId] = !rewindCollapsedStates.value[messageId]
+}
+
+// 检查 rewind-notice 是否折叠
+function isRewindCollapsed(messageId) {
+  // 默认折叠（如果未设置过）
+  return rewindCollapsedStates.value[messageId] !== false
+}
+
 async function copyMessageContent(index) {
   const message = messages.value[index]
   if (!message) return
@@ -528,9 +561,30 @@ async function sendMessage() {
   }
 }
 
+// 滚动到指定消息
+function scrollToMessage(messageId) {
+  if (!messagesContainer.value) return
+
+  const messageElement = document.querySelector(`[data-message-id="${messageId}"]`)
+  if (messageElement) {
+    messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    // 高亮效果
+    messageElement.classList.add('highlight-message')
+    setTimeout(() => {
+      messageElement.classList.remove('highlight-message')
+    }, 2000)
+  }
+}
+
+// 处理还原消息点击
+function handleRewindNoticeClick(rewindToMessageId) {
+  scrollToMessage(rewindToMessageId)
+}
+
 // 记录用户是否主动滚动离开底部
 let userScrolledAway = false
 
+// 滚动到底部
 function scrollToBottom(forceScroll = false) {
   if (!messagesContainer.value) return
 
@@ -734,6 +788,39 @@ function handleInputChange() {
   if (!isHistoryNavigation && historyIndex !== -1) {
     historyIndex = -1
   }
+}
+
+// 开始调整大小
+function startResize(event) {
+  event.preventDefault()
+  isResizing.value = true
+
+  const startY = event.clientY
+  const startHeight = messagesContainer.value ? messagesContainer.value.offsetHeight : 400
+
+  function onMouseMove(e) {
+    if (!isResizing.value) return
+
+    const deltaY = e.clientY - startY
+    // 计算最大高度：窗口高度 - env-header(约50px) - 输入区域最小高度(160px，包含padding)
+    const maxHeight = window.innerHeight - 50 - 160
+    const newHeight = Math.max(200, Math.min(maxHeight, startHeight + deltaY))
+
+    messagesHeight.value = newHeight + 'px'
+  }
+
+  function onMouseUp() {
+    isResizing.value = false
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+  document.body.style.cursor = 'ns-resize'
+  document.body.style.userSelect = 'none'
 }
 
 // 处理打断请求
@@ -1033,6 +1120,255 @@ function switchQuestionTab(messageIndex, tabIndex) {
   questionActiveTabs.value[messageIndex] = tabIndex
 }
 
+// 处理代码还原
+async function handleRewind(messageId, messageIndex) {
+  closeActionMenu() // 关闭菜单
+
+  console.log('[Rewind] handleRewind called with messageId:', messageId, 'index:', messageIndex)
+
+  // 先显示对话框（用于测试）
+  rewindTargetMessageId.value = messageId
+  rewindTargetMessageIndex.value = messageIndex
+  rewindPreviewData.value = {
+    files: [],
+    insertions: 0,
+    deletions: 0
+  }
+
+  console.log('[Rewind] Setting showRewindDialog to true (before API call)')
+  showRewindDialog.value = true
+  console.log('[Rewind] showRewindDialog is now:', showRewindDialog.value)
+
+  try {
+    // 调用 dry_run: true 获取预览
+    const previewResponse = await sessionStore.sendControlRequest({
+      subtype: 'rewind_files',
+      user_message_id: messageId,
+      dry_run: true
+    })
+
+    console.log('[Rewind] Preview response:', previewResponse)
+    console.log('[Rewind] previewResponse.response:', previewResponse?.response)
+
+    // 更新预览数据
+    let data = null
+    if (previewResponse && previewResponse.response) {
+      data = previewResponse.response.response || previewResponse.response
+      console.log('[Rewind] Extracted data:', data)
+
+      rewindPreviewData.value = {
+        files: data?.filesChanged || data?.restored_files || [],
+        insertions: data?.insertions || data?.lines_added || 0,
+        deletions: data?.deletions || data?.lines_removed || 0
+      }
+      console.log('[Rewind] Updated rewindPreviewData:', rewindPreviewData.value)
+    }
+
+  } catch (error) {
+    console.error('[Rewind] Preview error:', error)
+
+    // 关闭对话框并显示错误
+    showRewindDialog.value = false
+
+    messages.value.push({
+      role: 'system',
+      content: `❌ 获取还原预览失败: ${error.message || error}`,
+      timestamp: new Date()
+    })
+    scrollToBottom()
+  }
+}
+
+// 确认执行还原
+async function confirmRewind() {
+  showRewindDialog.value = false
+
+  try {
+    // 执行实际还原
+    const response = await sessionStore.sendControlRequest({
+      subtype: 'rewind_files',
+      user_message_id: rewindTargetMessageId.value,
+      dry_run: false
+    })
+
+    console.log('[Rewind] Response:', response)
+
+    // 显示还原结果
+    if (response && response.response) {
+      const result = response.response
+      const data = result.response || {}
+
+      const originalMessage = messages.value.find(m => m.id === rewindTargetMessageId.value)
+      const originalContent = originalMessage?.content || '未知消息'
+
+      // 使用预览数据（如果可用），否则使用实际响应数据
+      const changedFiles = rewindPreviewData.value?.files || data.filesChanged || data.restored_files || []
+      const insertions = rewindPreviewData.value?.insertions || data.insertions || 0
+      const deletions = rewindPreviewData.value?.deletions || data.deletions || 0
+
+      const hasRestoredFiles = changedFiles.length > 0
+      const canRewind = data.canRewind === true
+
+      let noticeContent = `已还原到「${originalContent.substring(0, 30)}${originalContent.length > 30 ? '...' : ''}」前的文件状态`
+
+      if (hasRestoredFiles) {
+        const restoredCount = changedFiles.length
+        noticeContent += `\n共还原了 ${restoredCount} 个文件`
+      }
+
+      messages.value.push({
+        id: `rewind-${Date.now()}`,
+        role: 'system',
+        subtype: 'rewind-notice',
+        content: noticeContent,
+        rewindToMessageId: rewindTargetMessageId.value,
+        originalMessageContent: originalContent,
+        restoredFilesCount: hasRestoredFiles ? changedFiles.length : (canRewind ? null : 0),
+        restoredFiles: changedFiles, // 保存完整的文件列表
+        insertions: insertions,
+        deletions: deletions,
+        timestamp: new Date()
+      })
+
+      scrollToBottom()
+    }
+  } catch (error) {
+    console.error('[Rewind] Error:', error)
+
+    messages.value.push({
+      role: 'system',
+      content: `❌ 还原失败: ${error.message || error}`,
+      timestamp: new Date()
+    })
+    scrollToBottom()
+  }
+}
+
+// 取消还原
+function cancelRewind() {
+  showRewindDialog.value = false
+  rewindPreviewData.value = null
+  rewindTargetMessageId.value = null
+  rewindTargetMessageIndex.value = null
+}
+
+// 切换操作菜单
+function toggleActionMenu(index) {
+  if (openActionMenuIndex.value === index) {
+    openActionMenuIndex.value = -1
+  } else {
+    openActionMenuIndex.value = index
+  }
+}
+
+// 关闭操作菜单
+function closeActionMenu() {
+  openActionMenuIndex.value = -1
+}
+
+// 处理创建分支
+async function handleFork(messageId, messageIndex) {
+  closeActionMenu()
+
+  const confirmed = confirm(
+    '确定要从此处创建会话分支吗？\n\n' +
+    '这将：\n' +
+    '• 创建一个新的会话副本\n' +
+    '• 复制到此消息为止的所有内容\n' +
+    '• 新会话将独立存在，不影响当前会话'
+  )
+
+  if (!confirmed) return
+
+  try {
+    // 后端会自动处理 Claude 启动（如果需要）
+    const response = await sessionStore.sendControlRequest({
+      subtype: 'fork_session',
+      message_id: messageId
+    })
+
+    console.log('[Fork] Response:', response)
+
+    if (response && response.response) {
+      const result = response.response
+      messages.value.push({
+        role: 'system',
+        content: `✅ 会话分支创建成功\n新会话 ID: ${result.session_id || '已生成'}\n\n您可以在项目列表中找到这个新会话`,
+        timestamp: new Date()
+      })
+      scrollToBottom()
+    }
+  } catch (error) {
+    console.error('[Fork] Error:', error)
+    messages.value.push({
+      role: 'system',
+      content: `❌ 创建分支失败: ${error.message || error}`,
+      timestamp: new Date()
+    })
+    scrollToBottom()
+  }
+}
+
+// 处理还原并创建分支
+async function handleRewindAndFork(messageId, messageIndex) {
+  closeActionMenu()
+
+  const confirmed = confirm(
+    '确定要还原并创建分支吗？\n\n' +
+    '这将：\n' +
+    '• 先将当前状态保存到新分支\n' +
+    '• 然后还原到此次提问之前的状态\n' +
+    '• 删除此次提问后的所有消息\n' +
+    '• 此操作无法撤销\n\n' +
+    '适用于：想保留当前进度，同时回滚代码探索其他方案'
+  )
+
+  if (!confirmed) return
+
+  try {
+    // 后端会自动处理 Claude 启动（如果需要）
+    const response = await sessionStore.sendControlRequest({
+      subtype: 'rewind_and_fork',
+      user_message_id: messageId,
+      dry_run: false
+    })
+
+    console.log('[RewindAndFork] Response:', response)
+
+    if (response && response.response) {
+      const result = response.response
+
+      // 删除此次提问之后的所有消息
+      const deleteCount = messages.value.length - messageIndex - 1
+      if (deleteCount > 0) {
+        messages.value.splice(messageIndex + 1, deleteCount)
+      }
+
+      const restoredCount = result.restored_files?.length || 0
+      const newSessionId = result.new_session_id || '已生成'
+
+      messages.value.push({
+        role: 'system',
+        content: `✅ 已还原并创建分支\n\n` +
+          `📦 新分支 ID: ${newSessionId}\n` +
+          ` (已保存当前状态)\n` +
+          `🔄 还原了 ${restoredCount} 个文件\n\n` +
+          `您可以在项目列表中找到新分支继续探索`,
+        timestamp: new Date()
+      })
+      scrollToBottom()
+    }
+  } catch (error) {
+    console.error('[RewindAndFork] Error:', error)
+    messages.value.push({
+      role: 'system',
+      content: `❌ 还原并创建分支失败: ${error.message || error}`,
+      timestamp: new Date()
+    })
+    scrollToBottom()
+  }
+}
+
 // 处理权限模式切换
 async function handlePermissionModeChange(mode) {
   if (mode === permissionMode.value) return
@@ -1319,62 +1655,62 @@ async function handleQuestionAnswer(requestId, answers) {
             <span class="env-icon">🔗</span>
             <span class="env-label">{{ envInfo.session_id?.substring(0, 8) }}</span>
           </span>
-        <span v-if="envInfo.tools?.length" class="env-item">
-          <span class="env-icon">🔧</span>
-          <span class="env-label">{{ envInfo.tools.length }} 工具</span>
-        </span>
-        <span v-if="envInfo.skills?.length" class="env-item">
-          <span class="env-icon">⚡</span>
-          <span class="env-label">{{ envInfo.skills.length }} 技能</span>
-        </span>
-        <span v-if="envInfo.mcp_servers?.length" class="env-item">
-          <span class="env-icon">🔌</span>
-          <span class="env-label">
-            {{ envInfo.mcp_servers.length }} MCP
-            <span v-if="mcpStatusSummary" class="mcp-status-summary">
-              <span v-if="mcpStatusSummary.connected > 0" class="mcp-status-ok">{{ mcpStatusSummary.connected }}✓</span>
-              <span v-if="mcpStatusSummary.failed > 0" class="mcp-status-fail">{{ mcpStatusSummary.failed }}✗</span>
+          <span v-if="envInfo.tools?.length" class="env-item">
+            <span class="env-icon">🔧</span>
+            <span class="env-label">{{ envInfo.tools.length }} 工具</span>
+          </span>
+          <span v-if="envInfo.skills?.length" class="env-item">
+            <span class="env-icon">⚡</span>
+            <span class="env-label">{{ envInfo.skills.length }} 技能</span>
+          </span>
+          <span v-if="envInfo.mcp_servers?.length" class="env-item">
+            <span class="env-icon">🔌</span>
+            <span class="env-label">
+              {{ envInfo.mcp_servers.length }} MCP
+              <span v-if="mcpStatusSummary" class="mcp-status-summary">
+                <span v-if="mcpStatusSummary.connected > 0" class="mcp-status-ok">{{ mcpStatusSummary.connected }}✓</span>
+                <span v-if="mcpStatusSummary.failed > 0" class="mcp-status-fail">{{ mcpStatusSummary.failed }}✗</span>
+              </span>
             </span>
           </span>
-        </span>
-        <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">
-          {{ showEnvDetail ? '收起' : '详情' }}
-        </button>
-      </div>
-      <!-- 浮动详情面板 -->
-      <div v-if="showEnvDetail" class="env-detail-dropdown">
-        <div class="env-detail-row">
-          <span class="env-detail-label">工作目录</span>
-          <span class="env-detail-value" :class="{ 'highlight-value': isDifferentFromProject }">{{ envInfo.cwd }}</span>
+          <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">
+            {{ showEnvDetail ? '收起' : '详情' }}
+          </button>
         </div>
-        <div v-if="envInfo.model" class="env-detail-row">
-          <span class="env-detail-label">模型</span>
-          <span class="env-detail-value">{{ envInfo.model }}</span>
-        </div>
-        <div v-if="envInfo.session_id" class="env-detail-row">
-          <span class="env-detail-label">会话 ID</span>
-          <span class="env-detail-value">{{ envInfo.session_id }}</span>
-        </div>
-        <div v-if="envInfo.plugins?.length" class="env-detail-row">
-          <span class="env-detail-label">插件</span>
-          <span class="env-detail-value tools-list">{{ envInfo.plugins.join(', ') }}</span>
-        </div>
-        <div v-if="envInfo.mcp_servers?.length" class="env-detail-row">
-          <span class="env-detail-label">MCP</span>
-          <span class="env-detail-value tools-list">{{ formatMcpServers(envInfo.mcp_servers) }}</span>
-        </div>
-        <div v-if="envInfo.skills?.length" class="env-detail-row">
-          <span class="env-detail-label">技能</span>
-          <span class="env-detail-value tools-list">{{ formatSkills(envInfo.skills) }}</span>
-        </div>
-        <div v-if="envInfo.tools?.length" class="env-detail-row env-tools">
-          <span class="env-detail-label">工具</span>
-          <span class="env-detail-value tools-list">{{ envInfo.tools.join(', ') }}</span>
+        <!-- 浮动详情面板 -->
+        <div v-if="showEnvDetail" class="env-detail-dropdown">
+          <div class="env-detail-row">
+            <span class="env-detail-label">工作目录</span>
+            <span class="env-detail-value" :class="{ 'highlight-value': isDifferentFromProject }">{{ envInfo.cwd }}</span>
+          </div>
+          <div v-if="envInfo.model" class="env-detail-row">
+            <span class="env-detail-label">模型</span>
+            <span class="env-detail-value">{{ envInfo.model }}</span>
+          </div>
+          <div v-if="envInfo.session_id" class="env-detail-row">
+            <span class="env-detail-label">会话 ID</span>
+            <span class="env-detail-value">{{ envInfo.session_id }}</span>
+          </div>
+          <div v-if="envInfo.plugins?.length" class="env-detail-row">
+            <span class="env-detail-label">插件</span>
+            <span class="env-detail-value tools-list">{{ envInfo.plugins.join(', ') }}</span>
+          </div>
+          <div v-if="envInfo.mcp_servers?.length" class="env-detail-row">
+            <span class="env-detail-label">MCP</span>
+            <span class="env-detail-value tools-list">{{ formatMcpServers(envInfo.mcp_servers) }}</span>
+          </div>
+          <div v-if="envInfo.skills?.length" class="env-detail-row">
+            <span class="env-detail-label">技能</span>
+            <span class="env-detail-value tools-list">{{ formatSkills(envInfo.skills) }}</span>
+          </div>
+          <div v-if="envInfo.tools?.length" class="env-detail-row env-tools">
+            <span class="env-detail-label">工具</span>
+            <span class="env-detail-value tools-list">{{ envInfo.tools.join(', ') }}</span>
+          </div>
         </div>
       </div>
     </div>
-    </div>
-    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll">
+    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight, flex: '0 0 auto' } : {}">
       <!-- 粘性头部 - 浮动在聊天内容上方 -->
       <div v-if="stickyMessage" class="sticky-header">
         <div class="sticky-content" :style="{ '--max-height': (containerHeight * 0.5) + 'px' }">
@@ -1452,6 +1788,7 @@ async function handleQuestionAnswer(requestId, answers) {
           class="message"
           :class="message.role"
           :data-index="index"
+          :data-message-id="message.id"
           :style="{ display: message.role !== 'user' && getResponseCollapseState(index).collapsed ? 'none' : '' }"
           @click="handleMessageClick($event, message)"
         >
@@ -1486,6 +1823,121 @@ async function handleQuestionAnswer(requestId, answers) {
               :raw-messages="message.rawMessages || []"
               @toggle-collapse="() => handleToolToggleCollapse(message)"
             />
+          </div>
+        </template>
+        <!-- Rewind notice message -->
+        <template v-else-if="message.role === 'system' && message.subtype === 'rewind-notice'">
+          <div class="message-avatar">↩️</div>
+          <div class="rewind-message-wrapper">
+            <!-- 时间头部 -->
+            <div v-if="message.timestamp" class="message-header rewind-header-time">
+              <span class="header-time">
+                <span class="header-icon">🕐</span>
+                {{ new Date(message.timestamp).toLocaleTimeString() }}
+              </span>
+            </div>
+            <!-- 实际的气泡 -->
+            <div
+              class="rewind-notice"
+              :class="{ 'rewind-collapsed': isRewindCollapsed(message.id) }"
+            >
+              <!-- 折叠时的布局 -->
+              <template v-if="isRewindCollapsed(message.id)">
+                <div class="rewind-header-collapsed" @click="toggleRewindCollapse(message.id)">
+                  <div class="rewind-header-row-1">
+                    <span class="rewind-icon">↩️</span>
+                    <span class="rewind-title">已还原到消息</span>
+                    <!-- 文件数徽章 - 始终显示 -->
+                    <span class="rewind-stat-badge files">
+                      {{ message.restoredFilesCount !== null ? message.restoredFilesCount : 0 }} 文件
+                    </span>
+                    <!-- 行数统计徽章 - 始终显示 -->
+                    <span class="rewind-stat-badge lines">
+                      <span class="stat-mini deletions">-{{ message.deletions || 0 }}</span>
+                      <span class="stat-mini separator">/</span>
+                      <span class="stat-mini insertions">+{{ message.insertions || 0 }}</span>
+                    </span>
+                    <span class="rewind-spacer"></span>
+                    <!-- 链接图标 -->
+                    <span
+                      class="rewind-hint"
+                      @click.stop="handleRewindNoticeClick(message.rewindToMessageId)"
+                      title="跳转到原消息"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                      </svg>
+                    </span>
+                    <span class="rewind-collapse-btn">▶</span>
+                  </div>
+                  <div class="rewind-header-row-2">
+                    <span class="rewind-preview-text">
+                      {{ (message.originalMessageContent || message.content || '').replace(/\n/g, ' ').substring(0, 80) }}{{ (message.originalMessageContent || message.content || '').length > 80 ? '...' : '' }}
+                    </span>
+                  </div>
+                </div>
+              </template>
+
+              <!-- 展开时的布局 -->
+              <template v-else>
+                <div class="rewind-header" @click="toggleRewindCollapse(message.id)">
+                  <span class="rewind-icon">↩️</span>
+                  <span class="rewind-title">已还原到消息</span>
+                  <span class="rewind-spacer"></span>
+                  <!-- 链接图标 -->
+                  <span
+                    class="rewind-hint"
+                    @click.stop="handleRewindNoticeClick(message.rewindToMessageId)"
+                    title="跳转到原消息"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                    </svg>
+                  </span>
+                  <span class="rewind-collapse-btn">▼</span>
+                </div>
+
+                <!-- 展开的内容区域 -->
+                <div class="rewind-body">
+                  <!-- 消息引用部分 -->
+                  <div class="rewind-tool-section">
+                    <div class="rewind-section-label">原消息</div>
+                    <div class="rewind-section-content">
+                      <div class="rewind-message-box">
+                        {{ message.originalMessageContent || message.content || '(空消息)' }}
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 变更统计和文件列表合并部分 -->
+                  <div class="rewind-tool-section">
+                    <div class="rewind-section-label">
+                      变更内容
+                      <span class="rewind-inline-stats">
+                        <span class="stat-mini deletions">-{{ message.deletions || 0 }}</span>
+                        <span class="stat-mini separator">/</span>
+                        <span class="stat-mini insertions">+{{ message.insertions || 0 }}</span>
+                        <span class="stat-unit">行</span>
+                      </span>
+                    </div>
+                    <div v-if="message.restoredFiles && message.restoredFiles.length > 0" class="rewind-section-content">
+                      <div class="rewind-files-grid">
+                        <div
+                          v-for="(file, fileIndex) in message.restoredFiles"
+                          :key="fileIndex"
+                          class="rewind-file-chip"
+                        >
+                          <span class="file-icon">📝</span>
+                          <span class="file-path">{{ file.split('/').pop() }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
           </div>
         </template>
         <!-- Question message -->
@@ -1673,6 +2125,69 @@ async function handleQuestionAnswer(requestId, answers) {
                   <span class="header-icon">⚡</span>
                   {{ formatTokens(message.usage) }}
                 </span>
+                <!-- 操作菜单 - 只在有后续消息时显示 -->
+                <div
+                  v-if="index < messages.length - 1 && message.id"
+                  class="action-menu-container"
+                >
+                  <button
+                    class="action-menu-btn"
+                    @click.stop="toggleActionMenu(index)"
+                    :class="{ active: openActionMenuIndex === index }"
+                    title="更多操作"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+                    </svg>
+                    操作
+                  </button>
+                  <!-- 下拉菜单 -->
+                  <div
+                    v-if="openActionMenuIndex === index"
+                    class="action-dropdown-menu"
+                    @click.stop
+                  >
+                    <button
+                      class="menu-item rewind-item"
+                      @click="handleRewind(message.id, index)"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                        <path d="M3 3v5h5"></path>
+                      </svg>
+                      还原
+                      <span class="menu-hint">撤销后续修改</span>
+                    </button>
+                    <button
+                      class="menu-item fork-item"
+                      @click="handleFork(message.id, index)"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="6" y1="3" x2="6" y2="15"></line>
+                        <circle cx="18" cy="6" r="3"></circle>
+                        <circle cx="6" cy="18" r="3"></circle>
+                        <path d="M18 9a9 9 0 0 1-9 9"></path>
+                      </svg>
+                      创建分支
+                      <span class="menu-hint">保留当前状态</span>
+                    </button>
+                    <button
+                      class="menu-item rewind-fork-item"
+                      @click="handleRewindAndFork(message.id, index)"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                        <path d="M3 3v5h5"></path>
+                        <line x1="6" y1="8" x2="6" y2="16"></line>
+                        <circle cx="16" cy="10" r="3"></circle>
+                        <circle cx="6" cy="18" r="3"></circle>
+                        <path d="M16 13a6 6 0 0 1-6 5"></path>
+                      </svg>
+                      还原并创建分支
+                      <span class="menu-hint">保存并回滚</span>
+                    </button>
+                  </div>
+                </div>
                 <!-- 回答折叠/展开按钮 -->
                 <button
                   v-if="message.responseCollapsed !== undefined"
@@ -1750,7 +2265,7 @@ async function handleQuestionAnswer(requestId, answers) {
             </div>
             <!-- 消息内容 - 只在有内容时显示 -->
             <div
-              v-if="message.content"
+              v-if="message.content && !(message.role === 'system' && message.subtype === 'rewind-notice')"
               class="message-text"
               :class="{ 'status-text': message.role === 'status' }"
             >
@@ -1770,7 +2285,7 @@ async function handleQuestionAnswer(requestId, answers) {
                 </svg>
               </button>
               <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
-              <div v-else>{{ message.content }}</div>
+              <div v-if="message.role !== 'assistant' && message.role !== 'system'">{{ message.content }}</div>
             </div>
             <div class="message-time" v-if="message.role !== 'status' && message.role !== 'assistant' && message.role !== 'user'">
               {{ new Date(message.timestamp).toLocaleTimeString() }}
@@ -1789,6 +2304,13 @@ async function handleQuestionAnswer(requestId, answers) {
       </div>
       </template>
     </div>
+
+    <!-- 可拖拽的分隔条 -->
+    <div
+      class="resize-handle"
+      :class="{ resizing: isResizing }"
+      @mousedown="startResize"
+    ></div>
 
     <div class="input-area">
       <!-- 输入框容器（包含切换按钮和文本框） -->
@@ -1820,6 +2342,26 @@ async function handleQuestionAnswer(requestId, answers) {
               </button>
             </div>
           </div>
+
+          <!-- 发送/打断按钮 -->
+          <button
+            v-if="!isProcessing"
+            @click="sendMessage"
+            :disabled="!inputMessage.trim() || isProcessing || pendingPermission !== null || pendingControlRequest !== null"
+            class="send-button"
+          >
+            发送
+          </button>
+          <button
+            v-else
+            @click="handleInterrupt"
+            class="interrupt-button"
+            title="打断"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+            </svg>
+          </button>
         </div>
 
         <!-- 历史记录选择弹窗 -->
@@ -1861,26 +2403,6 @@ async function handleQuestionAnswer(requestId, answers) {
           :disabled="isProcessing || pendingPermission !== null || pendingControlRequest !== null"
         />
       </div>
-
-      <!-- 发送/打断按钮 -->
-      <button
-        v-if="!isProcessing"
-        @click="sendMessage"
-        :disabled="!inputMessage.trim() || isProcessing || pendingPermission !== null || pendingControlRequest !== null"
-        class="send-button"
-      >
-        发送
-      </button>
-      <button
-        v-else
-        @click="handleInterrupt"
-        class="interrupt-button"
-        title="打断"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-          <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-        </svg>
-      </button>
     </div>
 
     <!-- Ask User Question Dialog - 在聊天窗口内部 -->
@@ -1916,6 +2438,91 @@ async function handleQuestionAnswer(requestId, answers) {
       :message="selectedMessage"
       @close="closeMessageDetail"
     />
+  </Teleport>
+
+  <!-- Rewind Confirmation Dialog -->
+  <Teleport to="body">
+    <div v-if="showRewindDialog" class="rewind-dialog-overlay" @click.self="cancelRewind">
+      <div class="rewind-dialog">
+        <div class="rewind-dialog-header">
+          <div class="rewind-dialog-icon">↩️</div>
+          <h3 class="rewind-dialog-title">确认还原</h3>
+        </div>
+
+        <div class="rewind-dialog-content">
+          <!-- 文件变更 -->
+          <div v-if="rewindPreviewData?.files?.length > 0" class="rewind-dialog-section">
+            <div class="rewind-dialog-section-title">
+              <span class="section-icon">📄</span>
+              将还原 {{ rewindPreviewData.files.length }} 个文件
+            </div>
+            <div class="rewind-files-list">
+              <div
+                v-for="(file, index) in rewindPreviewData.files"
+                :key="index"
+                class="rewind-file-item"
+              >
+                <span class="file-icon">📝</span>
+                <span class="file-name">{{ file.split('/').pop() }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-else class="rewind-dialog-section">
+            <div class="rewind-dialog-section-empty">
+              <span class="empty-icon">ℹ️</span>
+              没有文件需要还原
+            </div>
+          </div>
+
+          <!-- 行数统计 -->
+          <div v-if="rewindPreviewData?.deletions > 0 || rewindPreviewData?.insertions > 0" class="rewind-dialog-section">
+            <div class="rewind-stats-box">
+              <div class="stat-item deletions">
+                <span class="stat-label">删除</span>
+                <span class="stat-value">{{ rewindPreviewData.deletions }} 行</span>
+              </div>
+              <div class="stat-divider"></div>
+              <div class="stat-item insertions">
+                <span class="stat-label">添加</span>
+                <span class="stat-value">{{ rewindPreviewData.insertions }} 行</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 操作说明 -->
+          <div class="rewind-dialog-section">
+            <div class="rewind-dialog-warnings">
+              <div class="warning-item">
+                <span class="warning-icon">•</span>
+                <span>撤销此次提问后的所有代码修改</span>
+              </div>
+              <div class="warning-item">
+                <span class="warning-icon">•</span>
+                <span>创建一个还原点提示，可点击跳转到此次提问</span>
+              </div>
+              <div class="warning-item">
+                <span class="warning-icon">•</span>
+                <span class="warning-text-highlight">此操作无法撤销</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rewind-dialog-note">
+            <span class="note-icon">💡</span>
+            <span>注意：消息历史将保留，不会删除。</span>
+          </div>
+        </div>
+
+        <div class="rewind-dialog-footer">
+          <button class="rewind-btn cancel" @click="cancelRewind">
+            取消
+          </button>
+          <button class="rewind-btn confirm" @click="confirmRewind">
+            确认还原
+          </button>
+        </div>
+      </div>
+    </div>
   </Teleport>
 </template>
 
@@ -2253,7 +2860,8 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .messages {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 200px;
   overflow-y: auto;
   padding: 20px;
   position: relative;
@@ -2447,6 +3055,125 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .copy-btn:active {
   transform: scale(0.95);
+}
+
+/* 操作菜单容器 */
+.action-menu-container {
+  position: relative;
+  display: inline-block;
+  margin-left: 8px;
+  -webkit-app-region: no-drag;
+}
+
+/* 操作菜单按钮 */
+.action-menu-btn {
+  font-size: 11px;
+  color: #71717A;
+  background: transparent;
+  border: 1px solid #3F3F46;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.7;
+}
+
+.action-menu-btn:hover {
+  background: #27272A;
+  color: #A1A1AA;
+  border-color: #52525B;
+  opacity: 1;
+}
+
+.action-menu-btn.active {
+  background: #27272A;
+  color: #A1A1AA;
+  border-color: #52525B;
+  opacity: 1;
+}
+
+.action-menu-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 下拉菜单 */
+.action-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 220px;
+  background: #1F1F23;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 菜单项 */
+.menu-item {
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #D4D4D8;
+  text-align: left;
+  position: relative;
+}
+
+.menu-item:hover {
+  background: #27272A;
+}
+
+.menu-item svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.menu-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: #71717A;
+}
+
+/* 各个菜单项的特殊样式 */
+.rewind-item {
+  color: #F59E0B;
+}
+
+.rewind-item:hover {
+  background: #F59E0B15;
+}
+
+.fork-item {
+  color: #3B82F6;
+}
+
+.fork-item:hover {
+  background: #3B82F615;
+}
+
+.rewind-fork-item {
+  color: #8B5CF6;
+}
+
+.rewind-fork-item:hover {
+  background: #8B5CF615;
 }
 
 /* 气泡内的复制按钮 - 右上角定位 */
@@ -2739,13 +3466,32 @@ async function handleQuestionAnswer(requestId, answers) {
   background: #3F3F46;
 }
 
+/* 可拖拽调整大小的分隔条 */
+.resize-handle {
+  height: 4px;
+  background: transparent;
+  cursor: ns-resize;
+  transition: background 0.2s;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+.resize-handle:hover {
+  background: #F97316;
+}
+
+.resize-handle.resizing {
+  background: #EA580C;
+}
+
 .input-area {
   position: relative;
   padding: 20px;
   border-top: 1px solid #3F3F46;
   display: flex;
-  gap: 12px;
   -webkit-app-region: no-drag;
+  flex: 1 1 auto;
+  min-height: 165px;
 }
 
 /* 输入框容器 */
@@ -2767,6 +3513,7 @@ async function handleQuestionAnswer(requestId, answers) {
 .input-toolbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 4px 8px;
   background: transparent;
@@ -2784,7 +3531,7 @@ async function handleQuestionAnswer(requestId, answers) {
   resize: none;
   font-family: inherit;
   min-height: 60px;
-  max-height: 200px;
+  max-height: 400px;
   border-radius: 0 0 8px 8px;
 }
 
@@ -2800,15 +3547,42 @@ async function handleQuestionAnswer(requestId, answers) {
   background: rgba(249, 115, 22, 0.1);
 }
 
+/* Textarea scrollbar */
+.input-container textarea::-webkit-scrollbar {
+  width: 6px;
+}
+
+.input-container textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.input-container textarea::-webkit-scrollbar-thumb {
+  background: #52525B;
+  border-radius: 3px;
+}
+
+.input-container textarea::-webkit-scrollbar-thumb:hover {
+  background: #71717A;
+}
+
+.input-container textarea::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 .send-button {
-  padding: 12px 24px;
+  margin-right: -4.5px;
+  padding: 4px 16px;
   background: #F97316;
   border: none;
-  border-radius: 8px;
+  border-radius: 4px;
   color: white;
-  font-weight: bold;
+  font-weight: 500;
+  font-size: 12px;
   cursor: pointer;
   -webkit-app-region: no-drag;
+  transition: background 0.2s;
+  height: 24px;
+  line-height: 1;
 }
 
 .send-button:hover:not(:disabled) {
@@ -2918,18 +3692,23 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .interrupt-button {
-  padding: 12px 24px;
+  margin-right: -4.5px ;
+  padding: 4px 16px;
   background: #F97316;
   border: none;
-  border-radius: 8px;
+  border-radius: 4px;
   color: white;
-  font-weight: bold;
+  font-weight: 500;
+  font-size: 12px;
   cursor: pointer;
   transition: background 0.2s;
   display: flex;
   align-items: center;
   justify-content: center;
   -webkit-app-region: no-drag;
+  height: 24px;
+  min-width: 56px;
+  line-height: 1;
 }
 
 .interrupt-button:hover {
@@ -3555,5 +4334,923 @@ async function handleQuestionAnswer(requestId, answers) {
   cursor: text;
 }
 
+
+</style>
+
+<style scoped>
+/* Rewind notice styles - 和 tool use 保持一致 */
+
+/* Rewind message wrapper - 类似 tool-use-message-wrapper */
+.rewind-message-wrapper {
+  flex: 1;
+  max-width: 70%;
+}
+
+/* Rewind 时间头部 */
+.rewind-header-time {
+  margin-bottom: 4px;
+}
+
+/* Rewind notice 气泡 */
+.rewind-notice {
+  background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
+  border: 1px solid #F59E0B;
+  border-left: 3px solid #F59E0B;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.rewind-notice:hover {
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.2);
+}
+
+.rewind-notice.rewind-collapsed {
+  opacity: 0.85;
+}
+
+.rewind-notice.rewind-collapsed:hover {
+  opacity: 1;
+}
+
+.rewind-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #252526;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+  transition: background 0.2s ease;
+}
+
+.rewind-header:hover {
+  background: #2D2D30;
+}
+
+/* 折叠时的两行布局 */
+.rewind-header-collapsed {
+  cursor: pointer;
+  user-select: none;
+}
+
+.rewind-header-row-1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #252526;
+  min-width: 0;
+  transition: background 0.2s ease;
+}
+
+.rewind-header-row-1:hover {
+  background: #2D2D30;
+}
+
+.rewind-header-row-2 {
+  padding: 6px 14px 10px;
+  background: #1E1E2E;
+  border-top: 1px solid #333;
+}
+
+.rewind-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.rewind-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.rewind-title {
+  color: #F59E0B;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+/* 折叠时显示的预览文本 */
+.rewind-preview-text {
+  color: #A0A0B0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  margin-left: 8px;
+}
+
+/* 统计徽章 */
+.rewind-stat-badge {
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.rewind-stat-badge.files {
+  background: rgba(245, 158, 11, 0.15);
+  color: #F59E0B;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.rewind-stat-badge.lines {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  gap: 6px;
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+}
+
+.stat-mini.deletions {
+  color: #ff6b6b;
+  font-size: 10px;
+}
+
+.stat-mini.insertions {
+  color: #51cf66;
+  font-size: 10px;
+}
+
+/* 链接图标 */
+.rewind-hint {
+  margin-left: auto;
+  color: #F59E0B;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.rewind-hint:hover {
+  background: rgba(245, 158, 11, 0.1);
+}
+
+/* 折叠按钮 */
+.rewind-collapse-btn {
+  color: #F59E0B;
+  font-size: 10px;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+/* 展开内容 */
+.rewind-quote {
+  padding: 12px 14px;
+  border-top: 1px solid #333;
+  background: #1E1E2E;
+}
+
+.rewind-quote-info {
+  color: #A0A0B0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 文件列表 */
+.rewind-files-section {
+  padding: 12px 14px;
+  border-top: 1px solid #333;
+  background: #1E1E2E;
+}
+
+.rewind-files-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.files-icon {
+  font-size: 14px;
+}
+
+.files-title {
+  color: #A0A0B0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.rewind-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.rewind-file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #C0C0D0;
+}
+
+.rewind-file-item .file-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.rewind-file-item .file-name {
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 底部统计 */
+.rewind-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 14px;
+  border-top: 1px solid #333;
+  background: #1E1E2E;
+}
+
+.rewind-stats-detailed {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.stat-deletions {
+  color: #ff6b6b;
+}
+
+.stat-insertions {
+  color: #51cf66;
+}
+
+.stat-separator {
+  color: #666;
+  margin: 0 2px;
+}
+
+.stat-label {
+  color: #a0a0b0;
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+
+.rewind-notice:hover {
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.2);
+}
+
+.rewind-notice.rewind-collapsed {
+  opacity: 0.85;
+}
+
+.rewind-notice.rewind-collapsed:hover {
+  opacity: 1;
+}
+
+.rewind-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #252526;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+  transition: background 0.2s ease;
+}
+
+.rewind-header:hover {
+  background: #2D2D30;
+}
+
+/* 折叠时的两行布局 */
+.rewind-header-collapsed {
+  cursor: pointer;
+  user-select: none;
+}
+
+.rewind-header-row-1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #252526;
+  min-width: 0;
+  transition: background 0.2s ease;
+}
+
+.rewind-header-row-1:hover {
+  background: #2D2D30;
+}
+
+.rewind-header-row-2 {
+  padding: 6px 14px 10px;
+  background: #1E1E2E;
+  border-top: 1px solid #333;
+}
+
+.rewind-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.rewind-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.rewind-title {
+  color: #F59E0B;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+/* 折叠时显示的预览文本 */
+.rewind-preview-text {
+  color: #A0A0B0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  margin-left: 8px;
+}
+
+/* 统计徽章 */
+.rewind-stat-badge {
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.rewind-stat-badge.files {
+  background: rgba(245, 158, 11, 0.15);
+  color: #F59E0B;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.rewind-stat-badge.lines {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  gap: 6px;
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+}
+
+.stat-mini.deletions {
+  color: #ff6b6b;
+  font-size: 10px;
+}
+
+.stat-mini.insertions {
+  color: #51cf66;
+  font-size: 10px;
+}
+
+/* 链接图标 */
+.rewind-hint {
+  margin-left: auto;
+  color: #F59E0B;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.rewind-hint:hover {
+  background: rgba(245, 158, 11, 0.1);
+}
+
+/* 折叠按钮 */
+.rewind-collapse-btn {
+  color: #F59E0B;
+  font-size: 10px;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+/* 展开内容 */
+.rewind-quote {
+  padding: 12px 14px;
+  border-top: 1px solid #333;
+  background: #1E1E2E;
+}
+
+.rewind-quote-info {
+  color: #A0A0B0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 文件列表 */
+.rewind-files-section {
+  padding: 12px 14px;
+  border-top: 1px solid #333;
+  background: #1E1E2E;
+}
+
+.rewind-files-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.files-icon {
+  font-size: 14px;
+}
+
+.files-title {
+  color: #A0A0B0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.rewind-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.rewind-file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #C0C0D0;
+}
+
+.rewind-file-item .file-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.rewind-file-item .file-name {
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 底部统计 */
+.rewind-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 14px;
+  border-top: 1px solid #333;
+  background: #1E1E2E;
+}
+
+.rewind-stats-detailed {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.stat-deletions {
+  color: #ff6b6b;
+}
+
+.stat-insertions {
+  color: #51cf66;
+}
+
+.stat-separator {
+  color: #666;
+  margin: 0 2px;
+}
+
+.stat-label {
+  color: #a0a0b0;
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+
+/* Highlight animation for messages */
+.highlight-message {
+  animation: highlight-pulse 2s ease-in-out;
+}
+
+@keyframes highlight-pulse {
+  0%, 100% {
+    background-color: transparent;
+  }
+  50% {
+    background-color: rgba(102, 126, 234, 0.2);
+  }
+}
+</style>
+
+<style>
+/* Rewind Confirmation Dialog (non-scoped for Teleport) */
+.rewind-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: dialog-fade-in 0.2s ease-out;
+}
+
+@keyframes dialog-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.rewind-dialog {
+  background: linear-gradient(135deg, #1e1e2e 0%, #2a2a3e 100%);
+  border-radius: 16px;
+  border: 2px solid #667eea;
+  box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
+  max-width: 500px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: hidden;
+  animation: dialog-slide-in 0.3s ease-out;
+}
+
+@keyframes dialog-slide-in {
+  from {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.rewind-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(102, 126, 234, 0.2);
+}
+
+.rewind-dialog-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.rewind-dialog-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.rewind-dialog-content {
+  padding: 24px;
+  overflow-y: auto;
+  max-height: 60vh;
+}
+
+.rewind-dialog-section {
+  margin-bottom: 20px;
+}
+
+.rewind-dialog-section:last-child {
+  margin-bottom: 0;
+}
+
+.rewind-dialog-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e0;
+  margin-bottom: 12px;
+}
+
+.section-icon {
+  font-size: 18px;
+}
+
+.rewind-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+}
+
+.rewind-file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(102, 126, 234, 0.1);
+  border-radius: 6px;
+  font-size: 13px;
+  color: #c0c0d0;
+}
+
+.file-icon {
+  font-size: 14px;
+}
+
+.file-name {
+  flex: 1;
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+}
+
+.rewind-dialog-section-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  color: #a0a0b0;
+  font-size: 14px;
+}
+
+.empty-icon {
+  font-size: 18px;
+}
+
+.rewind-stats-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #a0a0b0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-value {
+  font-size: 18px;
+  font-weight: 600;
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+}
+
+.stat-item.deletions .stat-value {
+  color: #ff6b6b;
+}
+
+.stat-item.insertions .stat-value {
+  color: #51cf66;
+}
+
+.stat-divider {
+  width: 1px;
+  height: 40px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.rewind-dialog-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.warning-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: #c0c0d0;
+  line-height: 1.5;
+}
+
+.warning-icon {
+  color: #667eea;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.warning-text-highlight {
+  color: #ff6b6b;
+  font-weight: 500;
+}
+
+.rewind-dialog-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(102, 126, 234, 0.1);
+  border-radius: 8px;
+  border-left: 3px solid #667eea;
+  font-size: 13px;
+  color: #c0c0d0;
+  margin-top: 16px;
+}
+
+.note-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.rewind-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 24px;
+  border-top: 1px solid rgba(102, 126, 234, 0.2);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.rewind-btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.rewind-btn.cancel {
+  background: rgba(255, 255, 255, 0.1);
+  color: #c0c0d0;
+}
+
+.rewind-btn.cancel:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.rewind-btn.confirm {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.rewind-btn.confirm:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
+/* 展开内容的新样式 - Tool Use 风格 */
+.rewind-body {
+  background: #1E1E2E;
+  padding: 12px 14px;
+  border-top: 1px solid #333;
+}
+
+.rewind-tool-section {
+  margin-bottom: 16px;
+}
+
+.rewind-tool-section:last-child {
+  margin-bottom: 0;
+}
+
+.rewind-section-label {
+  font-size: 11px;
+  color: #71717A;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rewind-section-content {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.rewind-message-box {
+  padding: 10px 12px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #A0A0B0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.rewind-inline-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+}
+
+.stat-mini {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.stat-mini.deletions {
+  color: #ff6b6b;
+}
+
+.stat-mini.insertions {
+  color: #51cf66;
+}
+
+.stat-mini.separator {
+  color: #666;
+  margin: 0 1px;
+}
+
+.rewind-files-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.rewind-file-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.15);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #C0C0D0;
+  transition: all 0.2s ease;
+}
+
+.rewind-file-chip:hover {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+.rewind-file-chip .file-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.rewind-file-chip .file-path {
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 
 </style>

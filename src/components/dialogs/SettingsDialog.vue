@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, toRaw } from 'vue'
+import { ref, onMounted, onUnmounted, toRaw, computed } from 'vue'
 
 const emit = defineEmits(['close'])
 
@@ -142,6 +142,15 @@ const effortOptions = [
   { value: 'medium', label: '中等 - 平衡模式' },
   { value: 'high', label: '高 - 深度思考' }
 ]
+
+// 检查是否有任何模型映射
+const hasAnyModelMapping = computed(() => {
+  return defaultConfig.value.anthropicModel ||
+         defaultConfig.value.anthropicDefaultSonnetModel ||
+         defaultConfig.value.anthropicDefaultOpusModel ||
+         defaultConfig.value.anthropicDefaultHaikuModel ||
+         defaultConfig.value.anthropicSmallFastModel
+})
 
 // 导航项配置
 const navItems = [
@@ -669,6 +678,43 @@ onUnmounted(() => {
                 <div class="detail-row" v-if="defaultConfig.effort && defaultConfig.effort !== 'default'">
                   <span class="detail-label">思考力度:</span>
                   <span class="detail-value">{{ effortOptions.find(o => o.value === defaultConfig.effort)?.label || defaultConfig.effort }}</span>
+                </div>
+                <!-- 显示模型映射字段 -->
+                <div class="detail-row">
+                  <span class="detail-label">模型映射:</span>
+                  <div class="model-metadata-badges">
+                    <span
+                      v-if="defaultConfig.anthropicModel && defaultConfig.anthropicModel !== ''"
+                      class="model-metadata-badge"
+                    >
+                      通用:{{ defaultConfig.anthropicModel }}
+                    </span>
+                    <span
+                      v-if="defaultConfig.anthropicDefaultSonnetModel && defaultConfig.anthropicDefaultSonnetModel !== ''"
+                      class="model-metadata-badge"
+                    >
+                      SONNET:{{ defaultConfig.anthropicDefaultSonnetModel }}
+                    </span>
+                    <span
+                      v-if="defaultConfig.anthropicDefaultOpusModel && defaultConfig.anthropicDefaultOpusModel !== ''"
+                      class="model-metadata-badge"
+                    >
+                      OPUS:{{ defaultConfig.anthropicDefaultOpusModel }}
+                    </span>
+                    <span
+                      v-if="defaultConfig.anthropicDefaultHaikuModel && defaultConfig.anthropicDefaultHaikuModel !== ''"
+                      class="model-metadata-badge"
+                    >
+                      HAIKU:{{ defaultConfig.anthropicDefaultHaikuModel }}
+                    </span>
+                    <span
+                      v-if="defaultConfig.anthropicSmallFastModel && defaultConfig.anthropicSmallFastModel !== ''"
+                      class="model-metadata-badge"
+                    >
+                      SMALL_FAST:{{ defaultConfig.anthropicSmallFastModel }}
+                    </span>
+                    <span v-if="!hasAnyModelMapping" class="no-mapping">未配置</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1412,7 +1458,6 @@ onUnmounted(() => {
 .default-config-card {
   background: #27272A;
   border: 1px solid #3F3F46;
-  border-left: 4px solid #F97316;
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 24px;
@@ -1594,6 +1639,33 @@ onUnmounted(() => {
   font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
   font-size: 12px;
   color: #F97316;
+}
+
+/* 模型映射字段样式 */
+.model-metadata-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.model-metadata-badge {
+  font-size: 11px;
+  color: #6B7280;
+  background: rgba(75, 85, 99, 0.2);
+  border: 1px solid rgba(75, 85, 99, 0.4);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.no-mapping {
+  font-size: 12px;
+  color: #6B7280;
+  font-style: italic;
 }
 
 .setting-item {

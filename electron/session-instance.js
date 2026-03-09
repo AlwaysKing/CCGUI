@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
+const crypto = require('crypto')
 const { ClaudeManager } = require('./claude-manager')
 const logger = require('./logger')
 
@@ -103,6 +104,31 @@ class SessionInstance {
   }
 
   /**
+   * 解析时间戳，支持多种格式
+   * - ISO 8601 字符串: "2026-03-08T12:05:04.863Z"
+   * - Unix 时间戳（秒）: 1741434244
+   * - Unix 时间戳（毫秒）: 1741434244863
+   */
+  parseTimestamp(timestamp) {
+    if (!timestamp) return new Date()
+
+    // 如果是字符串，直接用 new Date() 解析（支持 ISO 8601）
+    if (typeof timestamp === 'string') {
+      const date = new Date(timestamp)
+      return isNaN(date.getTime()) ? new Date() : date
+    }
+
+    // 如果是数字
+    if (typeof timestamp === 'number') {
+      // 判断是秒还是毫秒（如果数值小于 1e12，认为是秒）
+      const ms = timestamp < 1e12 ? timestamp * 1000 : timestamp
+      return new Date(ms)
+    }
+
+    return new Date()
+  }
+
+  /**
    * 处理原始消息，转换为显示格式
    */
   processRawMessage(data, sendToFrontend = true) {
@@ -116,7 +142,7 @@ class SessionInstance {
             id: data.uuid || `user-${Date.now()}`,
             role: 'user',
             content: textContent.text,
-            timestamp: data.timestamp ? new Date(data.timestamp * 1000) : new Date(),
+            timestamp: this.parseTimestamp(data.timestamp),
             rawMessage: data
           }
           this.messages.push(msg)
@@ -137,7 +163,7 @@ class SessionInstance {
             id: data.uuid || `assistant-${Date.now()}`,
             role: 'assistant',
             content: textContent.text,
-            timestamp: data.timestamp ? new Date(data.timestamp * 1000) : new Date(),
+            timestamp: this.parseTimestamp(data.timestamp),
             rawMessage: data
           }
           this.messages.push(msg)
@@ -356,11 +382,15 @@ class SessionInstance {
     let userMessage
     let textContent
 
+    // 生成真实的 UUID（用于 Claude 创建文件快照）
+    const messageUuid = crypto.randomUUID()
+
     if (typeof content === 'string') {
       // 字符串格式：包装成消息对象
       textContent = content
       userMessage = {
         type: 'user',
+        uuid: messageUuid,  // 添加 UUID
         message: {
           role: 'user',
           content: [{ type: 'text', text: content }]
@@ -369,6 +399,10 @@ class SessionInstance {
     } else if (content && content.type === 'user' && content.message) {
       // 已经是消息对象格式
       userMessage = content
+      // 如果没有 UUID，添加一个
+      if (!userMessage.uuid) {
+        userMessage.uuid = messageUuid
+      }
       // 提取文本内容用于显示
       const msgContent = content.message.content
       if (Array.isArray(msgContent)) {
@@ -390,9 +424,9 @@ class SessionInstance {
     }
     this.historyIndex = -1
 
-    // 添加到本地消息列表
+    // 添加到本地消息列表（使用真实 UUID）
     const displayMessage = {
-      id: `user-${Date.now()}`,
+      id: userMessage.uuid,  // 使用消息对象中的真实 UUID
       role: 'user',
       content: textContent,
       timestamp: new Date(),
@@ -594,8 +628,9 @@ class SessionInstance {
    * 发送控制请求（主动请求，如切换权限模式）
    */
   async sendControlRequest(request) {
-    if (!this.claudeManager) {
-      throw new Error('Claude not started')
+    // 懒加载：第一次使用时启动 Claude（和 sendMessage 一样）
+    if (!this.claudeManager || !this.claudeManager.isReady()) {
+      await this.startClaude()
     }
 
     this.claudeManager.sendControlRequest(request)

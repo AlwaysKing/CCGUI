@@ -15,15 +15,23 @@ let mainWindow
 let sessionManager
 
 /**
+ * Get app icon path
+ */
+function getIconPath() {
+  return path.join(__dirname, '../build/icons/icon.icns')
+}
+
+/**
  * Create main application window
  */
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: 'CCGUI - 首页',
+    title: '首页',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
+    icon: getIconPath(),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -715,9 +723,10 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
       height: 800,
       minWidth: 800,
       minHeight: 600,
-      title: `CCGUI - ${project.name}`,
+      title: project.name,
       titleBarStyle: 'hiddenInset',
       trafficLightPosition: { x: 16, y: 16 },
+      icon: getIconPath(),
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
         contextIsolation: true,
@@ -854,7 +863,7 @@ app.on('open-file', (event, filePath) => {
   const projectId = encodeProjectPath(filePath)
 
   // Open in new window
-  openProjectWindow(projectId, path.basename(filePath))
+  openProjectWindow(projectId, path.basename(filePath), filePath)
 })
 
 /**
@@ -888,17 +897,21 @@ function encodeProjectPath(projectPath) {
 
 /**
  * Open project window (new or existing)
+ * @param {string} projectId - Encoded project ID (for URL parameter)
+ * @param {string} projectName - Project name (for window title)
+ * @param {string} projectPath - Original project path (for window lookup)
  */
-function openProjectWindow(projectId, projectName) {
+function openProjectWindow(projectId, projectName, projectPath) {
   // Create new BrowserWindow
   const newWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: `CCGUI - ${projectName}`,
+    title: projectName,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
+    icon: getIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -909,6 +922,7 @@ function openProjectWindow(projectId, projectName) {
   // Store project info
   newWindow.projectId = projectId
   newWindow.projectName = projectName
+  newWindow.projectPath = projectPath
 
   // Load app with project ID
   if (isDev) {
@@ -937,7 +951,24 @@ function setupDockMenu() {
     return
   }
 
-  const { Menu } = require('electron')
+  const { Menu, nativeImage } = require('electron')
+
+  // Set dock icon
+  const iconPath = isDev
+    ? path.join(__dirname, '../build/icons/icon.icns')
+    : path.join(__dirname, '../build/icons/icon.icns')
+
+  try {
+    if (fs.existsSync(iconPath)) {
+      const icon = nativeImage.createFromPath(iconPath)
+      app.dock.setIcon(icon)
+      logger.info('[Dock] Dock icon set successfully')
+    } else {
+      logger.warn('[Dock] Icon file not found:', iconPath)
+    }
+  } catch (error) {
+    logger.error('[Dock] Failed to set dock icon:', error)
+  }
 
   const dockMenuTemplate = [
     {
@@ -964,9 +995,10 @@ function createNewWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: 'CCGUI - 首页',
+    title: '首页',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
+    icon: getIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

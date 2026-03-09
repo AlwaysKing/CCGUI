@@ -266,16 +266,42 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 发送控制请求（主动请求，如切换权限模式）
+   * 发送控制请求（主动请求，如切换权限模式、rewind）
+   * @returns {Promise} 返回一个 Promise，在收到 control-response 时解析
    */
   async function sendControlRequest(request) {
     const session = currentSession.value
     if (!session) return
 
+    // 创建一个 Promise 来等待响应
+    const responsePromise = new Promise((resolve, reject) => {
+      // 设置超时，避免永久等待
+      const timeout = setTimeout(() => {
+        session.pendingControlRequestResult = null
+        reject(new Error('Control request timeout'))
+      }, 30000) // 30 秒超时
+
+      // 保存 resolve 和 reject 函数，在 handleControlResponse 中调用
+      session.pendingControlRequestResult = {
+        resolve: (data) => {
+          clearTimeout(timeout)
+          resolve(data)
+        },
+        reject: (error) => {
+          clearTimeout(timeout)
+          reject(error)
+        }
+      }
+    })
+
+    // 发送请求
     await window.electronAPI.sendControlRequest({
       sessionId: session.id,
       request
     })
+
+    // 返回 Promise，让调用者可以 await 响应
+    return responsePromise
   }
 
   /**
@@ -320,6 +346,10 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'control-request':
         handleControlRequest(session, data)
+        break
+
+      case 'control-response':
+        handleControlResponse(session, data)
         break
 
       case 'interrupt':
@@ -750,6 +780,21 @@ export const useSessionStore = defineStore('session', () => {
     } else {
       log('[SessionStore] Setting pendingControlRequest, toolName:', toolName, 'request_id:', mergedRequestData.request_id)
       session.pendingControlRequest = mergedRequestData
+    }
+  }
+
+  /**
+   * 处理控制响应（rewind/fork 等操作的结果）
+   */
+  function handleControlResponse(session, data) {
+    log('[SessionStore] handleControlResponse called')
+    log('[SessionStore] Response data:', JSON.stringify(data, null, 2))
+
+    // 检查是否有待处理的控制请求
+    if (session.pendingControlRequestResult) {
+      // 解析响应并传递给等待的 Promise
+      session.pendingControlRequestResult.resolve(data)
+      session.pendingControlRequestResult = null
     }
   }
 

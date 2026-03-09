@@ -19,8 +19,8 @@ const currentView = computed(() => {
 async function updateWindowTitle() {
   try {
     const title = currentView.value === 'welcome'
-      ? 'CCGUI - 首页'
-      : `CCGUI - ${store.currentProject?.name || '未知项目'}`
+      ? '首页'
+      : store.currentProject?.name || '未知项目'
 
     await window.electronAPI?.updateWindowTitle({ title })
     logger.info('Window title updated', { title, view: currentView.value })

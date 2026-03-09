@@ -319,6 +319,7 @@ async function copyToClipboard(text) {
   padding: 12px 20px;
   border-top: 1px solid #333;
   background: #161B22;
+  border-radius: 0 0 12px 12px;
 }
 
 .hint {

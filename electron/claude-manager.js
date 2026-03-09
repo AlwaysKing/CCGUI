@@ -98,13 +98,15 @@ class ClaudeManager {
     }
 
     const args = [
-      '--print',
+      '--print',  // 使用 print 模式以支持流式输入输出
       '--verbose',
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
       '--permission-prompt-tool', 'stdio',
       '--include-partial-messages',
-      '--max-thinking-tokens', '31999'
+      '--replay-user-messages',  // 重新发送用户消息以便跟踪消息 ID
+      '--max-thinking-tokens', '31999',
+      '--setting-sources', 'user,project,local'  // 启用设置源
     ]
 
     // Add permission mode if not default
@@ -132,7 +134,8 @@ class ClaudeManager {
         env: {
           ...process.env,
           CLAUDE_CODE_ENABLE_TELEMETRY: '0',
-          DISABLE_TELEMETRY: '1'
+          DISABLE_TELEMETRY: '1',
+          CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: 'true'  // 启用文件历史快照功能
         }
       })
 
@@ -164,10 +167,64 @@ class ClaudeManager {
         tools: []
       })
 
+      // Send initialize control request to enable file history
+      await this.sendInitializeRequest()
+
     } catch (error) {
       this.process = null
       throw error
     }
+  }
+
+  /**
+   * Send initialize control request to enable features like file history
+   */
+  async sendInitializeRequest() {
+    return new Promise((resolve, reject) => {
+      const requestId = `init_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+      // Set up one-time handler for the response
+      const responseHandler = (message) => {
+        if (message.type === 'control_response' &&
+            message.response?.request_id === requestId) {
+          this.off('control_response', responseHandler)
+          logger.info('[ClaudeManager] Initialize response received:', message)
+
+          // Check if initialization was successful
+          if (message.response?.subtype === 'success') {
+            logger.info('[ClaudeManager] Claude initialized successfully, file history should be enabled')
+            resolve(message)
+          } else {
+            logger.error('[ClaudeManager] Initialize failed:', message.response?.error)
+            reject(new Error(`Initialize failed: ${message.response?.error}`))
+          }
+        }
+      }
+
+      this.on('control_response', responseHandler)
+
+      // Send initialize request
+      const initRequest = {
+        type: 'control_request',
+        request_id: requestId,
+        request: {
+          subtype: 'initialize',
+          hooks: {},
+          sdkMcpServers: [],
+          jsonSchema: null,
+          systemPrompt: null
+        }
+      }
+
+      logger.info('[ClaudeManager] Sending initialize request:', initRequest)
+      this.sendMessage(initRequest)
+
+      // Timeout after 10 seconds
+      setTimeout(() => {
+        this.off('control_response', responseHandler)
+        reject(new Error('Initialize request timeout'))
+      }, 10000)
+    })
   }
 
   /**

@@ -218,22 +218,26 @@ const primaryContent = computed(() => {
         isBackground: input.run_in_background
       }
     case 'Read':
+      // 显示文件路径，以及描述（如果有）
+      const readPath = formatFilePath(input.file_path)
+      const readDesc = input.description ? `${readPath}    ${input.description}` : readPath
       return {
         label: '读取文件',
         value: input.file_path,
-        description: input.description
+        description: readDesc
       }
     case 'Edit':
-      // 根据操作类型显示不同的描述
+      // 根据操作类型显示不同的描述，包含文件路径
+      const editPath = formatFilePath(input.file_path)
       let editDesc = ''
       if (isAddOperation.value) {
-        editDesc = '在文件末尾添加内容'
+        editDesc = `${editPath}    添加内容`
       } else if (isDeleteOperation.value) {
-        editDesc = '删除内容'
+        editDesc = `${editPath}    删除内容`
       } else {
         const oldLen = input.old_string?.length || 0
         const newLen = input.new_string?.length || 0
-        editDesc = `替换 ${oldLen} 字符 → ${newLen} 字符`
+        editDesc = `${editPath}    替换 ${oldLen} 字符 → ${newLen} 字符`
       }
       return {
         label: '编辑文件',
@@ -243,10 +247,11 @@ const primaryContent = computed(() => {
     case 'Write':
       const content = input.content || ''
       const lineCount = content.split('\n').length
+      const writePath = formatFilePath(input.file_path)
       return {
         label: '写入文件',
         value: input.file_path,
-        description: `${lineCount} 行 · ${content.length} 字符`,
+        description: `${writePath}    ${lineCount} 行 · ${content.length} 字符`,
         hasContent: !!content
       }
     case 'Glob':
@@ -341,16 +346,30 @@ const collapsedSummary = computed(() => {
       const bgIcon = input.run_in_background ? '/bg' : ''
       return cmd.length > 40 ? cmd.substring(0, 40) + '...' + bgIcon : cmd + bgIcon
     case 'Read':
-      // 显示完整路径或相对路径
-      return formatFilePath(input.file_path)
+      // 显示文件路径和描述（如果有）
+      const readFilePath = formatFilePath(input.file_path)
+      const readSummary = input.description ? `${readFilePath}    ${input.description}` : readFilePath
+      return readSummary
     case 'Write':
-      // 显示完整路径或相对路径
-      return formatFilePath(input.file_path)
+      // 显示文件路径和统计信息
+      const writeFilePath = formatFilePath(input.file_path)
+      const writeContent = input.content || ''
+      const writeLineCount = writeContent.split('\n').length
+      return `${writeFilePath}    ${writeLineCount} 行 · ${writeContent.length} 字符`
     case 'Edit':
-      // 显示完整路径或相对路径，以及操作类型
+      // 显示完整路径或相对路径，以及操作说明
       const editFilePath = formatFilePath(input.file_path)
-      const opType = isAddOperation.value ? '➕' : isDeleteOperation.value ? '➖' : '🔄'
-      return `${opType} ${editFilePath}`
+      let editOpDesc = ''
+      if (isAddOperation.value) {
+        editOpDesc = '添加内容'
+      } else if (isDeleteOperation.value) {
+        editOpDesc = '删除内容'
+      } else {
+        const oldLen = input.old_string?.length || 0
+        const newLen = input.new_string?.length || 0
+        editOpDesc = `替换 ${oldLen} 字符 → ${newLen} 字符`
+      }
+      return `${editFilePath}    ${editOpDesc}`
     case 'Glob':
       return input.pattern || ''
     case 'Grep':

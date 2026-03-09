@@ -2,12 +2,14 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
 import NewProjectDialog from '../dialogs/NewProjectDialog.vue'
+import SettingsDialog from '../dialogs/SettingsDialog.vue'
 import { logger } from '../../utils/logger'
 
 const store = useAppStore()
 
 const searchQuery = ref('')
 const showNewProjectDialog = ref(false)
+const showSettingsDialog = ref(false)
 const showOldProjects = ref(false)
 const showMissingProjects = ref(false)
 const projectExistsMap = ref({})
@@ -284,6 +286,14 @@ onUnmounted(() => {
     @dragleave="handleDragLeave"
     @drop="handleDrop"
   >
+    <!-- Settings Button - 右上角齿轮图标 -->
+    <button class="settings-btn" @click="showSettingsDialog = true" title="应用设置">
+      <svg class="settings-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+
     <div class="welcome-header">
       <div class="logo">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -476,6 +486,12 @@ onUnmounted(() => {
       @created="showNewProjectDialog = false"
     />
 
+    <!-- Settings Dialog -->
+    <SettingsDialog
+      v-if="showSettingsDialog"
+      @close="showSettingsDialog = false"
+    />
+
     <!-- Delete Project Confirmation Dialog -->
     <div v-if="showDeleteConfirm" class="confirm-dialog-overlay" @click="cancelDelete">
       <div class="confirm-dialog" @click.stop>
@@ -569,6 +585,41 @@ onUnmounted(() => {
   height: 32px;
   -webkit-app-region: drag;
   z-index: 999;
+}
+
+.settings-btn {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  padding: 8px;
+  background: transparent;
+  border: none;
+  color: #71717A;
+  cursor: pointer;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  z-index: 1000;
+  -webkit-app-region: no-drag;
+}
+
+.settings-icon {
+  transition: transform 0.2s ease-in-out;
+}
+
+.settings-btn:hover {
+  background: #374151;
+  color: #D1D5DB;
+}
+
+.settings-btn:hover .settings-icon {
+  transform: rotate(45deg);
+}
+
+.settings-btn:active .settings-icon {
+  transform: rotate(90deg);
 }
 
 .welcome-header {

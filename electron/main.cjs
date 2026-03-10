@@ -69,21 +69,8 @@ function createWindow() {
  * Initialize Session Manager
  */
 function initSessionManager() {
-  // Create callback to send events to renderer
-  const sendToRenderer = (sessionId, eventType, data) => {
-    if (mainWindow && mainWindow.webContents) {
-      mainWindow.webContents.send('session-event', {
-        sessionId,
-        eventType,
-        data
-      })
-    }
-  }
-
-  // Create SessionManager instance
-  sessionManager = new SessionManager(sendToRenderer)
-
-  // All done,  console.log('[Main] SessionManager initialized')
+  // Create SessionManager instance (webContents will be passed per-session)
+  sessionManager = new SessionManager()
 }
 
 
@@ -163,8 +150,14 @@ ipcMain.handle('select-session', async (event, { sessionId, projectId, projectPa
   logger.info('[IPC] select-session:', { sessionId, projectId, projectPath })
 
   try {
-    // Get or create the session instance
-    const sessionInstance = await sessionManager.getOrCreateSession(sessionId, projectPath, true)
+    // Get or create the session instance, passing the caller's webContents
+    // This ensures events are sent to the correct window (supports multi-window)
+    const sessionInstance = await sessionManager.getOrCreateSession(
+      sessionId,
+      projectPath,
+      event.sender, // webContents of the calling window
+      true
+    )
 
     // Return the session state
     return {
@@ -353,8 +346,8 @@ ipcMain.handle('start-session', async (event, { sessionId, projectPath }) => {
   logger.info('[IPC] start-session (legacy):', { sessionId, projectPath })
 
   try {
-    // Use select-session internally
-    const session = await sessionManager.getOrCreateSession(sessionId, projectPath, true)
+    // Use select-session internally, passing webContents for multi-window support
+    const session = await sessionManager.getOrCreateSession(sessionId, projectPath, event.sender, true)
 
     // Start Claude process
     await session.start()

@@ -10,10 +10,10 @@ const logger = require('./logger')
  * 每个会话的独立实例，包含该会话的所有数据和状态
  */
 class SessionInstance {
-  constructor(sessionId, projectPath, sendToRenderer) {
+  constructor(sessionId, projectPath, webContents) {
     this.id = sessionId
     this.projectPath = projectPath
-    this.sendToRenderer = sendToRenderer // 回调函数，用于向前端发送事件
+    this.webContents = webContents // 所属窗口的 webContents，用于向前端发送事件
 
     // 会话数据
     this.messages = []        // 消息历史
@@ -661,8 +661,12 @@ class SessionInstance {
    * 向前端发送事件
    */
   emit(eventType, data) {
-    if (this.sendToRenderer) {
-      this.sendToRenderer(this.id, eventType, data)
+    if (this.webContents && !this.webContents.isDestroyed()) {
+      this.webContents.send('session-event', {
+        sessionId: this.id,
+        eventType,
+        data
+      })
     }
   }
 

@@ -6,29 +6,18 @@ const logger = require('./logger')
  * 管理多个 SessionInstance，每个会话都是独立的
  */
 class SessionManager {
-  constructor(sendToRenderer = null) {
+  constructor() {
     this.sessions = new Map() // sessionId -> SessionInstance
-    this.sendToRenderer = sendToRenderer // 向前端发送事件的回调
-  }
-
-  /**
-   * 设置发送到前端的回调
-   */
-  setSendToRenderer(callback) {
-    this.sendToRenderer = callback
-    // 更新所有已存在的 session 的回调
-    for (const session of this.sessions.values()) {
-      session.sendToRenderer = callback
-    }
   }
 
   /**
    * 获取或创建 SessionInstance
    * @param {string} sessionId - 会话 ID
    * @param {string} projectPath - 项目路径
+   * @param {Electron.WebContents} webContents - 所属窗口的 webContents
    * @param {boolean} createIfNotExists - 如果不存在是否创建
    */
-  async getOrCreateSession(sessionId, projectPath, createIfNotExists = true) {
+  async getOrCreateSession(sessionId, projectPath, webContents, createIfNotExists = true) {
     // 如果已存在，直接返回
     if (this.sessions.has(sessionId)) {
       return this.sessions.get(sessionId)
@@ -40,8 +29,8 @@ class SessionManager {
 
     logger.info(`[SessionManager] Creating session ${sessionId} for project ${projectPath}`)
 
-    // 创建新的 SessionInstance
-    const session = new SessionInstance(sessionId, projectPath, this.sendToRenderer)
+    // 创建新的 SessionInstance，传入 webContents
+    const session = new SessionInstance(sessionId, projectPath, webContents)
 
     // 初始化（加载历史）
     await session.initialize()

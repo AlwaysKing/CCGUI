@@ -8,10 +8,6 @@ const activeSection = ref('model')
 
 // 配置选项
 const settings = ref({
-  // 提示词配置
-  systemPrompt: '',
-  customPrompts: [],
-
   // 软件配置
   theme: 'dark',
   language: 'zh-CN',
@@ -61,8 +57,224 @@ const hoveredListModelCard = ref(null)
 // 模型列表中模型卡片的 hover 状态
 const hoveredModelId = ref(null)
 
+// 提示词列表
+const prompts = ref([])
+
+// 编辑提示词对话框
+const showPromptDialog = ref(false)
+const editingPrompt = ref(null)
+const promptForm = ref({
+  name: '',
+  description: '',
+  content: '',
+  isActive: false
+})
+
+// 规范文档列表
+const documents = ref([])
+
+// 编辑规范文档对话框
+const showDocumentDialog = ref(false)
+const editingDocument = ref(null)
+const documentForm = ref({
+  name: '',
+  description: '',
+  content: '',
+  isActive: false
+})
+
+// 提示词 hover 状态
+const hoveredPromptId = ref(null)
+
+// 规范文档 hover 状态
+const hoveredDocumentId = ref(null)
+
 // 生成模型卡片ID
 function generateModelCardId() {
+  return Date.now().toString() + Math.random().toString(36).substr(2, 9)
+}
+
+// 生成提示词ID
+function generatePromptId() {
+  return Date.now().toString() + Math.random().toString(36).substr(2, 9)
+}
+
+// 添加新提示词
+function handleAddPrompt() {
+  editingPrompt.value = null
+  promptForm.value = {
+    name: '',
+    description: '',
+    content: '',
+    isActive: false
+  }
+  showPromptDialog.value = true
+}
+
+// 编辑提示词
+function handleEditPrompt(prompt) {
+  editingPrompt.value = prompt
+  promptForm.value = {
+    name: prompt.name,
+    description: prompt.description || '',
+    content: prompt.content,
+    isActive: prompt.isActive
+  }
+  showPromptDialog.value = true
+}
+
+// 删除提示词
+async function handleDeletePrompt(promptId) {
+  if (!confirm('确定要删除这个提示词吗？')) {
+    return
+  }
+  console.log('[Prompt] Deleting prompt:', promptId)
+  console.log('[Prompt] Before delete:', JSON.stringify(prompts.value))
+  const index = prompts.value.findIndex(p => p.id === promptId)
+  if (index !== -1) {
+    prompts.value.splice(index, 1)
+  }
+  console.log('[Prompt] After delete:', JSON.stringify(prompts.value))
+  const success = await saveAppConfig()
+  console.log('[Prompt] Save result:', success)
+  if (success) {
+    console.log('[Prompt] Delete successful')
+  } else {
+    alert('删除失败，请重试')
+  }
+}
+
+// 切换提示词激活状态
+async function handleTogglePromptActive(promptId) {
+  const prompt = prompts.value.find(p => p.id === promptId)
+  if (prompt) {
+    prompt.isActive = !prompt.isActive
+    console.log('[Prompt] Toggled active state:', promptId, prompt.isActive)
+    await saveAppConfig()
+  }
+}
+
+// 关闭提示词对话框
+function handleClosePromptDialog() {
+  showPromptDialog.value = false
+  editingPrompt.value = null
+}
+
+// 保存提示词
+function handleSavePrompt() {
+  if (!promptForm.value.name || !promptForm.value.content) {
+    alert('请填写提示词名称和内容')
+    return
+  }
+
+  if (editingPrompt.value) {
+    // 更新现有提示词
+    const prompt = prompts.value.find(p => p.id === editingPrompt.value.id)
+    if (prompt) {
+      prompt.name = promptForm.value.name
+      prompt.description = promptForm.value.description
+      prompt.content = promptForm.value.content
+      prompt.isActive = promptForm.value.isActive
+    }
+  } else {
+    // 添加新提示词
+    prompts.value.push({
+      id: generatePromptId(),
+      name: promptForm.value.name,
+      description: promptForm.value.description,
+      content: promptForm.value.content,
+      isActive: promptForm.value.isActive
+    })
+  }
+
+  saveAppConfig()
+  handleClosePromptDialog()
+}
+
+// 添加规范文档
+function handleAddDocument() {
+  editingDocument.value = null
+  documentForm.value = {
+    name: '',
+    description: '',
+    content: '',
+    isActive: false
+  }
+  showDocumentDialog.value = true
+}
+
+// 编辑规范文档
+function handleEditDocument(document) {
+  editingDocument.value = document
+  documentForm.value = {
+    name: document.name,
+    description: document.description || '',
+    content: document.content,
+    isActive: document.isActive
+  }
+  showDocumentDialog.value = true
+}
+
+// 删除规范文档
+async function handleDeleteDocument(documentId) {
+  if (!confirm('确定要删除这个规范文档吗？')) {
+    return
+  }
+  const index = documents.value.findIndex(d => d.id === documentId)
+  if (index !== -1) {
+    documents.value.splice(index, 1)
+  }
+  await saveAppConfig()
+}
+
+// 切换规范文档激活状态
+async function handleToggleDocumentActive(documentId) {
+  const document = documents.value.find(d => d.id === documentId)
+  if (document) {
+    document.isActive = !document.isActive
+    await saveAppConfig()
+  }
+}
+
+// 保存规范文档
+function handleSaveDocument() {
+  if (!documentForm.value.name || !documentForm.value.content) {
+    alert('请填写文档名称和内容')
+    return
+  }
+
+  if (editingDocument.value) {
+    // 更新现有文档
+    const document = documents.value.find(d => d.id === editingDocument.value.id)
+    if (document) {
+      document.name = documentForm.value.name
+      document.description = documentForm.value.description
+      document.content = documentForm.value.content
+      document.isActive = documentForm.value.isActive
+    }
+  } else {
+    // 添加新文档
+    documents.value.push({
+      id: generateDocumentId(),
+      name: documentForm.value.name,
+      description: documentForm.value.description,
+      content: documentForm.value.content,
+      isActive: documentForm.value.isActive
+    })
+  }
+
+  saveAppConfig()
+  handleCloseDocumentDialog()
+}
+
+// 关闭规范文档对话框
+function handleCloseDocumentDialog() {
+  showDocumentDialog.value = false
+  editingDocument.value = null
+}
+
+// 生成文档ID
+function generateDocumentId() {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9)
 }
 
@@ -174,8 +386,6 @@ async function loadSettings() {
 
       // 加载基本设置
       settings.value = {
-        systemPrompt: configSettings.systemPrompt || '',
-        customPrompts: configSettings.customPrompts || [],
         theme: configSettings.theme || 'dark',
         language: configSettings.language || 'zh-CN',
         autoStart: configSettings.autoStart || false,
@@ -192,6 +402,10 @@ async function loadSettings() {
       if (models.value.length > 0 && !selectedModelId.value) {
         selectedModelId.value = models.value[0].id
       }
+
+      // 加载提示词列表
+      prompts.value = configSettings.prompts || []
+      console.log('[SettingsDialog] Loaded prompts:', JSON.stringify(prompts.value))
     }
 
     // 加载默认配置（从 ~/.claude/settings.json）
@@ -546,25 +760,30 @@ function handleClose() {
 async function saveAppConfig() {
   try {
     // 构建配置对象 - 使用 JSON 序列化确保完全去除响应式代理
+    const promptsData = JSON.parse(JSON.stringify(prompts.value))
+    console.log('[saveAppConfig] Prompts to save:', promptsData)
+
     const updates = {
       settings: {
         ...JSON.parse(JSON.stringify(settings.value)),
         models: JSON.parse(JSON.stringify(models.value)),
+        prompts: promptsData,
         selectedModelId: selectedModelId.value
       }
     }
 
-    console.log('[SettingsDialog] Auto-saving updates:', JSON.stringify(updates, null, 2))
+    console.log('[saveAppConfig] Full updates object:', JSON.stringify(updates, null, 2))
 
     // 保存配置
     const result = await window.electronAPI.updateAppConfig(updates)
+    console.log('[saveAppConfig] IPC result:', result)
 
     if (result.success) {
-      console.log('Settings auto-saved successfully')
+      console.log('[saveAppConfig] Settings saved successfully')
       return true
     } else {
-      console.error('Failed to auto-save settings')
-      alert('保存配置失败')
+      console.error('[saveAppConfig] Failed to save settings:', result.error)
+      alert('保存配置失败: ' + (result.error || '未知错误'))
       return false
     }
   } catch (error) {
@@ -780,7 +999,7 @@ onUnmounted(() => {
                       </button>
                     </div>
                   </div>
-                  <div class="model-details">
+                  <div>
                     <div class="detail-row">
                       <span class="detail-label">API地址:</span>
                       <span class="detail-value">{{ model.apiUrl }}</span>
@@ -865,25 +1084,210 @@ onUnmounted(() => {
           <div class="config-section" ref="promptSectionRef">
             <h3 class="section-title">提示词配置</h3>
 
-            <div class="setting-item vertical">
-              <div class="setting-label">
-                <span>系统提示词</span>
-                <span class="setting-description">设置默认的系统提示词，用于指导Claude的行为</span>
+            <!-- 自定义提示词 -->
+            <div class="subsection-header">
+              <h4 class="subsection-title">自定义提示词</h4>
+              <button class="icon-btn no-border" @click="handleAddPrompt" title="添加提示词">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+              </button>
+            </div>
+            <div class="prompts-section">
+              <div class="prompts-list">
+                <div
+                  v-for="prompt in prompts"
+                  :key="prompt.id"
+                  class="prompt-card-item"
+                  @mouseenter="hoveredPromptId = prompt.id"
+                  @mouseleave="hoveredPromptId = null"
+                >
+                  <div class="model-header">
+                    <h4 class="model-name">
+                      {{ prompt.name || '未命名' }}
+                      <button
+                        type="button"
+                        class="btn-toggle-active"
+                        :class="{ 'is-active': prompt.isActive }"
+                        @click.stop="handleTogglePromptActive(prompt.id)"
+                        :title="prompt.isActive ? '点击停用' : '点击激活'"
+                      >
+                        {{ prompt.isActive ? '已激活' : '未激活' }}
+                      </button>
+                    </h4>
+                    <div class="model-actions">
+                      <button
+                        type="button"
+                        class="icon-btn"
+                        @click.stop="handleEditPrompt(prompt)"
+                        title="编辑提示词"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        class="icon-btn danger"
+                        @click.stop="handleDeletePrompt(prompt.id)"
+                        title="删除提示词"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="prompt-description" v-if="prompt.description">
+                    {{ prompt.description }}
+                  </div>
+                </div>
+
+                <!-- 空状态 -->
+                <div v-if="prompts.length === 0" class="empty-state">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  <p class="empty-title">暂无自定义提示词</p>
+                  <p class="empty-description">点击右侧的"+"按钮开始配置</p>
+                </div>
               </div>
-              <textarea
-                v-model="settings.systemPrompt"
-                class="setting-textarea"
-                placeholder="输入系统提示词..."
-                rows="6"
-              ></textarea>
             </div>
 
-            <div class="setting-item">
-              <div class="setting-label">
-                <span>自定义提示词</span>
-                <span class="setting-description">管理常用的自定义提示词模板（开发中）</span>
+            <!-- 规范文档 -->
+            <div class="subsection-header">
+              <h4 class="subsection-title">规范文档</h4>
+              <button class="icon-btn no-border" @click="handleAddDocument" title="添加规范文档">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+              </button>
+            </div>
+            <div class="documents-section">
+              <div class="documents-list">
+                <div
+                  v-for="document in documents"
+                  :key="document.id"
+                  class="document-card-item"
+                  @mouseenter="hoveredDocumentId = document.id"
+                  @mouseleave="hoveredDocumentId = null"
+                >
+                  <div class="model-header">
+                    <h4 class="model-name">
+                      {{ document.name || '未命名' }}
+                      <button
+                        type="button"
+                        class="btn-toggle-active"
+                        :class="{ 'is-active': document.isActive }"
+                        @click.stop="handleToggleDocumentActive(document.id)"
+                        :title="document.isActive ? '点击停用' : '点击激活'"
+                      >
+                        {{ document.isActive ? '已激活' : '未激活' }}
+                      </button>
+                    </h4>
+                    <div class="model-actions">
+                      <button
+                        type="button"
+                        class="icon-btn"
+                        @click.stop="handleEditDocument(document)"
+                        title="编辑规范文档"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        class="icon-btn danger"
+                        @click.stop="handleDeleteDocument(document.id)"
+                        title="删除规范文档"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="document-description" v-if="document.description">
+                    {{ document.description }}
+                  </div>
+                </div>
+
+                <!-- 空状态 -->
+                <div v-if="documents.length === 0" class="empty-state">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                    <polyline points="10 9 9 9 8 9"/>
+                  </svg>
+                  <p class="empty-title">暂无规范文档</p>
+                  <p class="empty-description">点击右侧的"+"按钮开始配置</p>
+                </div>
               </div>
-              <button class="btn btn-secondary" disabled>管理提示词</button>
+            </div>
+          </div>
+
+          <!-- 提示词编辑对话框 -->
+          <div v-if="showPromptDialog" class="dialog-overlay prompt-dialog-overlay" @click="handleClosePromptDialog">
+            <div class="dialog-content prompt-dialog" @click.stop>
+              <div class="dialog-header">
+                <h3>{{ editingPrompt ? '编辑提示词' : '添加提示词' }}</h3>
+                <button type="button" class="btn-close" @click="handleClosePromptDialog">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="dialog-body">
+                <div class="form-group">
+                  <label class="form-label">名称 <span class="required">*</span></label>
+                  <input
+                    v-model="promptForm.name"
+                    type="text"
+                    class="form-input"
+                    placeholder="输入提示词名称"
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label class="form-label">描述</label>
+                  <input
+                    v-model="promptForm.description"
+                    type="text"
+                    class="form-input"
+                    placeholder="输入提示词描述"
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label class="form-label">内容 <span class="required">*</span></label>
+                  <textarea
+                    v-model="promptForm.content"
+                    class="form-textarea"
+                    placeholder="输入提示词内容..."
+                    rows="10"
+                  ></textarea>
+                </div>
+              </div>
+
+              <div class="dialog-footer">
+                <button type="button" class="btn btn-secondary" @click="handleClosePromptDialog">
+                  取消
+                </button>
+                <button type="button" class="btn btn-primary" @click="handleSavePrompt">
+                  保存
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1609,8 +2013,29 @@ onUnmounted(() => {
   color: #FCA5A5;
 }
 
-.model-details {
-  padding-left: 30px;
+/* 卡片内的按钮无边框 */
+.model-card .icon-btn,
+.default-config-card .icon-btn,
+.prompt-card-item .icon-btn,
+.document-card-item .icon-btn {
+  border: none;
+  background: transparent;
+}
+
+.model-card .icon-btn:hover,
+.default-config-card .icon-btn:hover,
+.prompt-card-item .icon-btn:hover,
+.document-card-item .icon-btn:hover {
+  background: rgba(249, 115, 22, 0.1);
+  color: #F97316;
+}
+
+.model-card .icon-btn.danger:hover,
+.default-config-card .icon-btn.danger:hover,
+.prompt-card-item .icon-btn.danger:hover,
+.document-card-item .icon-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #EF4444;
 }
 
 .detail-row {
@@ -1986,8 +2411,8 @@ input:checked + .slider:before {
 .form-input {
   width: 100%;
   padding: 10px 12px;
-  background: #374151;
-  border: 1px solid #4B5563;
+  background: #27272A;
+  border: 1px solid #3F3F46;
   border-radius: 6px;
   color: #F4F4F5;
   font-size: 14px;
@@ -2103,6 +2528,150 @@ select.form-input {
 
 .model-dialog .dialog-body::-webkit-scrollbar-thumb:hover {
   background: #6B7280;
+}
+
+/* 提示词对话框样式 */
+.prompt-dialog-overlay {
+  z-index: 2300;
+}
+
+.prompt-dialog {
+  width: 600px;
+  max-width: 90vw;
+  background: #2D2D2D;
+  border: 1px solid #3F3F46;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.prompt-dialog .dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #3F3F46;
+  flex-shrink: 0;
+}
+
+.prompt-dialog .dialog-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #F4F4F5;
+}
+
+.prompt-dialog .btn-close {
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: #71717A;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.prompt-dialog .btn-close:hover {
+  background: #3F3F46;
+  color: #FAFAFA;
+}
+
+.prompt-dialog .dialog-body {
+  display: block;
+  flex: 1;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.prompt-dialog .dialog-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding: 16px 20px;
+  border-top: 1px solid #3F3F46;
+  flex-shrink: 0;
+}
+
+.prompt-dialog .form-group {
+  margin-bottom: 16px;
+}
+
+.prompt-dialog .form-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #FAFAFA;
+}
+
+.prompt-dialog .form-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  color: #FAFAFA;
+  font-size: 14px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.prompt-dialog .form-input:focus {
+  outline: none;
+  border-color: #F97316;
+}
+
+.prompt-dialog .form-input::placeholder {
+  color: #71717A;
+}
+
+.prompt-dialog .form-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  color: #FAFAFA;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+
+.prompt-dialog .form-textarea:focus {
+  outline: none;
+  border-color: #F97316;
+}
+
+.prompt-dialog .form-textarea::placeholder {
+  color: #71717A;
+}
+
+.prompt-dialog .form-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.prompt-dialog .form-checkbox input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #F97316;
+}
+
+.prompt-dialog .form-checkbox span {
+  font-size: 14px;
+  color: #A1A1AA;
 }
 
 /* 模型卡片样式 */
@@ -2445,5 +3014,177 @@ select.form-input {
 .model-card-item:hover .default-badge {
   background: rgba(249, 115, 22, 0.15);
   border-color: rgba(249, 115, 22, 0.5);
+}
+
+/* 提示词卡片样式 */
+.prompts-section {
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.prompts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.prompt-card-item {
+  background: #1F1F23;
+  border: 2px solid #3F3F46;
+  border-radius: 8px;
+  padding: 16px;
+  transition: all 0.2s;
+}
+
+.prompt-card-item:hover {
+  background: #2D2D30;
+  border-color: #52525B;
+}
+
+.prompt-description {
+  font-size: 13px;
+  color: #A1A1AA;
+  margin-top: 8px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* 激活/停用按钮 */
+.btn-toggle-active {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #52525B;
+  background: transparent;
+  color: #A1A1AA;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-toggle-active:hover {
+  border-color: #F97316;
+  color: #F97316;
+}
+
+.btn-toggle-active.is-active {
+  background: rgba(249, 115, 22, 0.1);
+  border-color: #F97316;
+  color: #F97316;
+}
+
+/* 规范文档卡片样式 */
+.documents-section {
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.documents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.document-card-item {
+  background: #1F1F23;
+  border: 2px solid #3F3F46;
+  border-radius: 8px;
+  padding: 16px;
+  transition: all 0.2s;
+}
+
+.document-card-item:hover {
+  background: #2D2D30;
+  border-color: #52525B;
+}
+
+.document-description {
+  font-size: 13px;
+  color: #A1A1AA;
+  margin-top: 8px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+
+/* 规范文档对话框样式 */
+.document-dialog-overlay {
+  z-index: 2300;
+}
+
+.document-dialog {
+  width: 600px;
+  max-width: 90vw;
+  background: #2D2D2D;
+  border: 1px solid #3F3F46;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.document-dialog .dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #3F3F46;
+  flex-shrink: 0;
+}
+
+.document-dialog .dialog-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #F4F4F5;
+}
+
+.document-dialog .btn-close {
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: #71717A;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.document-dialog .btn-close:hover {
+  background: #3F3F46;
+  color: #FAFAFA;
+}
+
+.document-dialog .dialog-body {
+  display: block;
+  flex: 1;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.document-dialog .dialog-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding: 16px 20px;
+  border-top: 1px solid #3F3F46;
+  flex-shrink: 0;
 }
 </style>

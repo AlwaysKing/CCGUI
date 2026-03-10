@@ -196,23 +196,25 @@ function handleAddDocument() {
   editingDocument.value = null
   documentForm.value = {
     name: '',
-    description: '',
-    content: '',
-    isActive: false
+    content: ''
   }
   showDocumentDialog.value = true
 }
 
 // 编辑规范文档
-function handleEditDocument(document) {
+async function handleEditDocument(document) {
   editingDocument.value = document
-  documentForm.value = {
-    name: document.name,
-    description: document.description || '',
-    content: document.content,
-    isActive: document.isActive
+  // 从文件系统读取完整内容
+  const result = await window.electronAPI.getDoc({ docId: document.id })
+  if (result.success && result.doc) {
+    documentForm.value = {
+      name: result.doc.name,
+      content: result.doc.content
+    }
+    showDocumentDialog.value = true
+  } else {
+    alert('读取文档失败')
   }
-  showDocumentDialog.value = true
 }
 
 // 删除规范文档
@@ -220,51 +222,39 @@ async function handleDeleteDocument(documentId) {
   if (!confirm('确定要删除这个规范文档吗？')) {
     return
   }
-  const index = documents.value.findIndex(d => d.id === documentId)
-  if (index !== -1) {
-    documents.value.splice(index, 1)
-  }
-  await saveAppConfig()
-}
-
-// 切换规范文档激活状态
-async function handleToggleDocumentActive(documentId) {
-  const document = documents.value.find(d => d.id === documentId)
-  if (document) {
-    document.isActive = !document.isActive
-    await saveAppConfig()
+  const result = await window.electronAPI.deleteDoc({ docId: documentId })
+  if (result.success) {
+    await loadDocs()
+  } else {
+    alert('删除失败：' + (result.error || '未知错误'))
   }
 }
 
 // 保存规范文档
-function handleSaveDocument() {
+async function handleSaveDocument() {
   if (!documentForm.value.name || !documentForm.value.content) {
     alert('请填写文档名称和内容')
     return
   }
 
-  if (editingDocument.value) {
-    // 更新现有文档
-    const document = documents.value.find(d => d.id === editingDocument.value.id)
-    if (document) {
-      document.name = documentForm.value.name
-      document.description = documentForm.value.description
-      document.content = documentForm.value.content
-      document.isActive = documentForm.value.isActive
-    }
-  } else {
-    // 添加新文档
-    documents.value.push({
-      id: generateDocumentId(),
-      name: documentForm.value.name,
-      description: documentForm.value.description,
-      content: documentForm.value.content,
-      isActive: documentForm.value.isActive
-    })
+  // 文件名不能包含特殊字符
+  const docName = documentForm.value.name.trim()
+  if (/[\/\\?%*:|"<>]/.test(docName)) {
+    alert('文档名称不能包含特殊字符：/ \\ ? % * : | " < >')
+    return
   }
 
-  saveAppConfig()
-  handleCloseDocumentDialog()
+  const result = await window.electronAPI.saveDoc({
+    docId: docName,
+    content: documentForm.value.content
+  })
+
+  if (result.success) {
+    await loadDocs()
+    handleCloseDocumentDialog()
+  } else {
+    alert('保存失败：' + (result.error || '未知错误'))
+  }
 }
 
 // 关闭规范文档对话框
@@ -273,9 +263,16 @@ function handleCloseDocumentDialog() {
   editingDocument.value = null
 }
 
-// 生成文档ID
-function generateDocumentId() {
-  return Date.now().toString() + Math.random().toString(36).substr(2, 9)
+// 加载规范文档列表
+async function loadDocs() {
+  try {
+    const result = await window.electronAPI.listDocs()
+    if (result.success && result.docs) {
+      documents.value = result.docs
+    }
+  } catch (error) {
+    console.error('[SettingsDialog] Failed to load docs:', error)
+  }
 }
 
 // 添加模型卡片
@@ -406,6 +403,9 @@ async function loadSettings() {
       // 加载提示词列表
       prompts.value = configSettings.prompts || []
       console.log('[SettingsDialog] Loaded prompts:', JSON.stringify(prompts.value))
+
+      // 加载规范文档列表（从文件系统）
+      await loadDocs()
     }
 
     // 加载默认配置（从 ~/.claude/settings.json）
@@ -1179,15 +1179,6 @@ onUnmounted(() => {
                   <div class="model-header">
                     <h4 class="model-name">
                       {{ document.name || '未命名' }}
-                      <button
-                        type="button"
-                        class="btn-toggle-active"
-                        :class="{ 'is-active': document.isActive }"
-                        @click.stop="handleToggleDocumentActive(document.id)"
-                        :title="document.isActive ? '点击停用' : '点击激活'"
-                      >
-                        {{ document.isActive ? '已激活' : '未激活' }}
-                      </button>
                     </h4>
                     <div class="model-actions">
                       <button
@@ -1214,8 +1205,8 @@ onUnmounted(() => {
                       </button>
                     </div>
                   </div>
-                  <div class="document-description" v-if="document.description">
-                    {{ document.description }}
+                  <div class="document-summary" v-if="document.summary">
+                    {{ document.summary }}
                   </div>
                 </div>
 
@@ -1285,6 +1276,52 @@ onUnmounted(() => {
                   取消
                 </button>
                 <button type="button" class="btn btn-primary" @click="handleSavePrompt">
+                  保存
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 规范文档编辑对话框 -->
+          <div v-if="showDocumentDialog" class="dialog-overlay document-dialog-overlay" @click="handleCloseDocumentDialog">
+            <div class="dialog-content document-dialog" @click.stop>
+              <div class="dialog-header">
+                <h3>{{ editingDocument ? '编辑规范文档' : '添加规范文档' }}</h3>
+                <button type="button" class="btn-close" @click="handleCloseDocumentDialog">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="dialog-body">
+                <div class="form-group">
+                  <label class="form-label">文档名称 <span class="required">*</span></label>
+                  <input
+                    v-model="documentForm.name"
+                    type="text"
+                    class="form-input"
+                    placeholder="输入文档名称（将作为文件名）"
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label class="form-label">文档内容 <span class="required">*</span></label>
+                  <textarea
+                    v-model="documentForm.content"
+                    class="form-textarea"
+                    placeholder="输入 Markdown 格式的文档内容..."
+                    rows="15"
+                  ></textarea>
+                </div>
+              </div>
+
+              <div class="dialog-footer">
+                <button type="button" class="btn btn-secondary" @click="handleCloseDocumentDialog">
+                  取消
+                </button>
+                <button type="button" class="btn btn-primary" @click="handleSaveDocument">
                   保存
                 </button>
               </div>
@@ -3107,15 +3144,15 @@ select.form-input {
   border-color: #52525B;
 }
 
-.document-description {
+.document-summary {
   font-size: 13px;
   color: #A1A1AA;
   margin-top: 8px;
-  line-height: 1.4;
+  line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
 }
 

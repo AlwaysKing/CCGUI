@@ -173,5 +173,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   ensureLogDir: (options) => ipcRenderer.invoke('ensure-log-dir', options),
   writeAppLog: (options) => ipcRenderer.invoke('write-app-log', options),
-  writeStreamLog: (options) => ipcRenderer.invoke('write-stream-log', options)
+  writeStreamLog: (options) => ipcRenderer.invoke('write-stream-log', options),
+
+  // ============================================
+  // App Config API
+  // ============================================
+  getAppConfig: () => ipcRenderer.invoke('get-app-config'),
+  saveAppConfig: (options) => ipcRenderer.invoke('save-app-config', options),
+  updateAppConfig: (options) => ipcRenderer.invoke('update-app-config', options),
+
+  // ============================================
+  // Claude Settings API (from ~/.claude/settings.json)
+  // ============================================
+  getClaudeSettings: () => ipcRenderer.invoke('get-claude-settings'),
+
+  // ============================================
+  // Docs API (规范文档)
+  // ============================================
+  listDocs: () => ipcRenderer.invoke('list-docs'),
+  getDoc: (options) => ipcRenderer.invoke('get-doc', options),
+  saveDoc: (options) => ipcRenderer.invoke('save-doc', options),
+  renameDoc: (options) => ipcRenderer.invoke('rename-doc', options),
+  deleteDoc: (options) => ipcRenderer.invoke('delete-doc', options)
 })

@@ -793,6 +793,71 @@ ipcMain.handle('update-window-title', async (event, { title }) => {
   return { success: false, error: 'Window not found' }
 })
 
+// ============================================
+// Docs IPC Handlers
+// ============================================
+
+const { docsManager } = require('./storage')
+
+// List all docs
+ipcMain.handle('list-docs', async () => {
+  try {
+    const docs = docsManager.listDocs()
+    return { success: true, docs }
+  } catch (error) {
+    logger.error('[Docs] Failed to list docs', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Get a single doc
+ipcMain.handle('get-doc', async (event, { docId }) => {
+  try {
+    const doc = docsManager.getDoc(docId)
+    if (doc) {
+      return { success: true, doc }
+    } else {
+      return { success: false, error: 'Doc not found' }
+    }
+  } catch (error) {
+    logger.error('[Docs] Failed to get doc', { docId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Save a doc
+ipcMain.handle('save-doc', async (event, { docId, content }) => {
+  try {
+    const success = docsManager.saveDoc(docId, content)
+    return { success }
+  } catch (error) {
+    logger.error('[Docs] Failed to save doc', { docId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Rename a doc
+ipcMain.handle('rename-doc', async (event, { oldId, newId }) => {
+  try {
+    const success = docsManager.renameDoc(oldId, newId)
+    return { success }
+  } catch (error) {
+    logger.error('[Docs] Failed to rename doc', { oldId, newId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Delete a doc
+ipcMain.handle('delete-doc', async (event, { docId }) => {
+  try {
+    const success = docsManager.deleteDoc(docId)
+    return { success }
+  } catch (error) {
+    logger.error('[Docs] Failed to delete doc', { docId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 
 // Get session messages (for backwards compatibility, but prefer select-session)
 ipcMain.handle('get-session-messages', async (event, { sessionId, projectId }) => {

@@ -852,6 +852,65 @@ ipcMain.handle('get-claude-settings', async () => {
 })
 
 // ============================================
+// Notification IPC Handlers
+// ============================================
+
+// Send notification request (for Bark, etc.)
+ipcMain.handle('send-notification', async (event, { url }) => {
+  logger.info('[Notification] Sending notification', { url: url.substring(0, 50) + '...' })
+
+  try {
+    const https = require('https')
+    const http = require('http')
+    const parsedUrl = new URL(url)
+    const protocol = parsedUrl.protocol === 'https:' ? https : http
+
+    return new Promise((resolve) => {
+      const req = protocol.get(url, {
+        headers: {
+          'User-Agent': 'CCGUI/1.0'
+        }
+      }, (res) => {
+        let data = ''
+        res.on('data', chunk => { data += chunk })
+        res.on('end', () => {
+          try {
+            const result = JSON.parse(data)
+            if (result.code === 200 || result.success) {
+              logger.info('[Notification] Notification sent successfully')
+              resolve({ success: true, message: '发送成功', data: result })
+            } else {
+              logger.warn('[Notification] Notification failed', { result })
+              resolve({ success: false, message: result.message || '发送失败', error: 'NOTIFICATION_FAILED' })
+            }
+          } catch (parseError) {
+            // 有些通知服务可能不返回 JSON
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              resolve({ success: true, message: '发送成功' })
+            } else {
+              resolve({ success: false, message: `HTTP ${res.statusCode}`, error: 'HTTP_ERROR' })
+            }
+          }
+        })
+      })
+
+      req.on('error', (error) => {
+        logger.error('[Notification] Request failed', { error: error.message })
+        resolve({ success: false, message: error.message, error: 'NETWORK_ERROR' })
+      })
+
+      req.setTimeout(10000, () => {
+        req.destroy()
+        resolve({ success: false, message: '请求超时', error: 'TIMEOUT' })
+      })
+    })
+  } catch (error) {
+    logger.error('[Notification] Failed to send', { error: error.message })
+    return { success: false, message: error.message, error: 'UNKNOWN_ERROR' }
+  }
+})
+
+// ============================================
 // Docs IPC Handlers
 // ============================================
 

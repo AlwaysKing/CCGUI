@@ -194,5 +194,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDoc: (options) => ipcRenderer.invoke('get-doc', options),
   saveDoc: (options) => ipcRenderer.invoke('save-doc', options),
   renameDoc: (options) => ipcRenderer.invoke('rename-doc', options),
-  deleteDoc: (options) => ipcRenderer.invoke('delete-doc', options)
+  deleteDoc: (options) => ipcRenderer.invoke('delete-doc', options),
+
+  // ============================================
+  // Notification API
+  // ============================================
+  sendNotification: (options) => ipcRenderer.invoke('send-notification', options)
 })

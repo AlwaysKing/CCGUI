@@ -35,8 +35,7 @@ function getDefaultConfig() {
       selectedModelId: null,
 
       // 提示词配置
-      systemPrompt: '',
-      customPrompts: []
+      prompts: []
     }
   }
 }
@@ -122,17 +121,48 @@ function saveConfig(config) {
 }
 
 /**
+ * 深度合并对象
+ */
+function deepMerge(target, source) {
+  const result = { ...target }
+  for (const key of Object.keys(source)) {
+    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+      result[key] = deepMerge(target[key] || {}, source[key])
+    } else {
+      result[key] = source[key]
+    }
+  }
+  return result
+}
+
+/**
  * 更新部分配置
  * @param {object} updates - 要更新的配置项
  * @returns {object} 更新后的配置对象
  */
 function updateConfig(updates) {
   try {
-    const config = loadConfig()
-    const newConfig = {
-      ...config,
-      ...updates
+    logger.info('[AppConfigManager] updateConfig called with:', JSON.stringify(updates, null, 2))
+
+    let config = loadConfig()
+
+    // 确保 config 存在且有 settings 属性
+    if (!config) {
+      logger.warn('[AppConfigManager] loadConfig returned null/undefined, using default')
+      config = getDefaultConfig()
     }
+
+    if (!config.settings) {
+      logger.warn('[AppConfigManager] config.settings is missing, initializing')
+      config.settings = getDefaultConfig().settings
+    }
+
+    logger.info('[AppConfigManager] Before update, prompts:', config.settings?.prompts)
+    logger.info('[AppConfigManager] Updates received, prompts:', updates.settings?.prompts)
+
+    const newConfig = deepMerge(config, updates)
+    logger.info('[AppConfigManager] After merge, prompts:', newConfig.settings?.prompts)
+
     const success = saveConfig(newConfig)
     if (success) {
       return newConfig

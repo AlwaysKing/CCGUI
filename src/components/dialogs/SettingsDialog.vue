@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted, toRaw, computed } from 'vue'
+import { barkProvider } from '../../utils/notifier'
 
 const emit = defineEmits(['close'])
 
@@ -55,6 +56,10 @@ const hoveredListModelCard = ref(null)
 
 // 模型列表中模型卡片的 hover 状态
 const hoveredModelId = ref(null)
+
+// Bark 测试和保存状态
+const testingBark = ref(false)
+const savingBark = ref(false)
 
 // 提示词列表
 const prompts = ref([])
@@ -222,7 +227,7 @@ async function handleDeleteDocument(documentId) {
     return
   }
   const result = await window.electronAPI.deleteDoc({ docId: documentId })
-  if (result.success) {
+  if (result && result.success) {
     await loadDocs()
   } else {
     alert('删除失败：' + (result.error || '未知错误'))
@@ -248,7 +253,7 @@ async function handleSaveDocument() {
     content: documentForm.value.content
   })
 
-  if (result.success) {
+  if (result && result.success) {
     await loadDocs()
     handleCloseDocumentDialog()
   } else {
@@ -528,7 +533,7 @@ async function handleSaveDefaultConfig() {
 
     const result = await window.electronAPI.updateClaudeSettings({ updates })
 
-    if (result.success) {
+    if (result && result.success) {
       // 更新本地状态
       defaultConfig.value = {
         apiUrl: defaultConfigForm.value.apiUrl,
@@ -754,6 +759,41 @@ function handleClose() {
   emit('close')
 }
 
+// 测试 Bark 通知
+async function testBarkUrl() {
+  if (!settings.value.barkUrl) {
+    alert('请先输入 Bark 通知链接')
+    return
+  }
+
+  testingBark.value = true
+  try {
+    const result = await barkProvider.test(settings.value.barkUrl)
+    if (result && result.success) {
+      alert('测试成功！请检查您的设备是否收到通知')
+    } else {
+      alert('测试失败: ' + result.message)
+    }
+  } catch (error) {
+    alert('测试失败: ' + error.message)
+  } finally {
+    testingBark.value = false
+  }
+}
+
+// 保存 Bark URL
+async function saveBarkUrl() {
+  savingBark.value = true
+  try {
+    const success = await saveAppConfig()
+    if (success) {
+      alert('Bark 通知链接已保存')
+    }
+  } finally {
+    savingBark.value = false
+  }
+}
+
 // 保存应用配置到文件（可复用）
 async function saveAppConfig() {
   try {
@@ -773,15 +813,16 @@ async function saveAppConfig() {
     console.log('[saveAppConfig] Full updates object:', JSON.stringify(updates, null, 2))
 
     // 保存配置
-    const result = await window.electronAPI.updateAppConfig(updates)
+    const result = await window.electronAPI.updateAppConfig({ updates })
     console.log('[saveAppConfig] IPC result:', result)
 
-    if (result.success) {
+    if (result && result.success) {
       console.log('[saveAppConfig] Settings saved successfully')
       return true
     } else {
-      console.error('[saveAppConfig] Failed to save settings:', result.error)
-      alert('保存配置失败: ' + (result.error || '未知错误'))
+      const errorMsg = result?.error || '未知错误'
+      console.error('[saveAppConfig] Failed to save settings:', errorMsg)
+      alert('保存配置失败: ' + errorMsg)
       return false
     }
   } catch (error) {
@@ -1353,15 +1394,23 @@ onUnmounted(() => {
             </div>
 
             <div class="setting-item vertical">
-              <div class="setting-label">
-                <span>Bark 通知链接</span>
-                <span class="setting-description">配置 Bark 推送通知的 API 地址（选填）</span>
+              <div class="setting-header-row">
+                <span class="setting-title">Bark 通知链接</span>
+                <div class="setting-actions">
+                  <button class="btn-test" @click="testBarkUrl" :disabled="testingBark">
+                    {{ testingBark ? '测试中...' : '测试' }}
+                  </button>
+                  <button class="btn-save" @click="saveBarkUrl" :disabled="savingBark">
+                    {{ savingBark ? '保存中...' : '保存' }}
+                  </button>
+                </div>
               </div>
+              <span class="setting-description">配置 Bark 推送通知的 API 地址（选填）, 例子: https://example.com/key/ </span>
               <input
                 type="text"
                 v-model="settings.barkUrl"
                 class="setting-input"
-                placeholder="例如: https://api.day.app/your_key/"
+                placeholder="例如: https://example.com/key/"
               >
             </div>
 
@@ -2142,6 +2191,58 @@ onUnmounted(() => {
   gap: 12px;
 }
 
+.setting-header-row {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.setting-title {
+  color: #E5E7EB;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.setting-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-test,
+.btn-save {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-test {
+  background: #374151;
+  color: #E5E7EB;
+}
+
+.btn-test:hover:not(:disabled) {
+  background: #4B5563;
+}
+
+.btn-save {
+  background: #F97316;
+  color: white;
+}
+
+.btn-save:hover:not(:disabled) {
+  background: #EA580C;
+}
+
+.btn-test:disabled,
+.btn-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .setting-label {
   display: flex;
   flex-direction: column;
@@ -2161,8 +2262,8 @@ onUnmounted(() => {
 
 .setting-select {
   padding: 8px 12px;
-  background: #374151;
-  border: 1px solid #4B5563;
+  background: #27272A;
+  border: 1px solid #3F3F46;
   border-radius: 6px;
   color: #F4F4F5;
   font-size: 13px;
@@ -2172,7 +2273,7 @@ onUnmounted(() => {
 }
 
 .setting-select:hover {
-  border-color: #6B7280;
+  border-color: #52525B;
 }
 
 .setting-select:focus {
@@ -2181,7 +2282,7 @@ onUnmounted(() => {
 }
 
 .setting-select option {
-  background: #2D2D2D;
+  background: #27272A;
   color: #F4F4F5;
 }
 
@@ -2193,17 +2294,16 @@ onUnmounted(() => {
 
 .setting-input {
   padding: 8px 12px;
-  background: #374151;
-  border: 1px solid #4B5563;
+  background: #27272A;
+  border: 1px solid #3F3F46;
   border-radius: 6px;
   color: #F4F4F5;
   font-size: 13px;
-  flex: 1;
-  text-align: right;
+  width: 100%;
 }
 
 .setting-input:hover {
-  border-color: #6B7280;
+  border-color: #52525B;
 }
 
 .setting-input:focus {

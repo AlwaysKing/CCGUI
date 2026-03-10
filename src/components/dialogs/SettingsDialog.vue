@@ -11,8 +11,7 @@ const settings = ref({
   // 软件配置
   theme: 'dark',
   language: 'zh-CN',
-  autoStart: false,
-  showNotifications: true
+  barkUrl: ''
 })
 
 // 模型列表
@@ -385,8 +384,7 @@ async function loadSettings() {
       settings.value = {
         theme: configSettings.theme || 'dark',
         language: configSettings.language || 'zh-CN',
-        autoStart: configSettings.autoStart || false,
-        showNotifications: configSettings.showNotifications !== false
+        barkUrl: configSettings.barkUrl || ''
       }
 
       // 加载模型列表（用户自定义模型）
@@ -1354,26 +1352,17 @@ onUnmounted(() => {
               </select>
             </div>
 
-            <div class="setting-item">
+            <div class="setting-item vertical">
               <div class="setting-label">
-                <span>开机自动启动</span>
-                <span class="setting-description">系统启动时自动运行应用</span>
+                <span>Bark 通知链接</span>
+                <span class="setting-description">配置 Bark 推送通知的 API 地址（选填）</span>
               </div>
-              <label class="toggle-switch">
-                <input type="checkbox" v-model="settings.autoStart">
-                <span class="slider"></span>
-              </label>
-            </div>
-
-            <div class="setting-item">
-              <div class="setting-label">
-                <span>显示通知</span>
-                <span class="setting-description">接收应用通知消息</span>
-              </div>
-              <label class="toggle-switch">
-                <input type="checkbox" v-model="settings.showNotifications">
-                <span class="slider"></span>
-              </label>
+              <input
+                type="text"
+                v-model="settings.barkUrl"
+                class="setting-input"
+                placeholder="例如: https://api.day.app/your_key/"
+              >
             </div>
 
             <div class="setting-item about-section">

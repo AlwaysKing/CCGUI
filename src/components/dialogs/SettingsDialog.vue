@@ -3144,19 +3144,6 @@ select.form-input {
   border-color: #52525B;
 }
 
-.document-summary {
-  font-size: 13px;
-  color: #A1A1AA;
-  margin-top: 8px;
-  line-height: 1.5;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-}
-
-
 /* 规范文档对话框样式 */
 .document-dialog-overlay {
   z-index: 2300;
@@ -3223,5 +3210,75 @@ select.form-input {
   padding: 16px 20px;
   border-top: 1px solid #3F3F46;
   flex-shrink: 0;
+}
+
+.document-dialog .form-group {
+  margin-bottom: 16px;
+}
+
+.document-dialog .form-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #FAFAFA;
+}
+
+.document-dialog .form-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  color: #FAFAFA;
+  font-size: 14px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.document-dialog .form-input:focus {
+  outline: none;
+  border-color: #F97316;
+}
+
+.document-dialog .form-input::placeholder {
+  color: #71717A;
+}
+
+.document-dialog .form-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  color: #FAFAFA;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  line-height: 1.5;
+  box-sizing: border-box;
+  min-height: 200px;
+}
+
+.document-dialog .form-textarea:focus {
+  outline: none;
+  border-color: #F97316;
+}
+
+.document-dialog .form-textarea::placeholder {
+  color: #71717A;
+}
+
+/* 文档摘要样式 */
+.document-summary {
+  font-size: 13px;
+  color: #A1A1AA;
+  margin-top: 8px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 </style>

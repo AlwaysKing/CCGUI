@@ -832,6 +832,25 @@ ipcMain.handle('update-app-config', async (event, { updates }) => {
   }
 })
 
+// Get Claude settings from ~/.claude/settings.json
+ipcMain.handle('get-claude-settings', async () => {
+  try {
+    const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
+
+    if (!fs.existsSync(claudeSettingsPath)) {
+      logger.info('[ClaudeSettings] Settings file not found')
+      return { success: true, settings: {} }
+    }
+
+    const content = fs.readFileSync(claudeSettingsPath, 'utf-8')
+    const settings = JSON.parse(content)
+    return { success: true, settings }
+  } catch (error) {
+    logger.error('[ClaudeSettings] Failed to load settings', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 // ============================================
 // Docs IPC Handlers
 // ============================================

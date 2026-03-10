@@ -33,8 +33,14 @@ function ensureDocsDir() {
  */
 function listDocs() {
   try {
-    ensureDocsDir()
     const docsDir = getDocsDir()
+
+    // 如果目录不存在，返回空数组（不自动创建）
+    if (!fs.existsSync(docsDir)) {
+      logger.info('[DocsManager] Docs directory does not exist, returning empty list')
+      return []
+    }
+
     const files = fs.readdirSync(docsDir)
     const docs = []
 

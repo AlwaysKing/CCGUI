@@ -794,10 +794,47 @@ ipcMain.handle('update-window-title', async (event, { title }) => {
 })
 
 // ============================================
-// Docs IPC Handlers
+// App Config IPC Handlers
 // ============================================
 
-const { docsManager } = require('./storage')
+const { appConfigManager, docsManager } = require('./storage')
+
+// Get app config
+ipcMain.handle('get-app-config', async () => {
+  try {
+    const config = appConfigManager.loadConfig()
+    return { success: true, config }
+  } catch (error) {
+    logger.error('[AppConfig] Failed to get config', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Save app config
+ipcMain.handle('save-app-config', async (event, { config }) => {
+  try {
+    const success = appConfigManager.saveConfig(config)
+    return { success }
+  } catch (error) {
+    logger.error('[AppConfig] Failed to save config', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Update app config
+ipcMain.handle('update-app-config', async (event, { updates }) => {
+  try {
+    const config = appConfigManager.updateConfig(updates)
+    return { success: true, config }
+  } catch (error) {
+    logger.error('[AppConfig] Failed to update config', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// ============================================
+// Docs IPC Handlers
+// ============================================
 
 // List all docs
 ipcMain.handle('list-docs', async () => {

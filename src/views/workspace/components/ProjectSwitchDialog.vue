@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useAppStore } from '../../stores/useAppStore'
+import { useAppStore } from '../../../stores/useAppStore'
 
 const props = defineProps({
   currentProjectId: String

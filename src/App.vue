@@ -2,8 +2,8 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useAppStore } from './stores/useAppStore'
 import { logger } from './utils/logger'
-import WelcomePage from './components/pages/WelcomePage.vue'
-import WorkspaceLayout from './components/layout/WorkspaceLayout.vue'
+import Welcome from './views/welcome/Welcome.vue'
+import Workspace from './views/workspace/Workspace.vue'
 
 const store = useAppStore()
 
@@ -96,10 +96,10 @@ onUnmounted(() => {
 <template>
   <div class="app-container">
     <!-- Welcome Page - 显示项目列表 -->
-    <WelcomePage v-if="currentView === 'welcome'" />
+    <Welcome v-if="currentView === 'welcome'" />
 
     <!-- Workspace - 两栏布局（会话 + 聊天） -->
-    <WorkspaceLayout v-else />
+    <Workspace v-else />
   </div>
 </template>
 

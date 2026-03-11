@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import CollapseToggle from '../ui/CollapseToggle.vue'
 
 const emit = defineEmits(['toggle-collapse'])
 
@@ -492,7 +493,8 @@ async function copyResult() {
 </script>
 
 <template>
-  <div class="tool-use-card" :class="{ error: isError, executing: isExecuting, collapsed: !isExpanded }">
+  <div class="tool-use-message-wrapper">
+    <div class="tool-use-card" :class="{ error: isError, executing: isExecuting, collapsed: !isExpanded }">
     <div class="tool-header" @click="toggleExpand">
       <div class="tool-info">
         <span class="tool-icon">{{ toolIcon }}</span>
@@ -516,7 +518,7 @@ async function copyResult() {
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
         </button>
-        <span class="expand-icon">{{ isExpanded ? '▼' : '▶' }}</span>
+        <CollapseToggle :collapsed="!isExpanded" @toggle="toggleExpand" />
       </div>
     </div>
     <!-- 折叠时显示精简摘要 -->
@@ -775,9 +777,16 @@ async function copyResult() {
       </div>
     </div>
   </div>
+  </div>
 </template>
 
 <style scoped>
+/* 工具消息包装器：宽度约束 */
+.tool-use-message-wrapper {
+  flex: 1;
+  max-width: 70%;
+}
+
 .tool-use-card {
   background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
   border: 1px solid #3B82F6;
@@ -906,11 +915,32 @@ async function copyResult() {
   color: #6EE7B7;
 }
 
-.expand-icon {
-  font-size: 10px;
+.header-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  margin-right: 12px;
+}
+
+.header-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
   color: #71717A;
-  flex-shrink: 0;
-  margin-left: 8px;
+  background: #27272A;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.header-stat .stat-icon {
+  font-size: 10px;
+}
+
+.header-stat.duration.streaming {
+  color: #A78BFA;
+  background: #1E1B4B;
 }
 
 .header-actions {

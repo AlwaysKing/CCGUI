@@ -1,8 +1,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
-import NewProjectDialog from '../dialogs/NewProjectDialog.vue'
-import SettingsDialog from '../dialogs/SettingsDialog.vue'
+import NewProjectDialog from './components/NewProjectDialog.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
 import { logger } from '../../utils/logger'
 
 const store = useAppStore()

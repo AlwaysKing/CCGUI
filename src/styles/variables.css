@@ -1,0 +1,130 @@
+/**
+ * CCGUI CSS Variables
+ * 设计系统变量定义
+ */
+
+:root {
+  /* ==================== 色彩系统 ==================== */
+
+  /* 背景色 */
+  --bg-primary: #1E1E1E;
+  --bg-secondary: #18181B;
+  --bg-tertiary: #27272A;
+  --bg-hover: #3F3F46;
+  --bg-active: #52525B;
+
+  /* 文字色 */
+  --text-primary: #E4E4E7;
+  --text-secondary: #A1A1AA;
+  --text-muted: #71717A;
+  --text-inverse: #18181B;
+
+  /* 强调色 */
+  --accent-primary: #F97316;
+  --accent-hover: #FB923C;
+  --accent-active: #EA580C;
+  --accent-light: rgba(249, 115, 22, 0.1);
+
+  /* 边框色 */
+  --border-default: #3F3F46;
+  --border-light: #52525B;
+  --border-hover: #71717A;
+  --border-focus: #F97316;
+
+  /* 状态色 - 成功 */
+  --color-success: #22C55E;
+  --color-success-hover: #16A34A;
+  --color-success-bg: rgba(34, 197, 94, 0.1);
+
+  /* 状态色 - 错误 */
+  --color-error: #EF4444;
+  --color-error-hover: #DC2626;
+  --color-error-bg: rgba(239, 68, 68, 0.1);
+
+  /* 状态色 - 警告 */
+  --color-warning: #F59E0B;
+  --color-warning-hover: #D97706;
+  --color-warning-bg: rgba(245, 158, 11, 0.1);
+
+  /* 状态色 - 信息 */
+  --color-info: #3B82F6;
+  --color-info-hover: #2563EB;
+  --color-info-bg: rgba(59, 130, 246, 0.1);
+
+  /* 代码/语法色 */
+  --code-bg: #0D0D0D;
+  --code-inline-bg: #27272A;
+  --code-border: #3F3F46;
+
+  /* ==================== 间距系统 ==================== */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-2xl: 32px;
+
+  /* ==================== 圆角系统 ==================== */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* ==================== 字体系统 ==================== */
+
+  /* 字体族 */
+  --font-family-base: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  --font-family-mono: 'SF Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
+
+  /* 字号 */
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-md: 15px;
+  --font-size-lg: 16px;
+  --font-size-xl: 18px;
+  --font-size-2xl: 24px;
+
+  /* 字重 */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* 行高 */
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+  /* ==================== 阴影系统 ==================== */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.6);
+
+  /* ==================== 过渡动画 ==================== */
+  --transition-fast: 0.1s ease;
+  --transition-normal: 0.2s ease;
+  --transition-slow: 0.3s ease;
+
+  /* ==================== Z-Index 层级 ==================== */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 1000;
+  --z-tooltip: 1100;
+  --z-toast: 1200;
+
+  /* ==================== 布局相关 ==================== */
+
+  /* 侧边栏宽度 */
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 48px;
+
+  /* 头部高度 */
+  --header-height: 48px;
+
+  /* 输入区域最小高度 */
+  --input-min-height: 120px;
+}

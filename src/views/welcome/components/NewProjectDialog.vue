@@ -1,25 +1,31 @@
 <script setup>
 import { ref } from 'vue'
-import { useAppStore } from '../../stores/useAppStore'
+import { useAppStore } from '../../../stores/useAppStore'
 
 const store = useAppStore()
 
-const props = defineProps({
-  projectId: {
-    type: String,
-    required: true
-  }
-})
-
-const sessionName = ref('')
+const projectPath = ref('')
 const isCreating = ref(false)
 const error = ref('')
 
 const emit = defineEmits(['close', 'created'])
 
+async function handleBrowse() {
+  // Use Electron's dialog API if available
+  if (window.electronAPI?.selectDirectory) {
+    const result = await window.electronAPI.selectDirectory()
+    if (result && !result.canceled && result.filePaths.length > 0) {
+      projectPath.value = result.filePaths[0]
+    }
+  } else {
+    // Fallback: manual input
+    alert('请手动输入项目路径')
+  }
+}
+
 async function handleCreate() {
-  if (!props.projectId) {
-    error.value = '未选择项目'
+  if (!projectPath.value.trim()) {
+    error.value = '请选择或输入项目路径'
     return
   }
 
@@ -27,12 +33,10 @@ async function handleCreate() {
   error.value = ''
 
   try {
-    const newSession = await store.createSession(props.projectId, sessionName.value.trim() || null)
-    // Auto-select the new session
-    await store.selectSession(newSession)
-    emit('created', newSession)
+    const newProject = await store.addProject(projectPath.value.trim())
+    emit('created', newProject)
   } catch (e) {
-    error.value = e.message || '创建会话失败'
+    error.value = e.message || '创建项目失败'
   } finally {
     isCreating.value = false
   }
@@ -43,7 +47,7 @@ async function handleCreate() {
   <div class="dialog-overlay" @click.self="emit('close')">
     <div class="dialog">
       <div class="dialog-header">
-        <h3>新建会话</h3>
+        <h3>新建项目</h3>
         <button class="close-btn" @click="emit('close')">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/>
@@ -54,19 +58,22 @@ async function handleCreate() {
 
       <div class="dialog-body">
         <div class="form-group">
-          <label>会话名称 (可选)</label>
-          <input
-            v-model="sessionName"
-            type="text"
-            placeholder="留空则自动生成"
-            @keyup.enter="handleCreate"
-          />
+          <label>项目路径</label>
+          <div class="input-row">
+            <input
+              v-model="projectPath"
+              type="text"
+              placeholder="选择或输入项目目录路径"
+              @keyup.enter="handleCreate"
+            />
+            <button class="browse-btn" @click="handleBrowse">浏览...</button>
+          </div>
         </div>
 
         <p v-if="error" class="error-message">{{ error }}</p>
 
         <p class="hint">
-          新会话将在当前项目下创建
+          项目目录将包含 Claude Code 的配置和会话历史
         </p>
       </div>
 
@@ -76,7 +83,7 @@ async function handleCreate() {
         </button>
         <button
           class="btn btn-confirm"
-          :disabled="isCreating"
+          :disabled="isCreating || !projectPath.trim()"
           @click="handleCreate"
         >
           {{ isCreating ? '创建中...' : '创建' }}
@@ -104,8 +111,8 @@ async function handleCreate() {
   background: #2D2D2D;
   border: 1px solid #3F3F46;
   border-radius: 8px;
-  min-width: 360px;
-  max-width: 440px;
+  min-width: 400px;
+  max-width: 520px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
 
@@ -153,20 +160,39 @@ async function handleCreate() {
   margin-bottom: 8px;
 }
 
-.form-group input {
-  width: 100%;
+.input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.input-row input {
+  flex: 1;
   padding: 10px 12px;
   background: #1E1E1E;
   border: 1px solid #3F3F46;
   border-radius: 6px;
   color: #E5E7EB;
   font-size: 13px;
-  box-sizing: border-box;
 }
 
-.form-group input:focus {
+.input-row input:focus {
   outline: none;
   border-color: #F97316;
+}
+
+.browse-btn {
+  padding: 10px 16px;
+  background: #374151;
+  border: 1px solid #4B5563;
+  border-radius: 6px;
+  color: #D1D5DB;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.browse-btn:hover {
+  background: #4B5563;
 }
 
 .error-message {

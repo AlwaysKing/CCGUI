@@ -373,11 +373,6 @@ class SessionInstance {
    * @param {string|object} content - 字符串内容或完整的消息对象
    */
   async sendMessage(content) {
-    // 懒加载：第一次发送时启动 Claude
-    if (!this.claudeManager || !this.claudeManager.isReady()) {
-      await this.startClaude()
-    }
-
     // 支持两种格式：字符串或消息对象
     let userMessage
     let textContent
@@ -436,13 +431,21 @@ class SessionInstance {
     this.messages.push(displayMessage)
     this.rawMessages.push(userMessage)
 
-    // 发送到前端
+    // 立即发送到前端，让用户看到自己的消息
     this.emit('message', displayMessage)
 
     // 更新状态
     this.isProcessing = true
     this.inputMessage = ''
     this.emit('state-update', { isProcessing: true, inputMessage: '' })
+
+    // 懒加载：第一次发送时启动 Claude
+    // 注意：放在消息发送之后，这样用户能立即看到自己发送的内容
+    if (!this.claudeManager || !this.claudeManager.isReady()) {
+      // 发送启动状态提示
+      this.emit('cli-status', { message: '正在启动 Claude...' })
+      await this.startClaude()
+    }
 
     // 发送到 Claude
     this.claudeManager.sendMessage(userMessage)

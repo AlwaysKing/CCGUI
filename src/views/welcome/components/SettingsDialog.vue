@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, toRaw, computed } from 'vue'
-import { barkProvider } from '../../utils/notifier'
+import { barkProvider } from '../../../utils/notifier'
+import { IconButton } from '../../../components/common'
 
 const emit = defineEmits(['close'])
 

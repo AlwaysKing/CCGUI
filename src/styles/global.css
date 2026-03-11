@@ -1,5 +1,9 @@
 /* Global styles for the application */
 
+/* Import CSS variables first */
+@import './variables.css';
+@import './utilities.css';
+
 * {
   margin: 0;
   padding: 0;

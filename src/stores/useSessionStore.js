@@ -361,8 +361,9 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'cli-status':
-        // CLI 状态消息，可以显示在状态栏
+        // CLI 状态消息，显示在消息列表中
         log('[CLI Status]', data.message)
+        handleCliStatus(session, data)
         break
 
       case 'tool-use':
@@ -507,6 +508,12 @@ export const useSessionStore = defineStore('session', () => {
 
     // Handle message_start - 创建消息并显示"正在思考"状态
     if (event.type === 'message_start') {
+      // 移除 status 消息（如"正在启动 Claude..."）
+      const statusIndex = session.messages.findIndex(m => m.role === 'status')
+      if (statusIndex >= 0) {
+        session.messages.splice(statusIndex, 1)
+      }
+
       session.currentAssistantMessageIndex = -1
       session.currentContentBlockType = null
       session.contentBlockIndexToId.clear()
@@ -964,6 +971,28 @@ export const useSessionStore = defineStore('session', () => {
     }
     if (data.inputMessage !== undefined) {
       session.inputMessage = data.inputMessage
+    }
+  }
+
+  /**
+   * 处理 CLI 状态消息（如"正在启动 Claude..."）
+   * 添加一个临时的 status 消息到消息列表
+   */
+  function handleCliStatus(session, data) {
+    // 移除之前的 status 消息（如果有的话）
+    const existingStatusIndex = session.messages.findIndex(m => m.role === 'status')
+    if (existingStatusIndex >= 0) {
+      session.messages.splice(existingStatusIndex, 1)
+    }
+
+    // 添加新的 status 消息
+    if (data.message) {
+      session.messages.push({
+        id: `status-${Date.now()}`,
+        role: 'status',
+        content: data.message,
+        timestamp: new Date()
+      })
     }
   }
 

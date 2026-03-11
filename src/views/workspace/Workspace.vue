@@ -3,13 +3,13 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
 import { useSessionStore } from '../../stores/useSessionStore'
 import { logger } from '../../utils/logger'
-import SessionSidebar from './SessionSidebar.vue'
-import ChatWindow from '../ChatWindow.vue'
-import NewSessionDialog from '../dialogs/NewSessionDialog.vue'
-import ConfirmDialog from '../dialogs/ConfirmDialog.vue'
-import RenameDialog from '../dialogs/RenameDialog.vue'
-import ProjectSwitchDialog from '../dialogs/ProjectSwitchDialog.vue'
-import SwitchConfirmDialog from '../dialogs/SwitchConfirmDialog.vue'
+import SessionSidebar from './components/SessionSidebar.vue'
+import Chat from './chat/Chat.vue'
+import NewSessionDialog from './components/NewSessionDialog.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
+import RenameDialog from './components/RenameDialog.vue'
+import ProjectSwitchDialog from './components/ProjectSwitchDialog.vue'
+import SwitchConfirmDialog from './components/SwitchConfirmDialog.vue'
 
 const store = useAppStore()
 const sessionStore = useSessionStore()
@@ -363,7 +363,7 @@ onUnmounted(() => {
 
       <!-- Main Content -->
       <main class="main-content">
-        <ChatWindow
+        <Chat
           v-if="store.currentSession"
           :sidebar-collapsed="sidebarCollapsed"
           @toggleSidebar="toggleSidebar"

@@ -12,6 +12,7 @@ import AssistantMessage from './AssistantMessage.vue'
 import ThinkingSection from './ThinkingSection.vue'
 import QuestionMessage from './QuestionMessage.vue'
 import RewindNoticeMessage from './RewindNoticeMessage.vue'
+import PermissionResultMessage from './PermissionResultMessage.vue'
 import UnknownMessage from './UnknownMessage.vue'
 import { useMessageList } from '../composables/useMessageList'
 import { useMessage } from '../composables/useMessage'
@@ -118,6 +119,15 @@ const avatarChar = computed(() => {
   if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
     return '↩'
   }
+  // interrupt 特殊头像
+  if (props.message.role === 'system' && props.message.subtype === 'interrupt') {
+    return '⏹'
+  }
+  // permission_result 特殊头像：根据内容显示勾或叉
+  if (props.message.role === 'permission_result') {
+    const content = props.message.content || ''
+    return content.startsWith('✅') ? '✓' : '✗'
+  }
   switch (props.message.role) {
     case 'user': return 'U'
     case 'assistant': return 'C'
@@ -133,8 +143,23 @@ const showAvatar = computed(() => {
   if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
     return true
   }
+  // interrupt 需要显示头像
+  if (props.message.role === 'system' && props.message.subtype === 'interrupt') {
+    return true
+  }
+  // permission_result 需要显示头像
+  if (props.message.role === 'permission_result') {
+    return true
+  }
   return props.message.role !== 'status' &&
          props.message.role !== 'system'
+})
+
+// 权限结果是否是拒绝
+const isPermissionDenied = computed(() => {
+  if (props.message.role !== 'permission_result') return false
+  const content = props.message.content || ''
+  return content.startsWith('❌')
 })
 
 // 判断是否是最后一条用户消息（用于显示实时耗时）
@@ -245,7 +270,7 @@ function onToggleActionMenu(index) {
   <div
     v-if="!shouldHide"
     class="message"
-    :class="[message.role, message.subtype, { 'new-turn': isNewTurn }]"
+    :class="[message.role, message.subtype, { 'new-turn': isNewTurn, 'denied': isPermissionDenied }]"
     :data-index="messageIndex"
     :data-message-id="message.id"
     @click="handleMessageClick"
@@ -294,6 +319,19 @@ function onToggleActionMenu(index) {
           @toggle-collapse="onToggleRewindCollapse"
           @jump-to-message="handleRewindNoticeClick"
         />
+      </template>
+
+      <!-- Interrupt 消息 -->
+      <template v-else-if="message.role === 'system' && message.subtype === 'interrupt'">
+        <div class="interrupt-message">
+          <span class="interrupt-icon">⏹</span>
+          <span class="interrupt-text">{{ message.content }}</span>
+        </div>
+      </template>
+
+      <!-- Permission result 消息 -->
+      <template v-else-if="message.role === 'permission_result'">
+        <PermissionResultMessage :message="message" />
       </template>
 
       <!-- Question 消息 -->
@@ -630,12 +668,53 @@ function onToggleActionMenu(index) {
   color: white;
 }
 
+.message.interrupt .message-avatar {
+  background: #EF4444;
+  color: white;
+  font-size: 14px;
+}
+
 .message.question .message-avatar {
   background: #059669;
 }
 
+.message.permission_result .message-avatar {
+  background: #22C55E;
+  color: white;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.message.permission_result.denied .message-avatar {
+  background: #EF4444;
+}
+
 .message.question .message-body {
   flex: 1;
+}
+
+/* 中断消息样式 */
+.interrupt-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: linear-gradient(135deg, #450A0A 0%, #292524 100%);
+  border: 1px solid #991B1B;
+  border-left: 3px solid #EF4444;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #FCA5A5;
+  margin: 8px 0;
+  max-width: fit-content;
+}
+
+.interrupt-icon {
+  font-size: 14px;
+}
+
+.interrupt-text {
+  font-weight: 500;
 }
 
 .message.tool_use .message-avatar {

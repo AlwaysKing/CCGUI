@@ -40,6 +40,7 @@ class SessionData {
     this.pendingPermission = null
     this.pendingControlRequest = null
     this.pendingQuestion = null  // AskUserQuestion 请求
+    this.lastPermissionRequest = null // 用于在收到 CLI 响应时添加权限结果消息
 
     // 环境信息
     this.envInfo = null
@@ -799,17 +800,6 @@ export const useSessionStore = defineStore('session', () => {
     // 获取 tool_use_id - 支持多种可能的字段名
     const toolUseId = requestData.tool_use_id || requestData.toolUseId || requestData.id || data.tool_use_id
 
-    // 将外层的 request_id 和内层的 tool_use_id 都保留到 mergedRequestData 中
-    // 这样前端可以使用正确的 request_id 来响应，同时保留 tool_use_id 用于关联
-    const mergedRequestData = {
-      ...requestData,
-      request_id: outerRequestId || requestData.request_id,
-      tool_use_id: toolUseId // 确保 tool_use_id 被保留
-    }
-
-    log('[SessionStore] mergedRequestData:', JSON.stringify(mergedRequestData, null, 2))
-    log('[SessionStore] tool_use_id:', toolUseId)
-
     // 检查是否是 AskUserQuestion 请求
     // 支持多种可能的字段名格式
     const toolName = requestData.tool_name || requestData.toolName
@@ -817,6 +807,7 @@ export const useSessionStore = defineStore('session', () => {
     let toolInput = requestData.input || requestData.tool_input || requestData.toolInput
 
     log('[SessionStore] toolName:', toolName)
+    log('[SessionStore] tool_use_id:', toolUseId)
     log('[SessionStore] raw toolInput type:', typeof toolInput)
 
     // 如果 toolInput 是字符串，尝试解析为 JSON
@@ -829,8 +820,17 @@ export const useSessionStore = defineStore('session', () => {
       }
     }
 
+    // 将解析后的 input 放入 mergedRequestData
+    const mergedRequestData = {
+      ...requestData,
+      request_id: outerRequestId || requestData.request_id,
+      tool_use_id: toolUseId, // 确保 tool_use_id 被保留
+      input: toolInput // 使用解析后的 input
+    }
+
+    log('[SessionStore] mergedRequestData:', JSON.stringify(mergedRequestData, null, 2))
+
     const hasQuestions = toolInput?.questions || requestData.questions
-    log('[SessionStore] hasQuestions:', !!hasQuestions)
 
     if (toolName === 'AskUserQuestion' || hasQuestions) {
       log('[SessionStore] Setting pendingQuestion, request_id:', mergedRequestData.request_id)
@@ -842,11 +842,73 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 处理控制响应（rewind/fork 等操作的结果）
+   * 处理控制响应（rewind/fork 等操作的结果，以及权限确认的响应）
    */
   function handleControlResponse(session, data) {
     log('[SessionStore] handleControlResponse called')
     log('[SessionStore] Response data:', JSON.stringify(data, null, 2))
+
+    // 检查是否是权限确认的响应（包含 behavior 字段）
+    const responseData = data.response?.response || data.response
+    if (responseData?.behavior && session.lastPermissionRequest) {
+      const behavior = responseData.behavior // 'allow' or 'deny'
+      const updatedInput = responseData.updatedInput || {}
+      const updatedPermissions = responseData.updatedPermissions || []
+      const toolName = session.lastPermissionRequest.tool_name || session.lastPermissionRequest.toolName || 'Unknown'
+
+      // 判断是否是 "allow all"（有 updatedPermissions 且不为空）
+      const isAllowAll = behavior === 'allow' && updatedPermissions.length > 0
+
+      // 构建消息内容
+      let content = ''
+      if (behavior === 'deny') {
+        content = `❌ 已拒绝: ${toolName}`
+      } else if (isAllowAll) {
+        content = `✅ 已允许 (所有): ${toolName}`
+      } else {
+        content = `✅ 已允许: ${toolName}`
+      }
+
+      // 根据工具类型添加详细信息 - 先显示说明，再显示具体内容
+      if (updatedInput.command) {
+        // Bash 工具：先显示说明，再显示命令
+        if (updatedInput.description) {
+          content += `\n说明: ${updatedInput.description}`
+        }
+        content += `\n命令: ${updatedInput.command}`
+      } else if (updatedInput.file_path) {
+        if (updatedInput.description) {
+          content += `\n说明: ${updatedInput.description}`
+        }
+        content += `\n文件: ${updatedInput.file_path}`
+      } else if (updatedInput.pattern) {
+        if (updatedInput.description) {
+          content += `\n说明: ${updatedInput.description}`
+        }
+        content += `\n模式: ${updatedInput.pattern}`
+        if (updatedInput.path) {
+          content += `\n路径: ${updatedInput.path}`
+        }
+      } else if (updatedInput.query) {
+        if (updatedInput.description) {
+          content += `\n说明: ${updatedInput.description}`
+        }
+        content += `\n查询: ${updatedInput.query}`
+      } else if (updatedInput.description) {
+        content += `\n说明: ${updatedInput.description}`
+      }
+
+      // 添加权限结果消息
+      session.messages.push({
+        id: `permission-result-${Date.now()}`,
+        role: 'permission_result',
+        content: content,
+        timestamp: new Date()
+      })
+
+      // 清除保存的请求信息
+      session.lastPermissionRequest = null
+    }
 
     // 检查是否有待处理的控制请求
     if (session.pendingControlRequestResult) {
@@ -866,6 +928,7 @@ export const useSessionStore = defineStore('session', () => {
     session.messages.push({
       id: `interrupt-${Date.now()}`,
       role: 'system',
+      subtype: 'interrupt',
       content: '已中断',
       timestamp: new Date()
     })
@@ -1125,10 +1188,15 @@ export const useSessionStore = defineStore('session', () => {
 
   /**
    * 清除当前会话的权限和控制请求
+   * @param {boolean} saveForResponse - 是否保存请求信息用于后续添加权限结果消息
    */
-  function clearPendingPermissions() {
+  function clearPendingPermissions(saveForResponse = false) {
     const session = currentSession.value
     if (session) {
+      // 如果需要保存，先保存请求信息
+      if (saveForResponse && (session.pendingPermission || session.pendingControlRequest)) {
+        session.lastPermissionRequest = session.pendingPermission || session.pendingControlRequest
+      }
       session.pendingPermission = null
       session.pendingControlRequest = null
       session.pendingQuestion = null

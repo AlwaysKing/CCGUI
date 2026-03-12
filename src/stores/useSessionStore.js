@@ -405,6 +405,44 @@ export const useSessionStore = defineStore('session', () => {
         }
         return
       }
+
+      // 处理 tool_result 之后的 assistant 消息（ID 不匹配的情况）
+      // 查找是否有刚完成 tool_use 的 assistant 消息（isStreaming 已设置为 false 但没有 content）
+      const justFinishedIndex = session.messages.findIndex(m =>
+        m.role === 'assistant' && m.content === '' && !m.isStreaming
+      )
+      if (justFinishedIndex >= 0) {
+        const existingMsg = session.messages[justFinishedIndex]
+        existingMsg.content = message.content || existingMsg.content
+        existingMsg.isStreaming = false
+        if (message.rawMessage) {
+          existingMsg.rawMessage = message.rawMessage
+        }
+        log('[SessionStore] handleAddMessage: updated assistant message after tool_result')
+        return
+      }
+    }
+
+    // 处理 tool_result 消息：更新对应的 tool_use 消息而不是添加新消息
+    if (message.role === 'user' && message.content) {
+      const toolResultContent = message.content.find(c => c.type === 'tool_result')
+      if (toolResultContent) {
+        const toolUseId = toolResultContent.tool_use_id
+        log('[SessionStore] handleAddMessage: found tool_result for tool_use_id:', toolUseId)
+
+        // 查找对应的 tool_use 消息并更新结果
+        for (let i = session.messages.length - 1; i >= 0; i--) {
+          const msg = session.messages[i]
+          if (msg.role === 'tool_use' && (msg.id === toolUseId || msg.request_id === toolUseId)) {
+            msg.isExecuting = false
+            msg.isError = toolResultContent.is_error
+            msg.result = toolResultContent.content || '(无输出)'
+            msg.duration = Date.now() - (msg.startTime || Date.now())
+            log('[SessionStore] handleAddMessage: updated tool_use message result')
+            return // 不添加新消息
+          }
+        }
+      }
     }
 
     // 使用 reactive 包装消息对象以确保响应式
@@ -554,6 +592,11 @@ export const useSessionStore = defineStore('session', () => {
       const contentBlock = event.content_block
       session.currentContentBlockType = contentBlock?.type
 
+      log('[SessionStore] content_block_start:', {
+        contentType: contentBlock?.type,
+        currentAssistantMessageIndex: session.currentAssistantMessageIndex
+      })
+
       if (contentBlock?.type === 'thinking') {
         if (session.hasSeenToolUseInCurrentTurn) {
           session.currentTurnNumber++
@@ -611,12 +654,20 @@ export const useSessionStore = defineStore('session', () => {
 
       // Handle thinking_delta
       if (delta?.type === 'thinking_delta' && delta.thinking) {
+        log('[SessionStore] thinking_delta received:', {
+          deltaType: delta.type,
+          thinkingLength: delta.thinking?.length,
+          currentAssistantMessageIndex: session.currentAssistantMessageIndex
+        })
         if (session.currentAssistantMessageIndex >= 0 && session.messages[session.currentAssistantMessageIndex]) {
           const msg = session.messages[session.currentAssistantMessageIndex]
           msg.thinking = (msg.thinking || '') + delta.thinking
           msg.hasThinking = true
           if (!msg.rawMessages) msg.rawMessages = []
           msg.rawMessages.push(message)
+          log('[SessionStore] Updated thinking, total length:', msg.thinking.length)
+        } else {
+          log('[SessionStore] WARNING: Cannot update thinking, currentAssistantMessageIndex:', session.currentAssistantMessageIndex)
         }
       }
 

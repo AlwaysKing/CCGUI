@@ -424,7 +424,7 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     // 处理 tool_result 消息：更新对应的 tool_use 消息而不是添加新消息
-    if (message.role === 'user' && message.content) {
+    if (message.role === 'user' && Array.isArray(message.content)) {
       const toolResultContent = message.content.find(c => c.type === 'tool_result')
       if (toolResultContent) {
         const toolUseId = toolResultContent.tool_use_id

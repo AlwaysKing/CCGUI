@@ -40,16 +40,8 @@ function jumpToMessage(event) {
 </script>
 
 <template>
-  <div class="message-avatar">↩️</div>
   <div class="rewind-message-wrapper">
-    <!-- 时间头部 -->
-    <div v-if="message.timestamp" class="message-header rewind-header-time">
-      <span class="header-time">
-        <span class="header-icon">🕐</span>
-        {{ new Date(message.timestamp).toLocaleTimeString() }}
-      </span>
-    </div>
-    <!-- 实际的气泡 -->
+    <!-- 气泡 -->
     <div
       class="rewind-notice"
       :class="{ 'rewind-collapsed': isCollapsed }"
@@ -134,14 +126,14 @@ function jumpToMessage(event) {
               </span>
             </div>
             <div v-if="message.restoredFiles && message.restoredFiles.length > 0" class="rewind-section-content">
-              <div class="rewind-files-grid">
+              <div class="rewind-files-list">
                 <div
                   v-for="(file, fileIndex) in message.restoredFiles"
                   :key="fileIndex"
-                  class="rewind-file-chip"
+                  class="rewind-file-item"
                 >
                   <span class="file-icon">📝</span>
-                  <span class="file-path">{{ file.split('/').pop() }}</span>
+                  <span class="file-path">{{ file }}</span>
                 </div>
               </div>
             </div>
@@ -158,93 +150,119 @@ function jumpToMessage(event) {
   max-width: 70%;
 }
 
-.rewind-header-time {
-  padding: 4px 0;
-}
-
+/* Rewind notice 气泡 - 和参考项目保持一致 */
 .rewind-notice {
-  background: var(--bg-secondary);
-  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
+  border: 1px solid #F59E0B;
+  border-left: 3px solid #F59E0B;
+  border-radius: 8px;
   overflow: hidden;
-  cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: all 0.3s ease;
 }
 
 .rewind-notice:hover {
-  background: var(--bg-tertiary);
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.2);
 }
 
 .rewind-notice.rewind-collapsed {
-  background: var(--bg-secondary);
+  opacity: 0.85;
 }
 
 .rewind-notice.rewind-collapsed:hover {
-  background: var(--bg-tertiary);
+  opacity: 1;
 }
 
-.rewind-header-collapsed,
-.rewind-header {
+/* 折叠时的两行布局 */
+.rewind-header-collapsed {
   display: flex;
   flex-direction: column;
-  padding: 10px 12px;
+  padding: 10px 14px;
   gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s ease;
+}
+
+.rewind-header-collapsed:hover {
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .rewind-header-row-1 {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .rewind-header-row-2 {
   overflow: hidden;
 }
 
+/* 展开时的 header */
+.rewind-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #252526;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+  transition: background 0.2s ease;
+}
+
+.rewind-header:hover {
+  background: #2D2D30;
+}
+
 .rewind-icon {
   font-size: 14px;
+  flex-shrink: 0;
 }
 
 .rewind-title {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  color: #F59E0B;
 }
 
 .rewind-stat-badge {
-  font-size: var(--font-size-xs);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-tertiary);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
 }
 
 .rewind-stat-badge.files {
-  color: var(--text-secondary);
+  background: rgba(245, 158, 11, 0.15);
+  color: #FCD34D;
 }
 
 .rewind-stat-badge.lines {
-  background: var(--bg-tertiary);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .stat-mini {
-  font-family: var(--font-family-mono);
+  font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+  font-size: 11px;
 }
 
 .stat-mini.deletions {
-  color: var(--color-error);
+  color: #ff6b6b;
 }
 
 .stat-mini.insertions {
-  color: var(--color-success);
+  color: #51cf66;
 }
 
 .stat-mini.separator {
-  color: var(--text-muted);
+  color: #666;
   margin: 0 2px;
 }
 
 .stat-unit {
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
+  color: #a0a0b0;
+  font-size: 11px;
+  margin-left: 2px;
 }
 
 .rewind-spacer {
@@ -252,35 +270,38 @@ function jumpToMessage(event) {
 }
 
 .rewind-hint {
-  color: var(--text-muted);
+  color: #888;
   cursor: pointer;
   padding: 4px;
-  border-radius: var(--radius-sm);
-  transition: all var(--transition-fast);
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
 }
 
 .rewind-hint:hover {
-  background: var(--bg-hover);
-  color: var(--accent-primary);
+  background: rgba(245, 158, 11, 0.15);
+  color: #F59E0B;
 }
 
 .rewind-collapse-btn {
   font-size: 10px;
-  color: var(--text-muted);
-  transition: transform var(--transition-fast);
+  color: #888;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
 }
 
 .rewind-preview-text {
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
+  font-size: 12px;
+  color: #888;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* 展开内容区 */
 .rewind-body {
-  padding: 0 12px 12px;
-  border-top: 1px solid var(--border-default);
+  padding: 0 14px 12px;
+  border-top: 1px solid rgba(245, 158, 11, 0.2);
 }
 
 .rewind-tool-section {
@@ -288,8 +309,8 @@ function jumpToMessage(event) {
 }
 
 .rewind-section-label {
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
+  font-size: 11px;
+  color: #888;
   margin-bottom: 6px;
   display: flex;
   align-items: center;
@@ -297,15 +318,15 @@ function jumpToMessage(event) {
 }
 
 .rewind-section-content {
-  font-size: var(--font-size-sm);
+  font-size: 13px;
 }
 
 .rewind-message-box {
-  background: var(--bg-tertiary);
+  background: rgba(0, 0, 0, 0.3);
   padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
+  border-radius: 4px;
+  font-size: 12px;
+  color: #ccc;
   max-height: 80px;
   overflow-y: auto;
   white-space: pre-wrap;
@@ -319,31 +340,39 @@ function jumpToMessage(event) {
   margin-left: auto;
 }
 
-.rewind-files-grid {
+.rewind-files-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
 }
 
-.rewind-file-chip {
-  display: inline-flex;
+.rewind-file-item {
+  display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
-}
-
-.rewind-file-chip .file-icon {
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border-radius: 4px;
   font-size: 12px;
+  color: #C0C0D0;
 }
 
-.rewind-file-chip .file-path{
-  max-width: 150px;
+.rewind-file-item .file-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.rewind-file-item .file-path {
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 </style>

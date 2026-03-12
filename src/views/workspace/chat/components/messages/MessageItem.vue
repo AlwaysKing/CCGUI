@@ -114,6 +114,10 @@ const isNewTurn = computed(() => {
 
 // 头像字符
 const avatarChar = computed(() => {
+  // rewind-notice 特殊头像
+  if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
+    return '↩'
+  }
   switch (props.message.role) {
     case 'user': return 'U'
     case 'assistant': return 'C'
@@ -125,9 +129,12 @@ const avatarChar = computed(() => {
 
 // 是否显示头像（统一由 MessageItem 处理）
 const showAvatar = computed(() => {
+  // rewind-notice 需要显示头像
+  if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
+    return true
+  }
   return props.message.role !== 'status' &&
-         props.message.role !== 'system' &&
-         !(props.message.role === 'system' && props.message.subtype === 'rewind-notice')
+         props.message.role !== 'system'
 })
 
 // 判断是否是最后一条用户消息（用于显示实时耗时）
@@ -238,7 +245,7 @@ function onToggleActionMenu(index) {
   <div
     v-if="!shouldHide"
     class="message"
-    :class="[message.role, { 'new-turn': isNewTurn }]"
+    :class="[message.role, message.subtype, { 'new-turn': isNewTurn }]"
     :data-index="messageIndex"
     :data-message-id="message.id"
     @click="handleMessageClick"
@@ -616,6 +623,11 @@ function onToggleActionMenu(index) {
 
 .message.system .message-avatar {
   background: #6366F1;
+}
+
+.message.rewind-notice .message-avatar {
+  background: #F59E0B;
+  color: white;
 }
 
 .message.question .message-avatar {

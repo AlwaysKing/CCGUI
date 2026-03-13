@@ -7,6 +7,7 @@ import { ref, onMounted, onUnmounted, toRaw, computed } from 'vue'
 import { barkProvider } from '@/utils/notifier'
 import { IconButton } from '@/components/common'
 import { ModelSettings, PromptSettings, SoftwareSettings } from './components'
+import { ModelEditDialog, DefaultConfigDialog, PromptEditDialog, DocumentEditDialog } from './components/dialogs'
 
 const emit = defineEmits(['close'])
 
@@ -45,13 +46,6 @@ const documents = ref([])
 // ========== 对话框状态 ==========
 const showModelDialog = ref(false)
 const editingModel = ref(null)
-const modelForm = ref({
-  friendlyName: '',
-  apiUrl: '',
-  authToken: '',
-  defaultCardId: null,
-  modelCards: []
-})
 
 const showDefaultConfigDialog = ref(false)
 const showAuthToken = ref(false)
@@ -59,20 +53,9 @@ const showModelAuthToken = ref(false)
 
 const showPromptDialog = ref(false)
 const editingPrompt = ref(null)
-const promptForm = ref({
-  name: '',
-  description: '',
-  content: '',
-  isActive: false
-})
 
 const showDocumentDialog = ref(false)
 const editingDocument = ref(null)
-const documentForm = ref({
-  name: '',
-  summary: '',
-  content: ''
-})
 
 // ========== 悬停状态 ==========
 const hoveredPromptId = ref(null)
@@ -204,44 +187,11 @@ function handleScroll() {
 // ========== 模型操作 ==========
 function handleAddModel() {
   editingModel.value = null
-  const firstCardId = generateModelCardId()
-  modelForm.value = {
-    friendlyName: '',
-    apiUrl: '',
-    authToken: '',
-    defaultCardId: firstCardId,
-    modelCards: [{ id: firstCardId, modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '' }]
-  }
-  showModelAuthToken.value = false
   showModelDialog.value = true
 }
 
 function handleEditModel(model) {
   editingModel.value = model
-
-  let modelCards = []
-  if (model.modelCards && model.modelCards.length > 0) {
-    modelCards = model.modelCards.map(card => ({
-      id: card.id || generateModelCardId(),
-      modelName: card.modelName || '',
-      pricingCache: card.pricingCache || '',
-      pricingInput: card.pricingInput || '',
-      pricingOutput: card.pricingOutput || ''
-    }))
-  } else if (model.modelName) {
-    modelCards = [{ id: generateModelCardId(), modelName: model.modelName, pricingCache: model.pricingCache || '', pricingInput: model.pricingInput || '', pricingOutput: model.pricingOutput || '' }]
-  } else {
-    modelCards = [{ id: generateModelCardId(), modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '' }]
-  }
-
-  modelForm.value = {
-    friendlyName: model.friendlyName,
-    apiUrl: model.apiUrl,
-    authToken: model.authToken || '',
-    defaultCardId: model.defaultCardId || modelCards[0]?.id || null,
-    modelCards
-  }
-  showModelAuthToken.value = false
   showModelDialog.value = true
 }
 
@@ -255,19 +205,14 @@ async function handleDeleteModel(modelId) {
   }
 }
 
-async function handleSaveModel() {
-  if (!modelForm.value.friendlyName || !modelForm.value.apiUrl || !modelForm.value.authToken) {
-    alert('请填写必填项：友好名称、API地址和认证令牌')
-    return
-  }
-
-  const validModelCards = modelForm.value.modelCards.filter(card =>
+async function handleSaveModel(formData) {
+  const validModelCards = formData.modelCards.filter(card =>
     card.modelName || card.pricingCache || card.pricingInput || card.pricingOutput
   )
 
-  const finalCards = validModelCards.length > 0 ? toRaw(validModelCards) : toRaw(modelForm.value.modelCards)
-  const defaultCardId = finalCards.some(c => c.id === modelForm.value.defaultCardId)
-    ? modelForm.value.defaultCardId
+  const finalCards = validModelCards.length > 0 ? toRaw(validModelCards) : toRaw(formData.modelCards)
+  const defaultCardId = finalCards.some(c => c.id === formData.defaultCardId)
+    ? formData.defaultCardId
     : finalCards[0]?.id || null
 
   if (editingModel.value) {
@@ -275,19 +220,19 @@ async function handleSaveModel() {
     if (index !== -1) {
       models.value[index] = {
         ...models.value[index],
-        friendlyName: modelForm.value.friendlyName,
-        apiUrl: modelForm.value.apiUrl,
-        authToken: modelForm.value.authToken,
+        friendlyName: formData.friendlyName,
+        apiUrl: formData.apiUrl,
+        authToken: formData.authToken,
         defaultCardId,
         modelCards: finalCards
       }
     }
   } else {
     const newModel = {
-      id: Date.now().toString(),
-      friendlyName: modelForm.value.friendlyName,
-      apiUrl: modelForm.value.apiUrl,
-      authToken: modelForm.value.authToken,
+      id: formData.id || Date.now().toString(),
+      friendlyName: formData.friendlyName,
+      apiUrl: formData.apiUrl,
+      authToken: formData.authToken,
       defaultCardId,
       modelCards: finalCards
     }
@@ -317,7 +262,8 @@ function handleEditDefaultConfig() {
   showDefaultConfigDialog.value = true
 }
 
-async function handleSaveDefaultConfig() {
+async function handleSaveDefaultConfig(config) {
+  defaultConfig.value = { ...defaultConfig.value, ...config }
   showDefaultConfigDialog.value = false
   showAuthToken.value = false
   await saveAppConfig()
@@ -326,18 +272,11 @@ async function handleSaveDefaultConfig() {
 // ========== 提示词操作 ==========
 function handleAddPrompt() {
   editingPrompt.value = null
-  promptForm.value = { name: '', description: '', content: '', isActive: false }
   showPromptDialog.value = true
 }
 
 function handleEditPrompt(prompt) {
   editingPrompt.value = prompt
-  promptForm.value = {
-    name: prompt.name,
-    description: prompt.description || '',
-    content: prompt.content,
-    isActive: prompt.isActive
-  }
   showPromptDialog.value = true
 }
 
@@ -356,30 +295,25 @@ async function handleTogglePromptActive(promptId) {
   }
 }
 
-async function handleSavePrompt() {
-  if (!promptForm.value.name || !promptForm.value.content) {
-    alert('请填写必填项：名称和内容')
-    return
-  }
-
+async function handleSavePrompt(formData) {
   if (editingPrompt.value) {
     const index = prompts.value.findIndex(p => p.id === editingPrompt.value.id)
     if (index !== -1) {
       prompts.value[index] = {
         ...prompts.value[index],
-        name: promptForm.value.name,
-        description: promptForm.value.description,
-        content: promptForm.value.content,
-        isActive: promptForm.value.isActive
+        name: formData.name,
+        description: formData.description,
+        content: formData.content,
+        isActive: formData.isActive
       }
     }
   } else {
     prompts.value.push({
-      id: generatePromptId(),
-      name: promptForm.value.name,
-      description: promptForm.value.description,
-      content: promptForm.value.content,
-      isActive: promptForm.value.isActive
+      id: formData.id || generatePromptId(),
+      name: formData.name,
+      description: formData.description,
+      content: formData.content,
+      isActive: formData.isActive
     })
   }
 
@@ -390,17 +324,11 @@ async function handleSavePrompt() {
 // ========== 规范文档操作 ==========
 function handleAddDocument() {
   editingDocument.value = null
-  documentForm.value = { name: '', summary: '', content: '' }
   showDocumentDialog.value = true
 }
 
 function handleEditDocument(document) {
   editingDocument.value = document
-  documentForm.value = {
-    name: document.name,
-    summary: document.summary || '',
-    content: document.content
-  }
   showDocumentDialog.value = true
 }
 
@@ -411,28 +339,23 @@ async function handleDeleteDocument(documentId) {
   }
 }
 
-async function handleSaveDocument() {
-  if (!documentForm.value.name || !documentForm.value.content) {
-    alert('请填写必填项：名称和内容')
-    return
-  }
-
+async function handleSaveDocument(formData) {
   if (editingDocument.value) {
     const index = documents.value.findIndex(d => d.id === editingDocument.value.id)
     if (index !== -1) {
       documents.value[index] = {
         ...documents.value[index],
-        name: documentForm.value.name,
-        summary: documentForm.value.summary,
-        content: documentForm.value.content
+        name: formData.name,
+        summary: formData.summary,
+        content: formData.content
       }
     }
   } else {
     documents.value.push({
-      id: generateDocumentId(),
-      name: documentForm.value.name,
-      summary: documentForm.value.summary,
-      content: documentForm.value.content
+      id: formData.id || generateDocumentId(),
+      name: formData.name,
+      summary: formData.summary,
+      content: formData.content
     })
   }
 
@@ -575,7 +498,37 @@ function handleClose() {
       </div>
     </div>
 
-    <!-- TODO: 对话框组件将在后续添加 -->
+    <!-- 模型编辑对话框 -->
+    <ModelEditDialog
+      v-model:visible="showModelDialog"
+      :model="editingModel"
+      @save="handleSaveModel"
+      @close="showModelDialog = false"
+    />
+
+    <!-- 默认配置编辑对话框 -->
+    <DefaultConfigDialog
+      v-model:visible="showDefaultConfigDialog"
+      :config="defaultConfig"
+      @save="handleSaveDefaultConfig"
+      @close="showDefaultConfigDialog = false"
+    />
+
+    <!-- 提示词编辑对话框 -->
+    <PromptEditDialog
+      v-model:visible="showPromptDialog"
+      :prompt="editingPrompt"
+      @save="handleSavePrompt"
+      @close="showPromptDialog = false"
+    />
+
+    <!-- 规范文档编辑对话框 -->
+    <DocumentEditDialog
+      v-model:visible="showDocumentDialog"
+      :document="editingDocument"
+      @save="handleSaveDocument"
+      @close="showDocumentDialog = false"
+    />
   </div>
 </template>
 

@@ -105,8 +105,8 @@ function copyContent() {
 /* 复制按钮定位到右上角 */
 .message-text :deep(.copy-btn) {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 4px;
+  right: 4px;
   opacity: 0;
   transition: opacity 0.15s;
 }

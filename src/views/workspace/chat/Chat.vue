@@ -584,8 +584,9 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
   const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
-  // 清除权限请求（使用 sessionStore 方法）
-  sessionStore.clearPendingPermissions()
+  // 清除权限请求，并保存请求信息用于后续添加权限结果消息
+  // 气泡会在 CLI 返回 control_response 后添加
+  sessionStore.clearPendingPermissions(true)
 
   // 注意: 工具刚刚被批准，还没有执行完成，所以 isExecuting 应该保持 true
   // 工具执行完成后会通过 toolResult 事件来更新状态
@@ -655,8 +656,8 @@ async function handlePermissionDeny(requestId) {
   const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
-  // 清除权限请求（使用 sessionStore 方法）
-  sessionStore.clearPendingPermissions()
+  // 清除权限请求，并保存请求信息用于后续添加权限结果消息
+  sessionStore.clearPendingPermissions(true)
 
   // 找到对应的 tool_use 消息并更新状态
   // 对于 control_request，消息使用 tool_use_id 作为 request_id
@@ -683,29 +684,9 @@ async function handlePermissionDeny(requestId) {
         options.toolUseID = controlRequest.tool_use_id
       }
 
-      // 构建完整的响应消息用于日志
-      const responseMessage = {
-        type: 'control_response',
-        response: {
-          subtype: 'success',
-          request_id: requestId,
-          response: {
-            behavior: 'deny',
-            ...options
-          }
-        }
-      }
-
       await sessionStore.sendControlResponse(requestId, false, options)
     } else {
       // Regular tool_use permission
-      const responseMessage = {
-        type: 'tool_result',
-        tool_use_id: requestId,
-        content: 'Permission denied by user',
-        is_error: true
-      }
-
       await sessionStore.sendToolResult(requestId, 'Permission denied by user', true)
     }
   } catch (error) {
@@ -719,18 +700,9 @@ async function handlePermissionApproveAll(requestId) {
   const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
-  // 清除权限请求（使用 sessionStore 方法）
-  sessionStore.clearPendingPermissions()
-
-  if (permission || controlRequest) {
-    const toolName = permission?.tool_name || controlRequest?.tool_name
-    messages.value.push({
-      role: 'system',
-      content: `✅ 已允许 (所有): ${toolName}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
-  }
+  // 清除权限请求，并保存请求信息用于后续添加权限结果消息
+  // 气泡会在 CLI 返回 control_response 后添加
+  sessionStore.clearPendingPermissions(true)
 
   try {
     // Check if this is a control_request (for --permission-prompt-tool stdio)

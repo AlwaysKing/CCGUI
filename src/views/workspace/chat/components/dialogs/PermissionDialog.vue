@@ -59,12 +59,13 @@ const displayDetail = computed(() => {
   const input = toolInput.value
   const name = toolName.value
 
-  // Bash 工具显示命令
-  if (name === 'Bash' && input.command) {
+  // Bash 工具显示命令 - 支持多种字段名格式
+  const bashCommand = input.command || input.Command
+  if (name === 'Bash' && bashCommand) {
     return {
       label: '命令',
-      value: input.command,
-      description: input.description
+      value: bashCommand,
+      description: input.description || input.Description
     }
   }
 

@@ -24,7 +24,7 @@
     "productName": "CCGUI",
     "appId": "com.ccgui.app",
     "directories": {
-      "output": "dist"
+      "output": "output"
     },
     "mac": {
       "icon": "build/icons/icon.icns",

@@ -33,12 +33,7 @@ defineProps({
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 0;
-  border-bottom: 1px solid #3F3F46;
-}
-
-.detail-row:last-child {
-  border-bottom: none;
+  padding: 6px 0;
 }
 
 .detail-label {

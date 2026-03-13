@@ -39,6 +39,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Close session
   closeSession: (options) => ipcRenderer.invoke('close-session', options),
 
+  // Stop Claude process (keep session alive for restart)
+  stopClaude: (options) => ipcRenderer.invoke('stop-claude', options),
+
   // Start session (initialize Claude process without sending message)
   startSession: (options) => ipcRenderer.invoke('start-session', options),
 

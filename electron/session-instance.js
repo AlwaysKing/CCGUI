@@ -232,8 +232,16 @@ class SessionInstance {
    * 启动 Claude 实例（懒加载）
    */
   async startClaude() {
+    // 如果已经就绪，直接返回
     if (this.claudeManager && this.claudeManager.isReady()) {
       return true
+    }
+
+    // 如果存在旧的 ClaudeManager（进程已退出），先清理
+    if (this.claudeManager) {
+      logger.info(`[SessionInstance] Cleaning up old ClaudeManager for session ${this.id}`)
+      this.claudeManager.stop()
+      this.claudeManager = null
     }
 
     logger.info(`[SessionInstance] Starting Claude for session ${this.id}`)

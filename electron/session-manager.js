@@ -151,7 +151,18 @@ class SessionManager {
   }
 
   /**
-   * 关闭会话
+   * 停止会话的 Claude 进程（不删除 session）
+   */
+  stopClaude(sessionId) {
+    const session = this.sessions.get(sessionId)
+    if (session) {
+      logger.info(`[SessionManager] Stopping Claude for session ${sessionId}`)
+      session.stop()
+    }
+  }
+
+  /**
+   * 关闭会话（停止进程并删除）
    */
   closeSession(sessionId) {
     const session = this.sessions.get(sessionId)

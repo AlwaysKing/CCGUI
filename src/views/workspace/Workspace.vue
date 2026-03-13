@@ -165,9 +165,9 @@ async function performCloseSession(session, sessionState) {
       sessionState.isProcessing = false
     }
 
-    // 关闭 Claude 进程
-    await window.electronAPI.closeSession({ sessionId: session.id })
-    logger.info('[Workspace] Claude process closed for session:', session.id)
+    // 关闭 Claude 进程（保留 session，以便后续可以重新启动）
+    await window.electronAPI.stopClaude({ sessionId: session.id })
+    logger.info('[Workspace] Claude process stopped for session:', session.id)
   } catch (e) {
     logger.error('[Workspace] Failed to close Claude process:', { error: e.message })
     alert('关闭 Claude 进程失败: ' + e.message)

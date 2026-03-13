@@ -367,6 +367,13 @@ ipcMain.handle('close-session', async (event, { sessionId }) => {
   return { success: true }
 })
 
+// Stop Claude process (keep session alive for restart)
+ipcMain.handle('stop-claude', async (event, { sessionId }) => {
+  logger.info('[IPC] stop-claude:', sessionId)
+  sessionManager.stopClaude(sessionId)
+  return { success: true }
+})
+
 // ============================================
 // Project & Session Management IPC Handlers
 // ============================================

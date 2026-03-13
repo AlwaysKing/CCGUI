@@ -26,6 +26,7 @@ dist-electron
 # Build output
 /build
 /dist-electron
+/output
 
 # Environment
 .env

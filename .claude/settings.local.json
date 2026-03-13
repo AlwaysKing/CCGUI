@@ -64,11 +64,13 @@
       "Read(//Users/alwaysking/Desktop/xxx/**)",
       "Bash(curl -s \"http://worldtimeapi.org/api/ip\")",
       "Bash(curl -sI google.com)",
-      "Read(//private/tmp/**)"
+      "Read(//private/tmp/**)",
+      "Bash(git push:*)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",
-      "/Users/alwaysking/AKProject/CCGUI/src"
+      "/Users/alwaysking/AKProject/CCGUI/src",
+      "/Users/alwaysking/AKProject/CCGUI/src/views/settings/components"
     ]
   }
 }

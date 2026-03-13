@@ -4,7 +4,9 @@
  * 包含 Claude 默认配置和自定义模型列表
  */
 import { ref, computed } from 'vue'
-import { SettingsSection, SubsectionHeader, DetailRow } from './common'
+import SettingsSection from './common/SettingsSection.vue'
+import SubsectionHeader from './common/SubsectionHeader.vue'
+import DetailRow from './common/DetailRow.vue'
 import { IconButton } from '@/components/common'
 
 const props = defineProps({

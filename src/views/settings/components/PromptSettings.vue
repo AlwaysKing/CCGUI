@@ -4,7 +4,8 @@
  * 包含自定义提示词和规范文档
  */
 import { ref } from 'vue'
-import { SettingsSection, SubsectionHeader } from './common'
+import SettingsSection from './common/SettingsSection.vue'
+import SubsectionHeader from './common/SubsectionHeader.vue'
 import { IconButton } from '@/components/common'
 
 const props = defineProps({

@@ -6,8 +6,13 @@
 import { ref, onMounted, onUnmounted, toRaw, computed } from 'vue'
 import { barkProvider } from '@/utils/notifier'
 import { IconButton } from '@/components/common'
-import { ModelSettings, PromptSettings, SoftwareSettings } from './components'
-import { ModelEditDialog, DefaultConfigDialog, PromptEditDialog, DocumentEditDialog } from './components/dialogs'
+import ModelSettings from './components/ModelSettings.vue'
+import PromptSettings from './components/PromptSettings.vue'
+import SoftwareSettings from './components/SoftwareSettings.vue'
+import ModelEditDialog from './components/dialogs/ModelEditDialog.vue'
+import DefaultConfigDialog from './components/dialogs/DefaultConfigDialog.vue'
+import PromptEditDialog from './components/dialogs/PromptEditDialog.vue'
+import DocumentEditDialog from './components/dialogs/DocumentEditDialog.vue'
 
 const emit = defineEmits(['close'])
 

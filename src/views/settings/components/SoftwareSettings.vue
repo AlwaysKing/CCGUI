@@ -4,7 +4,8 @@
  * 包含主题、语言、Bark通知、关于信息
  */
 import { ref, defineProps, defineEmits } from 'vue'
-import { SettingsSection, SettingItem } from './common'
+import SettingsSection from './common/SettingsSection.vue'
+import SettingItem from './common/SettingItem.vue'
 
 const props = defineProps({
   settings: {

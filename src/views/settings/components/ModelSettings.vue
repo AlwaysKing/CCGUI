@@ -353,8 +353,6 @@ function getDefaultCard(model) {
 
 .model-card.selected {
   background: #2D2D30;
-  border-color: #F97316;
-  box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.2);
 }
 
 .model-header {

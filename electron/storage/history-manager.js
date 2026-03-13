@@ -1,6 +1,7 @@
 /**
  * 历史管理器
  * 管理聊天历史记录的存储和加载
+ * 直接保存/加载界面显示用的 message 对象
  */
 
 const fs = require('fs')
@@ -129,6 +130,54 @@ function saveMetadata(projectId, sessionId, metadata) {
 }
 
 /**
+ * 序列化消息（处理 Date 对象等特殊类型）
+ * @param {object} message - 消息对象
+ * @returns {string} JSON 字符串
+ */
+function serializeMessage(message) {
+  return JSON.stringify(message, (key, value) => {
+    // 处理 Date 对象
+    if (value instanceof Date) {
+      return { __type: 'Date', value: value.toISOString() }
+    }
+    // 处理 Set
+    if (value instanceof Set) {
+      return { __type: 'Set', value: Array.from(value) }
+    }
+    // 处理 Map
+    if (value instanceof Map) {
+      return { __type: 'Map', value: Array.from(value.entries()) }
+    }
+    return value
+  })
+}
+
+/**
+ * 反序列化消息（恢复 Date 对象等特殊类型）
+ * @param {string} jsonStr - JSON 字符串
+ * @returns {object} 消息对象
+ */
+function deserializeMessage(jsonStr) {
+  return JSON.parse(jsonStr, (key, value) => {
+    if (value && typeof value === 'object') {
+      // 恢复 Date 对象
+      if (value.__type === 'Date') {
+        return new Date(value.value)
+      }
+      // 恢复 Set
+      if (value.__type === 'Set') {
+        return new Set(value.value)
+      }
+      // 恢复 Map
+      if (value.__type === 'Map') {
+        return new Map(value.value)
+      }
+    }
+    return value
+  })
+}
+
+/**
  * 追加消息到历史记录
  * @param {string} projectId - 项目ID
  * @param {string} sessionId - 会话ID
@@ -139,7 +188,7 @@ function appendMessage(projectId, sessionId, message) {
     ensureHistoryDir(projectId, sessionId)
 
     const messagesPath = getMessagesFilePath(projectId, sessionId)
-    const messageLine = JSON.stringify(message) + '\n'
+    const messageLine = serializeMessage(message) + '\n'
 
     fs.appendFileSync(messagesPath, messageLine, 'utf-8')
 
@@ -159,6 +208,7 @@ function appendMessage(projectId, sessionId, message) {
     logger.debug('[HistoryManager] Appended message', {
       projectId,
       sessionId,
+      role: message.role,
       messageCount: metadata.messageCount
     })
 
@@ -167,6 +217,44 @@ function appendMessage(projectId, sessionId, message) {
     logger.error('[HistoryManager] Failed to append message', {
       projectId,
       sessionId,
+      error: error.message
+    })
+    return false
+  }
+}
+
+/**
+ * 更新指定消息（通过消息ID）
+ * @param {string} projectId - 项目ID
+ * @param {string} sessionId - 会话ID
+ * @param {string} messageId - 消息ID
+ * @param {object} updates - 更新内容
+ */
+function updateMessage(projectId, sessionId, messageId, updates) {
+  try {
+    const messages = loadHistory(projectId, sessionId)
+    let found = false
+
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].id === messageId) {
+        messages[i] = { ...messages[i], ...updates }
+        found = true
+        break
+      }
+    }
+
+    if (found) {
+      // 重写整个文件
+      saveAllMessages(projectId, sessionId, messages)
+      logger.debug('[HistoryManager] Updated message', { projectId, sessionId, messageId })
+    }
+
+    return found
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to update message', {
+      projectId,
+      sessionId,
+      messageId,
       error: error.message
     })
     return false
@@ -196,7 +284,7 @@ function loadHistory(projectId, sessionId) {
       if (!line.trim()) continue
 
       try {
-        const message = JSON.parse(line)
+        const message = deserializeMessage(line)
         messages.push(message)
       } catch (e) {
         logger.warn('[HistoryManager] Failed to parse message line', {
@@ -261,7 +349,7 @@ function saveAllMessages(projectId, sessionId, messages) {
     ensureHistoryDir(projectId, sessionId)
 
     const messagesPath = getMessagesFilePath(projectId, sessionId)
-    const content = messages.map(msg => JSON.stringify(msg)).join('\n') + '\n'
+    const content = messages.map(msg => serializeMessage(msg)).join('\n') + '\n'
 
     fs.writeFileSync(messagesPath, content, 'utf-8')
 
@@ -317,6 +405,7 @@ module.exports = {
   loadMetadata,
   saveMetadata,
   appendMessage,
+  updateMessage,
   loadHistory,
   deleteHistory,
   saveAllMessages,

@@ -313,7 +313,7 @@ function syncProjectSessions(projectId) {
 }
 
 /**
- * 加载会话历史(优先从 CCGUI,否则从 Claude 导入)
+ * 加载会话历史(优先从 CCGUI,否则从 Claude 导入并转换)
  * @param {string} projectId - 项目ID
  * @param {string} sessionId - 会话ID
  * @returns {Array} 消息数组
@@ -321,26 +321,16 @@ function syncProjectSessions(projectId) {
 function loadSessionHistoryWithFallback(projectId, sessionId) {
   try {
     // 首先尝试从 CCGUI 加载
-    if (historyManager.historyExists(projectId, sessionId)) {
-      logger.info('[SyncManager] Loading history from CCGUI', { projectId, sessionId })
-      return historyManager.loadHistory(projectId, sessionId)
+    const ccguiMessages = historyManager.loadHistory(projectId, sessionId)
+    if (ccguiMessages.length > 0) {
+      logger.info('[SyncManager] Loading history from CCGUI', { projectId, sessionId, messageCount: ccguiMessages.length })
+      return ccguiMessages
     }
 
-    // 如果 CCGUI 中没有,从 Claude 导入
-    logger.info('[SyncManager] Importing history from Claude', { projectId, sessionId })
-    const messages = importClaudeHistory(projectId, sessionId)
-
-    // 保存到 CCGUI
-    if (messages.length > 0) {
-      historyManager.saveAllMessages(projectId, sessionId, messages)
-      logger.info('[SyncManager] Imported and saved history', {
-        projectId,
-        sessionId,
-        messageCount: messages.length
-      })
-    }
-
-    return messages
+    // 如果 CCGUI 中没有，返回空数组（不自动从 Claude 导入）
+    // 因为 Claude 的原始格式需要前端解析，这里无法直接转换
+    logger.info('[SyncManager] No history found in CCGUI', { projectId, sessionId })
+    return []
   } catch (error) {
     logger.error('[SyncManager] Failed to load session history', {
       projectId,

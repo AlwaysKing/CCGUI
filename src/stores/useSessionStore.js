@@ -337,11 +337,32 @@ export const useSessionStore = defineStore('session', () => {
         handleAddMessage(session, data)
         break
 
+      case 'message-start':
+        // 后端发送的消息创建事件
+        handleMessageStart(session, data)
+        break
+
+      case 'message-delta':
+        // 后端发送的增量更新事件
+        handleMessageDelta(session, data)
+        break
+
+      case 'message-complete':
+        // 后端发送的消息完成事件
+        handleMessageComplete(session, data)
+        break
+
+      case 'message-update':
+        // 后端发送的字段更新事件
+        handleMessageUpdate(session, data)
+        break
+
       case 'result':
         handleResult(session, data)
         break
 
       case 'stream-event':
+        // 保留旧的事件转发（兼容）
         handleStreamEvent(session, data)
         break
 
@@ -520,7 +541,100 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 处理流式事件
+   * 处理消息创建事件（来自后端）
+   */
+  function handleMessageStart(session, message) {
+    log('[SessionStore] handleMessageStart:', message.role, message.id)
+
+    // 添加消息到列表
+    session.messages.push(reactive(message))
+    session.currentStreamingAssistantId = message.id
+
+    // 根据角色设置初始状态
+    if (message.role === 'assistant') {
+      session.currentAssistantMessageIndex = session.messages.length - 1
+    } else if (message.role === 'tool_use') {
+      // 记录 tool_use 的索引
+      if (typeof message.request_id === 'number') {
+        session.contentBlockIndexToId.set(message.request_id, message.id)
+      }
+    }
+  }
+
+  /**
+   * 处理消息增量更新（来自后端）
+   */
+  function handleMessageDelta(session, data) {
+    const { messageId, field, delta } = data
+
+    // 查找对应的消息
+    const msgIndex = session.messages.findIndex(m => m.id === messageId)
+    if (msgIndex === -1) {
+      log('[SessionStore] handleMessageDelta: message not found', messageId)
+      return
+    }
+
+    const msg = session.messages[msgIndex]
+
+    // 根据字段类型增量更新
+    if (field === 'content') {
+      msg.content = (msg.content || '') + delta
+    } else if (field === 'thinking') {
+      msg.thinking = (msg.thinking || '') + delta
+      msg.hasThinking = true
+    }
+
+    log('[SessionStore] handleMessageDelta:', field, 'delta length:', delta.length)
+  }
+
+  /**
+   * 处理消息完成事件（来自后端）
+   */
+  function handleMessageComplete(session, data) {
+    const { messageId, updates } = data
+
+    // 查找对应的消息
+    const msgIndex = session.messages.findIndex(m => m.id === messageId)
+    if (msgIndex === -1) {
+      log('[SessionStore] handleMessageComplete: message not found', messageId)
+      return
+    }
+
+    // 应用更新
+    const msg = session.messages[msgIndex]
+    Object.assign(msg, updates)
+
+    // 清除流式标记
+    if (msg.role === 'assistant') {
+      session.currentAssistantMessageIndex = -1
+    }
+    session.currentStreamingAssistantId = null
+
+    log('[SessionStore] handleMessageComplete:', messageId)
+  }
+
+  /**
+   * 处理消息字段更新（来自后端）
+   */
+  function handleMessageUpdate(session, data) {
+    const { messageId, updates } = data
+
+    // 查找对应的消息
+    const msgIndex = session.messages.findIndex(m => m.id === messageId)
+    if (msgIndex === -1) {
+      log('[SessionStore] handleMessageUpdate: message not found', messageId)
+      return
+    }
+
+    // 应用更新
+    const msg = session.messages[msgIndex]
+    Object.assign(msg, updates)
+
+    log('[SessionStore] handleMessageUpdate:', messageId, 'updates:', Object.keys(updates))
+  }
+
+  /**
+   * 处理流式事件（来自后端 - 旧格式兼容）
    * 处理 content_block_start, content_block_delta, message_start 等
    */
   function handleStreamEvent(session, message) {

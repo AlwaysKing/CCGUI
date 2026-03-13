@@ -65,7 +65,8 @@
       "Bash(curl -s \"http://worldtimeapi.org/api/ip\")",
       "Bash(curl -sI google.com)",
       "Read(//private/tmp/**)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(git rm:*)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

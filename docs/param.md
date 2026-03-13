@@ -1,12 +1,51 @@
 # Claude Code 启动参数详解
 
-**文档版本**: 1.0
-**最后更新**: 2026-03-08
+**文档版本**: 2.0
+**最后更新**: 2026-03-13
 **适用版本**: Claude Code 2.1.71+
 
 ## 概述
 
 Claude Code 支持丰富的命令行参数，用于控制其行为、权限模式、模型选择等。本文档详细说明所有可用的启动参数。
+
+## 最近更新 (v2.0)
+
+### 新增参数
+
+| 参数 | 说明 |
+|------|------|
+| `--agents <json>` | 定义自定义代理的 JSON 对象 |
+| `--agent <agent>` | 指定当前会话使用的代理 |
+| `--chrome` / `--no-chrome` | 启用/禁用 Chrome 集成 |
+| `--disable-slash-commands` | 禁用所有技能（skills） |
+| `--ide` | 启动时自动连接到 IDE |
+| `--file <specs...>` | 启动时下载文件资源 |
+| `--worktree [name]` / `-w` | 为会话创建新的 git worktree |
+| `--tmux` | 为 worktree 创建 tmux 会话 |
+| `--from-pr [value]` | 恢复与 PR 关联的会话 |
+| `--replay-user-messages` | 重新发送用户消息 |
+| `--system-prompt <prompt>` | 完全替换系统提示 |
+
+### 新增 CLI 命令
+
+| 命令 | 说明 |
+|------|------|
+| `claude agents` | 列出配置的代理 |
+| `claude auth` | 管理认证 |
+| `claude doctor` | 检查自动更新器健康状态 |
+| `claude install [target]` | 安装原生构建 |
+| `claude mcp` | 配置和管理 MCP 服务器 |
+| `claude plugin` | 管理插件 |
+| `claude setup-token` | 设置长期认证令牌 |
+| `claude update` / `upgrade` | 检查并安装更新 |
+
+### 权限模式更新
+
+新增选项：
+- `dontAsk` - 不询问模式（自动执行）
+- `auto` - 自动模式（智能决策）
+
+---
 
 ## 完整启动示例
 

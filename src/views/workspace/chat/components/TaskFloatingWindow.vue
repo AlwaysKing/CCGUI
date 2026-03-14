@@ -32,7 +32,23 @@ function getTaskIcon(taskType) {
   if (taskType === 'local_agent') return '🤖'
   if (taskType === 'explore') return '🔍'
   if (taskType === 'plan') return '📋'
+  if (taskType === 'todo') return '📝'
   return '⚙️'
+}
+
+// Todo 状态图标和样式
+function getTodoStatusInfo(status) {
+  if (status === 'completed') return { icon: '✅', class: 'completed' }
+  if (status === 'in_progress') return { icon: '🔄', class: 'in-progress' }
+  return { icon: '⏳', class: 'pending' }
+}
+
+// 计算 Todo 进度
+function getTodoProgress(task) {
+  if (!task.todos) return null
+  const completed = task.todos.filter(t => t.status === 'completed').length
+  const total = task.todos.length
+  return { completed, total, percent: total > 0 ? Math.round((completed / total) * 100) : 0 }
 }
 
 // 格式化运行时间
@@ -126,37 +142,64 @@ onUnmounted(() => {
           <div class="task-info">
             <div class="task-title">{{ task.description || '子任务运行中...' }}</div>
             <div class="task-meta">
-              <span class="running-time">{{ formatRunningTime(task.startTime) }}</span>
-              <span class="status-badge running">运行中</span>
+              <!-- Todo 类型：显示进度 -->
+              <template v-if="task.taskType === 'todo' && getTodoProgress(task)">
+                <span class="todo-progress">{{ getTodoProgress(task).completed }}/{{ getTodoProgress(task).total }}</span>
+                <span class="status-badge" :class="getTodoStatusInfo(task.status).class">
+                  {{ getTodoStatusInfo(task.status).icon }}
+                </span>
+              </template>
+              <!-- 其他类型：显示运行时间 -->
+              <template v-else>
+                <span class="running-time">{{ formatRunningTime(task.startTime) }}</span>
+                <span class="status-badge running">运行中</span>
+              </template>
             </div>
           </div>
           <span class="collapse-btn">{{ collapsedTasks.has(task.id) ? '▶' : '▼' }}</span>
         </div>
 
         <div v-if="!collapsedTasks.has(task.id)" class="task-details">
-          <!-- Prompt 信息 -->
-          <div v-if="task.prompt" class="detail-section">
-            <div class="detail-label">Prompt:</div>
-            <pre class="detail-content">{{ task.prompt }}</pre>
-          </div>
-
-          <!-- 进度信息 -->
-          <div v-if="task.summary" class="detail-section">
-            <div class="detail-label">Progress:</div>
-            <div class="detail-content">{{ task.summary }}</div>
-          </div>
-
-          <!-- Usage 信息 -->
-          <div v-if="task.usage" class="detail-section">
-            <div class="usage-info">
-              <span v-if="task.usage.total_tokens">
-                {{ (task.usage.total_tokens / 1000).toFixed(1) }}k tokens
-              </span>
-              <span v-if="task.usage.tool_uses">
-                · {{ task.usage.tool_uses }} tools
-              </span>
+          <!-- Todo 类型：显示任务列表 -->
+          <template v-if="task.taskType === 'todo' && task.todos">
+            <div class="todo-list">
+              <div
+                v-for="(todo, idx) in task.todos"
+                :key="idx"
+                class="todo-item"
+                :class="getTodoStatusInfo(todo.status).class"
+              >
+                <span class="todo-status-icon">{{ getTodoStatusInfo(todo.status).icon }}</span>
+                <span class="todo-content">{{ todo.content }}</span>
+              </div>
             </div>
-          </div>
+          </template>
+
+          <!-- 其他类型：显示 Prompt 信息 -->
+          <template v-else>
+            <div v-if="task.prompt" class="detail-section">
+              <div class="detail-label">Prompt:</div>
+              <pre class="detail-content">{{ task.prompt }}</pre>
+            </div>
+
+            <!-- 进度信息 -->
+            <div v-if="task.summary" class="detail-section">
+              <div class="detail-label">Progress:</div>
+              <div class="detail-content">{{ task.summary }}</div>
+            </div>
+
+            <!-- Usage 信息 -->
+            <div v-if="task.usage" class="detail-section">
+              <div class="usage-info">
+                <span v-if="task.usage.total_tokens">
+                  {{ (task.usage.total_tokens / 1000).toFixed(1) }}k tokens
+                </span>
+                <span v-if="task.usage.tool_uses">
+                  · {{ task.usage.tool_uses }} tools
+                </span>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -309,5 +352,72 @@ onUnmounted(() => {
 .usage-info {
   font-size: var(--font-size-xs);
   color: #71717A;
+}
+
+/* Todo 进度样式 */
+.todo-progress {
+  color: #A78BFA;
+  font-weight: var(--font-weight-medium);
+}
+
+.status-badge.completed {
+  background: rgba(34, 197, 94, 0.2);
+  color: #4ADE80;
+}
+
+.status-badge.in-progress {
+  background: rgba(251, 191, 36, 0.2);
+  color: #FBBF24;
+}
+
+.status-badge.pending {
+  background: rgba(113, 113, 122, 0.2);
+  color: #71717A;
+}
+
+/* Todo 列表样式 */
+.todo-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--font-size-xs);
+  color: #A1A1AA;
+  padding: 6px 8px;
+  background: #0A0A0A;
+  border-radius: var(--radius-sm);
+  border-left: 2px solid transparent;
+}
+
+.todo-item.completed {
+  color: #71717A;
+  text-decoration: line-through;
+  border-left-color: #22C55E;
+}
+
+.todo-item.in-progress {
+  color: #FBBF24;
+  border-left-color: #FBBF24;
+}
+
+.todo-item.pending {
+  border-left-color: #3F3F46;
+}
+
+.todo-status-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.todo-content {
+  flex: 1;
+  line-height: 1.4;
+  word-break: break-word;
 }
 </style>

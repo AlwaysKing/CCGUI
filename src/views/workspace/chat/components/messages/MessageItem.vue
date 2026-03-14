@@ -14,6 +14,8 @@ import QuestionMessage from './QuestionMessage.vue'
 import RewindNoticeMessage from './RewindNoticeMessage.vue'
 import PermissionResultMessage from './PermissionResultMessage.vue'
 import UnknownMessage from './UnknownMessage.vue'
+import SystemNotificationMessage from './SystemNotificationMessage.vue'
+import TaskCompleteMessage from './TaskCompleteMessage.vue'
 import { useMessageList } from '../composables/useMessageList'
 import { useMessage } from '../composables/useMessage'
 import { useSessionStore } from '../../../../../stores/useSessionStore'
@@ -128,6 +130,10 @@ const avatarChar = computed(() => {
     const content = props.message.content || ''
     return content.startsWith('✅') ? '✓' : '✗'
   }
+  // unknown 消息头像
+  if (props.message.role === 'unknown') {
+    return '?'
+  }
   switch (props.message.role) {
     case 'user': return 'U'
     case 'assistant': return 'C'
@@ -152,7 +158,9 @@ const showAvatar = computed(() => {
     return true
   }
   return props.message.role !== 'status' &&
-         props.message.role !== 'system'
+         props.message.role !== 'system' &&
+         props.message.role !== 'system_notification' &&
+         props.message.role !== 'task_complete'
 })
 
 // 权限结果是否是拒绝
@@ -282,8 +290,8 @@ function onToggleActionMenu(index) {
 
     <!-- 消息内容区域 -->
     <div class="message-body">
-      <!-- 统一的统计信息（在气泡外部） -->
-      <div class="message-stats-header">
+      <!-- 统一的统计信息（在气泡外部） - system_notification 不显示 -->
+      <div v-if="message.role !== 'system_notification'" class="message-stats-header">
         <MessageStats
           :timestamp="message.timestamp"
           :duration="message.duration"
@@ -332,6 +340,21 @@ function onToggleActionMenu(index) {
       <!-- Permission result 消息 -->
       <template v-else-if="message.role === 'permission_result'">
         <PermissionResultMessage :message="message" />
+      </template>
+
+      <!-- System notification 消息 -->
+      <template v-else-if="message.role === 'system_notification'">
+        <SystemNotificationMessage :message="message" />
+      </template>
+
+      <!-- Task complete 消息 -->
+      <template v-else-if="message.role === 'task_complete'">
+        <TaskCompleteMessage
+          :message="message"
+          :message-index="messageIndex"
+          :copied-message-index="copiedMessageIndex"
+          @copy-content="copyMessageContent"
+        />
       </template>
 
       <!-- Question 消息 -->
@@ -719,6 +742,13 @@ function onToggleActionMenu(index) {
 
 .message.tool_use .message-avatar {
   background: #3B82F6;
+}
+
+.message.unknown .message-avatar {
+  background: #EF4444;
+  color: white;
+  font-size: 16px;
+  font-weight: bold;
 }
 
 .message-body {

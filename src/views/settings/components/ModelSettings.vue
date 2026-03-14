@@ -39,21 +39,22 @@ const emit = defineEmits([
   'edit-model',
   'delete-model',
   'add-model',
-  'set-model-default-card'
+  'set-model-default-card',
+  'toggle-model-active',
+  'apply-model'
 ])
 
 // 令牌可见性
 const showClaudeToken = ref(false)
 const visibleModelTokens = ref(new Set())
 
-// 悬停状态
-const hoveredModelId = ref(null)
+// 复制成功状态
+const copiedKeys = ref(new Set())
 
-// 检查是否有任何模型映射
+// 检查是否有任何模型映射（不包括通用模型）
 const hasAnyModelMapping = computed(() => {
   const config = props.defaultConfig
   return (
-    (config.anthropicModel && config.anthropicModel !== '') ||
     (config.anthropicDefaultSonnetModel && config.anthropicDefaultSonnetModel !== '') ||
     (config.anthropicDefaultOpusModel && config.anthropicDefaultOpusModel !== '') ||
     (config.anthropicDefaultHaikuModel && config.anthropicDefaultHaikuModel !== '') ||
@@ -70,15 +71,18 @@ function toggleModelToken(modelId) {
   }
 }
 
-// 检查模型是否有多个卡片
-function hasMultipleCards(model) {
-  return model.modelCards && model.modelCards.length > 1
-}
-
-// 获取默认卡片
-function getDefaultCard(model) {
-  if (!model.modelCards || model.modelCards.length === 0) return null
-  return model.modelCards.find(card => card.id === model.defaultCardId) || model.modelCards[0]
+// 复制到剪贴板
+async function copyToClipboard(text, key) {
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedKeys.value.add(key)
+    setTimeout(() => {
+      copiedKeys.value.delete(key)
+    }, 1500)
+  } catch (err) {
+    console.error('复制失败:', err)
+  }
 }
 </script>
 
@@ -94,7 +98,27 @@ function getDefaultCard(model) {
         </svg>
       </IconButton>
       <div class="default-config-details">
-        <DetailRow label="API地址">{{ defaultConfig.apiUrl || '未配置' }}</DetailRow>
+        <DetailRow label="API地址">
+          <div class="value-with-copy">
+            <span>{{ defaultConfig.apiUrl || '未配置' }}</span>
+            <button
+              v-if="defaultConfig.apiUrl"
+              type="button"
+              class="copy-btn"
+              :class="{ copied: copiedKeys.has('claude-api') }"
+              @click.stop="copyToClipboard(defaultConfig.apiUrl, 'claude-api')"
+              :title="copiedKeys.has('claude-api') ? '已复制' : '复制'"
+            >
+              <svg v-if="copiedKeys.has('claude-api')" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
+          </div>
+        </DetailRow>
         <DetailRow label="认证令牌">
           <div class="token-value">
             <button
@@ -113,9 +137,25 @@ function getDefaultCard(model) {
                 <circle cx="12" cy="12" r="3"/>
               </svg>
             </button>
-            <span class="token-text">
+            <span class="token-text" :class="{ 'has-toggle': defaultConfig.authToken }">
               {{ showClaudeToken && defaultConfig.authToken ? defaultConfig.authToken : (defaultConfig.authToken ? '••••••••' : '未配置') }}
             </span>
+            <button
+              v-if="defaultConfig.authToken"
+              type="button"
+              class="copy-btn"
+              :class="{ copied: copiedKeys.has('claude-token') }"
+              @click.stop="copyToClipboard(defaultConfig.authToken, 'claude-token')"
+              :title="copiedKeys.has('claude-token') ? '已复制' : '复制'"
+            >
+              <svg v-if="copiedKeys.has('claude-token')" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
           </div>
         </DetailRow>
         <DetailRow label="模型" :code="true">
@@ -124,11 +164,8 @@ function getDefaultCard(model) {
         <DetailRow v-if="defaultConfig.effort && defaultConfig.effort !== 'default'" label="思考力度">
           {{ effortOptions.find(o => o.value === defaultConfig.effort)?.label || defaultConfig.effort }}
         </DetailRow>
-        <DetailRow label="模型映射">
+        <DetailRow v-if="hasAnyModelMapping" label="模型映射">
           <div class="model-metadata-badges">
-            <span v-if="defaultConfig.anthropicModel" class="model-metadata-badge">
-              通用:{{ defaultConfig.anthropicModel }}
-            </span>
             <span v-if="defaultConfig.anthropicDefaultSonnetModel" class="model-metadata-badge">
               SONNET:{{ defaultConfig.anthropicDefaultSonnetModel }}
             </span>
@@ -141,7 +178,6 @@ function getDefaultCard(model) {
             <span v-if="defaultConfig.anthropicSmallFastModel" class="model-metadata-badge">
               SMALL_FAST:{{ defaultConfig.anthropicSmallFastModel }}
             </span>
-            <span v-if="!hasAnyModelMapping" class="no-mapping">未配置</span>
           </div>
         </DetailRow>
       </div>
@@ -165,25 +201,27 @@ function getDefaultCard(model) {
           v-for="model in models"
           :key="model.id"
           class="model-card"
-          :class="{ selected: selectedModelId === model.id }"
+          :class="{ selected: selectedModelId === model.id, inactive: model.isActive === false }"
           @click="emit('select-model', model.id)"
-          @mouseenter="hoveredModelId = model.id"
-          @mouseleave="hoveredModelId = null"
         >
           <div class="model-header">
             <h4 class="model-name">
               {{ model.friendlyName || '未命名模型' }}
-              <span v-if="model.isDefault" class="model-default-badge">默认</span>
               <button
-                v-else-if="hoveredModelId === model.id"
                 type="button"
-                class="model-btn-set-default"
-                @click.stop="emit('set-model-default', model.id)"
+                class="model-btn-activate"
+                :class="{ active: model.isActive !== false }"
+                @click.stop="emit('toggle-model-active', { modelId: model.id, active: model.isActive === false })"
               >
-                设为默认
+                {{ model.isActive !== false ? '激活' : '未激活' }}
               </button>
             </h4>
             <div class="model-actions">
+              <IconButton @click.stop="emit('apply-model', model)" title="应用">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              </IconButton>
               <IconButton @click.stop="emit('edit-model', model)" title="编辑">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -203,7 +241,27 @@ function getDefaultCard(model) {
           <div class="model-details">
             <!-- 新格式：有 modelCards -->
             <template v-if="model.modelCards && model.modelCards.length > 0">
-              <DetailRow label="API地址">{{ model.apiUrl }}</DetailRow>
+              <DetailRow label="API地址">
+                <div class="value-with-copy">
+                  <span>{{ model.apiUrl }}</span>
+                  <button
+                    v-if="model.apiUrl"
+                    type="button"
+                    class="copy-btn"
+                    :class="{ copied: copiedKeys.has('api-' + model.id) }"
+                    @click.stop="copyToClipboard(model.apiUrl, 'api-' + model.id)"
+                    :title="copiedKeys.has('api-' + model.id) ? '已复制' : '复制'"
+                  >
+                    <svg v-if="copiedKeys.has('api-' + model.id)" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                  </button>
+                </div>
+              </DetailRow>
               <DetailRow label="认证令牌">
                 <div class="token-value">
                   <button
@@ -222,40 +280,43 @@ function getDefaultCard(model) {
                       <circle cx="12" cy="12" r="3"/>
                     </svg>
                   </button>
-                  <span class="token-text">
+                  <span class="token-text" :class="{ 'has-toggle': model.authToken }">
                     {{ visibleModelTokens.has(model.id) && model.authToken ? model.authToken : (model.authToken ? '••••••••' : '未配置') }}
                   </span>
+                  <button
+                    v-if="model.authToken"
+                    type="button"
+                    class="copy-btn"
+                    :class="{ copied: copiedKeys.has('token-' + model.id) }"
+                    @click.stop="copyToClipboard(model.authToken, 'token-' + model.id)"
+                    :title="copiedKeys.has('token-' + model.id) ? '已复制' : '复制'"
+                  >
+                    <svg v-if="copiedKeys.has('token-' + model.id)" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                  </button>
                 </div>
               </DetailRow>
 
-              <!-- 多卡片时显示卡片列表 -->
-              <div v-if="hasMultipleCards(model)" class="model-cards-section">
-                <div
+              <!-- 模型卡片列表（单卡片和多卡片统一格式） -->
+              <DetailRow v-if="model.modelCards && model.modelCards.length > 0" label="模型列表">
+                <span
                   v-for="card in model.modelCards"
                   :key="card.id"
-                  class="model-card-tag"
+                  class="card-chip"
                   :class="{ 'is-default': card.id === model.defaultCardId }"
                   @click.stop="emit('set-model-default-card', { modelId: model.id, cardId: card.id })"
-                >
-                  <span class="card-name">{{ card.modelName || '未命名' }}</span>
-                  <span v-if="card.id === model.defaultCardId" class="default-indicator">默认</span>
-                </div>
-              </div>
+                >{{ card.modelName || '未命名' }}</span>
+              </DetailRow>
 
-              <!-- 单卡片时直接显示 -->
-              <template v-else-if="getDefaultCard(model)">
-                <DetailRow label="模型名称" :code="true">{{ getDefaultCard(model).modelName }}</DetailRow>
-                <DetailRow v-if="getDefaultCard(model).pricingCache || getDefaultCard(model).pricingInput || getDefaultCard(model).pricingOutput" label="计费标准">
-                  <span v-if="getDefaultCard(model).pricingCache">Cache: ${{ getDefaultCard(model).pricingCache }}/M</span>
-                  <span v-if="getDefaultCard(model).pricingInput"> | Input: ${{ getDefaultCard(model).pricingInput }}/M</span>
-                  <span v-if="getDefaultCard(model).pricingOutput"> | Output: ${{ getDefaultCard(model).pricingOutput }}/M</span>
-                </DetailRow>
-              </template>
-            </template>
-
-            <!-- 兼容旧格式 -->
-            <template v-else-if="model.modelName">
-              <DetailRow label="模型名称" :code="true">{{ model.modelName }}</DetailRow>
+              <!-- 兼容旧格式 -->
+              <DetailRow v-else-if="model.modelName" label="模型列表">
+                <span class="card-chip is-default">{{ model.modelName }}</span>
+              </DetailRow>
               <DetailRow v-if="model.pricingCache || model.pricingInput || model.pricingOutput" label="计费标准">
                 <span v-if="model.pricingCache">Cache: ${{ model.pricingCache }}/M</span>
                 <span v-if="model.pricingInput"> | Input: ${{ model.pricingInput }}/M</span>
@@ -355,6 +416,25 @@ function getDefaultCard(model) {
   background: #2D2D30;
 }
 
+.model-card.inactive {
+  opacity: 0.5;
+}
+
+.model-card.inactive:hover {
+  opacity: 0.7;
+}
+
+.model-card.inactive .card-chip {
+  color: #9CA3AF;
+  background: rgba(156, 163, 175, 0.1);
+  border-color: rgba(156, 163, 175, 0.2);
+}
+
+.model-card.inactive .card-chip.is-default {
+  background: #52525B;
+  color: #9CA3AF;
+}
+
 .model-header {
   display: flex;
   align-items: center;
@@ -373,27 +453,30 @@ function getDefaultCard(model) {
   gap: 8px;
 }
 
-.model-default-badge {
-  font-size: 11px;
-  color: #F97316;
-  background: rgba(249, 115, 22, 0.1);
-  border: 1px solid rgba(249, 115, 22, 0.3);
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-weight: 500;
-}
-
-.model-btn-set-default {
+.model-btn-activate {
   font-size: 11px;
   color: #6B7280;
   background: transparent;
-  border: none;
-  padding: 0 4px;
+  border: 1px solid #52525B;
+  border-radius: 4px;
+  padding: 1px 8px;
   cursor: pointer;
+  transition: all 0.2s;
 }
 
-.model-btn-set-default:hover {
+.model-btn-activate:hover {
   color: #9CA3AF;
+  border-color: #71717A;
+}
+
+.model-btn-activate.active {
+  color: #fff;
+  background: #F97316;
+  border-color: #F97316;
+}
+
+.model-btn-activate.active:hover {
+  background: #EA580C;
 }
 
 .model-actions {
@@ -406,17 +489,62 @@ function getDefaultCard(model) {
 }
 
 .token-value {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.value-with-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: text;
+}
+
+.copy-btn {
+  background: transparent;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: #71717A;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  transition: all 0.2s;
+  opacity: 0;
+}
+
+.value-with-copy:hover .copy-btn,
+.token-value:hover .copy-btn {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  color: #F97316;
+}
+
+.copy-btn.copied {
+  color: #22C55E;
+  opacity: 1;
 }
 
 .token-toggle-btn {
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  transform: translateY(-50%);
   background: transparent;
   border: none;
-  padding: 4px;
+  padding: 2px;
   cursor: pointer;
   color: #71717A;
+  opacity: 0;
+  transition: all 0.2s;
+}
+
+.token-value:hover .token-toggle-btn {
+  opacity: 1;
 }
 
 .token-toggle-btn:hover {
@@ -426,6 +554,11 @@ function getDefaultCard(model) {
 .token-text {
   font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
   font-size: 12px;
+  cursor: text;
+}
+
+.token-text.has-toggle {
+  padding-left: 0;
 }
 
 .model-metadata-badges {
@@ -449,43 +582,28 @@ function getDefaultCard(model) {
   font-size: 12px;
 }
 
-.model-cards-section {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #3F3F46;
-  margin-top: 8px;
-}
-
-.model-card-tag {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  background: #27272A;
-  border: 1px solid #3F3F46;
+.card-chip {
+  font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+  font-size: 12px;
+  color: #FB923C;
+  background: rgba(251, 146, 60, 0.1);
+  padding: 2px 8px;
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s;
+  margin-right: 6px;
 }
 
-.model-card-tag:hover {
-  border-color: #52525B;
+.card-chip:last-child {
+  margin-right: 0;
 }
 
-.model-card-tag.is-default {
-  border-color: #F97316;
-  background: rgba(249, 115, 22, 0.1);
+.card-chip:hover {
+  background: rgba(251, 146, 60, 0.2);
 }
 
-.card-name {
-  font-size: 12px;
-  color: #D1D5DB;
-}
-
-.default-indicator {
-  font-size: 10px;
-  color: #F97316;
+.card-chip.is-default {
+  background: #F97316;
+  color: #fff;
 }
 </style>

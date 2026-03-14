@@ -26,7 +26,8 @@ const emit = defineEmits([
   'toggle-prompt-active',
   'add-document',
   'edit-document',
-  'delete-document'
+  'delete-document',
+  'toggle-document-active'
 ])
 
 // 悬停状态
@@ -58,12 +59,11 @@ const hoveredDocumentId = ref(null)
               {{ prompt.name || '未命名' }}
               <button
                 type="button"
-                class="btn-toggle-active"
-                :class="{ 'is-active': prompt.isActive }"
+                class="btn-activate"
+                :class="{ active: prompt.isActive }"
                 @click.stop="emit('toggle-prompt-active', prompt.id)"
-                :title="prompt.isActive ? '点击停用' : '点击激活'"
               >
-                {{ prompt.isActive ? '已激活' : '未激活' }}
+                {{ prompt.isActive ? '激活' : '未激活' }}
               </button>
             </h4>
             <div class="card-actions">
@@ -111,12 +111,21 @@ const hoveredDocumentId = ref(null)
           v-for="document in documents"
           :key="document.id"
           class="document-card-item"
+          :class="{ inactive: document.isActive === false }"
           @mouseenter="hoveredDocumentId = document.id"
           @mouseleave="hoveredDocumentId = null"
         >
           <div class="card-header">
             <h4 class="card-name">
               {{ document.name || '未命名' }}
+              <button
+                type="button"
+                class="btn-activate"
+                :class="{ active: document.isActive !== false }"
+                @click.stop="emit('toggle-document-active', document.id)"
+              >
+                {{ document.isActive !== false ? '激活' : '未激活' }}
+              </button>
             </h4>
             <div class="card-actions">
               <IconButton @click.stop="emit('edit-document', document)" title="编辑规范文档">
@@ -182,9 +191,17 @@ const hoveredDocumentId = ref(null)
 }
 
 .prompt-card-item:hover,
-.document-card-item:hover {
+.document-card-item:hover{
   background: #2D2D30;
   border-color: #52525B;
+}
+
+.document-card-item.inactive{
+  opacity: 0.5;
+}
+
+.document-card-item.inactive:hover{
+  opacity: 0.7;
 }
 
 .card-header {
@@ -221,25 +238,30 @@ const hoveredDocumentId = ref(null)
   line-height: 1.5;
 }
 
-.btn-toggle-active {
+.btn-activate {
   font-size: 11px;
-  padding: 2px 8px;
+  color: #6B7280;
+  background: transparent;
+  border: 1px solid #52525B;
   border-radius: 4px;
-  border: none;
+  padding: 1px 8px;
   cursor: pointer;
   transition: all 0.2s;
-  background: transparent;
-  color: #71717A;
 }
 
-.btn-toggle-active:hover {
-  background: rgba(156, 163, 175, 0.1);
+.btn-activate:hover {
+  color: #9CA3AF;
+  border-color: #71717A;
 }
 
-.btn-toggle-active.is-active {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22C55E;
-  border: 1px solid rgba(34, 197, 94, 0.3);
+.btn-activate.active {
+  color: #fff;
+  background: #F97316;
+  border-color: #F97316;
+}
+
+.btn-activate.active:hover {
+  background: #EA580C;
 }
 
 .empty-state {

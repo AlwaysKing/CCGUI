@@ -851,6 +851,74 @@ ipcMain.handle('get-claude-settings', async () => {
   }
 })
 
+// Update Claude settings to ~/.claude/settings.json
+ipcMain.handle('update-claude-settings', async (event, { updates, clearMappings }) => {
+  try {
+    const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
+
+    // 读取现有设置
+    let existingSettings = {}
+    if (fs.existsSync(claudeSettingsPath)) {
+      const content = fs.readFileSync(claudeSettingsPath, 'utf-8')
+      existingSettings = JSON.parse(content)
+    }
+
+    // 确保 env 对象存在
+    if (!existingSettings.env) {
+      existingSettings.env = {}
+    }
+
+    // 合并 env 变量（只更新指定的，不覆盖其他的）
+    if (updates.env) {
+      existingSettings.env = {
+        ...existingSettings.env,
+        ...updates.env
+      }
+    }
+
+    // 如果需要清除映射变量（单卡片模式）
+    if (clearMappings) {
+      const mappingKeys = [
+        'ANTHROPIC_DEFAULT_SONNET_MODEL',
+        'ANTHROPIC_DEFAULT_OPUS_MODEL',
+        'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+        'ANTHROPIC_SMALL_FAST_MODEL'
+      ]
+      for (const key of mappingKeys) {
+        // 如果 updates.env 中没有提供这个 key，就清除它
+        if (!updates?.env?.hasOwnProperty(key)) {
+          delete existingSettings.env[key]
+        }
+      }
+    }
+
+    // 更新 model（如果提供）
+    if (updates.model !== undefined) {
+      existingSettings.model = updates.model
+    }
+
+    // 更新 effort（如果提供）
+    if (updates.effort !== undefined) {
+      existingSettings.effort = updates.effort
+    }
+
+    // 确保 .claude 目录存在
+    const claudeDir = path.dirname(claudeSettingsPath)
+    if (!fs.existsSync(claudeDir)) {
+      fs.mkdirSync(claudeDir, { recursive: true })
+    }
+
+    // 写入文件
+    fs.writeFileSync(claudeSettingsPath, JSON.stringify(existingSettings, null, 2), 'utf-8')
+    logger.info('[ClaudeSettings] Settings updated successfully')
+
+    return { success: true, settings: existingSettings }
+  } catch (error) {
+    logger.error('[ClaudeSettings] Failed to update settings', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 // ============================================
 // Notification IPC Handlers
 // ============================================

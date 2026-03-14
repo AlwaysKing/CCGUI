@@ -370,9 +370,10 @@ class ClaudeManager {
           return
         }
       }
-      // If not a tool_result or interrupt, treat as unknown message
-      const unknownHandlers = this.messageHandlers.get('unknown_message') || []
-      unknownHandlers.forEach(handler => {
+      // 调用注册的 user 处理器（如果有），否则忽略
+      // 用户消息已在 sendMessage 中处理，这里只处理 CLI 回放
+      const userHandlers = this.messageHandlers.get('user') || []
+      userHandlers.forEach(handler => {
         try {
           handler(message)
         } catch (error) {

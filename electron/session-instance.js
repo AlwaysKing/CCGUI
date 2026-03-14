@@ -357,6 +357,12 @@ class SessionInstance {
       this.handleAssistantMessage(message)
     })
 
+    // User 消息 - CLI 会回放 (isReplay) 用户消息，本地已处理，忽略
+    manager.on('user', (message) => {
+      // 用户消息已在 sendMessage 中处理，忽略 CLI 的回放
+      logger.debug('[SessionInstance] Ignoring user message replay:', message.uuid)
+    })
+
     // Result 消息（包含 usage 信息）
     manager.on('result', (message) => {
       this.handleResultMessage(message)
@@ -639,7 +645,86 @@ class SessionInstance {
 
       logger.info(`[SessionInstance] Updated envInfo:`, this.envInfo)
       this.emit('env-info', this.envInfo)
+
+      // 如果 init 包含 fast_mode_state，发送事件
+      if (message.fast_mode_state) {
+        logger.info(`[SessionInstance] Fast mode state from init: ${message.fast_mode_state}`)
+        this.emit('fast-mode-change', message.fast_mode_state)
+      }
+    } else if (message.subtype === 'status') {
+      // 处理状态更新消息，包括 permissionMode 和 fast_mode_state 变化
+      logger.info(`[SessionInstance] System status message:`, message)
+
+      // 如果包含 permissionMode，发送权限模式更新事件
+      if (message.permissionMode) {
+        logger.info(`[SessionInstance] Permission mode changed to: ${message.permissionMode}`)
+        this.emit('permission-mode-change', message.permissionMode)
+        // 同时发送系统通知用于聊天显示
+        this.emit('system-notification', {
+          type: 'permission-mode-change',
+          permissionMode: message.permissionMode,
+          source: 'auto' // 自动切换
+        })
+      }
+
+      // 如果包含 fast_mode_state，发送快速模式更新事件
+      if (message.fast_mode_state) {
+        logger.info(`[SessionInstance] Fast mode state changed to: ${message.fast_mode_state}`)
+        this.emit('fast-mode-change', message.fast_mode_state)
+        // 同时发送系统通知用于聊天显示
+        this.emit('system-notification', {
+          type: 'fast-mode-change',
+          fastModeState: message.fast_mode_state,
+          source: 'auto' // 自动切换
+        })
+      }
+
+      // 如果包含 status，更新 envInfo
+      if (message.status) {
+        this.envInfo = {
+          ...this.envInfo,
+          status: message.status
+        }
+        this.emit('env-info', this.envInfo)
+      }
+    } else if (message.subtype === 'compact_boundary') {
+      // 处理上下文压缩边界消息
+      logger.info(`[SessionInstance] Compact boundary message:`, message)
+      this.emit('system-notification', {
+        type: 'compact-boundary',
+        compactMetadata: message.compact_metadata || message.compactMetadata,
+        compactSummary: message.compactSummary || message.compact_summary
+      })
+    } else if (message.subtype === 'task_started') {
+      // 处理子任务开始消息
+      logger.info(`[SessionInstance] Task started:`, message)
+      this.emit('task-event', {
+        eventType: 'started',
+        taskId: message.task_id,
+        taskType: message.task_type,
+        description: message.description,
+        prompt: message.prompt
+      })
+    } else if (message.subtype === 'task_progress') {
+      // 处理子任务进度消息
+      logger.info(`[SessionInstance] Task progress:`, message)
+      this.emit('task-event', {
+        eventType: 'progress',
+        taskId: message.task_id,
+        usage: message.usage,
+        summary: message.summary,
+        description: message.description
+      })
+    } else if (message.subtype === 'task_notification') {
+      // 处理子任务通知消息（通常用于移除任务）
+      logger.info(`[SessionInstance] Task notification:`, message)
+      this.emit('task-event', {
+        eventType: 'notification',
+        taskId: message.task_id
+      })
     } else {
+      // 其他 system 消息发送到前端显示为 unknown
+      logger.info(`[SessionInstance] Unknown system message subtype: ${message.subtype}`)
       this.emit('system-message', message)
     }
   }

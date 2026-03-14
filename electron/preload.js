@@ -189,6 +189,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Claude Settings API (from ~/.claude/settings.json)
   // ============================================
   getClaudeSettings: () => ipcRenderer.invoke('get-claude-settings'),
+  updateClaudeSettings: (options) => ipcRenderer.invoke('update-claude-settings', options),
 
   // ============================================
   // Docs API (规范文档)

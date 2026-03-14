@@ -1,0 +1,167 @@
+<script setup>
+/**
+ * SystemNotificationMessage - 系统通知消息组件
+ * 显示权限模式切换、快速模式切换、上下文压缩等系统通知
+ * 居中显示，黄色背景
+ */
+import { computed } from 'vue'
+
+const props = defineProps({
+  message: {
+    type: Object,
+    required: true
+  }
+})
+
+// 格式化时间
+const formattedTime = computed(() => {
+  if (!props.message.timestamp) return ''
+  const date = new Date(props.message.timestamp)
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+})
+
+// 通知内容
+const notificationContent = computed(() => {
+  const { notificationType, data } = props.message
+
+  if (notificationType === 'permission-mode-change') {
+    const modeNames = {
+      'default': '默认模式',
+      'acceptEdits': '自动接受编辑',
+      'bypassPermissions': '绕过权限确认',
+      'plan': '计划模式'
+    }
+    const source = data.source || 'auto' // 'manual' 或 'auto'
+    const pending = data.pending // 是否待生效
+
+    const sourceLabel = source === 'manual' ? '手动切换' : '自动切换'
+
+    let description = `已切换到: ${modeNames[data.permissionMode] || data.permissionMode}`
+    if (pending) {
+      description += ' (将在 Claude 启动时生效)'
+    }
+
+    return {
+      icon: '🔐',
+      title: `权限模式切换 [${sourceLabel}]`,
+      description: description
+    }
+  }
+
+  if (notificationType === 'fast-mode-change') {
+    const stateNames = {
+      'off': '关闭',
+      'auto': '自动',
+      'on': '开启'
+    }
+    return {
+      icon: '⚡',
+      title: '快速模式',
+      description: `快速模式: ${stateNames[data.fastModeState] || data.fastModeState}`
+    }
+  }
+
+  if (notificationType === 'compact-boundary') {
+    const metadata = data.compactMetadata || {}
+    const summary = data.compactSummary || {}
+    const preTokens = metadata.pre_tokens || metadata.preTokens
+    const trigger = metadata.trigger || 'auto'
+
+    let description = '上下文已压缩'
+    if (preTokens) {
+      description += ` (压缩前: ${(preTokens / 1000).toFixed(1)}k tokens)`
+    }
+    if (summary.value) {
+      description += `\n${summary.value}`
+    }
+
+    return {
+      icon: '📦',
+      title: '上下文压缩',
+      description: description
+    }
+  }
+
+  // 未知通知类型
+  return {
+    icon: '🔔',
+    title: '系统通知',
+    description: JSON.stringify(data, null, 2)
+  }
+})
+</script>
+
+<template>
+  <div class="system-notification-wrapper">
+    <div class="system-notification">
+      <span class="notification-icon">{{ notificationContent.icon }}</span>
+      <div class="notification-content">
+        <div class="notification-header">
+          <div class="notification-title">{{ notificationContent.title }}</div>
+          <div v-if="formattedTime" class="notification-time">{{ formattedTime }}</div>
+        </div>
+        <div class="notification-description">{{ notificationContent.description }}</div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.system-notification-wrapper {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin: 8px 0;
+}
+
+.system-notification {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, #422006 0%, #292524 100%);
+  border: 1px solid #854D0E;
+  border-left: 3px solid #F59E0B;
+  border-radius: var(--radius-lg);
+  min-width: 280px;
+  max-width: 80%;
+  font-size: var(--font-size-sm);
+}
+
+.notification-icon {
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.notification-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.notification-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.notification-title {
+  font-weight: var(--font-weight-medium);
+  color: #FCD34D;
+}
+
+.notification-time {
+  font-size: var(--font-size-xs);
+  color: #854D0E;
+  flex-shrink: 0;
+}
+
+.notification-description {
+  color: #D4D4D4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+}
+</style>

@@ -13,6 +13,7 @@ import ModelEditDialog from './components/dialogs/ModelEditDialog.vue'
 import DefaultConfigDialog from './components/dialogs/DefaultConfigDialog.vue'
 import PromptEditDialog from './components/dialogs/PromptEditDialog.vue'
 import DocumentEditDialog from './components/dialogs/DocumentEditDialog.vue'
+import ModelMappingDialog from './components/dialogs/ModelMappingDialog.vue'
 
 const emit = defineEmits(['close'])
 
@@ -40,7 +41,12 @@ const defaultConfig = ref({
   apiUrl: '',
   authToken: '',
   model: 'claude-sonnet-4-6',
-  effort: 'default'
+  anthropicModel: '',
+  effort: 'default',
+  anthropicDefaultSonnetModel: '',
+  anthropicDefaultOpusModel: '',
+  anthropicDefaultHaikuModel: '',
+  anthropicSmallFastModel: ''
 })
 
 const models = ref([])
@@ -61,6 +67,10 @@ const editingPrompt = ref(null)
 
 const showDocumentDialog = ref(false)
 const editingDocument = ref(null)
+
+// 映射确认对话框
+const showMappingDialog = ref(false)
+const pendingModel = ref(null)
 
 // ========== 悬停状态 ==========
 const hoveredPromptId = ref(null)
@@ -109,10 +119,24 @@ async function loadSettings() {
       }
     }
 
-    // 加载默认配置
-    const defaultResult = await window.electronAPI.getDefaultConfig()
-    if (defaultResult && defaultResult.success) {
-      defaultConfig.value = { ...defaultConfig.value, ...defaultResult.config }
+    // 加载 Claude 设置 (from ~/.claude/settings.json)
+    const claudeResult = await window.electronAPI.getClaudeSettings()
+    if (claudeResult && claudeResult.success && claudeResult.settings) {
+      const claudeSettings = claudeResult.settings
+      const env = claudeSettings.env || {}
+
+      // 映射 Claude 设置到 defaultConfig
+      defaultConfig.value.apiUrl = env.ANTHROPIC_BASE_URL || ''
+      defaultConfig.value.authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || ''
+      defaultConfig.value.model = claudeSettings.model || ''
+      defaultConfig.value.effort = claudeSettings.effort || 'default'
+
+      // 映射模型变量 (从 env 中加载)
+      defaultConfig.value.anthropicModel = env.ANTHROPIC_MODEL || ''
+      defaultConfig.value.anthropicDefaultSonnetModel = env.ANTHROPIC_DEFAULT_SONNET_MODEL || ''
+      defaultConfig.value.anthropicDefaultOpusModel = env.ANTHROPIC_DEFAULT_OPUS_MODEL || ''
+      defaultConfig.value.anthropicDefaultHaikuModel = env.ANTHROPIC_DEFAULT_HAIKU_MODEL || ''
+      defaultConfig.value.anthropicSmallFastModel = env.ANTHROPIC_SMALL_FAST_MODEL || ''
     }
   } catch (error) {
     console.error('Failed to load settings:', error)
@@ -255,12 +279,112 @@ function handleSelectModel(modelId) {
   selectedModelId.value = modelId
 }
 
-async function handleSetModelDefault(modelId) {
-  for (const model of models.value) {
-    model.isDefault = model.id === modelId
+async function handleSetModelDefaultCard({ modelId, cardId }) {
+  const model = models.value.find(m => m.id === modelId)
+  if (model) {
+    model.defaultCardId = cardId
+    await saveAppConfig()
   }
-  await saveAppConfig()
 }
+
+async function handleToggleModelActive({ modelId, active }) {
+  const model = models.value.find(m => m.id === modelId)
+  if (model) {
+    model.isActive = active
+    await saveAppConfig()
+  }
+}
+
+function handleApplyModel(model) {
+  if (!model) return
+
+  // 检查模型卡片数量
+  const cardCount = model.modelCards?.length || 0
+
+  if (cardCount <= 1) {
+    // 单卡片或无卡片：直接应用，只设置通用模型
+    const defaultModelName = cardCount === 1 ? model.modelCards[0].modelName : ''
+    applyModelWithMappings(model, {
+      ANTHROPIC_MODEL: defaultModelName,
+      model: defaultModelName
+    }, true)  // clearMappings: true for single card mode
+  } else {
+    // 多卡片：显示映射确认对话框
+    pendingModel.value = model
+    showMappingDialog.value = true
+  }
+}
+
+// 处理映射确认
+async function handleMappingConfirm(mappings) {
+  if (!pendingModel.value) return
+
+  try {
+    await applyModelWithMappings(pendingModel.value, mappings)
+  } finally {
+    showMappingDialog.value = false
+    pendingModel.value = null
+  }
+}
+
+// 应用模型配置（带映射）
+async function applyModelWithMappings(model, mappings, clearMappings = false) {
+  try {
+    // 构建环境变量更新
+    const env = {
+      ANTHROPIC_BASE_URL: model.apiUrl || '',
+      ANTHROPIC_AUTH_TOKEN: model.authToken || ''
+    }
+
+    // 根据映射设置各模型变量
+    if (mappings.ANTHROPIC_MODEL) {
+      env.ANTHROPIC_MODEL = mappings.ANTHROPIC_MODEL
+    }
+    if (mappings.ANTHROPIC_DEFAULT_SONNET_MODEL) {
+      env.ANTHROPIC_DEFAULT_SONNET_MODEL = mappings.ANTHROPIC_DEFAULT_SONNET_MODEL
+    }
+    if (mappings.ANTHROPIC_DEFAULT_OPUS_MODEL) {
+      env.ANTHROPIC_DEFAULT_OPUS_MODEL = mappings.ANTHROPIC_DEFAULT_OPUS_MODEL
+    }
+    if (mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL) {
+      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL
+    }
+    if (mappings.ANTHROPIC_SMALL_FAST_MODEL) {
+      env.ANTHROPIC_SMALL_FAST_MODEL = mappings.ANTHROPIC_SMALL_FAST_MODEL
+    }
+
+    const updates = { env }
+    if (mappings.model) {
+      updates.model = mappings.model
+    }
+
+    // 调用 API 更新 Claude 设置
+    const result = await window.electronAPI.updateClaudeSettings({ updates, clearMappings })
+
+    if (result && result.success) {
+      // 更新本地 defaultConfig 显示
+      defaultConfig.value.apiUrl = model.apiUrl || ''
+      defaultConfig.value.authToken = model.authToken || ''
+      defaultConfig.value.anthropicModel = mappings.ANTHROPIC_MODEL || ''
+      defaultConfig.value.anthropicDefaultSonnetModel = mappings.ANTHROPIC_DEFAULT_SONNET_MODEL || ''
+      defaultConfig.value.anthropicDefaultOpusModel = mappings.ANTHROPIC_DEFAULT_OPUS_MODEL || ''
+      defaultConfig.value.anthropicDefaultHaikuModel = mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL || ''
+      defaultConfig.value.anthropicSmallFastModel = mappings.ANTHROPIC_SMALL_FAST_MODEL || ''
+      if (mappings.model) {
+        defaultConfig.value.model = mappings.model
+      }
+
+      await saveAppConfig()
+      alert('模型配置已应用')
+    } else {
+      alert('应用模型配置失败: ' + (result?.error || '未知错误'))
+    }
+  } catch (error) {
+    console.error('应用模型失败:', error)
+    alert('应用模型配置失败: ' + error.message)
+  }
+}
+
 
 // ========== 默认配置操作 ==========
 function handleEditDefaultConfig() {
@@ -340,6 +464,14 @@ function handleEditDocument(document) {
 async function handleDeleteDocument(documentId) {
   if (confirm('确定要删除这个规范文档吗？')) {
     documents.value = documents.value.filter(d => d.id !== documentId)
+    await saveAppConfig()
+  }
+}
+
+async function handleToggleDocumentActive(documentId) {
+  const document = documents.value.find(d => d.id === documentId)
+  if (document) {
+    document.isActive = document.isActive === false ? true : false
     await saveAppConfig()
   }
 }
@@ -473,7 +605,9 @@ function handleClose() {
               @edit-model="handleEditModel"
               @delete-model="handleDeleteModel"
               @add-model="handleAddModel"
-              @set-model-default="handleSetModelDefault"
+              @set-model-default-card="handleSetModelDefaultCard"
+              @toggle-model-active="handleToggleModelActive"
+              @apply-model="handleApplyModel"
             />
           </div>
 
@@ -488,6 +622,7 @@ function handleClose() {
               @add-document="handleAddDocument"
               @edit-document="handleEditDocument"
               @delete-document="handleDeleteDocument"
+              @toggle-document-active="handleToggleDocumentActive"
             />
           </div>
 
@@ -533,6 +668,14 @@ function handleClose() {
       :document="editingDocument"
       @save="handleSaveDocument"
       @close="showDocumentDialog = false"
+    />
+
+    <!-- 模型映射确认对话框 -->
+    <ModelMappingDialog
+      v-model:visible="showMappingDialog"
+      :model="pendingModel"
+      @confirm="handleMappingConfirm"
+      @close="showMappingDialog = false"
     />
   </div>
 </template>

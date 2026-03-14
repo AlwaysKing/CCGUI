@@ -18,6 +18,10 @@ const props = defineProps({
   sidebarCollapsed: {
     type: Boolean,
     default: false
+  },
+  permissionMode: {
+    type: String,
+    default: 'default'
   }
 })
 
@@ -54,6 +58,18 @@ const mcpStatusSummary = computed(() => {
     failed,
     other
   }
+})
+
+// 权限模式显示配置
+const permissionModeConfig = computed(() => {
+  const configs = {
+    'default': { icon: '🔒', label: '默认', class: 'mode-default' },
+    'acceptEdits': { icon: '✏️', label: '编辑', class: 'mode-edit' },
+    'bypassPermissions': { icon: '✅', label: '全部允许', class: 'mode-bypass' },
+    'plan': { icon: '📋', label: '计划', class: 'mode-plan' },
+    'auto': { icon: '🔄', label: '自动', class: 'mode-auto' }
+  }
+  return configs[props.permissionMode] || configs['default']
 })
 
 // 处理 PID 点击
@@ -266,6 +282,46 @@ function handlePidClick() {
 .mcp-status-fail {
   color: var(--color-error);
   margin-right: 4px;
+}
+
+/* 权限模式样式 */
+.mode-bypass {
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  margin: -2px -8px;
+}
+
+.mode-bypass .env-label {
+  color: #22c55e;
+  font-weight: var(--font-weight-medium);
+}
+
+.mode-plan {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  margin: -2px -8px;
+}
+
+.mode-plan .env-label {
+  color: #3b82f6;
+  font-weight: var(--font-weight-medium);
+}
+
+.mode-auto {
+  background: rgba(168, 85, 247, 0.15);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  margin: -2px -8px;
+}
+
+.mode-auto .env-label {
+  color: #a855f7;
+  font-weight: var(--font-weight-medium);
 }
 
 .env-detail-btn {

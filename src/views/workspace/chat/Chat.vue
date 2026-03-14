@@ -13,6 +13,7 @@ import EnvInfoBar from './components/layout/EnvInfoBar.vue'
 import ChatInput from './components/layout/ChatInput.vue'
 import StickyHeader from './components/layout/StickyHeader.vue'
 import MessageList from './components/messages/MessageList.vue'
+import TaskFloatingWindow from './components/TaskFloatingWindow.vue'
 
 // 引入 composables
 // useMessageList composable 的功能已移至 MessageList 组件
@@ -76,6 +77,18 @@ const permissionModes = [
   { value: 'plan', label: '计划模式', icon: '📋' },
   { value: 'bypassPermissions', label: '全部允许', icon: '✅' }
 ]
+
+// 监听 session 的 permissionMode 变化
+watch(
+  () => sessionStore.currentSession?.permissionMode,
+  (newMode) => {
+    if (newMode && newMode !== permissionMode.value) {
+      permissionMode.value = newMode
+      console.log('[Chat] Permission mode synced from session:', newMode)
+    }
+  },
+  { immediate: true }
+)
 
 onMounted(async () => {
   // 启动 SessionStore 的事件监听器（监听后端的 session-event 统一通道）
@@ -1010,21 +1023,18 @@ async function handlePermissionModeChange(mode) {
     // - 如果 Claude 未启动，保存模式，启动时应用
     await sessionStore.setPermissionMode(mode)
 
-    // 添加系统消息提示
+    // 添加系统通知消息（使用统一的 system_notification 类型）
     const isClaudeReady = envInfo.value?.claudePid != null
-    if (isClaudeReady) {
-      messages.value.push({
-        role: 'system',
-        content: `🔄 权限模式已切换: ${modeLabel}`,
-        timestamp: new Date()
-      })
-    } else {
-      messages.value.push({
-        role: 'system',
-        content: `💡 权限模式已设置为: ${modeLabel} (将在 Claude 启动时生效)`,
-        timestamp: new Date()
-      })
-    }
+    messages.value.push({
+      role: 'system_notification',
+      notificationType: 'permission-mode-change',
+      data: {
+        permissionMode: mode,
+        source: 'manual', // 手动切换
+        pending: !isClaudeReady // 是否待生效
+      },
+      timestamp: new Date()
+    })
     scrollToBottom()
   } catch (error) {
     // 恢复之前的模式
@@ -1151,6 +1161,7 @@ async function handleQuestionAnswer(requestId, answers) {
       :env-info="envInfo"
       :project-path="appStore.currentProject?.path"
       :sidebar-collapsed="sidebarCollapsed"
+      :permission-mode="permissionMode"
       @toggle-sidebar="emit('toggleSidebar')"
       @pid-click="handlePidClick"
     />
@@ -1319,6 +1330,9 @@ async function handleQuestionAnswer(requestId, answers) {
       </div>
     </div>
   </Teleport>
+
+  <!-- 任务浮动窗口 -->
+  <TaskFloatingWindow />
 </template>
 
 <style scoped>

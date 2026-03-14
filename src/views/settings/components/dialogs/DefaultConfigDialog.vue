@@ -42,21 +42,31 @@ const formData = ref({
 const showAuthToken = ref(false)
 const loading = ref(false)
 
-// 监听 config 变化
-watch(() => props.config, (config) => {
-  if (config) {
+// 同步表单数据
+function syncFormData() {
+  if (props.config) {
     formData.value = {
-      apiUrl: config.apiUrl || '',
-      authToken: config.authToken || '',
-      anthropicModel: config.anthropicModel || '',
-      effort: config.effort || 'default',
-      anthropicDefaultSonnetModel: config.anthropicDefaultSonnetModel || '',
-      anthropicDefaultOpusModel: config.anthropicDefaultOpusModel || '',
-      anthropicDefaultHaikuModel: config.anthropicDefaultHaikuModel || '',
-      anthropicSmallFastModel: config.anthropicSmallFastModel || ''
+      apiUrl: props.config.apiUrl || '',
+      authToken: props.config.authToken || '',
+      anthropicModel: props.config.anthropicModel || '',
+      effort: props.config.effort || 'default',
+      anthropicDefaultSonnetModel: props.config.anthropicDefaultSonnetModel || '',
+      anthropicDefaultOpusModel: props.config.anthropicDefaultOpusModel || '',
+      anthropicDefaultHaikuModel: props.config.anthropicDefaultHaikuModel || '',
+      anthropicSmallFastModel: props.config.anthropicSmallFastModel || ''
     }
   }
-}, { immediate: true })
+}
+
+// 监听 visible 变化，对话框打开时同步数据
+watch(() => props.visible, (visible) => {
+  if (visible) {
+    syncFormData()
+  }
+})
+
+// 监听 config 变化
+watch(() => props.config, syncFormData, { immediate: true, deep: true })
 
 // 关闭对话框
 function handleClose() {

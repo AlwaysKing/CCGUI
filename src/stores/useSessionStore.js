@@ -55,6 +55,10 @@ class SessionData {
     this.currentTurnNumber = 0
     this.hasSeenToolUseInCurrentTurn = false
     this.currentStreamingAssistantId = null // 用于去重
+
+    this.permissionMode = 'default' // 当前权限模式
+    this.fastModeState = 'off' // 快速模式状态: 'off' | 'auto' | 'on'
+    this.activeTasks = new Map() // 活跃的子任务 Map<taskId, taskData>
   }
 }
 
@@ -400,6 +404,42 @@ export const useSessionStore = defineStore('session', () => {
         handleStateUpdate(session, data)
         break
 
+      case 'permission-mode-change':
+        // Claude 主动切换权限模式
+        log('[SessionStore] Permission mode changed:', data)
+        session.permissionMode = data
+        break
+
+      case 'fast-mode-change':
+        // 快速模式状态变化
+        log('[SessionStore] Fast mode state changed:', data)
+        session.fastModeState = data
+        break
+
+      case 'system-notification':
+        // 系统通知（权限模式切换、压缩边界等）
+        log('[SessionStore] System notification:', data)
+        handleSystemNotification(session, data)
+        break
+
+      case 'task-event':
+        // 子任务事件（started/progress/notification）
+        log('[SessionStore] Task event:', data)
+        handleTaskEvent(session, data)
+        break
+
+      case 'system-message':
+        // 未处理的 system 消息，显示为 unknown 消息
+        log('[SessionStore] System message:', data)
+        handleUnknownMessage(session, data)
+        break
+
+      case 'unknown-message':
+        // 未知消息类型，显示为 unknown 消息
+        log('[SessionStore] Unknown message:', data)
+        handleUnknownMessage(session, data)
+        break
+
       default:
         log('[SessionStore] Unknown event type:', eventType)
     }
@@ -477,6 +517,12 @@ export const useSessionStore = defineStore('session', () => {
   function handleResult(session, result) {
     log('[SessionStore] handleResult called')
     log('[SessionStore] Full result object:', JSON.stringify(result, null, 2))
+
+    // 移除 status 消息（如"正在启动 Claude..."）
+    const statusIndex = session.messages.findIndex(m => m.role === 'status')
+    if (statusIndex >= 0) {
+      session.messages.splice(statusIndex, 1)
+    }
 
     // 清除流式消息标记
     session.currentStreamingAssistantId = null
@@ -1199,6 +1245,99 @@ export const useSessionStore = defineStore('session', () => {
     }
     if (data.inputMessage !== undefined) {
       session.inputMessage = data.inputMessage
+    }
+  }
+
+  /**
+   * 处理未知消息类型
+   * 显示为 unknown 消息气泡，方便调试和发现漏掉的消息
+   */
+  function handleUnknownMessage(session, data) {
+    log('[SessionStore] handleUnknownMessage:', data)
+
+    // 创建 unknown 消息
+    const unknownMsg = {
+      id: `unknown-${Date.now()}`,
+      role: 'unknown',
+      messageType: data.type || 'unknown',
+      subtype: data.subtype || null,
+      content: typeof data === 'string' ? data : JSON.stringify(data, null, 2),
+      rawMessage: data,
+      timestamp: new Date()
+    }
+
+    session.messages.push(unknownMsg)
+  }
+
+  /**
+   * 处理系统通知（权限模式切换、快速模式切换、压缩边界等）
+   * 添加到消息列表显示为系统通知气泡
+   */
+  function handleSystemNotification(session, data) {
+    log('[SessionStore] handleSystemNotification:', data)
+
+    // 创建系统通知消息
+    const notificationMsg = {
+      id: `system-notification-${Date.now()}`,
+      role: 'system_notification',
+      notificationType: data.type,
+      data: data,
+      timestamp: new Date()
+    }
+
+    session.messages.push(notificationMsg)
+  }
+
+  /**
+   * 处理子任务事件（started/progress/notification）
+   */
+  function handleTaskEvent(session, data) {
+    const { eventType, taskId } = data
+
+    if (eventType === 'started') {
+      // 任务开始：添加到活跃任务列表
+      const taskData = {
+        id: taskId,
+        taskType: data.taskType,
+        description: data.description,
+        prompt: data.prompt,
+        status: 'running',
+        startTime: Date.now(),
+        usage: null,
+        summary: null
+      }
+      session.activeTasks.set(taskId, taskData)
+      log('[SessionStore] Task started:', taskId, data.description)
+    } else if (eventType === 'progress') {
+      // 任务进度：更新任务信息
+      const task = session.activeTasks.get(taskId)
+      if (task) {
+        task.usage = data.usage || task.usage
+        task.summary = data.summary || task.summary
+        task.description = data.description || task.description
+        log('[SessionStore] Task progress:', taskId, data.summary)
+      }
+    } else if (eventType === 'notification') {
+      // 任务通知：通常是任务结束，从活跃列表移除
+      const task = session.activeTasks.get(taskId)
+      if (task) {
+        task.status = 'completed'
+        // 添加任务完成消息到聊天
+        session.messages.push({
+          id: `task-complete-${taskId}`,
+          role: 'task_complete',
+          taskId: taskId,
+          taskType: task.taskType,
+          description: task.description,
+          summary: task.summary,
+          usage: task.usage,
+          duration: Date.now() - task.startTime,
+          timestamp: new Date()
+        })
+        // 从活跃列表移除
+        session.activeTasks.delete(taskId)
+        log('[SessionStore] Task completed:', taskId)
+      }
     }
   }
 

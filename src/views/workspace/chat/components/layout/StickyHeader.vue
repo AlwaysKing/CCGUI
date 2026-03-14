@@ -248,7 +248,6 @@ function scrollToUserMessage() {
 
 .sticky-duration.streaming {
   color: #A78BFA;
-  background: #1E1B4B;
 }
 
 /* 滚动到提问按钮 */

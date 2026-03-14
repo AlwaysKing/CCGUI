@@ -194,10 +194,6 @@ export const useSessionStore = defineStore('session', () => {
 
     const sessionId = session.id
 
-    // 清除所有活跃任务（新对话开始时清除悬浮窗）
-    session.activeTasks.clear()
-    log('[SessionStore] Cleared active tasks for new conversation')
-
     // 保存输入历史
     if (content && (session.inputHistory.length === 0 || session.inputHistory[session.inputHistory.length - 1] !== content)) {
       session.inputHistory.push(content)
@@ -893,25 +889,7 @@ export const useSessionStore = defineStore('session', () => {
 
     // Handle content_block_stop
     if (event.type === 'content_block_stop') {
-      // 处理 TodoWrite 工具：显示在悬浮窗中
-      const contentBlockId = session.contentBlockIndexToId.get(event.index)
-      log('[SessionStore] content_block_stop:', {
-        eventIndex: event.index,
-        contentBlockId,
-        mapSize: session.contentBlockIndexToId.size
-      })
-      if (contentBlockId) {
-        const toolUseMsg = session.messages.find(m => m.id === contentBlockId && m.role === 'tool_use')
-        log('[SessionStore] Looking for tool_use:', {
-          contentBlockId,
-          found: !!toolUseMsg,
-          toolName: toolUseMsg?.toolName,
-          toolInput: toolUseMsg?.toolInput
-        })
-        if (toolUseMsg && toolUseMsg.toolName === 'TodoWrite' && toolUseMsg.toolInput?.todos) {
-          handleTodoWrite(session, contentBlockId, toolUseMsg.toolInput.todos)
-        }
-      }
+      // 可以在这里处理内容块结束
       return
     }
 
@@ -1139,12 +1117,6 @@ export const useSessionStore = defineStore('session', () => {
           inputKeys: toolUseContent.input ? Object.keys(toolUseContent.input) : [],
           input: toolUseContent.input
         })
-
-        // 处理 TodoWrite 工具：显示在悬浮窗中
-        if (toolUseContent.name === 'TodoWrite' && toolUseContent.input?.todos) {
-          handleTodoWrite(session, toolUseContent.id, toolUseContent.input.todos)
-        }
-
         // 查找是否已存在相同的 tool_use 消息（通过 id 或 request_id 匹配）
         const existingMsgIndex = session.messages.findIndex(m =>
           (m.role === 'tool_use' && m.id === toolUseContent.id) ||
@@ -1179,42 +1151,12 @@ export const useSessionStore = defineStore('session', () => {
             startTime: Date.now()
           })
         }
+
+        // 处理 TodoWrite 工具：显示在悬浮窗中
+        if (toolUseContent.name === 'TodoWrite' && toolUseContent.input?.todos) {
+          handleTodoWrite(session, toolUseContent.id, toolUseContent.input.todos)
+        }
       }
-    }
-  }
-
-  /**
-   * 处理 TodoWrite 工具调用
-   * 将 todos 显示在悬浮窗中
-   */
-  function handleTodoWrite(session, toolUseId, todos) {
-    log('[SessionStore] handleTodoWrite called:', { toolUseId, todosCount: todos.length })
-
-    const taskId = `todo-${toolUseId}`
-    const existingTask = session.activeTasks.get(taskId)
-
-    // 找到当前正在进行的 todo（用于显示描述）
-    const currentTodo = todos.find(t => t.status === 'in_progress') || todos[todos.length - 1]
-    const completedCount = todos.filter(t => t.status === 'completed').length
-
-    if (existingTask) {
-      // 更新现有任务
-      existingTask.todos = todos
-      existingTask.description = currentTodo?.activeForm || currentTodo?.content || '任务列表'
-      existingTask.status = completedCount === todos.length ? 'completed' : 'in_progress'
-      log('[SessionStore] Updated todo task:', taskId, `(${completedCount}/${todos.length})`)
-    } else {
-      // 创建新任务
-      session.activeTasks.set(taskId, {
-        id: taskId,
-        taskType: 'todo',
-        description: currentTodo?.activeForm || currentTodo?.content || '任务列表',
-        status: completedCount === todos.length ? 'completed' : 'in_progress',
-        startTime: Date.now(),
-        todos: todos,
-        toolUseId: toolUseId
-      })
-      log('[SessionStore] Created todo task:', taskId)
     }
   }
 
@@ -1401,6 +1343,41 @@ export const useSessionStore = defineStore('session', () => {
         session.activeTasks.delete(taskId)
         log('[SessionStore] Task completed:', taskId)
       }
+    }
+  }
+
+  /**
+   * 处理 TodoWrite 工具调用
+   * 将 todos 显示在悬浮窗中
+   */
+  function handleTodoWrite(session, toolUseId, todos) {
+    log('[SessionStore] handleTodoWrite called:', { toolUseId, todosCount: todos.length })
+
+    const taskId = `todo-${toolUseId}`
+    const existingTask = session.activeTasks.get(taskId)
+
+    // 找到当前正在进行的 todo（用于显示描述）
+    const currentTodo = todos.find(t => t.status === 'in_progress') || todos[todos.length - 1]
+    const completedCount = todos.filter(t => t.status === 'completed').length
+
+    if (existingTask) {
+      // 更新现有任务
+      existingTask.todos = todos
+      existingTask.description = currentTodo?.activeForm || currentTodo?.content || '任务列表'
+      existingTask.status = completedCount === todos.length ? 'completed' : 'in_progress'
+      log('[SessionStore] Updated todo task:', taskId, `(${completedCount}/${todos.length})`)
+    } else {
+      // 创建新任务
+      session.activeTasks.set(taskId, {
+        id: taskId,
+        taskType: 'todo',
+        description: currentTodo?.activeForm || currentTodo?.content || '任务列表',
+        status: completedCount === todos.length ? 'completed' : 'in_progress',
+        startTime: Date.now(),
+        todos: todos,
+        toolUseId: toolUseId
+      })
+      log('[SessionStore] Created todo task:', taskId)
     }
   }
 

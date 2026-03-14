@@ -895,8 +895,19 @@ export const useSessionStore = defineStore('session', () => {
     if (event.type === 'content_block_stop') {
       // 处理 TodoWrite 工具：显示在悬浮窗中
       const contentBlockId = session.contentBlockIndexToId.get(event.index)
+      log('[SessionStore] content_block_stop:', {
+        eventIndex: event.index,
+        contentBlockId,
+        mapSize: session.contentBlockIndexToId.size
+      })
       if (contentBlockId) {
         const toolUseMsg = session.messages.find(m => m.id === contentBlockId && m.role === 'tool_use')
+        log('[SessionStore] Looking for tool_use:', {
+          contentBlockId,
+          found: !!toolUseMsg,
+          toolName: toolUseMsg?.toolName,
+          toolInput: toolUseMsg?.toolInput
+        })
         if (toolUseMsg && toolUseMsg.toolName === 'TodoWrite' && toolUseMsg.toolInput?.todos) {
           handleTodoWrite(session, contentBlockId, toolUseMsg.toolInput.todos)
         }

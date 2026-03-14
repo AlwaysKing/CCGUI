@@ -83,6 +83,18 @@ const sendDisabled = computed(() => {
   return !localValue.value.trim() || props.isProcessing || props.hasPermission
 })
 
+// 权限模式对应的颜色主题
+const modeThemeClass = computed(() => {
+  const modeColors = {
+    'default': '', // 默认保持现状
+    'plan': 'mode-plan', // 蓝色
+    'bypassPermissions': 'mode-bypass', // 绿色
+    'acceptEdits': 'mode-edit', // 白色
+    'auto': 'mode-edit' // 白色（auto 如果存在）
+  }
+  return modeColors[props.permissionMode] || ''
+})
+
 // 发送消息
 function sendMessage() {
   if (!localValue.value.trim() || props.isProcessing) return
@@ -252,7 +264,7 @@ defineExpose({
 
 <template>
   <div class="input-area">
-    <div class="input-container" :class="{ focused: isInputFocused }">
+    <div class="input-container" :class="{ focused: isInputFocused, [modeThemeClass]: modeThemeClass }">
       <!-- 权限模式切换按钮 -->
       <div class="input-toolbar">
         <div class="permission-mode-wrapper">
@@ -367,6 +379,19 @@ defineExpose({
 
 .input-container.focused {
   border-color: #F97316;
+}
+
+/* 权限模式颜色主题 */
+.input-container.mode-plan.focused {
+  border-color: #3B82F6;
+}
+
+.input-container.mode-bypass.focused {
+  border-color: #22C55E;
+}
+
+.input-container.mode-edit.focused {
+  border-color: #E4E4E7;
 }
 
 /* 工具栏（包含权限模式按钮） */
@@ -493,6 +518,32 @@ defineExpose({
 .send-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 权限模式对应的发送按钮颜色 */
+.input-container.mode-plan .send-button {
+  background: #3B82F6;
+}
+
+.input-container.mode-plan .send-button:hover:not(:disabled) {
+  background: #2563EB;
+}
+
+.input-container.mode-bypass .send-button {
+  background: #22C55E;
+}
+
+.input-container.mode-bypass .send-button:hover:not(:disabled) {
+  background: #16A34A;
+}
+
+.input-container.mode-edit .send-button {
+  background: #A1A1AA;
+  color: #18181B;
+}
+
+.input-container.mode-edit .send-button:hover:not(:disabled) {
+  background: #D4D4D8;
 }
 
 .interrupt-button {

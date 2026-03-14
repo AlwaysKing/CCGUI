@@ -78,6 +78,15 @@ const permissionModes = [
   { value: 'bypassPermissions', label: '全部允许', icon: '✅' }
 ]
 
+// 思考力度
+const effort = ref('medium') // 当前思考力度
+const effortOptions = [
+  { value: 'default', label: '默认', icon: '🧠', description: '自动调整思考深度' },
+  { value: 'low', label: '低', icon: '⚡', description: '快速响应，较少思考' },
+  { value: 'medium', label: '中', icon: '🎯', description: '平衡思考与速度' },
+  { value: 'high', label: '高', icon: '🔬', description: '深度思考，详细分析' }
+]
+
 // 监听 session 的 permissionMode 变化
 watch(
   () => sessionStore.currentSession?.permissionMode,
@@ -1056,6 +1065,13 @@ function selectPermissionMode(mode) {
   handlePermissionModeChange(mode)
 }
 
+// 选择思考力度
+function selectEffort(newEffort) {
+  effort.value = newEffort
+  // TODO: 实际修改 effort 需要重启 CLI，暂只保存状态
+  console.log('[Chat] Effort changed to:', newEffort)
+}
+
 async function handleQuestionAnswer(requestId, answers) {
   console.log('[ChatWindow] handleQuestionAnswer called, requestId:', requestId, 'answers:', answers)
   const question = pendingQuestion.value
@@ -1204,10 +1220,13 @@ async function handleQuestionAnswer(requestId, answers) {
       :has-permission="pendingPermission !== null || pendingControlRequest !== null"
       :permission-mode="permissionMode"
       :permission-modes="permissionModes"
+      :effort="effort"
+      :effort-options="effortOptions"
       :input-history="inputHistory"
       @send="handleSendMessage"
       @interrupt="handleInterrupt"
       @permission-mode-change="selectPermissionMode"
+      @effort-change="selectEffort"
       @add-to-history="addToHistory"
     />
 

@@ -34,10 +34,23 @@ const props = defineProps({
   inputHistory: {
     type: Array,
     default: () => []
+  },
+  effort: {
+    type: String,
+    default: 'default'
+  },
+  effortOptions: {
+    type: Array,
+    default: () => [
+      { value: 'default', label: '默认', icon: '🧠', description: '自动调整思考深度' },
+      { value: 'low', label: '低', icon: '⚡', description: '快速响应，较少思考' },
+      { value: 'medium', label: '中', icon: '🎯', description: '平衡思考与速度' },
+      { value: 'high', label: '高', icon: '🔬', description: '深度思考，详细分析' }
+    ]
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'send', 'interrupt', 'permissionModeChange', 'addToHistory'])
+const emit = defineEmits(['update:modelValue', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'addToHistory'])
 
 // 输入区域 ref
 const inputArea = ref(null)
@@ -50,6 +63,27 @@ const isDragOver = ref(false)
 
 // 显示权限菜单
 const showPermissionMenu = ref(false)
+
+// 显示思考力度菜单
+const showEffortMenu = ref(false)
+
+// 思考力度选项
+const effortOptions = [
+  { value: 'low', label: '低', icon: '⚡', description: '快速响应，较少思考' },
+  { value: 'medium', label: '中', icon: '🧠', description: '平衡思考深度' },
+  { value: 'high', label: '高', icon: '🔬', description: '深度思考，详细分析' }
+]
+
+// 当前思考力度 (从 props 获取或默认)
+const currentEffort = ref('medium')
+
+// Enter 键模式锁定 (true = Enter 发送, false = Enter 换行)
+const enterModeLocked = ref(true)
+
+// 切换 Enter 模式
+function toggleEnterMode() {
+  enterModeLocked.value = !enterModeLocked.value
+}
 
 // 显示历史记录选择弹窗
 const showHistoryPicker = ref(false)
@@ -111,7 +145,14 @@ function handleEnterKey(event) {
   // 如果正在使用输入法组合，不触发发送
   if (event.isComposing) return
 
-  // Shift+Enter 换行，Enter 发送
+  // 如果解锁了（enterModeLocked = false），Enter 换行，Shift+Enter 也换行
+  // 如果锁定了（enterModeLocked = true），Shift+Enter 换行，Enter 发送
+  if (!enterModeLocked.value) {
+    // 解锁状态：Enter 换行（不做任何处理，让默认行为发生）
+    return
+  }
+
+  // 锁定状态：Shift+Enter 换行，Enter 发送
   if (event.shiftKey) {
     return
   }
@@ -210,6 +251,24 @@ function selectPermissionMode(mode) {
   emit('permissionModeChange', mode)
 }
 
+// 当前思考力度的标签
+const currentEffortLabel = computed(() => {
+  const effort = props.effortOptions.find(e => e.value === props.effort)
+  return effort ? `${effort.icon} ${effort.label}` : '🧠 中'
+})
+
+// 当前思考力度的描述
+const currentEffortDescription = computed(() => {
+  const effort = props.effortOptions.find(e => e.value === props.effort)
+  return effort?.description || '平衡思考与速度'
+})
+
+// 选择思考力度
+function selectEffort(effort) {
+  showEffortMenu.value = false
+  emit('effortChange', effort)
+}
+
 // 点击外部关闭权限菜单
 function handleClickOutsidePermissionMenu(event) {
   const wrapper = document.querySelector('.permission-mode-wrapper')
@@ -265,53 +324,98 @@ defineExpose({
 <template>
   <div class="input-area">
     <div class="input-container" :class="{ focused: isInputFocused, [modeThemeClass]: modeThemeClass }">
-      <!-- 权限模式切换按钮 -->
+      <!-- 工具栏 -->
       <div class="input-toolbar">
-        <div class="permission-mode-wrapper">
-          <button
-            @click="showPermissionMenu = !showPermissionMenu"
-            class="permission-mode-btn"
-            :title="`权限模式: ${currentModeDescription}`"
-            :disabled="isProcessing"
-          >
-            {{ currentModeLabel }}
-          </button>
-
-          <!-- 权限模式菜单 -->
-          <div v-if="showPermissionMenu" class="permission-menu">
+        <!-- 左侧按钮组 -->
+        <div class="toolbar-left">
+          <div class="permission-mode-wrapper">
             <button
-              v-for="mode in permissionModes"
-              :key="mode.value"
-              class="permission-menu-item"
-              :class="{ active: permissionMode === mode.value }"
-              @click="selectPermissionMode(mode.value)"
+              @click="showPermissionMenu = !showPermissionMenu"
+              class="permission-mode-btn"
+              :title="`权限模式: ${currentModeDescription}`"
+              :disabled="isProcessing"
             >
-              <span class="permission-menu-icon">{{ mode.icon }}</span>
-              <span class="permission-menu-label">{{ mode.label }}</span>
-              <span v-if="permissionMode === mode.value" class="permission-menu-check">✓</span>
+              {{ currentModeLabel }}
             </button>
+
+            <!-- 权限模式菜单 -->
+            <div v-if="showPermissionMenu" class="permission-menu">
+              <button
+                v-for="mode in permissionModes"
+                :key="mode.value"
+                class="permission-menu-item"
+                :class="{ active: permissionMode === mode.value }"
+                @click="selectPermissionMode(mode.value)"
+              >
+                <span class="permission-menu-icon">{{ mode.icon }}</span>
+                <span class="permission-menu-label">{{ mode.label }}</span>
+                <span v-if="permissionMode === mode.value" class="permission-menu-check">✓</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 思考力度切换按钮 -->
+          <div class="effort-mode-wrapper">
+            <button
+              @click="showEffortMenu = !showEffortMenu"
+              class="effort-mode-btn"
+              :title="`思考力度: ${currentEffortDescription}`"
+              :disabled="isProcessing"
+            >
+              {{ currentEffortLabel }}
+            </button>
+
+            <!-- 思考力度菜单 -->
+            <div v-if="showEffortMenu" class="effort-menu">
+              <button
+                v-for="option in effortOptions"
+                :key="option.value"
+                class="effort-menu-item"
+                :class="{ active: effort === option.value }"
+                @click="selectEffort(option.value)"
+              >
+                <span class="effort-menu-icon">{{ option.icon }}</span>
+                <span class="effort-menu-label">{{ option.label }}</span>
+                <span class="effort-menu-desc">{{ option.description }}</span>
+                <span v-if="effort === option.value" class="effort-menu-check">✓</span>
+              </button>
+            </div>
           </div>
         </div>
 
-        <!-- 发送/打断按钮 -->
-        <button
-          v-if="!isProcessing"
-          @click="sendMessage"
-          :disabled="sendDisabled"
-          class="send-button"
-        >
-          发送
-        </button>
-        <button
-          v-else
-          @click="handleInterrupt"
-          class="interrupt-button"
-          title="打断"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-          </svg>
-        </button>
+        <!-- 右侧按钮组 -->
+        <div class="toolbar-right">
+          <!-- Enter 模式切换按钮 -->
+          <button
+            @click="toggleEnterMode"
+            class="enter-mode-btn"
+            :class="{ locked: enterModeLocked }"
+            :title="enterModeLocked ? 'Enter 发送 (点击切换为换行)' : 'Enter 换行 (点击切换为发送)'"
+            :disabled="isProcessing"
+          >
+            {{ enterModeLocked ? '🔒' : '⏎' }}
+          </button>
+
+          <!-- 发送/打断按钮 -->
+          <button
+            v-if="!isProcessing"
+            @click="sendMessage"
+            :disabled="sendDisabled"
+            class="send-button"
+          >
+            发送
+          </button>
+          <button
+            v-else
+            @click="handleInterrupt"
+            class="interrupt-button"
+            title="打断"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+            </svg>
+          </button>
+        </div>
       </div>
 
       <!-- 历史记录选择弹窗 -->
@@ -403,7 +507,13 @@ defineExpose({
   padding: 4px 8px;
   background: transparent;
   border-bottom: 1px solid #3F3F46;
-  border-radius: 8px 8px 0 0;
+}
+
+/* 左侧按钮组 */
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* 权限模式包装器（用于定位菜单） */
@@ -495,9 +605,139 @@ defineExpose({
   color: #F97316;
 }
 
+/* 思考力度包装器 */
+.effort-mode-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+/* 思考力度按钮 */
+.effort-mode-btn {
+  min-width: 60px;
+  padding: 2px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: #A1A1AA;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.effort-mode-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.effort-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 思考力度菜单 */
+.effort-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 180px;
+  z-index: 1000;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+
+/* 思考力度菜单项 */
+.effort-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.effort-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.effort-menu-item.active {
+  color: #A78BFA;
+}
+
+.effort-menu-icon {
+  font-size: 14px;
+  width: 20px;
+  text-align: center;
+}
+
+.effort-menu-label {
+  min-width: 30px;
+}
+
+.effort-menu-desc {
+  flex: 1;
+  font-size: 11px;
+  color: #71717A;
+  text-align: right;
+}
+
+.effort-menu-check {
+  color: #A78BFA;
+}
+
+/* 右侧按钮组 */
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: -4.5px;
+}
+
+/* Enter 模式切换按钮 */
+.enter-mode-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.enter-mode-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.enter-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* 发送按钮 */
 .send-button {
-  margin-right: -4.5px;
   padding: 4px 16px;
   background: #F97316;
   border: none;
@@ -547,7 +787,6 @@ defineExpose({
 }
 
 .interrupt-button {
-  margin-right: -4.5px;
   padding: 4px 12px;
   background: #EF4444;
   border: none;

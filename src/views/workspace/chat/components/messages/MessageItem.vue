@@ -4,7 +4,7 @@
  * 封装消息的通用结构：头像、统计信息、思考过程、点击处理、折叠占位符
  * 具体内容通过插槽或子组件渲染
  */
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import MessageStats from './MessageStats.vue'
 import ToolUseMessage from './ToolUseMessage.vue'
 import UserMessage from './UserMessage.vue'
@@ -71,7 +71,8 @@ const {
   toggleResponseCollapse,
   isLastUserMessage,
   openActionMenuIndex,
-  toggleActionMenu
+  toggleActionMenu,
+  closeActionMenu
 } = useMessageList()
 
 const { copiedMessageIndex, copyToClipboard } = useMessage()
@@ -202,14 +203,17 @@ function handleMessageClick(event) {
 }
 
 function handleRewind(messageId, messageIndex) {
+  closeActionMenu()
   emit('rewind', { messageId, messageIndex })
 }
 
 function handleFork(messageId, messageIndex) {
+  closeActionMenu()
   emit('fork', { messageId, messageIndex })
 }
 
 function handleRewindAndFork(messageId, messageIndex) {
+  closeActionMenu()
   emit('rewindAndFork', { messageId, messageIndex })
 }
 
@@ -271,6 +275,24 @@ function onToggleRewindCollapse(messageId) {
 function onToggleActionMenu(index) {
   toggleActionMenu(index)
 }
+
+// 点击外部关闭菜单
+function handleGlobalClick(event) {
+  if (openActionMenuIndex.value === -1) return
+  const target = event.target
+  const menuWrapper = target.closest('.action-menu-wrapper')
+  if (!menuWrapper) {
+    closeActionMenu()
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleGlobalClick)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleGlobalClick)
+})
 </script>
 
 <template>
@@ -563,8 +585,9 @@ function onToggleActionMenu(index) {
   justify-content: center;  /* 按钮居中 */
 }
 
-/* hover 整个消息行时显示操作按钮 */
-.message.user:hover .user-action-buttons {
+/* hover 整个消息行时显示操作按钮，或菜单打开时保持显示 */
+.message.user:hover .user-action-buttons,
+.message.user .user-action-buttons:has(.action-dropdown-menu) {
   opacity: 1;
 }
 

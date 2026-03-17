@@ -1,260 +1,45 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { onMounted } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
 import NewProjectDialog from './components/NewProjectDialog.vue'
 import SettingsDialog from '@/views/settings/SettingsDialog.vue'
 import { logger } from '../../utils/logger'
+import { useWelcomeProjects } from './hooks/useWelcomeProjects'
+import { useProjectDrop } from './hooks/useProjectDrop'
 
 const store = useAppStore()
+const {
+  searchQuery,
+  showSettingsDialog,
+  showOldProjects,
+  showMissingProjects,
+  showDeleteConfirm,
+  projectToDelete,
+  deleteProjectFolder,
+  categorizedProjects,
+  categoryCounts,
+  selectProject,
+  handleDeleteClick,
+  cancelDelete,
+  confirmDeleteProject,
+  checkProjectsExistence,
+  formatLastActive
+} = useWelcomeProjects(store)
 
-const searchQuery = ref('')
-const showNewProjectDialog = ref(false)
-const showSettingsDialog = ref(false)
-const showOldProjects = ref(false)
-const showMissingProjects = ref(false)
-const projectExistsMap = ref({})
-const showDeleteConfirm = ref(false)
-const projectToDelete = ref(null)
-const deleteProjectFolder = ref(false)
-const isDragging = ref(false)
-const initialProjectPath = ref('') // 新建项目对话框的初始路径
-
-// 10天的毫秒数
-const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000
-
-// 检查项目是否在10天内活跃
-function isRecent(project) {
-  if (!project.lastActiveAt) return false
-  const lastActive = new Date(project.lastActiveAt).getTime()
-  const now = Date.now()
-  return (now - lastActive) < TEN_DAYS_MS
-}
-
-// 分类项目
-const categorizedProjects = computed(() => {
-  const filtered = searchQuery.value
-    ? store.projects.filter(p =>
-        p.name.toLowerCase().includes(searchQuery.value.toLowerCase())
-      )
-    : store.projects
-
-  const recent = []
-  const old = []
-  const missing = []
-
-  filtered.forEach(project => {
-    const exists = projectExistsMap.value[project.id] !== false // 默认存在，除非明确检查为 false
-
-    if (!exists) {
-      missing.push(project)
-    } else if (isRecent(project)) {
-      recent.push(project)
-    } else {
-      old.push(project)
-    }
-  })
-
-  return {
-    recent,
-    old,
-    missing
-  }
-})
-
-// 获取分类数量
-const categoryCounts = computed(() => {
-  const { recent, old, missing } = categorizedProjects.value
-  return {
-    recent: recent.length,
-    old: old.length,
-    missing: missing.length
-  }
-})
-
-function formatLastActive(dateStr) {
-  if (!dateStr) return '未知'
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diff = now - date
-
-  if (diff < 60000) return '刚刚'
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`
-  if (diff < 604800000) return `${Math.floor(diff / 86400000)} 天前`
-  return date.toLocaleDateString('zh-CN')
-}
-
-function selectProject(project) {
-  store.selectProject(project)
-}
-
-function openProject(project) {
-  store.selectProject(project)
-}
-
-function handleDeleteClick(event, project) {
-  event.stopPropagation()
-  projectToDelete.value = project
-  showDeleteConfirm.value = true
-}
-
-// 拖拽处理函数
-function handleDragEnter(event) {
-  event.preventDefault()
-  logger.info('DragEnter triggered', {
-    type: event.type,
-    target: event.target?.className,
-    relatedTarget: event.relatedTarget?.className,
-    isDraggingBefore: isDragging.value
-  })
-  isDragging.value = true
-  logger.info('DragEnter completed', { isDraggingAfter: isDragging.value })
-}
-
-function handleDragOver(event) {
-  event.preventDefault()
-  logger.debug('DragOver triggered', {
-    type: event.type,
-    target: event.target?.className,
-    isDragging: isDragging.value
-  })
-  isDragging.value = true
-}
-
-function handleDragLeave(event) {
-  event.preventDefault()
-  logger.info('DragLeave triggered', {
-    type: event.type,
-    target: event.target?.className,
-    relatedTarget: event.relatedTarget?.className,
-    relatedTargetNull: !event.relatedTarget,
-    isDraggingBefore: isDragging.value
-  })
-
-  // 只有当真正离开窗口时才隐藏（relatedTarget 为 null）
-  if (!event.relatedTarget) {
-    logger.info('DragLeave: relatedTarget is null, hiding overlay')
-    isDragging.value = false
-  } else {
-    logger.info('DragLeave: relatedTarget exists, keeping overlay', {
-      relatedTargetClass: event.relatedTarget?.className
-    })
-  }
-  logger.info('DragLeave completed', { isDraggingAfter: isDragging.value })
-}
-
-async function handleDrop(event) {
-  event.preventDefault()
-  event.stopPropagation()
-
-  logger.info('Drop triggered', {
-    isDraggingBefore: isDragging.value,
-    hasFiles: !!event.dataTransfer?.files,
-    filesCount: event.dataTransfer?.files?.length
-  })
-
-  // 重置拖拽状态
-  isDragging.value = false
-  logger.info('Drop: overlay hidden')
-
-  const files = event.dataTransfer?.files
-  if (!files || files.length === 0) {
-    logger.warn('Drop: no files')
-    return
-  }
-
-  // 只处理第一个拖拽的项
-  const file = files[0]
-  logger.info('Drop: file info', {
-    name: file.name,
-    type: file.type,
-    path: file.path
-  })
-
-  // 检查是否是文件夹（Electron 环境下，文件夹也有 path 属性）
-  const fullPath = file.path
-  if (!fullPath) {
-    logger.warn('Drop: file has no path property')
-    return
-  }
-
-  logger.info('Drop: file path found', { path: fullPath })
-
-  // 使用 Electron API 检查是否是目录
-  try {
-    const result = await window.electronAPI.checkProjectExists({ projectPath: fullPath })
-    logger.info('Drop: checkProjectExists result', { result })
-
-    if (!result || !result.exists) {
-      // 不是目录或不存在
-      logger.warn('Drop: path does not exist', { path: fullPath })
-      return
-    }
-
-    // 检查项目是否已存在
-    const found = store.projects.find(p => p.path === fullPath)
-
-    if (found) {
-      // 项目已存在，直接打开
-      logger.info('Drop: project exists, opening', { projectId: found.id })
-      store.selectProject(found)
-    } else {
-      // 新项目，打开新建项目对话框并预填充路径
-      logger.info('Drop: new project, opening new project dialog', { path: fullPath })
-      initialProjectPath.value = fullPath
-      showNewProjectDialog.value = true
-    }
-  } catch (error) {
-    logger.error('Failed to check dropped path:', error)
-    // 确保出错时也重置状态
-    isDragging.value = false
-  }
-}
-
-function cancelDelete() {
-  showDeleteConfirm.value = false
-  projectToDelete.value = null
-  deleteProjectFolder.value = false
-}
-
-async function confirmDeleteProject() {
-  if (!projectToDelete.value) return
-
-  try {
-    await store.removeProject(projectToDelete.value.id, deleteProjectFolder.value)
-    showDeleteConfirm.value = false
-    projectToDelete.value = null
-    deleteProjectFolder.value = false
-  } catch (error) {
-    console.error('Failed to delete project:', error)
-    alert('删除项目失败: ' + error.message)
-  }
-}
-
-// 检查所有项目是否存在
-
-// 检查所有项目是否存在
-async function checkProjectsExistence() {
-  for (const project of store.projects) {
-    try {
-      const result = await window.electronAPI.checkProjectExists({ projectPath: project.path })
-      projectExistsMap.value[project.id] = result.exists
-    } catch (error) {
-      console.error(`Failed to check project ${project.id}:`, error)
-      projectExistsMap.value[project.id] = true // 出错时假设存在
-    }
-  }
-}
+const {
+  isDragging,
+  initialProjectPath,
+  showNewProjectDialog,
+  handleDragEnter,
+  handleDragOver,
+  handleDragLeave,
+  handleDrop,
+  resetNewProjectDialog
+} = useProjectDrop(store, logger)
 
 onMounted(async () => {
   await store.fetchProjects()
   await checkProjectsExistence()
-
-  // 不需要在 window 级别添加监听器，welcome-page 元素的 dragleave 已经足够
-})
-
-onUnmounted(() => {
-  // 清理工作（如果需要的话）
 })
 </script>
 
@@ -464,8 +249,8 @@ onUnmounted(() => {
     <NewProjectDialog
       v-if="showNewProjectDialog"
       :initial-path="initialProjectPath"
-      @close="showNewProjectDialog = false; initialProjectPath = ''"
-      @created="showNewProjectDialog = false; initialProjectPath = ''"
+      @close="resetNewProjectDialog"
+      @created="resetNewProjectDialog"
     />
 
     <!-- Settings Dialog -->

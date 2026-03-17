@@ -4,7 +4,7 @@
  * 用于选择各模型变量对应的具体模型卡片
  */
 import { ref, watch, computed } from 'vue'
-import IconButton from '@/components/common/IconButton.vue'
+import IconButton from '@/components/base/IconButton.vue'
 
 const props = defineProps({
   visible: {

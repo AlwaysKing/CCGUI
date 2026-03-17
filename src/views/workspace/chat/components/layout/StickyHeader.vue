@@ -5,7 +5,7 @@
  */
 import { computed } from 'vue'
 import CopyButton from '../ui/CopyButton.vue'
-import MarkdownRenderer from '../../../../../components/common/MarkdownRenderer.vue'
+import MarkdownRenderer from '@/components/base/MarkdownRenderer.vue'
 
 const props = defineProps({
   message: {

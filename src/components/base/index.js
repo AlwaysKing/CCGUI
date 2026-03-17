@@ -1,6 +1,6 @@
 /**
- * Common Components Index
- * 通用组件导出
+ * Base Components Index
+ * 基础原子组件导出
  */
 
 export { default as BaseButton } from './BaseButton.vue'

@@ -6,7 +6,7 @@
 import { ref } from 'vue'
 import SettingsSection from './common/SettingsSection.vue'
 import SubsectionHeader from './common/SubsectionHeader.vue'
-import { IconButton } from '@/components/common'
+import { IconButton } from '@/components/base'
 
 const props = defineProps({
   prompts: {

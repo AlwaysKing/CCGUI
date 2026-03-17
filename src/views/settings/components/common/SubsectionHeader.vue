@@ -3,7 +3,7 @@
  * SubsectionHeader - 子章节标题行
  * 包含标题和可选的操作按钮（如添加按钮）
  */
-import { IconButton } from '@/components/common'
+import { IconButton } from '@/components/base'
 
 defineProps({
   title: {

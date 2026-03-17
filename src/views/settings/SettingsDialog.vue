@@ -1,11 +1,5 @@
 <script setup>
-/**
- * SettingsDialog - 设置对话框
- * 整合模型配置、提示词配置、软件配置三个区域
- */
-import { ref, onMounted, onUnmounted, toRaw, computed } from 'vue'
-import { barkProvider } from '@/utils/notifier'
-import { IconButton } from '@/components/common'
+import { onMounted, onUnmounted } from 'vue'
 import ModelSettings from './components/ModelSettings.vue'
 import PromptSettings from './components/PromptSettings.vue'
 import SoftwareSettings from './components/SoftwareSettings.vue'
@@ -14,597 +8,74 @@ import DefaultConfigDialog from './components/dialogs/DefaultConfigDialog.vue'
 import PromptEditDialog from './components/dialogs/PromptEditDialog.vue'
 import DocumentEditDialog from './components/dialogs/DocumentEditDialog.vue'
 import ModelMappingDialog from './components/dialogs/ModelMappingDialog.vue'
+import { useSettingsNavigation } from './hooks/useSettingsNavigation'
+import { useSettingsData } from './hooks/useSettingsData'
 
 const emit = defineEmits(['close', 'saved'])
-
-// ========== 导航相关 ==========
-const activeSection = ref('model')
-const contentRef = ref(null)
-const modelSectionRef = ref(null)
-const promptSectionRef = ref(null)
-const softwareSectionRef = ref(null)
-
-const navItems = [
-  { id: 'model', label: '模型配置', icon: 'model' },
-  { id: 'prompt', label: '提示词配置', icon: 'prompt' },
-  { id: 'software', label: '软件配置', icon: 'software' }
-]
-
-// ========== 配置状态 ==========
-const settings = ref({
-  theme: 'dark',
-  language: 'zh-CN',
-  notificationSound: 'Glass',
-  barkUrl: ''
-})
-
-const defaultConfig = ref({
-  apiUrl: '',
-  authToken: '',
-  model: 'claude-sonnet-4-6',
-  anthropicModel: '',
-  effort: 'default',
-  anthropicDefaultSonnetModel: '',
-  anthropicDefaultOpusModel: '',
-  anthropicDefaultHaikuModel: '',
-  anthropicSmallFastModel: ''
-})
-
-const models = ref([])
-const selectedModelId = ref(null)
-const prompts = ref([])
-const documents = ref([])
-
-// ========== 对话框状态 ==========
-const showModelDialog = ref(false)
-const editingModel = ref(null)
-
-const showDefaultConfigDialog = ref(false)
-const showAuthToken = ref(false)
-const showModelAuthToken = ref(false)
-
-const showPromptDialog = ref(false)
-const editingPrompt = ref(null)
-
-const showDocumentDialog = ref(false)
-const editingDocument = ref(null)
-
-// 映射确认对话框
-const showMappingDialog = ref(false)
-const pendingModel = ref(null)
-
-// ========== 悬停状态 ==========
-const hoveredPromptId = ref(null)
-const hoveredDocumentId = ref(null)
-const hoveredModelId = ref(null)
-
-// ========== Bark 测试状态 ==========
-const testingBark = ref(false)
-const savingBark = ref(false)
-
-// ========== 努力选项 ==========
-const effortOptions = [
-  { value: 'default', label: '默认' },
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' }
-]
-
-// ========== 工具函数 ==========
-function generateModelCardId() {
-  return Date.now().toString() + Math.random().toString(36).substr(2, 9)
-}
-
-function generatePromptId() {
-  return Date.now().toString() + Math.random().toString(36).substr(2, 9)
-}
-
-function generateDocumentId() {
-  return Date.now().toString() + Math.random().toString(36).substr(2, 9)
-}
-
-// ========== 加载配置 ==========
-async function loadSettings() {
-  try {
-    const result = await window.electronAPI.getAppConfig()
-    if (result && result.success) {
-      const config = result.config
-      if (config.settings) {
-        settings.value = { ...settings.value, ...config.settings }
-        models.value = config.settings.models || []
-        prompts.value = config.settings.prompts || []
-        selectedModelId.value = config.settings.selectedModelId || null
-      }
-      if (config.documents) {
-        documents.value = config.documents
-      }
-    }
-
-    // 加载 Claude 设置 (from ~/.claude/settings.json)
-    const claudeResult = await window.electronAPI.getClaudeSettings()
-    if (claudeResult && claudeResult.success && claudeResult.settings) {
-      const claudeSettings = claudeResult.settings
-      const env = claudeSettings.env || {}
-
-      // 映射 Claude 设置到 defaultConfig
-      defaultConfig.value.apiUrl = env.ANTHROPIC_BASE_URL || ''
-      defaultConfig.value.authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || ''
-      defaultConfig.value.model = claudeSettings.model || ''
-      defaultConfig.value.effort = claudeSettings.effort || 'default'
-
-      // 映射模型变量 (从 env 中加载)
-      defaultConfig.value.anthropicModel = env.ANTHROPIC_MODEL || ''
-      defaultConfig.value.anthropicDefaultSonnetModel = env.ANTHROPIC_DEFAULT_SONNET_MODEL || ''
-      defaultConfig.value.anthropicDefaultOpusModel = env.ANTHROPIC_DEFAULT_OPUS_MODEL || ''
-      defaultConfig.value.anthropicDefaultHaikuModel = env.ANTHROPIC_DEFAULT_HAIKU_MODEL || ''
-      defaultConfig.value.anthropicSmallFastModel = env.ANTHROPIC_SMALL_FAST_MODEL || ''
-    }
-  } catch (error) {
-    console.error('Failed to load settings:', error)
-  }
-}
-
-// ========== 保存配置 ==========
-async function saveAppConfig() {
-  try {
-    const promptsData = JSON.parse(JSON.stringify(prompts.value))
-    const updates = {
-      settings: {
-        ...JSON.parse(JSON.stringify(settings.value)),
-        models: JSON.parse(JSON.stringify(models.value)),
-        prompts: promptsData,
-        selectedModelId: selectedModelId.value
-      },
-      documents: JSON.parse(JSON.stringify(documents.value))
-    }
-
-    const result = await window.electronAPI.updateAppConfig({ updates })
-    if (result && result.success) {
-      emit('saved')
-      return true
-    } else {
-      alert('保存配置失败: ' + (result?.error || '未知错误'))
-      return false
-    }
-  } catch (error) {
-    console.error('Failed to save settings:', error)
-    alert('保存配置失败: ' + error.message)
-    return false
-  }
-}
-
-async function saveSoftwareSettings() {
-  const success = await saveAppConfig()
-  if (!success) {
-    alert('保存软件配置失败')
-  }
-}
-
-// ========== 导航功能 ==========
-function scrollToSection(sectionId) {
-  activeSection.value = sectionId
-  const sectionMap = {
-    model: modelSectionRef.value,
-    prompt: promptSectionRef.value,
-    software: softwareSectionRef.value
-  }
-
-  const targetSection = sectionMap[sectionId]
-  if (targetSection && contentRef.value) {
-    const container = contentRef.value
-    const targetOffsetTop = targetSection.offsetTop - container.offsetTop
-    container.scrollTo({ top: targetOffsetTop, behavior: 'smooth' })
-  }
-}
-
-function handleScroll() {
-  if (!contentRef.value) return
-
-  const container = contentRef.value
-  const scrollTop = container.scrollTop
-
-  const sections = [
-    { id: 'model', ref: modelSectionRef.value },
-    { id: 'prompt', ref: promptSectionRef.value },
-    { id: 'software', ref: softwareSectionRef.value }
-  ]
-
-  for (const section of sections) {
-    if (section.ref) {
-      const offsetTop = section.ref.offsetTop - container.offsetTop
-      const offsetBottom = offsetTop + section.ref.offsetHeight
-
-      if (scrollTop >= offsetTop - 10 && scrollTop < offsetBottom - 10) {
-        activeSection.value = section.id
-        break
-      }
-    }
-  }
-}
-
-// ========== 模型操作 ==========
-function handleAddModel() {
-  editingModel.value = null
-  showModelDialog.value = true
-}
-
-function handleEditModel(model) {
-  editingModel.value = model
-  showModelDialog.value = true
-}
-
-async function handleDeleteModel(modelId) {
-  if (confirm('确定要删除这个模型吗？')) {
-    models.value = models.value.filter(m => m.id !== modelId)
-    if (selectedModelId.value === modelId) {
-      selectedModelId.value = models.value[0]?.id || null
-    }
-    await saveAppConfig()
-  }
-}
-
-async function handleSaveModel(formData) {
-  const validModelCards = formData.modelCards.filter(card =>
-    card.modelName || card.pricingCache || card.pricingInput || card.pricingOutput
-  )
-
-  const finalCards = validModelCards.length > 0 ? toRaw(validModelCards) : toRaw(formData.modelCards)
-  const defaultCardId = finalCards.some(c => c.id === formData.defaultCardId)
-    ? formData.defaultCardId
-    : finalCards[0]?.id || null
-
-  if (editingModel.value) {
-    const index = models.value.findIndex(m => m.id === editingModel.value.id)
-    if (index !== -1) {
-      models.value[index] = {
-        ...models.value[index],
-        friendlyName: formData.friendlyName,
-        apiUrl: formData.apiUrl,
-        authToken: formData.authToken,
-        defaultCardId,
-        modelCards: finalCards
-      }
-    }
-  } else {
-    const newModel = {
-      id: formData.id || Date.now().toString(),
-      friendlyName: formData.friendlyName,
-      apiUrl: formData.apiUrl,
-      authToken: formData.authToken,
-      defaultCardId,
-      modelCards: finalCards
-    }
-    models.value.push(newModel)
-    if (models.value.length === 1) {
-      selectedModelId.value = newModel.id
-    }
-  }
-
-  showModelDialog.value = false
-  await saveAppConfig()
-}
-
-function handleSelectModel(modelId) {
-  selectedModelId.value = modelId
-}
-
-async function handleSetModelDefaultCard({ modelId, cardId }) {
-  const model = models.value.find(m => m.id === modelId)
-  if (model) {
-    model.defaultCardId = cardId
-    await saveAppConfig()
-  }
-}
-
-async function handleToggleModelActive({ modelId, active }) {
-  const model = models.value.find(m => m.id === modelId)
-  if (model) {
-    model.isActive = active
-    await saveAppConfig()
-  }
-}
-
-function handleApplyModel(model) {
-  if (!model) return
-
-  // 检查模型卡片数量
-  const cardCount = model.modelCards?.length || 0
-
-  if (cardCount <= 1) {
-    // 单卡片或无卡片：直接应用，只设置通用模型
-    const defaultModelName = cardCount === 1 ? model.modelCards[0].modelName : ''
-    applyModelWithMappings(model, {
-      ANTHROPIC_MODEL: defaultModelName,
-      model: defaultModelName
-    }, true)  // clearMappings: true for single card mode
-  } else {
-    // 多卡片：显示映射确认对话框
-    pendingModel.value = model
-    showMappingDialog.value = true
-  }
-}
-
-// 处理映射确认
-async function handleMappingConfirm(mappings) {
-  if (!pendingModel.value) return
-
-  try {
-    await applyModelWithMappings(pendingModel.value, mappings)
-  } finally {
-    showMappingDialog.value = false
-    pendingModel.value = null
-  }
-}
-
-// 应用模型配置（带映射）
-async function applyModelWithMappings(model, mappings, clearMappings = false) {
-  try {
-    // 构建环境变量更新
-    const env = {
-      ANTHROPIC_BASE_URL: model.apiUrl || '',
-      ANTHROPIC_AUTH_TOKEN: model.authToken || ''
-    }
-
-    // 根据映射设置各模型变量
-    if (mappings.ANTHROPIC_MODEL) {
-      env.ANTHROPIC_MODEL = mappings.ANTHROPIC_MODEL
-    }
-    if (mappings.ANTHROPIC_DEFAULT_SONNET_MODEL) {
-      env.ANTHROPIC_DEFAULT_SONNET_MODEL = mappings.ANTHROPIC_DEFAULT_SONNET_MODEL
-    }
-    if (mappings.ANTHROPIC_DEFAULT_OPUS_MODEL) {
-      env.ANTHROPIC_DEFAULT_OPUS_MODEL = mappings.ANTHROPIC_DEFAULT_OPUS_MODEL
-    }
-    if (mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL) {
-      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL
-    }
-    if (mappings.ANTHROPIC_SMALL_FAST_MODEL) {
-      env.ANTHROPIC_SMALL_FAST_MODEL = mappings.ANTHROPIC_SMALL_FAST_MODEL
-    }
-
-    const updates = { env }
-    if (mappings.model) {
-      updates.model = mappings.model
-    }
-
-    // 调用 API 更新 Claude 设置
-    const result = await window.electronAPI.updateClaudeSettings({ updates, clearMappings })
-
-    if (result && result.success) {
-      // 更新本地 defaultConfig 显示
-      defaultConfig.value.apiUrl = model.apiUrl || ''
-      defaultConfig.value.authToken = model.authToken || ''
-      defaultConfig.value.anthropicModel = mappings.ANTHROPIC_MODEL || ''
-      defaultConfig.value.anthropicDefaultSonnetModel = mappings.ANTHROPIC_DEFAULT_SONNET_MODEL || ''
-      defaultConfig.value.anthropicDefaultOpusModel = mappings.ANTHROPIC_DEFAULT_OPUS_MODEL || ''
-      defaultConfig.value.anthropicDefaultHaikuModel = mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL || ''
-      defaultConfig.value.anthropicSmallFastModel = mappings.ANTHROPIC_SMALL_FAST_MODEL || ''
-      if (mappings.model) {
-        defaultConfig.value.model = mappings.model
-      }
-
-      await saveAppConfig()
-      alert('模型配置已应用')
-    } else {
-      alert('应用模型配置失败: ' + (result?.error || '未知错误'))
-    }
-  } catch (error) {
-    console.error('应用模型失败:', error)
-    alert('应用模型配置失败: ' + error.message)
-  }
-}
-
-
-// ========== 默认配置操作 ==========
-function handleEditDefaultConfig() {
-  showDefaultConfigDialog.value = true
-}
-
-async function handleSaveDefaultConfig(config) {
-  defaultConfig.value = { ...defaultConfig.value, ...config }
-  showDefaultConfigDialog.value = false
-  showAuthToken.value = false
-  await saveAppConfig()
-}
-
-// ========== 提示词操作 ==========
-function handleAddPrompt() {
-  editingPrompt.value = null
-  showPromptDialog.value = true
-}
-
-function handleEditPrompt(prompt) {
-  editingPrompt.value = prompt
-  showPromptDialog.value = true
-}
-
-async function handleDeletePrompt(promptId) {
-  if (confirm('确定要删除这个提示词吗？')) {
-    prompts.value = prompts.value.filter(p => p.id !== promptId)
-    await saveAppConfig()
-  }
-}
-
-async function handleTogglePromptActive(promptId) {
-  const prompt = prompts.value.find(p => p.id === promptId)
-  if (prompt) {
-    prompt.isBase = !prompt.isBase
-    await saveAppConfig()
-  }
-}
-
-async function handleSavePrompt(formData) {
-  if (editingPrompt.value) {
-    const index = prompts.value.findIndex(p => p.id === editingPrompt.value.id)
-    if (index !== -1) {
-      prompts.value[index] = {
-        ...prompts.value[index],
-        name: formData.name,
-        description: formData.description,
-        content: formData.content,
-        isBase: formData.isBase
-      }
-    }
-  } else {
-    prompts.value.push({
-      id: formData.id || generatePromptId(),
-      name: formData.name,
-      description: formData.description,
-      content: formData.content,
-      isBase: formData.isBase
-    })
-  }
-
-  showPromptDialog.value = false
-  await saveAppConfig()
-}
-
-// ========== 规范文档操作 ==========
-function handleAddDocument() {
-  editingDocument.value = null
-  showDocumentDialog.value = true
-}
-
-async function handleEditDocument(document) {
-  // 使用文档 id（即文件名）从 .md 文件加载内容
-  const docId = document.id || document.name.replace(/[\/\\?%*:|"<>]/g, '_')
-
-  try {
-    const result = await window.electronAPI.getDoc({ docId })
-    if (result && result.doc) {
-      editingDocument.value = {
-        ...document,
-        id: docId,
-        content: result.doc.content || ''
-      }
-    } else {
-      editingDocument.value = {
-        ...document,
-        id: docId,
-        content: ''
-      }
-    }
-  } catch (e) {
-    console.error('Failed to load document content:', e)
-    editingDocument.value = {
-      ...document,
-      id: docId,
-      content: document.content || ''
-    }
-  }
-  showDocumentDialog.value = true
-}
-
-async function handleDeleteDocument(documentId) {
-  if (confirm('确定要删除这个规范文档吗？')) {
-    documents.value = documents.value.filter(d => d.id !== documentId)
-    await saveAppConfig()
-  }
-}
-
-async function handleToggleDocumentActive(documentId) {
-  const document = documents.value.find(d => d.id === documentId)
-  if (document) {
-    document.isBase = document.isBase === false ? true : false
-    await saveAppConfig()
-  }
-}
-
-async function handleSaveDocument(formData) {
-  // 使用文档名称作为文件名（替换特殊字符）
-  const sanitizedName = formData.name.replace(/[\/\\?%*:|"<>]/g, '_')
-  const oldName = editingDocument.value?.name?.replace(/[\/\\?%*:|"<>]/g, '_')
-  const isNewDoc = !editingDocument.value
-
-  // 1. 保存文档内容为 .md 文件
-  try {
-    await window.electronAPI.saveDoc({
-      docId: sanitizedName,
-      content: formData.content
-    })
-  } catch (e) {
-    console.error('Failed to save doc file:', e)
-    alert('保存文档文件失败: ' + e.message)
-    return
-  }
-
-  // 2. 如果是编辑且名称改变了，删除旧文件
-  if (editingDocument.value && oldName && oldName !== sanitizedName) {
-    try {
-      await window.electronAPI.deleteDoc({ docId: oldName })
-    } catch (e) {
-      console.warn('Failed to delete old doc file:', e)
-    }
-  }
-
-  // 3. 更新 app.json 中的文档元数据（使用名称作为 id）
-  if (editingDocument.value) {
-    const index = documents.value.findIndex(d => d.id === editingDocument.value.id || d.name === editingDocument.value.name)
-    if (index !== -1) {
-      documents.value[index] = {
-        id: sanitizedName,
-        name: formData.name,
-        summary: formData.summary
-      }
-    }
-  } else {
-    documents.value.push({
-      id: sanitizedName,
-      name: formData.name,
-      summary: formData.summary
-    })
-  }
-
-  showDocumentDialog.value = false
-  await saveAppConfig()
-}
-
-// ========== Bark 通知 ==========
-async function testBarkUrl() {
-  if (!settings.value.barkUrl) {
-    alert('请先输入 Bark 通知链接')
-    return
-  }
-
-  testingBark.value = true
-  try {
-    const result = await barkProvider.test(settings.value.barkUrl)
-    if (result && result.success) {
-      alert('测试成功！请检查您的设备是否收到通知')
-    } else {
-      alert('测试失败: ' + result.message)
-    }
-  } catch (error) {
-    alert('测试失败: ' + error.message)
-  } finally {
-    testingBark.value = false
-  }
-}
-
-async function saveBarkUrl() {
-  savingBark.value = true
-  try {
-    const success = await saveAppConfig()
-    if (success) {
-      alert('Bark 通知链接已保存')
-    }
-  } finally {
-    savingBark.value = false
-  }
-}
+const {
+  activeSection,
+  contentRef,
+  modelSectionRef,
+  promptSectionRef,
+  softwareSectionRef,
+  navItems,
+  scrollToSection,
+  bindScrollListener,
+  unbindScrollListener
+} = useSettingsNavigation()
+
+const {
+  settings,
+  defaultConfig,
+  models,
+  selectedModelId,
+  prompts,
+  documents,
+  showModelDialog,
+  editingModel,
+  showDefaultConfigDialog,
+  showPromptDialog,
+  editingPrompt,
+  showDocumentDialog,
+  editingDocument,
+  showMappingDialog,
+  pendingModel,
+  effortOptions,
+  loadSettings,
+  saveSoftwareSettings,
+  handleAddModel,
+  handleEditModel,
+  handleDeleteModel,
+  handleSaveModel,
+  handleSelectModel,
+  handleSetModelDefaultCard,
+  handleToggleModelActive,
+  handleApplyModel,
+  handleMappingConfirm,
+  handleEditDefaultConfig,
+  handleSaveDefaultConfig,
+  handleAddPrompt,
+  handleEditPrompt,
+  handleDeletePrompt,
+  handleTogglePromptActive,
+  handleSavePrompt,
+  handleAddDocument,
+  handleEditDocument,
+  handleDeleteDocument,
+  handleToggleDocumentActive,
+  handleSaveDocument,
+  testBarkUrl,
+  saveBarkUrl
+} = useSettingsData(emit)
 
 // ========== 生命周期 ==========
 onMounted(() => {
-  if (contentRef.value) {
-    contentRef.value.addEventListener('scroll', handleScroll)
-  }
+  bindScrollListener()
   loadSettings()
 })
 
 onUnmounted(() => {
-  if (contentRef.value) {
-    contentRef.value.removeEventListener('scroll', handleScroll)
-  }
+  unbindScrollListener()
 })
 
 function handleClose() {

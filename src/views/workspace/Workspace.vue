@@ -1,8 +1,7 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
 import { useSessionStore } from '../../stores/useSessionStore'
-import { logger } from '../../utils/logger'
 import SessionSidebar from './components/SessionSidebar.vue'
 import Chat from './chat/Chat.vue'
 import NewSessionDialog from './components/NewSessionDialog.vue'
@@ -13,362 +12,61 @@ import SwitchConfirmDialog from './components/SwitchConfirmDialog.vue'
 import ProjectConfigDialog from './components/ProjectConfigDialog.vue'
 import SessionConfigDialog from './components/SessionConfigDialog.vue'
 import SettingsDialog from '@/views/settings/SettingsDialog.vue'
+import { useWorkspaceLayout } from './hooks/useWorkspaceLayout'
+import { useWorkspaceDialogs } from './hooks/useWorkspaceDialogs'
 
 const store = useAppStore()
 const sessionStore = useSessionStore()
+const {
+  sessionSidebarRef,
+  chatRef,
+  sidebarWidth,
+  sidebarCollapsed,
+  toggleSidebar,
+  startResize,
+  handleResize,
+  stopResize
+} = useWorkspaceLayout()
 
-// SessionSidebar ref
-const sessionSidebarRef = ref(null)
-const chatRef = ref(null)
-
-// Dialog states
-const showNewSessionDialog = ref(false)
-const showConfirmDialog = ref(false)
-const showRenameDialog = ref(false)
-const showProjectSwitchDialog = ref(false)
-const showSwitchConfirmDialog = ref(false)
-const showProjectConfigDialog = ref(false)
-const showSessionConfigDialog = ref(false)
-const showSettingsDialog = ref(false)
-const selectedSessionForConfig = ref(null)
-const selectedProject = ref(null)
-const confirmDialogConfig = ref({
-  title: '',
-  message: '',
-  onConfirm: () => {}
+const {
+  showNewSessionDialog,
+  showConfirmDialog,
+  showRenameDialog,
+  showProjectSwitchDialog,
+  showSwitchConfirmDialog,
+  showProjectConfigDialog,
+  showSessionConfigDialog,
+  showSettingsDialog,
+  selectedSessionForConfig,
+  selectedProject,
+  confirmDialogConfig,
+  renameDialogConfig,
+  handleNewSession,
+  handleDeleteSession,
+  handleRenameSession,
+  handleRenameConfirm,
+  handleCloseSession,
+  handleStartSession,
+  handleSwitchProject,
+  handleGoHomeFromSidebar,
+  handleOpenProjectConfig,
+  handleProjectConfigSaved,
+  handleSettingsSaved,
+  handleOpenSessionConfig,
+  handleDeleteSessionConfig,
+  handleCopySession,
+  handleSessionConfigSaved,
+  handleProjectSelected,
+  handleReplaceProject,
+  handleNewWindow,
+  handleGoHomeFromDialog,
+  handleSelectSession
+} = useWorkspaceDialogs({
+  store,
+  sessionStore,
+  sessionSidebarRef,
+  chatRef
 })
-const renameDialogConfig = ref({
-  title: '',
-  initialName: '',
-  type: '',
-  item: null
-})
-
-// Sidebar width (resizable)
-const sidebarWidth = ref(260)
-const isResizing = ref(false)
-const sidebarCollapsed = ref(false)
-
-// Toggle sidebar
-function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-}
-
-// Start resizing
-function startResize(event) {
-  isResizing.value = true
-  event.preventDefault()
-}
-
-// Handle resize
-function handleResize(event) {
-  if (!isResizing.value) return
-
-  const newWidth = event.clientX
-  if (newWidth >= 180 && newWidth <= 500) {
-    sidebarWidth.value = newWidth
-  }
-}
-
-// Stop resizing
-function stopResize() {
-  isResizing.value = null
-}
-
-// Dialog handlers
-function handleNewSession() {
-  if (!store.currentProject) {
-    alert('请先选择一个项目')
-    return
-  }
-  showNewSessionDialog.value = true
-}
-
-async function handleDeleteSession(session) {
-  confirmDialogConfig.value = {
-    title: '删除会话',
-    message: `确定要删除会话 "${session.name || session.id.slice(0, 8)}" 吗？\n此操作不可撤销。`,
-    onConfirm: async () => {
-      await store.deleteSession(session.id)
-      showConfirmDialog.value = false
-    }
-  }
-  showConfirmDialog.value = true
-}
-
-function handleRenameSession(session) {
-  renameDialogConfig.value = {
-    title: '重命名会话',
-    initialName: session.name || '',
-    type: 'session',
-    item: session
-  }
-  showRenameDialog.value = true
-}
-
-async function handleRenameConfirm(newName) {
-  const { type, item } = renameDialogConfig.value
-  try {
-    if (type === 'session') {
-      await store.renameSession(item.id, newName)
-    }
-  } catch (e) {
-    alert('重命名失败: ' + e.message)
-  }
-  showRenameDialog.value = false
-}
-
-async function handleCloseSession(session) {
-  // 获取会话的完整状态
-  const sessionState = sessionStore.sessions.get(session.id)
-
-  // 如果正在处理，显示确认对话框
-  if (sessionState?.isProcessing) {
-    confirmDialogConfig.value = {
-      title: '确认关闭',
-      message: '会话正在处理中，关闭将中断当前操作。确定要关闭吗？',
-      onConfirm: () => {
-        performCloseSession(session, sessionState)
-        showConfirmDialog.value = false
-      }
-    }
-    showConfirmDialog.value = true
-  } else {
-    // 不在处理中，直接关闭
-    await performCloseSession(session, sessionState)
-  }
-}
-
-async function performCloseSession(session, sessionState) {
-  try {
-    // 如果正在处理，添加中断消息并停止计时
-    if (sessionState?.isProcessing) {
-      // 停止所有正在执行的工具和流式传输
-      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-        const msg = sessionState.messages[i]
-
-        // 停止流式传输的 assistant 消息
-        if (msg.isStreaming) {
-          msg.isStreaming = false
-          if (msg.startTime && !msg.duration) {
-            msg.duration = Date.now() - msg.startTime
-          }
-        }
-
-        // 停止正在执行的工具
-        if (msg.isExecuting) {
-          msg.isExecuting = false
-          if (msg.startTime && !msg.duration) {
-            msg.duration = Date.now() - msg.startTime
-          }
-        }
-      }
-
-      // 添加中断消息
-      sessionState.messages.push({
-        id: `interrupt-${Date.now()}`,
-        role: 'system',
-        content: '已中断',
-        timestamp: new Date()
-      })
-
-      // 停止处理状态
-      sessionState.isProcessing = false
-    }
-
-    // 关闭 Claude 进程（保留 session，以便后续可以重新启动）
-    await window.electronAPI.stopClaude({ sessionId: session.id })
-    logger.info('[Workspace] Claude process stopped for session:', session.id)
-  } catch (e) {
-    logger.error('[Workspace] Failed to close Claude process:', { error: e.message })
-    alert('关闭 Claude 进程失败: ' + e.message)
-  }
-}
-
-async function handleStartSession(session) {
-  try {
-    // 启动 Claude 进程（不发送消息）
-    await window.electronAPI.startSession({
-      sessionId: session.id,
-      projectPath: store.currentProject?.path
-    })
-    logger.info('[Workspace] Claude process started for session:', session.id)
-
-    // 立即刷新运行状态
-    await store.fetchRunningSessions()
-  } catch (e) {
-    logger.error('[Workspace] Failed to start Claude process:', { error: e.message })
-    alert('启动 Claude 进程失败: ' + e.message)
-  }
-}
-
-// Project switching handlers
-function handleSwitchProject() {
-  showProjectSwitchDialog.value = true
-}
-
-function handleGoHomeFromSidebar() {
-  handleGoHomeFromDialog(store.hasProcessingSessions)
-}
-
-// Project config handler
-function handleOpenProjectConfig() {
-  showProjectConfigDialog.value = true
-}
-
-function handleProjectConfigSaved() {
-  showProjectConfigDialog.value = false
-  sessionSidebarRef.value?.refreshConfig()
-}
-
-async function handleSettingsSaved() {
-  await Promise.all([
-    sessionSidebarRef.value?.refreshConfig?.(),
-    chatRef.value?.refreshModelConfig?.()
-  ])
-}
-
-// Session config handlers
-function handleOpenSessionConfig(session) {
-  selectedSessionForConfig.value = session
-  showSessionConfigDialog.value = true
-}
-
-async function handleDeleteSessionConfig(session) {
-  confirmDialogConfig.value = {
-    title: '删除独立配置',
-    message: `确定要删除会话 "${session.name || session.id.slice(0, 8)}" 的独立配置吗？\n删除后将使用项目配置。`,
-    onConfirm: async () => {
-      try {
-        await window.electronAPI.deleteSessionConfig({
-          projectId: store.currentProject?.id,
-          sessionId: session.id
-        })
-        showConfirmDialog.value = false
-        sessionSidebarRef.value?.refreshConfig()
-      } catch (e) {
-        alert('删除配置失败: ' + e.message)
-      }
-    }
-  }
-  showConfirmDialog.value = true
-}
-
-async function handleCopySession(session) {
-  try {
-    const result = await window.electronAPI.copySession({
-      projectId: store.currentProject?.id,
-      sessionId: session.id
-    })
-    if (result.success) {
-      await store.fetchSessions(store.currentProject?.id)
-    } else {
-      alert('复制会话失败: ' + result.error)
-    }
-  } catch (e) {
-    alert('复制会话失败: ' + e.message)
-  }
-}
-
-function handleSessionConfigSaved() {
-  showSessionConfigDialog.value = false
-  sessionSidebarRef.value?.refreshConfig()
-}
-
-function handleProjectSelected(project) {
-  // If selected current project, just close dialog
-  if (project.id === store.currentProject?.id) {
-    showProjectSwitchDialog.value = false
-    return
-  }
-
-  selectedProject.value = project
-  showProjectSwitchDialog.value = false
-  showSwitchConfirmDialog.value = true
-}
-
-async function handleReplaceProject() {
-  try {
-    // Close all current sessions
-    for (const session of store.sessions) {
-      await sessionStore.closeSession(session.id)
-    }
-
-    // Switch project
-    store.selectProject(selectedProject.value)
-
-    showSwitchConfirmDialog.value = false
-    selectedProject.value = null
-  } catch (e) {
-    logger.error('Failed to switch project', { error: e.message })
-    alert('切换项目失败: ' + e.message)
-  }
-}
-
-async function handleNewWindow() {
-  try {
-    await window.electronAPI.openProjectInNewWindow({
-      projectId: selectedProject.value.id
-    })
-
-    showSwitchConfirmDialog.value = false
-    selectedProject.value = null
-  } catch (e) {
-    logger.error('Failed to open new window', { error: e.message })
-    alert('打开新窗口失败: ' + e.message)
-  }
-}
-
-async function handleGoHomeFromDialog(hasRunningSessions) {
-  // If there are running sessions, show confirmation
-  if (hasRunningSessions) {
-    confirmDialogConfig.value = {
-      title: '返回首页',
-      message: '当前有正在运行的会话，返回首页将中断这些操作。确定要返回吗？',
-      onConfirm: async () => {
-        await performGoHome()
-        showConfirmDialog.value = false
-      }
-    }
-    showConfirmDialog.value = true
-  } else {
-    // No running sessions, go home directly
-    await performGoHome()
-  }
-}
-
-async function performGoHome() {
-  try {
-    // Close all sessions
-    for (const session of store.sessions) {
-      await sessionStore.closeSession(session.id)
-    }
-
-    // Clear current project to return to welcome page
-    store.currentProject = null
-    store.currentSession = null
-
-    showProjectSwitchDialog.value = false
-    logger.info('[Workspace] Returned to home page')
-  } catch (e) {
-    logger.error('[Workspace] Failed to go home', { error: e.message })
-    alert('返回首页失败: ' + e.message)
-  }
-}
-
-// Handle session selection
-async function handleSelectSession(sessionId) {
-  // Find the session object from the list
-  const session = store.currentProjectSessions.find(s => s.id === sessionId)
-  if (session) {
-    try {
-      await store.selectSession(session)
-    } catch (e) {
-      logger.error('Failed to select session', { error: e.message, sessionId })
-      alert('打开会话失败: ' + e.message)
-    }
-  }
-}
 
 // Initialize
 onMounted(async () => {
@@ -434,7 +132,7 @@ onUnmounted(() => {
         @switchProject="handleSwitchProject"
         @home="handleGoHomeFromSidebar"
         @openAppSettings="showSettingsDialog = true"
-        @openProjectConfig="showProjectConfigDialog = true"
+        @openProjectConfig="handleOpenProjectConfig"
         @openSessionConfig="handleOpenSessionConfig"
         @deleteSessionConfig="handleDeleteSessionConfig"
         @copySession="handleCopySession"

@@ -4,7 +4,7 @@
  * 基于 BaseDialog，添加表单相关功能
  */
 import { ref, watch } from 'vue'
-import BaseDialog from '@/components/common/BaseDialog.vue'
+import BaseDialog from '@/components/base/BaseDialog.vue'
 
 const props = defineProps({
   visible: {

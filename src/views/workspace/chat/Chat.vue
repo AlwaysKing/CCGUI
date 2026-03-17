@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
+import { useAttrs, ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import { useSessionStore } from '../../../stores/useSessionStore'
 import { useAppStore } from '../../../stores/useAppStore'
 import { logger } from '../../../utils/logger'
@@ -25,6 +25,7 @@ import TaskFloatingWindow from './components/TaskFloatingWindow.vue'
 
 const sessionStore = useSessionStore()
 const appStore = useAppStore()
+const attrs = useAttrs()
 
 // 使用 composables
 // useMessage composable 的功能已移至 MessageList 组件
@@ -38,11 +39,19 @@ const props = defineProps({
   sidebarWidth: {
     type: Number,
     default: 260
+  },
+  showCollapseToggle: {
+    type: Boolean,
+    default: false
+  },
+  isCollapsedByPreview: {
+    type: Boolean,
+    default: false
   }
 })
 
 // Emits
-const emit = defineEmits(['toggleSidebar', 'startSession', 'closeSession'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'startSession', 'closeSession'])
 
 // 使用 SessionStore 的状态（只读 computed）
 const messages = computed(() => sessionStore.currentMessages)
@@ -1469,14 +1478,17 @@ async function handleQuestionAnswer(requestId, answers) {
 </script>
 
 <template>
-  <div class="chat-window">
+  <div class="chat-window" v-bind="attrs">
     <!-- Top Bar: Environment Bar -->
     <EnvInfoBar
       :env-info="envInfo"
       :project-path="appStore.currentProject?.path"
       :sidebar-collapsed="sidebarCollapsed"
       :permission-mode="permissionMode"
+      :show-collapse-toggle="showCollapseToggle"
+      :is-chat-collapsed="isCollapsedByPreview"
       @toggle-sidebar="emit('toggleSidebar')"
+      @toggle-collapse="emit('toggleCollapse')"
       @pid-click="handlePidClick"
     />
     <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight, flex: '0 0 auto' } : {}">
@@ -1506,6 +1518,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
     <!-- 任务浮动窗口 - 在 messages 容器外,不受滚动影响 -->
     <TaskFloatingWindow
+      v-if="!isCollapsedByPreview"
       :sidebar-collapsed="sidebarCollapsed"
       :sidebar-width="sidebarWidth"
     />
@@ -1668,8 +1681,13 @@ async function handleQuestionAnswer(requestId, answers) {
 .chat-window {
   position: relative; /* 为 PermissionDialog 提供定位基准 */
   height: 100%;
+  width: 100%;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Top Bar: Expand Button + Environment Bar */

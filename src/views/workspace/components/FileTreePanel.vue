@@ -44,14 +44,26 @@ const emit = defineEmits(['refresh', 'toggle-preview-panel', 'toggle-directory',
       </div>
       <div class="header-actions">
         <button class="refresh-btn" title="刷新文件树" @click.stop="emit('refresh')">
-          ↻
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 2v6h-6"></path>
+            <path d="M3 11a9 9 0 0 1 15.55-5.36L21 8"></path>
+            <path d="M3 22v-6h6"></path>
+            <path d="M21 13a9 9 0 0 1-15.55 5.36L3 16"></path>
+          </svg>
         </button>
         <button
           class="refresh-btn"
           :title="previewPanelVisible ? '隐藏预览区' : '显示预览区'"
           @click.stop="emit('toggle-preview-panel')"
         >
-          {{ previewPanelVisible ? '◧' : '◨' }}
+          <svg v-if="previewPanelVisible" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+            <path d="M9 4v16"></path>
+          </svg>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+            <path d="M15 4v16"></path>
+          </svg>
         </button>
       </div>
     </div>
@@ -117,13 +129,18 @@ const emit = defineEmits(['refresh', 'toggle-preview-panel', 'toggle-directory',
 }
 
 .refresh-btn {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border: none;
   border-radius: 5px;
   background: transparent;
   color: #A1A1AA;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s, color 0.15s;
 }
 
 .refresh-btn:hover {

@@ -14,10 +14,14 @@ const props = defineProps({
   activeTab: {
     type: Object,
     default: null
+  },
+  isChatCollapsed: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel'])
+const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel'])
 
 const titleText = computed(() => {
   if (!props.activeTab) return '文件预览'
@@ -45,6 +49,12 @@ function handleActivateTab(event, tabPath) {
   event.preventDefault()
   event.stopPropagation()
   emit('activate-tab', tabPath)
+}
+
+function handleToggleChatPanel(event) {
+  event.preventDefault()
+  event.stopPropagation()
+  emit('toggle-chat-panel')
 }
 </script>
 
@@ -75,6 +85,18 @@ function handleActivateTab(event, tabPath) {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M14 6l-6 6 6 6"/>
           <path d="M20 5v14"/>
+        </svg>
+      </button>
+
+      <button
+        v-if="isChatCollapsed"
+        class="tab-bar-chat-btn"
+        title="展开聊天区"
+        @mousedown.stop
+        @click="handleToggleChatPanel"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
         </svg>
       </button>
     </div>
@@ -142,7 +164,6 @@ function handleActivateTab(event, tabPath) {
 }
 
 .tab-bar-close-btn {
-  margin-left: auto;
   width: 42px;
   height: 41.5px;
   padding: 0;
@@ -161,6 +182,26 @@ function handleActivateTab(event, tabPath) {
   pointer-events: auto;
 }
 
+.tab-bar-chat-btn {
+  width: 42px;
+  height: 41.5px;
+  padding: 0;
+  border: none;
+  border-left: 1px solid #2F3239;
+  background: #17191E;
+  color: #E4E4E7;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.tab-bar-chat-btn:hover,
 .tab-bar-close-btn:hover {
   background: #23262D;
 }

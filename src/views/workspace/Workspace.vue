@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
 import { useSessionStore } from '../../stores/useSessionStore'
 import { useFileBrowserStore } from '../../stores/useFileBrowserStore'
@@ -22,6 +22,9 @@ const sessionStore = useSessionStore()
 const fileBrowserStore = useFileBrowserStore()
 const previewWidth = ref(42)
 const isPreviewResizing = ref(false)
+const isChatCollapsed = ref(false)
+const lastExpandedPreviewWidth = ref(42)
+const CHAT_MIN_WIDTH = 360
 const {
   sessionSidebarRef,
   chatRef,
@@ -81,6 +84,78 @@ async function handlePinFile(node) {
   await fileBrowserStore.pinFile(node.path)
 }
 
+const shouldShowChatPanel = computed(() => {
+  return !fileBrowserStore.shouldShowPreviewPanel || !isChatCollapsed.value
+})
+
+const previewPanelStyle = computed(() => {
+  if (!fileBrowserStore.shouldShowPreviewPanel) {
+    return undefined
+  }
+
+  if (isChatCollapsed.value) {
+    return {
+      width: '100%',
+      maxWidth: '100%',
+      minWidth: '0',
+      flex: '1 1 auto'
+    }
+  }
+
+  return {
+    width: `${previewWidth.value}%`
+  }
+})
+
+const chatPanelHostStyle = computed(() => {
+  if (!store.currentSession) {
+    return undefined
+  }
+
+    if (!shouldShowChatPanel.value) {
+      return {
+        width: '0px',
+        minWidth: '0px',
+        flex: '0 0 0px',
+      overflow: 'hidden',
+      border: 'none'
+    }
+  }
+
+  return undefined
+})
+
+function syncExpandedPreviewWidth() {
+  if (!isChatCollapsed.value) {
+    lastExpandedPreviewWidth.value = previewWidth.value
+  }
+}
+
+function collapseChatPanel() {
+  if (!fileBrowserStore.shouldShowPreviewPanel || isChatCollapsed.value) return
+  lastExpandedPreviewWidth.value = previewWidth.value
+  isChatCollapsed.value = true
+}
+
+function expandChatPanel(restorePreviousWidth = true) {
+  if (!fileBrowserStore.shouldShowPreviewPanel) return
+  isChatCollapsed.value = false
+  if (restorePreviousWidth) {
+    previewWidth.value = Math.max(24, Math.min(65, lastExpandedPreviewWidth.value))
+  }
+}
+
+function toggleChatPanelCollapse() {
+  if (!fileBrowserStore.shouldShowPreviewPanel) return
+
+  if (isChatCollapsed.value) {
+    expandChatPanel(true)
+    return
+  }
+
+  collapseChatPanel()
+}
+
 function startPreviewResize(event) {
   isPreviewResizing.value = true
   event.preventDefault()
@@ -93,18 +168,41 @@ function handlePreviewResize(event) {
   const mainContent = document.querySelector('.main-content')
   if (!workspaceBody || !mainContent) return
 
-  const workspaceRect = workspaceBody.getBoundingClientRect()
   const mainRect = mainContent.getBoundingClientRect()
-  const sidebarCurrentWidth = mainRect.left - workspaceRect.left
-  const relativeX = event.clientX - workspaceRect.left - sidebarCurrentWidth
-  const nextPercent = (relativeX / mainRect.width) * 100
+  const previewWidthPx = event.clientX - mainRect.left
+  const chatWidthPx = mainRect.right - event.clientX
 
+  if (isChatCollapsed.value) {
+    if (previewWidthPx < mainRect.width - 2) {
+      isChatCollapsed.value = false
+      previewWidth.value = ((mainRect.width - CHAT_MIN_WIDTH) / mainRect.width) * 100
+      syncExpandedPreviewWidth()
+    }
+    return
+  }
+
+  if (chatWidthPx <= CHAT_MIN_WIDTH) {
+    collapseChatPanel()
+    return
+  }
+
+  const nextPercent = (previewWidthPx / mainRect.width) * 100
   previewWidth.value = Math.max(24, Math.min(65, nextPercent))
+  syncExpandedPreviewWidth()
 }
 
 function stopPreviewResize() {
   isPreviewResizing.value = false
 }
+
+watch(() => fileBrowserStore.shouldShowPreviewPanel, (visible) => {
+  if (!visible) {
+    isChatCollapsed.value = false
+  } else {
+    previewWidth.value = Math.max(24, Math.min(65, previewWidth.value))
+    syncExpandedPreviewWidth()
+  }
+})
 
 // Initialize
 onMounted(async () => {
@@ -205,15 +303,17 @@ onUnmounted(() => {
       <main class="main-content">
         <FilePreviewPanel
           :visible="fileBrowserStore.shouldShowPreviewPanel"
-          :style="fileBrowserStore.shouldShowPreviewPanel ? { width: `${previewWidth}%` } : undefined"
+          :style="previewPanelStyle"
           :tabs="fileBrowserStore.tabs"
           :active-tab="fileBrowserStore.activeTab"
+          :is-chat-collapsed="isChatCollapsed"
           @activate-tab="fileBrowserStore.setActiveTab"
           @close-tab="fileBrowserStore.closeTab"
           @close-others="fileBrowserStore.closeOtherTabs"
           @update-content="fileBrowserStore.updateTabContent"
           @save-file="fileBrowserStore.saveFile"
           @close-panel="fileBrowserStore.hidePreviewPanel"
+          @toggle-chat-panel="toggleChatPanelCollapse"
         />
 
         <div
@@ -223,17 +323,26 @@ onUnmounted(() => {
           @mousedown="startPreviewResize"
         ></div>
 
-        <Chat
+        <div
           v-if="store.currentSession"
-          class="chat-panel"
-          ref="chatRef"
-          :sidebar-collapsed="sidebarCollapsed"
-          :sidebar-width="sidebarWidth"
-          @toggleSidebar="toggleSidebar"
-          @startSession="handleStartSession"
-          @closeSession="handleCloseSession"
-        />
-        <div v-else class="empty-state-wrapper">
+          class="chat-panel-host"
+          :class="{ collapsed: !shouldShowChatPanel }"
+          :style="chatPanelHostStyle"
+        >
+          <Chat
+            class="chat-panel"
+            ref="chatRef"
+            :sidebar-collapsed="sidebarCollapsed"
+            :sidebar-width="sidebarWidth"
+            :show-collapse-toggle="fileBrowserStore.shouldShowPreviewPanel"
+            :is-collapsed-by-preview="isChatCollapsed"
+            @toggleSidebar="toggleSidebar"
+            @toggleCollapse="toggleChatPanelCollapse"
+            @startSession="handleStartSession"
+            @closeSession="handleCloseSession"
+          />
+        </div>
+        <div v-if="!store.currentSession" class="empty-state-wrapper">
           <!-- Top Bar when sidebar collapsed -->
           <div v-if="sidebarCollapsed" class="empty-top-bar">
             <button
@@ -378,7 +487,24 @@ onUnmounted(() => {
 
 .chat-panel {
   flex: 1;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+  min-height: 0;
+}
+
+.chat-panel-host {
+  flex: 1;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.chat-panel-host.collapsed {
+  pointer-events: none;
 }
 
 .preview-resize-handle {

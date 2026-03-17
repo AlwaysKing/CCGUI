@@ -22,10 +22,18 @@ const props = defineProps({
   permissionMode: {
     type: String,
     default: 'default'
+  },
+  showCollapseToggle: {
+    type: Boolean,
+    default: false
+  },
+  isChatCollapsed: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['toggleSidebar', 'pidClick'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick'])
 
 // 使用 useMessage composable
 const { formatMcpServers, formatSkills } = useMessage()
@@ -79,7 +87,7 @@ function handlePidClick() {
 </script>
 
 <template>
-  <div v-if="envInfo || sidebarCollapsed" class="top-bar" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+  <div v-if="envInfo || sidebarCollapsed || showCollapseToggle" class="top-bar" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <!-- 展开按钮 (当侧边栏折叠时) -->
     <button
       v-if="sidebarCollapsed"
@@ -92,8 +100,24 @@ function handlePidClick() {
       </svg>
     </button>
 
+    <button
+      v-if="showCollapseToggle"
+      class="collapse-chat-btn"
+      :title="isChatCollapsed ? '展开聊天区' : '隐藏聊天区'"
+      @click="emit('toggleCollapse')"
+    >
+      <svg v-if="!isChatCollapsed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M10 6l6 6-6 6"></path>
+        <path d="M4 5v14"></path>
+      </svg>
+      <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M14 6l-6 6 6 6"></path>
+        <path d="M20 5v14"></path>
+      </svg>
+    </button>
+
     <!-- 环境信息栏 -->
-    <div v-if="envInfo" class="env-bar" :class="{ 'with-expand-btn': sidebarCollapsed }">
+    <div v-if="envInfo" class="env-bar" :class="{ 'with-expand-btn': sidebarCollapsed, 'with-collapse-btn': showCollapseToggle }">
       <div class="env-main">
         <span class="env-item env-item-clickable" @click="handlePidClick" :title="envInfo.claudePid ? '点击关闭 Claude' : '点击启动 Claude'">
           <span class="env-icon">⚙️</span>
@@ -204,6 +228,27 @@ function handlePidClick() {
   color: var(--text-secondary);
 }
 
+.collapse-chat-btn {
+  width: 42px;
+  height: 41.5px;
+  padding: 0;
+  border: none;
+  background: #17191E;
+  color: #E4E4E7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid var(--bg-tertiary);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+.collapse-chat-btn:hover {
+  background: #23262D;
+}
+
 .env-bar {
   flex: 1;
   position: relative;
@@ -214,6 +259,10 @@ function handlePidClick() {
 }
 
 .env-bar.with-expand-btn {
+  padding-left: 8px;
+}
+
+.env-bar.with-collapse-btn {
   padding-left: 8px;
 }
 

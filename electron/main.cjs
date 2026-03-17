@@ -74,6 +74,120 @@ function initSessionManager() {
   sessionManager = new SessionManager()
 }
 
+const FILE_TREE_IGNORES = new Set([
+  '.git',
+  'node_modules',
+  '.DS_Store',
+  '.idea',
+  '.vscode',
+  'dist',
+  'build',
+  'output'
+])
+
+const MAX_PREVIEW_FILE_SIZE = 1024 * 1024
+
+function resolveProjectTargetPath(projectPath, targetPath = '') {
+  const normalizedProjectPath = path.resolve(projectPath)
+  const normalizedTargetPath = path.resolve(normalizedProjectPath, targetPath)
+  const relativePath = path.relative(normalizedProjectPath, normalizedTargetPath)
+
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    throw new Error('目标路径超出项目目录')
+  }
+
+  return normalizedTargetPath
+}
+
+function detectLanguageFromPath(filePath) {
+  const extension = path.extname(filePath).toLowerCase()
+  const languageMap = {
+    '.js': 'javascript',
+    '.cjs': 'javascript',
+    '.mjs': 'javascript',
+    '.ts': 'typescript',
+    '.tsx': 'typescript',
+    '.jsx': 'javascript',
+    '.vue': 'xml',
+    '.json': 'json',
+    '.toml': 'ini',
+    '.yaml': 'yaml',
+    '.yml': 'yaml',
+    '.md': 'markdown',
+    '.css': 'css',
+    '.scss': 'scss',
+    '.less': 'less',
+    '.html': 'xml',
+    '.xml': 'xml',
+    '.sh': 'bash',
+    '.py': 'python',
+    '.rs': 'rust',
+    '.go': 'go',
+    '.java': 'java'
+  }
+
+  return languageMap[extension] || 'plaintext'
+}
+
+function isLikelyBinary(buffer) {
+  if (!buffer || buffer.length === 0) return false
+
+  const sampleLength = Math.min(buffer.length, 1024)
+  let suspiciousBytes = 0
+  for (let i = 0; i < sampleLength; i += 1) {
+    const byte = buffer[i]
+    if (byte === 0) return true
+    if ((byte < 7 || (byte > 14 && byte < 32)) && byte !== 9 && byte !== 10 && byte !== 13) {
+      suspiciousBytes += 1
+    }
+  }
+
+  return suspiciousBytes / sampleLength > 0.15
+}
+
+function listDirectoryEntries(projectPath, relativePath = '') {
+  const targetDir = resolveProjectTargetPath(projectPath, relativePath)
+
+  if (!fs.existsSync(targetDir)) {
+    throw new Error('目录不存在')
+  }
+
+  const stat = fs.statSync(targetDir)
+  if (!stat.isDirectory()) {
+    throw new Error('目标不是目录')
+  }
+
+  return fs.readdirSync(targetDir, { withFileTypes: true })
+    .filter(entry => !FILE_TREE_IGNORES.has(entry.name))
+    .map(entry => {
+      const entryAbsolutePath = path.join(targetDir, entry.name)
+      const entryRelativePath = path.relative(projectPath, entryAbsolutePath)
+      let hasChildren = false
+
+      if (entry.isDirectory()) {
+        try {
+          hasChildren = fs.readdirSync(entryAbsolutePath).some(childName => !FILE_TREE_IGNORES.has(childName))
+        } catch (error) {
+          hasChildren = false
+        }
+      }
+
+      return {
+        name: entry.name,
+        path: entryRelativePath,
+        type: entry.isDirectory() ? 'directory' : 'file',
+        extension: entry.isDirectory() ? '' : path.extname(entry.name).toLowerCase(),
+        hasChildren
+      }
+    })
+    .sort((left, right) => {
+      if (left.type !== right.type) {
+        return left.type === 'directory' ? -1 : 1
+      }
+      return left.name.localeCompare(right.name, 'zh-Hans-CN', { sensitivity: 'base' })
+    })
+}
+
 
 
 // ============================================
@@ -1010,6 +1124,108 @@ ipcMain.handle('update-window-title', async (event, { title }) => {
     return { success: true }
   }
   return { success: false, error: 'Window not found' }
+})
+
+ipcMain.handle('list-project-files', async (event, { projectPath, relativePath = '' }) => {
+  try {
+    if (!projectPath) {
+      throw new Error('缺少项目路径')
+    }
+
+    const entries = listDirectoryEntries(projectPath, relativePath)
+    return { success: true, entries }
+  } catch (error) {
+    logger.error('[Files] Failed to list project files', { projectPath, relativePath, error: error.message })
+    return { success: false, error: error.message, entries: [] }
+  }
+})
+
+ipcMain.handle('read-project-file', async (event, { projectPath, filePath }) => {
+  try {
+    if (!projectPath || !filePath) {
+      throw new Error('缺少文件路径')
+    }
+
+    const absolutePath = resolveProjectTargetPath(projectPath, filePath)
+    const stat = fs.statSync(absolutePath)
+
+    if (!stat.isFile()) {
+      throw new Error('目标不是文件')
+    }
+
+    if (stat.size > MAX_PREVIEW_FILE_SIZE) {
+      return {
+        success: false,
+        error: '文件过大，暂不支持预览',
+        code: 'FILE_TOO_LARGE',
+        file: {
+          path: filePath,
+          size: stat.size,
+          language: detectLanguageFromPath(filePath)
+        }
+      }
+    }
+
+    const buffer = fs.readFileSync(absolutePath)
+    if (isLikelyBinary(buffer)) {
+      return {
+        success: false,
+        error: '当前文件是二进制文件，暂不支持预览',
+        code: 'BINARY_FILE',
+        file: {
+          path: filePath,
+          size: stat.size,
+          language: detectLanguageFromPath(filePath)
+        }
+      }
+    }
+
+    return {
+      success: true,
+      file: {
+        path: filePath,
+        name: path.basename(filePath),
+        language: detectLanguageFromPath(filePath),
+        content: buffer.toString('utf8'),
+        size: stat.size,
+        updatedAt: stat.mtime.toISOString()
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to read project file', { projectPath, filePath, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('write-project-file', async (event, { projectPath, filePath, content }) => {
+  try {
+    if (!projectPath || !filePath) {
+      throw new Error('缺少文件路径')
+    }
+
+    const absolutePath = resolveProjectTargetPath(projectPath, filePath)
+    const existingStat = fs.existsSync(absolutePath) ? fs.statSync(absolutePath) : null
+    if (existingStat && !existingStat.isFile()) {
+      throw new Error('目标不是文件')
+    }
+
+    fs.writeFileSync(absolutePath, content ?? '', 'utf8')
+    const stat = fs.statSync(absolutePath)
+
+    return {
+      success: true,
+      file: {
+        path: filePath,
+        name: path.basename(filePath),
+        language: detectLanguageFromPath(filePath),
+        size: stat.size,
+        updatedAt: stat.mtime.toISOString()
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to write project file', { projectPath, filePath, error: error.message })
+    return { success: false, error: error.message }
+  }
 })
 
 // ============================================

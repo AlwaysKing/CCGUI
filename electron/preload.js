@@ -161,6 +161,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkProjectExists: (options) => ipcRenderer.invoke('check-project-exists', options),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   updateWindowTitle: (options) => ipcRenderer.invoke('update-window-title', options),
+  listProjectFiles: (options) => ipcRenderer.invoke('list-project-files', options),
+  readProjectFile: (options) => ipcRenderer.invoke('read-project-file', options),
+  writeProjectFile: (options) => ipcRenderer.invoke('write-project-file', options),
 
   // ============================================
   // Project Config API

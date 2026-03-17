@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useAppStore } from '../../../stores/useAppStore'
+import FileTreePanel from './FileTreePanel.vue'
 
 const props = defineProps({
   sessions: {
@@ -18,16 +19,48 @@ const props = defineProps({
   projectPath: {
     type: String,
     default: ''
+  },
+  fileTree: {
+    type: Array,
+    default: () => []
+  },
+  fileTreeLoading: {
+    type: Boolean,
+    default: false
+  },
+  fileTreeError: {
+    type: String,
+    default: ''
+  },
+  expandedDirs: {
+    type: Object,
+    default: () => new Set()
+  },
+  activeFilePath: {
+    type: String,
+    default: ''
+  },
+  isFilePanelVisible: {
+    type: Boolean,
+    default: true
+  },
+  hasOpenFiles: {
+    type: Boolean,
+    default: false
+  },
+  previewPanelVisible: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
 const systemConfig = ref(null)
 const loadingConfig = ref(false)
-const configExpanded = ref(false)
+const showConfigPanel = ref(false)
 const sessionConfigs = ref({}) // Map of sessionId -> hasCustomConfig
 const compactCountLabels = ref(new Set()) // Sessions with compact count labels
 
@@ -40,6 +73,8 @@ const contextMenu = ref({
 
 // ResizeObserver for detecting width changes
 let resizeObserver = null
+const fileSectionHeight = ref(48)
+const isDraggingFileSplit = ref(false)
 
 function checkLabelCollapse() {
   nextTick(() => {
@@ -84,6 +119,7 @@ onUnmounted(() => {
   if (resizeObserver) {
     resizeObserver.disconnect()
   }
+  stopFileSplitResize()
 })
 
 // 当前项目ID
@@ -383,9 +419,8 @@ const configSummary = computed(() => {
   }
 })
 
-// 切换配置展开状态
-function toggleConfigExpand() {
-  configExpanded.value = !configExpanded.value
+function toggleConfigPanel() {
+  showConfigPanel.value = !showConfigPanel.value
 }
 
 function handleSelect(session) {
@@ -521,6 +556,36 @@ function getProjectName(path) {
   return parts[parts.length - 1] || '会话'
 }
 
+function startFileSplitResize(event) {
+  event.preventDefault()
+  isDraggingFileSplit.value = true
+  document.addEventListener('mousemove', handleFileSplitResize)
+  document.addEventListener('mouseup', stopFileSplitResize)
+  document.body.style.cursor = 'row-resize'
+  document.body.style.userSelect = 'none'
+}
+
+function handleFileSplitResize(event) {
+  if (!isDraggingFileSplit.value) return
+
+  const body = document.querySelector('.sidebar-body')
+  if (!body) return
+
+  const rect = body.getBoundingClientRect()
+  const offset = event.clientY - rect.top
+  const percentage = (offset / rect.height) * 100
+  fileSectionHeight.value = Math.max(20, Math.min(75, percentage))
+}
+
+function stopFileSplitResize() {
+  if (!isDraggingFileSplit.value) return
+  isDraggingFileSplit.value = false
+  document.removeEventListener('mousemove', handleFileSplitResize)
+  document.removeEventListener('mouseup', stopFileSplitResize)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+}
+
 async function refreshConfig() {
   await Promise.all([
     loadSystemConfig(),
@@ -568,42 +633,42 @@ defineExpose({
       <div class="sidebar-title" :title="projectPath" @click="emit('switchProject')">
         <span class="project-name">{{ getProjectName(projectPath) }}</span>
       </div>
-      <button class="add-btn" @click="emit('newSession')" title="新建会话">
+      <button class="file-toggle-btn" @click.stop="emit('openProjectConfig')" title="项目配置">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="5" x2="12" y2="19"/>
-          <line x1="5" y1="12" x2="19" y2="12"/>
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+      <button
+        class="file-toggle-btn"
+        :class="{ active: showConfigPanel }"
+        @click="toggleConfigPanel"
+        :title="showConfigPanel ? '隐藏项目看板' : '显示项目看板'"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <path d="M9 4v16"/>
+          <path d="M15 10v10"/>
+        </svg>
+      </button>
+      <button
+        class="file-toggle-btn"
+        :class="{ active: isFilePanelVisible }"
+        @click="emit('toggleFilePanel')"
+        :title="isFilePanelVisible ? '隐藏文件列表' : '显示文件列表'"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
         </svg>
       </button>
     </div>
 
     <!-- 第三行：项目配置摘要 -->
-    <div class="sidebar-header-row3" :class="{ expanded: configExpanded }">
-      <div class="config-summary">
-        <div class="config-summary-main" @click="toggleConfigExpand">
-          <span v-if="loadingConfig" class="config-loading">加载中...</span>
-          <template v-else>
-            <div class="config-main">
-              <span class="config-label">模型:</span>
-              <span class="config-model">{{ configSummary.configName }}<span v-if="configSummary.cardName" class="card-name">({{ configSummary.cardName }})</span></span>
-              <span class="config-counts" v-if="configSummary.hasCustomConfig && (configSummary.prompts.length > 0 || configSummary.documents.length > 0)">
-                <span class="count-badge" v-if="configSummary.prompts.length > 0">{{ configSummary.prompts.length }}</span>
-                <span class="count-badge" v-if="configSummary.documents.length > 0">{{ configSummary.documents.length }}</span>
-              </span>
-            </div>
-            <svg class="expand-icon" :class="{ rotated: configExpanded }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="6 9 12 15 18 9"/>
-            </svg>
-          </template>
-        </div>
-        <button class="config-edit-btn" @click.stop="emit('openProjectConfig')" title="项目配置">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
-        </button>
+    <div v-if="showConfigPanel" class="sidebar-header-row3">
+      <div class="config-panel-header">
+        <span class="config-panel-title">项目看板</span>
       </div>
-      <!-- 展开后的详细内容 -->
-      <div class="config-details" v-if="configExpanded && !loadingConfig">
+      <div class="config-details" v-if="!loadingConfig">
         <div class="detail-section">
           <div class="detail-title">模型</div>
           <div class="detail-list">
@@ -634,71 +699,113 @@ defineExpose({
           未配置提示词和文档
         </div>
       </div>
+      <div v-else class="config-loading-panel">加载中...</div>
     </div>
 
-    <div class="session-list">
-      <div
-        v-for="session in sessions"
-        :key="session.id"
-        :data-session-id="session.id"
-        class="session-item"
-        :class="{ active: currentSession?.id === session.id }"
-        @click="handleSelect(session)"
-        @contextmenu="handleContextMenu($event, session)"
-      >
-        <div class="session-status" :class="getSessionStatus(session.id)" />
+    <div class="sidebar-body">
+      <FileTreePanel
+        v-if="isFilePanelVisible"
+        class="file-tree-section"
+        :style="{ flexBasis: `${fileSectionHeight}%` }"
+        :tree="fileTree"
+        :is-loading="fileTreeLoading"
+        :error="fileTreeError"
+        :expanded-dirs="expandedDirs"
+        :active-file-path="activeFilePath"
+        :has-open-files="hasOpenFiles"
+        :preview-panel-visible="previewPanelVisible"
+        @refresh="emit('refreshFileTree')"
+        @toggle-preview-panel="emit('togglePreviewPanel')"
+        @toggle-directory="emit('toggleDirectory', $event)"
+        @preview-file="emit('previewFile', $event)"
+        @pin-file="emit('pinFile', $event)"
+      />
 
-        <div class="session-info">
-          <div class="session-row1">
-            <span class="session-name">
-              <span class="session-name-text">{{ getSessionName(session) }}</span>
-              <span class="session-id"> - {{ session.id.slice(0, 8) }}</span>
-            </span>
+      <div
+        v-if="isFilePanelVisible"
+        class="file-session-resize"
+        :class="{ dragging: isDraggingFileSplit }"
+        @mousedown="startFileSplitResize"
+      ></div>
+
+      <div class="session-section">
+        <div class="session-section-header">
+          <div class="session-section-title">
+            <span>会话列表</span>
+            <button class="session-add-btn" @click="emit('newSession')" title="新建会话">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            </button>
           </div>
-          <div v-if="sessionHasConfig(session.id)" class="session-row2" :data-session-id="session.id">
-            <span v-if="getSessionModelInfo(session)" class="session-model">{{ getSessionModelInfo(session) }}</span>
-            <div class="session-counts-badges">
-              <span v-if="getSessionPromptDocCounts(session).promptCount > 0" class="count-badge-item">
-                <span class="badge-label" v-if="!shouldUseCompactCountLabels(session.id)">提示词:</span>{{ getSessionPromptDocCounts(session).promptCount }}
-              </span>
-              <span v-if="getSessionPromptDocCounts(session).docCount > 0" class="count-badge-item">
-                <span class="badge-label" v-if="!shouldUseCompactCountLabels(session.id)">规范:</span>{{ getSessionPromptDocCounts(session).docCount }}
-              </span>
-            </div>
-            <div class="session-counts-measure" aria-hidden="true">
-              <span v-if="getSessionPromptDocCounts(session).promptCount > 0" class="count-badge-item">
-                <span class="badge-label">提示词:</span>{{ getSessionPromptDocCounts(session).promptCount }}
-              </span>
-              <span v-if="getSessionPromptDocCounts(session).docCount > 0" class="count-badge-item">
-                <span class="badge-label">规范:</span>{{ getSessionPromptDocCounts(session).docCount }}
-              </span>
-            </div>
-          </div>
-          <div class="session-row3">
-            <span v-if="session.preview" class="session-preview">{{ session.preview }}</span>
-          </div>
-          <div class="session-row4">
-            <span>{{ session.messageCount || 0 }} 条消息, {{ formatTime(session.updatedAt) }}</span>
-          </div>
+          <span class="session-section-count">{{ sessions.length }}</span>
         </div>
 
-        <!-- Three-dot menu button -->
-        <button
-          class="session-menu-btn"
-          @click.stop="handleContextMenu($event, session)"
-          title="更多操作"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <circle cx="12" cy="5" r="2"/>
-            <circle cx="12" cy="12" r="2"/>
-            <circle cx="12" cy="19" r="2"/>
-          </svg>
-        </button>
-      </div>
+        <div class="session-list">
+          <div
+            v-for="session in sessions"
+            :key="session.id"
+            :data-session-id="session.id"
+            class="session-item"
+            :class="{ active: currentSession?.id === session.id }"
+            @click="handleSelect(session)"
+            @contextmenu="handleContextMenu($event, session)"
+          >
+            <div class="session-status" :class="getSessionStatus(session.id)" />
 
-      <div v-if="sessions.length === 0" class="empty-list">
-        <p>暂无会话</p>
-        <p class="hint">点击 + 创建新会话</p>
+            <div class="session-info">
+              <div class="session-row1">
+                <span class="session-name">
+                  <span class="session-name-text">{{ getSessionName(session) }}</span>
+                  <span class="session-id"> - {{ session.id.slice(0, 8) }}</span>
+                </span>
+              </div>
+              <div v-if="sessionHasConfig(session.id)" class="session-row2" :data-session-id="session.id">
+                <span v-if="getSessionModelInfo(session)" class="session-model">{{ getSessionModelInfo(session) }}</span>
+                <div class="session-counts-badges">
+                  <span v-if="getSessionPromptDocCounts(session).promptCount > 0" class="count-badge-item">
+                    <span class="badge-label" v-if="!shouldUseCompactCountLabels(session.id)">提示词:</span>{{ getSessionPromptDocCounts(session).promptCount }}
+                  </span>
+                  <span v-if="getSessionPromptDocCounts(session).docCount > 0" class="count-badge-item">
+                    <span class="badge-label" v-if="!shouldUseCompactCountLabels(session.id)">规范:</span>{{ getSessionPromptDocCounts(session).docCount }}
+                  </span>
+                </div>
+                <div class="session-counts-measure" aria-hidden="true">
+                  <span v-if="getSessionPromptDocCounts(session).promptCount > 0" class="count-badge-item">
+                    <span class="badge-label">提示词:</span>{{ getSessionPromptDocCounts(session).promptCount }}
+                  </span>
+                  <span v-if="getSessionPromptDocCounts(session).docCount > 0" class="count-badge-item">
+                    <span class="badge-label">规范:</span>{{ getSessionPromptDocCounts(session).docCount }}
+                  </span>
+                </div>
+              </div>
+              <div class="session-row3">
+                <span v-if="session.preview" class="session-preview">{{ session.preview }}</span>
+              </div>
+              <div class="session-row4">
+                <span>{{ session.messageCount || 0 }} 条消息, {{ formatTime(session.updatedAt) }}</span>
+              </div>
+            </div>
+
+            <button
+              class="session-menu-btn"
+              @click.stop="handleContextMenu($event, session)"
+              title="更多操作"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="12" cy="5" r="2"/>
+                <circle cx="12" cy="12" r="2"/>
+                <circle cx="12" cy="19" r="2"/>
+              </svg>
+            </button>
+          </div>
+
+          <div v-if="sessions.length === 0" class="empty-list">
+            <p>暂无会话</p>
+            <p class="hint">点击 + 创建新会话</p>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -918,6 +1025,10 @@ defineExpose({
   color: #F4F4F5;
 }
 
+.sidebar-title + .file-toggle-btn {
+  margin-left: -2px;
+}
+
 .add-btn {
   padding: 4px;
   background: transparent;
@@ -933,8 +1044,102 @@ defineExpose({
   color: #D1D5DB;
 }
 
+.file-toggle-btn {
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: #6B7280;
+  cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-toggle-btn:hover,
+.file-toggle-btn.active {
+  background: #374151;
+  color: #D1D5DB;
+}
+
+.sidebar-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.file-tree-section {
+  flex: 0 0 48%;
+  min-height: 220px;
+}
+
+.file-session-resize {
+  height: 5px;
+  flex-shrink: 0;
+  background: transparent;
+  cursor: row-resize;
+  transition: background 0.15s;
+}
+
+.file-session-resize:hover,
+.file-session-resize.dragging {
+  background: #F97316;
+}
+
+.session-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid #2C2C31;
+  background: #1A1B1F;
+  color: #D4D4D8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.session-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-section-count {
+  color: #71717A;
+  font-weight: 500;
+}
+
+.session-add-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #6B7280;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.session-add-btn:hover {
+  background: #2A2D33;
+  color: #E4E4E7;
+}
+
 .session-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px;
 }
@@ -1361,106 +1566,23 @@ defineExpose({
   background: #1E1E1E;
 }
 
-.config-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 16px;
-  gap: 8px;
-  user-select: none;
+.config-panel-header {
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid #2C2C31;
+  background: #1A1B1F;
 }
 
-.config-summary:hover {
-  background: #252526;
+.config-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #D4D4D8;
+  line-height: 1;
 }
 
-.config-summary-main {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex: 1;
-  min-width: 0;
-  cursor: pointer;
-}
-
-.config-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-
-.config-label {
-  font-size: 11px;
-  color: #6B7280;
-  flex-shrink: 0;
-}
-
-.config-model {
-  font-size: 11px;
-  color: #D1D5DB;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.config-model .card-name {
-  color: #6B7280;
-  font-weight: 400;
-}
-
-.config-counts {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.count-badge {
-  font-size: 10px;
-  padding: 1px 5px;
-  background: #374151;
-  color: #9CA3AF;
-  border-radius: 3px;
-}
-
-.config-default {
-  font-size: 11px;
-  color: #6B7280;
-}
-
-.expand-icon {
-  flex-shrink: 0;
-  color: #6B7280;
-  transition: transform 0.2s ease;
-}
-
-.expand-icon.rotated {
-  transform: rotate(180deg);
-}
-
-.config-edit-btn {
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  background: transparent;
-  border: none;
+.config-loading-panel {
+  padding: 10px 12px 12px;
+  font-size: 12px;
   color: #71717A;
-  cursor: pointer;
-  border-radius: 5px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.78;
-  transition: background 0.15s, color 0.15s, opacity 0.15s;
-}
-
-.config-edit-btn:hover {
-  background: #3F3F46;
-  color: #E4E4E7;
-  opacity: 1;
 }
 
 /* 展开后的详细内容 */

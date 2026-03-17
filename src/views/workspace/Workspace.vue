@@ -1,8 +1,10 @@
 <script setup>
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
 import { useSessionStore } from '../../stores/useSessionStore'
+import { useFileBrowserStore } from '../../stores/useFileBrowserStore'
 import SessionSidebar from './components/SessionSidebar.vue'
+import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import Chat from './chat/Chat.vue'
 import NewSessionDialog from './components/NewSessionDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -17,6 +19,9 @@ import { useWorkspaceDialogs } from './hooks/useWorkspaceDialogs'
 
 const store = useAppStore()
 const sessionStore = useSessionStore()
+const fileBrowserStore = useFileBrowserStore()
+const previewWidth = ref(42)
+const isPreviewResizing = ref(false)
 const {
   sessionSidebarRef,
   chatRef,
@@ -68,6 +73,39 @@ const {
   chatRef
 })
 
+async function handlePreviewFile(node) {
+  await fileBrowserStore.previewFile(node.path)
+}
+
+async function handlePinFile(node) {
+  await fileBrowserStore.pinFile(node.path)
+}
+
+function startPreviewResize(event) {
+  isPreviewResizing.value = true
+  event.preventDefault()
+}
+
+function handlePreviewResize(event) {
+  if (!isPreviewResizing.value) return
+
+  const workspaceBody = document.querySelector('.workspace-body')
+  const mainContent = document.querySelector('.main-content')
+  if (!workspaceBody || !mainContent) return
+
+  const workspaceRect = workspaceBody.getBoundingClientRect()
+  const mainRect = mainContent.getBoundingClientRect()
+  const sidebarCurrentWidth = mainRect.left - workspaceRect.left
+  const relativeX = event.clientX - workspaceRect.left - sidebarCurrentWidth
+  const nextPercent = (relativeX / mainRect.width) * 100
+
+  previewWidth.value = Math.max(24, Math.min(65, nextPercent))
+}
+
+function stopPreviewResize() {
+  isPreviewResizing.value = false
+}
+
 // Initialize
 onMounted(async () => {
   // Fetch sessions for current project
@@ -78,6 +116,8 @@ onMounted(async () => {
   // Add global event listeners
   window.addEventListener('mousemove', handleResize)
   window.addEventListener('mouseup', stopResize)
+  window.addEventListener('mousemove', handlePreviewResize)
+  window.addEventListener('mouseup', stopPreviewResize)
 
   // Periodically update running sessions status (every 2 seconds)
   // This also fetches messageCount and updatedAt from memory
@@ -92,6 +132,8 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('mousemove', handleResize)
   window.removeEventListener('mouseup', stopResize)
+  window.removeEventListener('mousemove', handlePreviewResize)
+  window.removeEventListener('mouseup', stopPreviewResize)
 
   // Clear interval
   if (window.runningSessionsInterval) {
@@ -104,7 +146,7 @@ onUnmounted(() => {
   <div class="workspace-layout">
     <!-- Draggable Title Bar Area - 只在没有选择 session 时显示 -->
     <div
-      v-if="!store.currentSession"
+      v-if="!store.currentSession && !fileBrowserStore.shouldShowPreviewPanel"
       class="titlebar-drag-area"
       :style="{
         left: sidebarCollapsed ? '140px' : `${sidebarWidth}px`,
@@ -122,6 +164,14 @@ onUnmounted(() => {
         :current-session="store.currentSession"
         :session-statuses="store.sessionStatuses"
         :project-path="store.currentProject?.path"
+        :file-tree="fileBrowserStore.tree"
+        :file-tree-loading="fileBrowserStore.isTreeLoading"
+        :file-tree-error="fileBrowserStore.treeError"
+        :expanded-dirs="fileBrowserStore.expandedDirs"
+        :active-file-path="fileBrowserStore.activeFilePath"
+        :is-file-panel-visible="fileBrowserStore.isFilePanelVisible"
+        :has-open-files="fileBrowserStore.hasOpenFiles"
+        :preview-panel-visible="fileBrowserStore.shouldShowPreviewPanel"
         @select="handleSelectSession"
         @delete="handleDeleteSession"
         @start="handleStartSession"
@@ -136,6 +186,12 @@ onUnmounted(() => {
         @openSessionConfig="handleOpenSessionConfig"
         @deleteSessionConfig="handleDeleteSessionConfig"
         @copySession="handleCopySession"
+        @toggleFilePanel="fileBrowserStore.toggleFilePanel"
+        @togglePreviewPanel="fileBrowserStore.togglePreviewPanel"
+        @refreshFileTree="fileBrowserStore.refreshTree"
+        @toggleDirectory="fileBrowserStore.toggleDirectory"
+        @previewFile="handlePreviewFile"
+        @pinFile="handlePinFile"
       />
 
       <!-- Resize Handle -->
@@ -147,8 +203,29 @@ onUnmounted(() => {
 
       <!-- Main Content -->
       <main class="main-content">
+        <FilePreviewPanel
+          :visible="fileBrowserStore.shouldShowPreviewPanel"
+          :style="fileBrowserStore.shouldShowPreviewPanel ? { width: `${previewWidth}%` } : undefined"
+          :tabs="fileBrowserStore.tabs"
+          :active-tab="fileBrowserStore.activeTab"
+          @activate-tab="fileBrowserStore.setActiveTab"
+          @close-tab="fileBrowserStore.closeTab"
+          @close-others="fileBrowserStore.closeOtherTabs"
+          @update-content="fileBrowserStore.updateTabContent"
+          @save-file="fileBrowserStore.saveFile"
+          @close-panel="fileBrowserStore.hidePreviewPanel"
+        />
+
+        <div
+          v-if="fileBrowserStore.shouldShowPreviewPanel"
+          class="preview-resize-handle"
+          :class="{ resizing: isPreviewResizing }"
+          @mousedown="startPreviewResize"
+        ></div>
+
         <Chat
           v-if="store.currentSession"
+          class="chat-panel"
           ref="chatRef"
           :sidebar-collapsed="sidebarCollapsed"
           :sidebar-width="sidebarWidth"
@@ -295,7 +372,26 @@ onUnmounted(() => {
   flex: 1;
   overflow: hidden;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  min-width: 0;
+}
+
+.chat-panel {
+  flex: 1;
+  min-width: 0;
+}
+
+.preview-resize-handle {
+  width: 4px;
+  background: transparent;
+  cursor: col-resize;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.preview-resize-handle:hover,
+.preview-resize-handle.resizing {
+  background: #F97316;
 }
 
 .empty-state-wrapper {

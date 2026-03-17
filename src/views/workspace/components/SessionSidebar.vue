@@ -40,6 +40,14 @@ const props = defineProps({
     type: String,
     default: ''
   },
+  selectedNodePath: {
+    type: String,
+    default: ''
+  },
+  editingNodePath: {
+    type: String,
+    default: ''
+  },
   isFilePanelVisible: {
     type: Boolean,
     default: true
@@ -54,7 +62,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -64,6 +72,7 @@ const showConfigPanel = ref(false)
 const sessionConfigs = ref({}) // Map of sessionId -> hasCustomConfig
 const compactCountLabels = ref(new Set()) // Sessions with compact count labels
 
+const contextMenuRef = ref(null)
 const contextMenu = ref({
   show: false,
   x: 0,
@@ -103,6 +112,74 @@ function checkLabelCollapse() {
   })
 }
 
+function clampMenuPosition(x, y) {
+  const menuElement = contextMenuRef.value
+  if (!menuElement) {
+    return { x, y }
+  }
+
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const menuRect = menuElement.getBoundingClientRect()
+  const margin = 8
+
+  return {
+    x: Math.max(margin, Math.min(x, viewportWidth - menuRect.width - margin)),
+    y: Math.max(margin, Math.min(y, viewportHeight - menuRect.height - margin))
+  }
+}
+
+async function openContextMenuAt(x, y, session) {
+  contextMenu.value = {
+    show: true,
+    x,
+    y,
+    session
+  }
+
+  await nextTick()
+  const clamped = clampMenuPosition(x, y)
+  if (clamped.x !== contextMenu.value.x || clamped.y !== contextMenu.value.y) {
+    contextMenu.value = {
+      ...contextMenu.value,
+      x: clamped.x,
+      y: clamped.y
+    }
+  }
+}
+
+function closeContextMenu() {
+  contextMenu.value.show = false
+}
+
+function handleGlobalPointerDown(event) {
+  if (!contextMenu.value.show) return
+  if (contextMenuRef.value?.contains(event.target)) return
+  closeContextMenu()
+}
+
+function handleGlobalContextMenu(event) {
+  if (!contextMenu.value.show) return
+  if (contextMenuRef.value?.contains(event.target)) return
+  closeContextMenu()
+}
+
+function handleWindowBlur() {
+  closeContextMenu()
+}
+
+function handleViewportChange() {
+  if (!contextMenu.value.show) return
+  nextTick(() => {
+    const clamped = clampMenuPosition(contextMenu.value.x, contextMenu.value.y)
+    contextMenu.value = {
+      ...contextMenu.value,
+      x: clamped.x,
+      y: clamped.y
+    }
+  })
+}
+
 onMounted(() => {
   resizeObserver = new ResizeObserver(() => {
     checkLabelCollapse()
@@ -113,6 +190,11 @@ onMounted(() => {
   if (sessionList) {
     resizeObserver.observe(sessionList)
   }
+
+  window.addEventListener('pointerdown', handleGlobalPointerDown, true)
+  window.addEventListener('contextmenu', handleGlobalContextMenu, true)
+  window.addEventListener('blur', handleWindowBlur)
+  window.addEventListener('resize', handleViewportChange)
 })
 
 onUnmounted(() => {
@@ -120,6 +202,10 @@ onUnmounted(() => {
     resizeObserver.disconnect()
   }
   stopFileSplitResize()
+  window.removeEventListener('pointerdown', handleGlobalPointerDown, true)
+  window.removeEventListener('contextmenu', handleGlobalContextMenu, true)
+  window.removeEventListener('blur', handleWindowBlur)
+  window.removeEventListener('resize', handleViewportChange)
 })
 
 // 当前项目ID
@@ -429,12 +515,7 @@ function handleSelect(session) {
 
 function handleContextMenu(event, session) {
   event.preventDefault()
-  contextMenu.value = {
-    show: true,
-    x: event.clientX,
-    y: event.clientY,
-    session
-  }
+  openContextMenuAt(event.clientX, event.clientY, session)
 }
 
 function handleRename() {
@@ -484,10 +565,6 @@ function handleCopySession() {
     emit('copySession', contextMenu.value.session)
   }
   closeContextMenu()
-}
-
-function closeContextMenu() {
-  contextMenu.value.show = false
 }
 
 function getSessionStatus(sessionId) {
@@ -712,6 +789,8 @@ defineExpose({
         :error="fileTreeError"
         :expanded-dirs="expandedDirs"
         :active-file-path="activeFilePath"
+        :selected-node-path="selectedNodePath"
+        :editing-node-path="editingNodePath"
         :has-open-files="hasOpenFiles"
         :preview-panel-visible="previewPanelVisible"
         @refresh="emit('refreshFileTree')"
@@ -719,6 +798,12 @@ defineExpose({
         @toggle-directory="emit('toggleDirectory', $event)"
         @preview-file="emit('previewFile', $event)"
         @pin-file="emit('pinFile', $event)"
+        @select-node="emit('selectFileNode', $event)"
+        @start-rename-node="emit('startRenameFileNode', $event)"
+        @stop-rename-node="emit('stopRenameFileNode')"
+        @rename-node="emit('renameFileNode', $event)"
+        @create-entry="emit('createFileNode', $event)"
+        @delete-node="emit('deleteFileNode', $event)"
       />
 
       <div
@@ -812,6 +897,7 @@ defineExpose({
     <!-- Context Menu -->
     <div
       v-if="contextMenu.show"
+      ref="contextMenuRef"
       class="context-menu"
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
@@ -886,9 +972,6 @@ defineExpose({
         删除会话
       </button>
     </div>
-
-    <!-- Click outside to close menu -->
-    <div v-if="contextMenu.show" class="menu-overlay" @click="closeContextMenu" />
   </aside>
 </template>
 
@@ -1442,15 +1525,6 @@ defineExpose({
   height: 1px;
   background: #3F3F46;
   margin: 4px 8px;
-}
-
-.menu-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 999;
 }
 
 /* Confirmation Dialog */

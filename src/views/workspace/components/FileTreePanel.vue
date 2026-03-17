@@ -1,7 +1,8 @@
 <script setup>
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
 
-defineProps({
+const props = defineProps({
   tree: {
     type: Array,
     default: () => []
@@ -22,6 +23,14 @@ defineProps({
     type: String,
     default: ''
   },
+  selectedNodePath: {
+    type: String,
+    default: ''
+  },
+  editingNodePath: {
+    type: String,
+    default: ''
+  },
   hasOpenFiles: {
     type: Boolean,
     default: false
@@ -32,17 +41,231 @@ defineProps({
   }
 })
 
-const emit = defineEmits(['refresh', 'toggle-preview-panel', 'toggle-directory', 'preview-file', 'pin-file'])
+const emit = defineEmits([
+  'refresh',
+  'toggle-preview-panel',
+  'toggle-directory',
+  'preview-file',
+  'pin-file',
+  'select-node',
+  'start-rename-node',
+  'stop-rename-node',
+  'rename-node',
+  'create-entry',
+  'delete-node'
+])
+
+const panelRef = ref(null)
+const contextMenuRef = ref(null)
+const contextMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  node: null
+})
+
+function focusPanel() {
+  panelRef.value?.focus()
+}
+
+function clampMenuPosition(x, y) {
+  const menuElement = contextMenuRef.value
+  if (!menuElement) {
+    return { x, y }
+  }
+
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const menuRect = menuElement.getBoundingClientRect()
+  const margin = 8
+
+  return {
+    x: Math.max(margin, Math.min(x, viewportWidth - menuRect.width - margin)),
+    y: Math.max(margin, Math.min(y, viewportHeight - menuRect.height - margin))
+  }
+}
+
+async function openContextMenu({ x, y, node }) {
+  contextMenu.value = {
+    show: true,
+    x,
+    y,
+    node
+  }
+
+  await nextTick()
+  const clamped = clampMenuPosition(x, y)
+  if (clamped.x !== contextMenu.value.x || clamped.y !== contextMenu.value.y) {
+    contextMenu.value = {
+      ...contextMenu.value,
+      x: clamped.x,
+      y: clamped.y
+    }
+  }
+}
+
+function normalizePath(value = '') {
+  return String(value || '').replace(/\\/g, '/')
+}
+
+function getParentPath(targetPath = '') {
+  const normalizedPath = normalizePath(targetPath)
+  if (!normalizedPath) return ''
+  const segments = normalizedPath.split('/').filter(Boolean)
+  segments.pop()
+  return segments.join('/')
+}
+
+function findNodeByPath(nodes, targetPath) {
+  for (const node of nodes) {
+    if (node.path === targetPath) {
+      return node
+    }
+    if (node.children?.length) {
+      const found = findNodeByPath(node.children, targetPath)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+function resolveCreateParentPath(nodePath = props.selectedNodePath) {
+  const normalizedPath = normalizePath(nodePath)
+  if (!normalizedPath) return ''
+
+  const node = findNodeByPath(props.tree, normalizedPath)
+  if (!node) {
+    return getParentPath(normalizedPath)
+  }
+
+  return node.type === 'directory' ? node.path : getParentPath(node.path)
+}
+
+function closeContextMenu() {
+  contextMenu.value.show = false
+}
+
+function handleGlobalPointerDown(event) {
+  if (!contextMenu.value.show) return
+  if (contextMenuRef.value?.contains(event.target)) return
+  closeContextMenu()
+}
+
+function handleGlobalContextMenu(event) {
+  if (!contextMenu.value.show) return
+  if (contextMenuRef.value?.contains(event.target)) return
+  closeContextMenu()
+}
+
+function handleWindowBlur() {
+  closeContextMenu()
+}
+
+function handleViewportChange() {
+  if (!contextMenu.value.show) return
+  nextTick(() => {
+    const clamped = clampMenuPosition(contextMenu.value.x, contextMenu.value.y)
+    contextMenu.value = {
+      ...contextMenu.value,
+      x: clamped.x,
+      y: clamped.y
+    }
+  })
+}
+
+function handlePanelKeydown(event) {
+  if (event.key !== 'Enter') return
+  if (props.editingNodePath) return
+  if (!props.selectedNodePath) return
+  emit('start-rename-node', props.selectedNodePath)
+}
+
+function handleSelectNode(node) {
+  emit('select-node', node.path)
+  focusPanel()
+}
+
+function handleContextMenu(payload) {
+  openContextMenu({
+    x: payload.event.clientX,
+    y: payload.event.clientY,
+    node: payload.node
+  })
+  emit('select-node', payload.node.path)
+  focusPanel()
+}
+
+function handleCreateFromToolbar(type) {
+  emit('create-entry', { parentPath: resolveCreateParentPath(), type })
+  focusPanel()
+}
+
+function handleCreateFromMenu(type) {
+  const node = contextMenu.value.node
+  const parentPath = resolveCreateParentPath(node?.path || '')
+  emit('create-entry', { parentPath, type })
+  closeContextMenu()
+  focusPanel()
+}
+
+function handleRenameFromMenu() {
+  if (contextMenu.value.node) {
+    emit('start-rename-node', contextMenu.value.node.path)
+  }
+  closeContextMenu()
+  focusPanel()
+}
+
+function handleDeleteFromMenu() {
+  if (contextMenu.value.node) {
+    emit('delete-node', contextMenu.value.node.path)
+  }
+  closeContextMenu()
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', handleGlobalPointerDown, true)
+  window.addEventListener('contextmenu', handleGlobalContextMenu, true)
+  window.addEventListener('blur', handleWindowBlur)
+  window.addEventListener('resize', handleViewportChange)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', handleGlobalPointerDown, true)
+  window.removeEventListener('contextmenu', handleGlobalContextMenu, true)
+  window.removeEventListener('blur', handleWindowBlur)
+  window.removeEventListener('resize', handleViewportChange)
+})
 </script>
 
 <template>
-  <section class="file-tree-panel">
+  <section
+    ref="panelRef"
+    class="file-tree-panel"
+    tabindex="0"
+    @keydown="handlePanelKeydown"
+  >
     <div class="file-tree-header">
       <div class="header-text">
         <div class="panel-title">文件</div>
         <div class="panel-subtitle">当前项目目录</div>
       </div>
       <div class="header-actions">
+        <button class="refresh-btn" title="新建文件" @click.stop="handleCreateFromToolbar('file')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <path d="M14 2v6h6"></path>
+            <path d="M12 18v-6"></path>
+            <path d="M9 15h6"></path>
+          </svg>
+        </button>
+        <button class="refresh-btn" title="新建文件夹" @click.stop="handleCreateFromToolbar('directory')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path>
+            <path d="M12 11v6"></path>
+            <path d="M9 14h6"></path>
+          </svg>
+        </button>
         <button class="refresh-btn" title="刷新文件树" @click.stop="emit('refresh')">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 2v6h-6"></path>
@@ -79,11 +302,32 @@ const emit = defineEmits(['refresh', 'toggle-preview-panel', 'toggle-directory',
         :depth="0"
         :expanded-dirs="expandedDirs"
         :active-file-path="activeFilePath"
+        :selected-node-path="selectedNodePath"
+        :editing-node-path="editingNodePath"
         @toggle-directory="emit('toggle-directory', $event)"
         @preview-file="emit('preview-file', $event)"
         @pin-file="emit('pin-file', $event)"
+        @select-node="handleSelectNode"
+        @context-menu="handleContextMenu"
+        @rename-node="emit('rename-node', $event)"
+        @stop-rename-node="emit('stop-rename-node')"
       />
     </div>
+
+    <div
+      v-if="contextMenu.show"
+      ref="contextMenuRef"
+      class="context-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @click.stop
+    >
+      <button class="menu-item" @click="handleCreateFromMenu('directory')">新建文件夹</button>
+      <button class="menu-item" @click="handleCreateFromMenu('file')">新建文件</button>
+      <div class="menu-divider"></div>
+      <button class="menu-item" @click="handleRenameFromMenu">重命名</button>
+      <button class="menu-item danger" @click="handleDeleteFromMenu">删除</button>
+    </div>
+
   </section>
 </template>
 
@@ -93,6 +337,8 @@ const emit = defineEmits(['refresh', 'toggle-preview-panel', 'toggle-directory',
   flex-direction: column;
   min-height: 0;
   border-bottom: 1px solid #3F3F46;
+  outline: none;
+  position: relative;
 }
 
 .file-tree-header {
@@ -164,4 +410,48 @@ const emit = defineEmits(['refresh', 'toggle-preview-panel', 'toggle-directory',
 .tree-placeholder.error {
   color: #FCA5A5;
 }
+
+.context-menu {
+  position: fixed;
+  min-width: 140px;
+  padding: 4px 0;
+  background: #1E1E1E;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.5);
+  z-index: 1200;
+}
+
+.menu-item {
+  width: 100%;
+  min-height: 34px;
+  border: none;
+  background: transparent;
+  color: #E4E4E7;
+  text-align: left;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+}
+
+.menu-item:hover {
+  background: #27272A;
+}
+
+.menu-item.danger {
+  color: #EF4444;
+}
+
+.menu-item.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.menu-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: #3F3F46;
+}
+
 </style>

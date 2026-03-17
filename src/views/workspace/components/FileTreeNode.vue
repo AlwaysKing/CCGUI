@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 const props = defineProps({
   node: {
@@ -17,14 +17,35 @@ const props = defineProps({
   activeFilePath: {
     type: String,
     default: ''
+  },
+  selectedNodePath: {
+    type: String,
+    default: ''
+  },
+  editingNodePath: {
+    type: String,
+    default: ''
   }
 })
 
-const emit = defineEmits(['toggle-directory', 'preview-file', 'pin-file'])
+const emit = defineEmits([
+  'toggle-directory',
+  'preview-file',
+  'pin-file',
+  'select-node',
+  'context-menu',
+  'rename-node',
+  'stop-rename-node'
+])
+
+const renameInputRef = ref(null)
+const draftName = ref('')
 
 const isExpanded = computed(() => props.expandedDirs.has(props.node.path))
 const isDirectory = computed(() => props.node.type === 'directory')
 const isActive = computed(() => props.activeFilePath === props.node.path)
+const isSelected = computed(() => props.selectedNodePath === props.node.path)
+const isEditing = computed(() => props.editingNodePath === props.node.path)
 
 function getFileIcon() {
   if (isDirectory.value) {
@@ -41,7 +62,13 @@ function getFileIcon() {
   return '📄'
 }
 
+function selectCurrentNode() {
+  emit('select-node', props.node)
+}
+
 function handleClick() {
+  selectCurrentNode()
+
   if (isDirectory.value) {
     emit('toggle-directory', props.node)
     return
@@ -51,24 +78,55 @@ function handleClick() {
 }
 
 function handleDoubleClick() {
+  selectCurrentNode()
   if (!isDirectory.value) {
     emit('pin-file', props.node)
   }
 }
+
+function handleContextMenu(event) {
+  event.preventDefault()
+  selectCurrentNode()
+  emit('context-menu', { event, node: props.node })
+}
+
+function submitRename() {
+  emit('rename-node', {
+    path: props.node.path,
+    name: draftName.value
+  })
+}
+
+function cancelRename() {
+  draftName.value = props.node.name
+  emit('stop-rename-node')
+}
+
+watch(isEditing, async (nextValue) => {
+  if (nextValue) {
+    draftName.value = props.node.name
+    await nextTick()
+    renameInputRef.value?.focus()
+    renameInputRef.value?.select()
+  }
+}, { immediate: true })
 </script>
 
 <template>
   <div class="file-tree-node">
     <button
+      v-if="!isEditing"
       class="file-tree-row"
       :class="{
         directory: isDirectory,
-        active: isActive
+        active: isActive,
+        selected: isSelected
       }"
       :style="{ paddingLeft: `${depth * 16 + 8}px` }"
       :title="node.path"
       @click="handleClick"
       @dblclick="handleDoubleClick"
+      @contextmenu="handleContextMenu"
     >
       <span class="tree-caret">
         <template v-if="isDirectory">
@@ -77,8 +135,30 @@ function handleDoubleClick() {
       </span>
       <span class="tree-icon">{{ getFileIcon() }}</span>
       <span class="tree-name">{{ node.name }}</span>
-      <span v-if="node.loading" class="tree-meta">加载中</span>
+      <span v-if="node.loading" class="tree-meta-inline">加载中</span>
     </button>
+
+    <div
+      v-else
+      class="file-tree-row editing"
+      :style="{ paddingLeft: `${depth * 16 + 8}px` }"
+    >
+      <span class="tree-caret">
+        <template v-if="isDirectory">
+          {{ isExpanded ? '▾' : '▸' }}
+        </template>
+      </span>
+      <span class="tree-icon">{{ getFileIcon() }}</span>
+      <input
+        ref="renameInputRef"
+        v-model="draftName"
+        class="rename-input"
+        @click.stop
+        @keydown.enter.prevent="submitRename"
+        @keydown.esc.prevent="cancelRename"
+        @blur="submitRename"
+      />
+    </div>
 
     <div v-if="isDirectory && isExpanded" class="file-tree-children">
       <div v-if="node.error" class="tree-error">{{ node.error }}</div>
@@ -90,9 +170,15 @@ function handleDoubleClick() {
         :depth="depth + 1"
         :expanded-dirs="expandedDirs"
         :active-file-path="activeFilePath"
+        :selected-node-path="selectedNodePath"
+        :editing-node-path="editingNodePath"
         @toggle-directory="emit('toggle-directory', $event)"
         @preview-file="emit('preview-file', $event)"
         @pin-file="emit('pin-file', $event)"
+        @select-node="emit('select-node', $event)"
+        @context-menu="emit('context-menu', $event)"
+        @rename-node="emit('rename-node', $event)"
+        @stop-rename-node="emit('stop-rename-node')"
       />
     </div>
   </div>
@@ -122,6 +208,15 @@ function handleDoubleClick() {
 .file-tree-row.active {
   background: rgba(249, 115, 22, 0.14);
   color: #FDEAD7;
+}
+
+.file-tree-row.selected:not(.active) {
+  background: #2A2D33;
+}
+
+.file-tree-row.editing {
+  cursor: default;
+  background: #25262B;
 }
 
 .tree-caret {
@@ -154,7 +249,26 @@ function handleDoubleClick() {
   padding: 4px 8px 4px 28px;
 }
 
+.tree-meta-inline {
+  font-size: 11px;
+  color: #71717A;
+  flex-shrink: 0;
+}
+
 .tree-error {
   color: #FCA5A5;
+}
+
+.rename-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  border: 1px solid #F97316;
+  border-radius: 4px;
+  background: #111216;
+  color: #F4F4F5;
+  font-size: 12px;
+  padding: 0 8px;
+  outline: none;
 }
 </style>

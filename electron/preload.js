@@ -164,6 +164,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listProjectFiles: (options) => ipcRenderer.invoke('list-project-files', options),
   readProjectFile: (options) => ipcRenderer.invoke('read-project-file', options),
   writeProjectFile: (options) => ipcRenderer.invoke('write-project-file', options),
+  createProjectEntry: (options) => ipcRenderer.invoke('create-project-entry', options),
+  renameProjectEntry: (options) => ipcRenderer.invoke('rename-project-entry', options),
+  deleteProjectEntry: (options) => ipcRenderer.invoke('delete-project-entry', options),
 
   // ============================================
   // Project Config API

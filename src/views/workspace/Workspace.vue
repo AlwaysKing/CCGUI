@@ -84,6 +84,18 @@ async function handlePinFile(node) {
   await fileBrowserStore.pinFile(node.path)
 }
 
+async function handleCreateFileNode(payload) {
+  await fileBrowserStore.createEntry(payload?.parentPath || '', payload?.type || 'file')
+}
+
+async function handleRenameFileNode(payload) {
+  await fileBrowserStore.renameEntry(payload?.path || '', payload?.name || '')
+}
+
+async function handleDeleteFileNode(targetPath) {
+  await fileBrowserStore.deleteEntry(targetPath)
+}
+
 const shouldShowChatPanel = computed(() => {
   return !fileBrowserStore.shouldShowPreviewPanel || !isChatCollapsed.value
 })
@@ -267,6 +279,8 @@ onUnmounted(() => {
         :file-tree-error="fileBrowserStore.treeError"
         :expanded-dirs="fileBrowserStore.expandedDirs"
         :active-file-path="fileBrowserStore.activeFilePath"
+        :selected-node-path="fileBrowserStore.selectedNodePath"
+        :editing-node-path="fileBrowserStore.editingNodePath"
         :is-file-panel-visible="fileBrowserStore.isFilePanelVisible"
         :has-open-files="fileBrowserStore.hasOpenFiles"
         :preview-panel-visible="fileBrowserStore.shouldShowPreviewPanel"
@@ -290,6 +304,12 @@ onUnmounted(() => {
         @toggleDirectory="fileBrowserStore.toggleDirectory"
         @previewFile="handlePreviewFile"
         @pinFile="handlePinFile"
+        @selectFileNode="fileBrowserStore.setSelectedNode"
+        @startRenameFileNode="fileBrowserStore.startRenaming"
+        @stopRenameFileNode="fileBrowserStore.stopRenaming"
+        @renameFileNode="handleRenameFileNode"
+        @createFileNode="handleCreateFileNode"
+        @deleteFileNode="handleDeleteFileNode"
       />
 
       <!-- Resize Handle -->

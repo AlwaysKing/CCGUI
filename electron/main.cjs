@@ -97,6 +97,10 @@ const FILE_TREE_IGNORES = new Set([
 
 const MAX_PREVIEW_FILE_SIZE = 1024 * 1024
 
+function normalizePathSlashes(value = '') {
+  return String(value || '').replace(/\\/g, '/')
+}
+
 function resolveProjectTargetPath(projectPath, targetPath = '') {
   const normalizedProjectPath = path.resolve(projectPath)
   const normalizedTargetPath = path.resolve(normalizedProjectPath, targetPath)
@@ -196,6 +200,32 @@ function listDirectoryEntries(projectPath, relativePath = '') {
       }
       return left.name.localeCompare(right.name, 'zh-Hans-CN', { sensitivity: 'base' })
     })
+}
+
+function validateProjectEntryName(name) {
+  const normalizedName = String(name || '').trim()
+  if (!normalizedName) {
+    throw new Error('名称不能为空')
+  }
+  if (normalizedName === '.' || normalizedName === '..') {
+    throw new Error('名称无效')
+  }
+  if (normalizedName.includes('/') || normalizedName.includes('\\')) {
+    throw new Error('名称不能包含路径分隔符')
+  }
+  return normalizedName
+}
+
+function ensureProjectParentDirectory(projectPath, parentPath = '') {
+  const absoluteParentPath = resolveProjectTargetPath(projectPath, parentPath)
+  if (!fs.existsSync(absoluteParentPath)) {
+    throw new Error('父目录不存在')
+  }
+  const stat = fs.statSync(absoluteParentPath)
+  if (!stat.isDirectory()) {
+    throw new Error('父级目标不是目录')
+  }
+  return absoluteParentPath
 }
 
 
@@ -1234,6 +1264,132 @@ ipcMain.handle('write-project-file', async (event, { projectPath, filePath, cont
     }
   } catch (error) {
     logger.error('[Files] Failed to write project file', { projectPath, filePath, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('create-project-entry', async (event, { projectPath, parentPath = '', entryType, name }) => {
+  try {
+    if (!projectPath) {
+      throw new Error('缺少项目路径')
+    }
+
+    if (!['file', 'directory'].includes(entryType)) {
+      throw new Error('无效的条目类型')
+    }
+
+    const validatedName = validateProjectEntryName(name)
+    const absoluteParentPath = ensureProjectParentDirectory(projectPath, parentPath)
+    const absoluteTargetPath = resolveProjectTargetPath(projectPath, path.join(parentPath, validatedName))
+
+    if (fs.existsSync(absoluteTargetPath)) {
+      throw new Error('同名文件或文件夹已存在')
+    }
+
+    if (entryType === 'directory') {
+      fs.mkdirSync(absoluteTargetPath)
+    } else {
+      fs.writeFileSync(absoluteTargetPath, '', 'utf8')
+    }
+
+    const stat = fs.statSync(absoluteTargetPath)
+    return {
+      success: true,
+      entry: {
+        name: validatedName,
+        path: normalizePathSlashes(path.relative(projectPath, absoluteTargetPath)),
+        type: entryType,
+        extension: entryType === 'file' ? path.extname(validatedName).toLowerCase() : '',
+        hasChildren: entryType === 'directory' ? false : undefined,
+        updatedAt: stat.mtime.toISOString()
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to create project entry', { projectPath, parentPath, entryType, name, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('rename-project-entry', async (event, { projectPath, targetPath, newName }) => {
+  try {
+    if (!projectPath || !targetPath) {
+      throw new Error('缺少目标路径')
+    }
+
+    const validatedName = validateProjectEntryName(newName)
+    const absoluteSourcePath = resolveProjectTargetPath(projectPath, targetPath)
+    if (!fs.existsSync(absoluteSourcePath)) {
+      throw new Error('目标不存在')
+    }
+
+    const parentRelativePath = normalizePathSlashes(path.dirname(targetPath) === '.' ? '' : path.dirname(targetPath))
+    const absoluteParentPath = ensureProjectParentDirectory(projectPath, parentRelativePath)
+    const absoluteTargetPath = resolveProjectTargetPath(projectPath, path.join(parentRelativePath, validatedName))
+
+    if (absoluteSourcePath === absoluteTargetPath) {
+      const stat = fs.statSync(absoluteSourcePath)
+      return {
+        success: true,
+        entry: {
+          oldPath: normalizePathSlashes(targetPath),
+          path: normalizePathSlashes(path.relative(projectPath, absoluteSourcePath)),
+          name: validatedName,
+          type: stat.isDirectory() ? 'directory' : 'file',
+          extension: stat.isDirectory() ? '' : path.extname(validatedName).toLowerCase()
+        }
+      }
+    }
+
+    if (fs.existsSync(absoluteTargetPath)) {
+      throw new Error('同名文件或文件夹已存在')
+    }
+
+    fs.renameSync(absoluteSourcePath, absoluteTargetPath)
+    const stat = fs.statSync(absoluteTargetPath)
+
+    return {
+      success: true,
+      entry: {
+        oldPath: normalizePathSlashes(targetPath),
+        path: normalizePathSlashes(path.relative(projectPath, absoluteTargetPath)),
+        name: validatedName,
+        type: stat.isDirectory() ? 'directory' : 'file',
+        extension: stat.isDirectory() ? '' : path.extname(validatedName).toLowerCase()
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to rename project entry', { projectPath, targetPath, newName, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('delete-project-entry', async (event, { projectPath, targetPath }) => {
+  try {
+    if (!projectPath || !targetPath) {
+      throw new Error('缺少目标路径')
+    }
+
+    const absoluteTargetPath = resolveProjectTargetPath(projectPath, targetPath)
+    if (!fs.existsSync(absoluteTargetPath)) {
+      throw new Error('目标不存在')
+    }
+
+    const stat = fs.statSync(absoluteTargetPath)
+    if (stat.isDirectory()) {
+      fs.rmSync(absoluteTargetPath, { recursive: true, force: false })
+    } else {
+      fs.unlinkSync(absoluteTargetPath)
+    }
+
+    return {
+      success: true,
+      entry: {
+        path: normalizePathSlashes(targetPath),
+        type: stat.isDirectory() ? 'directory' : 'file'
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to delete project entry', { projectPath, targetPath, error: error.message })
     return { success: false, error: error.message }
   }
 })

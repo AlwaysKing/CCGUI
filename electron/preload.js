@@ -162,11 +162,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   updateWindowTitle: (options) => ipcRenderer.invoke('update-window-title', options),
   listProjectFiles: (options) => ipcRenderer.invoke('list-project-files', options),
+  getProjectGitStatus: (options) => ipcRenderer.invoke('get-project-git-status', options),
+  watchProjectFiles: (options) => ipcRenderer.invoke('watch-project-files', options),
+  unwatchProjectFiles: () => ipcRenderer.invoke('unwatch-project-files'),
+  statProjectEntry: (options) => ipcRenderer.invoke('stat-project-entry', options),
+  getProjectFileGitBase: (options) => ipcRenderer.invoke('get-project-file-git-base', options),
   readProjectFile: (options) => ipcRenderer.invoke('read-project-file', options),
   writeProjectFile: (options) => ipcRenderer.invoke('write-project-file', options),
   createProjectEntry: (options) => ipcRenderer.invoke('create-project-entry', options),
   renameProjectEntry: (options) => ipcRenderer.invoke('rename-project-entry', options),
   deleteProjectEntry: (options) => ipcRenderer.invoke('delete-project-entry', options),
+  openProjectEntryInFinder: (options) => ipcRenderer.invoke('open-project-entry-in-finder', options),
 
   // ============================================
   // Project Config API
@@ -225,4 +231,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   sendNotification: (options) => ipcRenderer.invoke('send-notification', options),
   playSystemSound: (options) => ipcRenderer.invoke('play-system-sound', options)
+})
+
+contextBridge.exposeInMainWorld('electronEvents', {
+  onProjectFilesChanged: (callback) => {
+    const listener = (event, payload) => callback(payload)
+    ipcRenderer.on('project-files-changed', listener)
+    return () => ipcRenderer.removeListener('project-files-changed', listener)
+  }
 })

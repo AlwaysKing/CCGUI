@@ -25,6 +25,9 @@ const isPreviewResizing = ref(false)
 const isChatCollapsed = ref(false)
 const lastExpandedPreviewWidth = ref(42)
 const CHAT_MIN_WIDTH = 360
+const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
+const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
+const COLLAPSED_SIDEBAR_SAFE_WIDTH = 124
 const {
   sessionSidebarRef,
   chatRef,
@@ -94,6 +97,11 @@ async function handleRenameFileNode(payload) {
 
 async function handleDeleteFileNode(targetPath) {
   await fileBrowserStore.deleteEntry(targetPath)
+}
+
+function handleAddFileToChat(filePath) {
+  if (!filePath) return
+  chatRef.value?.appendTextToInput?.(filePath)
 }
 
 const shouldShowChatPanel = computed(() => {
@@ -176,16 +184,15 @@ function startPreviewResize(event) {
 function handlePreviewResize(event) {
   if (!isPreviewResizing.value) return
 
-  const workspaceBody = document.querySelector('.workspace-body')
   const mainContent = document.querySelector('.main-content')
-  if (!workspaceBody || !mainContent) return
+  if (!mainContent) return
 
   const mainRect = mainContent.getBoundingClientRect()
   const previewWidthPx = event.clientX - mainRect.left
   const chatWidthPx = mainRect.right - event.clientX
 
   if (isChatCollapsed.value) {
-    if (previewWidthPx < mainRect.width - 2) {
+    if (chatWidthPx >= CHAT_EXPAND_THRESHOLD) {
       isChatCollapsed.value = false
       previewWidth.value = ((mainRect.width - CHAT_MIN_WIDTH) / mainRect.width) * 100
       syncExpandedPreviewWidth()
@@ -193,7 +200,7 @@ function handlePreviewResize(event) {
     return
   }
 
-  if (chatWidthPx <= CHAT_MIN_WIDTH) {
+  if (chatWidthPx <= CHAT_COLLAPSE_THRESHOLD) {
     collapseChatPanel()
     return
   }
@@ -213,6 +220,16 @@ watch(() => fileBrowserStore.shouldShowPreviewPanel, (visible) => {
   } else {
     previewWidth.value = Math.max(24, Math.min(65, previewWidth.value))
     syncExpandedPreviewWidth()
+  }
+})
+
+watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
+  if (!nextSessionId || nextSessionId === previousSessionId) {
+    return
+  }
+
+  if (fileBrowserStore.shouldShowPreviewPanel && isChatCollapsed.value) {
+    expandChatPanel(true)
   }
 })
 
@@ -259,7 +276,7 @@ onUnmounted(() => {
       v-if="!store.currentSession && !fileBrowserStore.shouldShowPreviewPanel"
       class="titlebar-drag-area"
       :style="{
-        left: sidebarCollapsed ? '140px' : `${sidebarWidth}px`,
+        left: sidebarCollapsed ? `${COLLAPSED_SIDEBAR_SAFE_WIDTH}px` : `${sidebarWidth}px`,
         right: 0
       }"
     ></div>
@@ -310,6 +327,7 @@ onUnmounted(() => {
         @renameFileNode="handleRenameFileNode"
         @createFileNode="handleCreateFileNode"
         @deleteFileNode="handleDeleteFileNode"
+        @addFileToChat="handleAddFileToChat"
       />
 
       <!-- Resize Handle -->
@@ -326,18 +344,22 @@ onUnmounted(() => {
           :style="previewPanelStyle"
           :tabs="fileBrowserStore.tabs"
           :active-tab="fileBrowserStore.activeTab"
+          :active-git-status="fileBrowserStore.activeFileGitStatus"
           :is-chat-collapsed="isChatCollapsed"
+          :show-sidebar-toggle="sidebarCollapsed"
           @activate-tab="fileBrowserStore.setActiveTab"
           @close-tab="fileBrowserStore.closeTab"
           @close-others="fileBrowserStore.closeOtherTabs"
           @update-content="fileBrowserStore.updateTabContent"
           @save-file="fileBrowserStore.saveFile"
           @close-panel="fileBrowserStore.hidePreviewPanel"
+          @toggle-sidebar="toggleSidebar"
+          @toggle-diff="fileBrowserStore.toggleTabDiff"
           @toggle-chat-panel="toggleChatPanelCollapse"
         />
 
         <div
-          v-if="fileBrowserStore.shouldShowPreviewPanel"
+          v-if="fileBrowserStore.shouldShowPreviewPanel && shouldShowChatPanel"
           class="preview-resize-handle"
           :class="{ resizing: isPreviewResizing }"
           @mousedown="startPreviewResize"
@@ -356,6 +378,7 @@ onUnmounted(() => {
             :sidebar-width="sidebarWidth"
             :show-collapse-toggle="fileBrowserStore.shouldShowPreviewPanel"
             :is-collapsed-by-preview="isChatCollapsed"
+            :show-sidebar-toggle="sidebarCollapsed && !fileBrowserStore.shouldShowPreviewPanel"
             @toggleSidebar="toggleSidebar"
             @toggleCollapse="toggleChatPanelCollapse"
             @startSession="handleStartSession"
@@ -363,17 +386,15 @@ onUnmounted(() => {
           />
         </div>
         <div v-if="!store.currentSession" class="empty-state-wrapper">
-          <!-- Top Bar when sidebar collapsed -->
           <div v-if="sidebarCollapsed" class="empty-top-bar">
-            <button
-              class="expand-btn-empty"
-              @click="toggleSidebar"
-              title="展开侧边栏"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="9 18 15 12 9 6"/>
-              </svg>
-            </button>
+            <div class="sidebar-safe-spacer">
+              <button class="sidebar-safe-btn" @click="toggleSidebar" title="展开侧边栏">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10 6l6 6-6 6"/>
+                  <path d="M4 5v14"/>
+                </svg>
+              </button>
+            </div>
           </div>
 
           <div class="empty-state">
@@ -548,35 +569,40 @@ onUnmounted(() => {
 }
 
 .empty-top-bar {
-  display: flex;
-  align-items: stretch;
-  padding-left: 80px;
-  -webkit-app-region: drag;
   height: 41.5px;
-}
-
-.expand-btn-empty {
-  padding: 4px;
-  background: transparent;
-  border: none;
-  color: #6B7280;
-  border-radius: 4px;
-align-self: center;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  border-right: 1px solid #27272A;
-  cursor: pointer;
-  transition: all 0.2s;
-  -webkit-app-region: no-drag;
+  background: #17191E;
+  border-bottom: 1px solid #2F3239;
   flex-shrink: 0;
 }
 
-.expand-btn-empty:hover {
-  background: #374151;
-  color: #D1D5DB;
+.sidebar-safe-spacer {
+  width: 124px;
+  height: 41.5px;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding-left: 80px;
+  background: #17191E;
+  -webkit-app-region: drag;
+}
+
+.sidebar-safe-btn {
+  width: 44px;
+  height: 41.5px;
+  border: none;
+  border-left: 1px solid #2F3239;
+  background: #17191E;
+  color: #E4E4E7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s;
+  -webkit-app-region: no-drag;
+}
+
+.sidebar-safe-btn:hover {
+  background: #23262D;
 }
 
 .empty-state {

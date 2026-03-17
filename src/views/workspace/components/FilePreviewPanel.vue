@@ -15,13 +15,21 @@ const props = defineProps({
     type: Object,
     default: null
   },
+  activeGitStatus: {
+    type: String,
+    default: ''
+  },
   isChatCollapsed: {
+    type: Boolean,
+    default: false
+  },
+  showSidebarToggle: {
     type: Boolean,
     default: false
   }
 })
 
-const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel'])
+const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel', 'toggle-sidebar', 'toggle-diff'])
 
 const titleText = computed(() => {
   if (!props.activeTab) return '文件预览'
@@ -61,6 +69,15 @@ function handleToggleChatPanel(event) {
 <template>
   <aside v-if="visible" class="file-preview-panel">
     <div class="preview-tabs">
+      <div v-if="showSidebarToggle" class="sidebar-safe-spacer">
+        <button class="sidebar-safe-btn" title="展开侧边栏" @mousedown.stop @click="emit('toggle-sidebar')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10 6l6 6-6 6"/>
+            <path d="M4 5v14"/>
+          </svg>
+        </button>
+      </div>
+
       <div class="tabs-list">
         <button
           v-for="tab in tabs"
@@ -107,13 +124,29 @@ function handleToggleChatPanel(event) {
       <CodeEditor
         v-else
         :model-value="activeTab.content"
+        :original-value="activeTab.diffBaseContent"
         :language="activeTab.language"
+        :diff-mode="activeTab.diffMode"
         @update:model-value="emit('update-content', activeTab.path, $event)"
         @save="emit('save-file', activeTab.path)"
       />
 
       <div v-if="!activeTab.loading && !activeTab.error" class="preview-statusbar">
         <div class="statusbar-path" :title="titleText">{{ titleText }}</div>
+        <div class="statusbar-actions">
+          <span v-if="activeTab.diffMode && activeTab.diffBaseError" class="statusbar-note error">{{ activeTab.diffBaseError }}</span>
+          <button
+            v-if="activeGitStatus"
+            class="statusbar-btn"
+            :class="{ active: activeTab.diffMode }"
+            :title="activeTab.diffMode ? '关闭 Diff' : '显示 Diff'"
+            @click="emit('toggle-diff', activeTab.path)"
+          >
+            <span class="statusbar-btn-text plus">+</span>
+            <span class="statusbar-btn-separator">/</span>
+            <span class="statusbar-btn-text minus">-</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -144,6 +177,36 @@ function handleToggleChatPanel(event) {
   height: 41.5px;
   overflow: hidden;
   -webkit-app-region: no-drag;
+}
+
+.sidebar-safe-spacer {
+  width: 124px;
+  flex: 0 0 124px;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding-left: 80px;
+  background: #17191E;
+  border-right: 1px solid #2F3239;
+  -webkit-app-region: drag;
+}
+
+.sidebar-safe-btn {
+  width: 43px;
+  height: 41.5px;
+  padding: 0;
+  border: none;
+  background: #17191E;
+  color: #E4E4E7;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: no-drag;
+}
+
+.sidebar-safe-btn:hover {
+  background: #23262D;
 }
 
 .tabs-list {
@@ -301,6 +364,8 @@ function handleToggleChatPanel(event) {
   background: #15181E;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 0 12px;
   flex-shrink: 0;
 }
@@ -313,6 +378,66 @@ function handleToggleChatPanel(event) {
   white-space: nowrap;
   font-size: 11px;
   color: #8B93A1;
+}
+
+.statusbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.statusbar-note {
+  font-size: 11px;
+  color: #A1A1AA;
+}
+
+.statusbar-note.error {
+  color: #FCA5A5;
+}
+
+.statusbar-btn {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #3F3F46;
+  border-radius: 4px;
+  background: transparent;
+  color: #D4D4D8;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.statusbar-btn:hover {
+  background: #23262D;
+}
+
+.statusbar-btn-text {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.statusbar-btn-text.plus {
+  color: #22C55E;
+}
+
+.statusbar-btn-text.minus {
+  color: #EF4444;
+}
+
+.statusbar-btn-separator {
+  font-size: 11px;
+  color: #71717A;
+  line-height: 1;
+}
+
+.statusbar-btn.active {
+  border-color: #52525B;
+  background: #23262D;
 }
 
 .empty-title {

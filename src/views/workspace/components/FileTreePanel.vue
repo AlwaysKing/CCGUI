@@ -3,6 +3,10 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
 
 const props = defineProps({
+  projectPath: {
+    type: String,
+    default: ''
+  },
   tree: {
     type: Array,
     default: () => []
@@ -52,7 +56,8 @@ const emit = defineEmits([
   'stop-rename-node',
   'rename-node',
   'create-entry',
-  'delete-node'
+  'delete-node',
+  'add-to-chat'
 ])
 
 const panelRef = ref(null)
@@ -102,6 +107,18 @@ async function openContextMenu({ x, y, node }) {
       y: clamped.y
     }
   }
+}
+
+function joinAbsolutePath(basePath = '', targetPath = '') {
+  const normalizedBasePath = String(basePath || '').replace(/\\/g, '/').replace(/\/$/, '')
+  const normalizedTargetPath = normalizePath(targetPath)
+  if (!normalizedBasePath) {
+    return normalizedTargetPath
+  }
+  if (!normalizedTargetPath) {
+    return normalizedBasePath
+  }
+  return `${normalizedBasePath}/${normalizedTargetPath}`
 }
 
 function normalizePath(value = '') {
@@ -223,6 +240,49 @@ function handleDeleteFromMenu() {
   closeContextMenu()
 }
 
+function handleAddToChat() {
+  const targetPath = contextMenu.value.node?.path
+  if (!targetPath) {
+    closeContextMenu()
+    return
+  }
+
+  emit('add-to-chat', joinAbsolutePath(props.projectPath, targetPath))
+  closeContextMenu()
+  focusPanel()
+}
+
+async function handleOpenInFinder(mode = 'reveal') {
+  const targetPath = contextMenu.value.node?.path
+  if (!props.projectPath || !targetPath) {
+    closeContextMenu()
+    return
+  }
+
+  await window.electronAPI.openProjectEntryInFinder({
+    projectPath: props.projectPath,
+    targetPath,
+    mode
+  })
+  closeContextMenu()
+}
+
+async function handleCopyPath() {
+  const targetPath = contextMenu.value.node?.path
+  if (!targetPath) {
+    closeContextMenu()
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(joinAbsolutePath(props.projectPath, targetPath))
+  } catch (error) {
+    console.error('Failed to copy file path:', error)
+  }
+
+  closeContextMenu()
+}
+
 onMounted(() => {
   window.addEventListener('pointerdown', handleGlobalPointerDown, true)
   window.addEventListener('contextmenu', handleGlobalContextMenu, true)
@@ -323,6 +383,17 @@ onBeforeUnmount(() => {
     >
       <button class="menu-item" @click="handleCreateFromMenu('directory')">新建文件夹</button>
       <button class="menu-item" @click="handleCreateFromMenu('file')">新建文件</button>
+      <div class="menu-divider"></div>
+      <button class="menu-item" @click="handleOpenInFinder('reveal')">在 Finder 中选中</button>
+      <button
+        v-if="contextMenu.node?.type === 'directory'"
+        class="menu-item"
+        @click="handleOpenInFinder('open')"
+      >
+        在 Finder 中打开
+      </button>
+      <button class="menu-item" @click="handleCopyPath">拷贝文件路径</button>
+      <button class="menu-item" @click="handleAddToChat">添加文件到聊天框</button>
       <div class="menu-divider"></div>
       <button class="menu-item" @click="handleRenameFromMenu">重命名</button>
       <button class="menu-item danger" @click="handleDeleteFromMenu">删除</button>

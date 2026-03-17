@@ -403,10 +403,7 @@ function handleFileDrop(event) {
   }
 
   if (filePaths.length > 0) {
-    if (localValue.value.trim()) {
-      localValue.value += ' '
-    }
-    localValue.value += filePaths.join(' ')
+    appendText(filePaths.join(' '))
   }
 }
 
@@ -435,9 +432,25 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeydown)
 })
 
+function appendText(text) {
+  const nextText = String(text || '').trim()
+  if (!nextText) return
+
+  localValue.value = localValue.value.trim()
+    ? `${localValue.value} ${nextText}`
+    : nextText
+
+  requestAnimationFrame(() => {
+    inputArea.value?.focus()
+    const cursorPosition = localValue.value.length
+    inputArea.value?.setSelectionRange?.(cursorPosition, cursorPosition)
+  })
+}
+
 // 暴露方法
 defineExpose({
-  focus: () => inputArea.value?.focus()
+  focus: () => inputArea.value?.focus(),
+  appendText
 })
 </script>
 

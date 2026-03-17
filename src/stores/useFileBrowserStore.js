@@ -17,8 +17,51 @@ function createNode(entry) {
     children: [],
     loaded: false,
     loading: false,
-    error: null
+    error: null,
+    gitStatus: entry.gitStatus || ''
   }
+}
+
+function sortNodes(nodes = []) {
+  return [...nodes].sort((left, right) => {
+    if (left.type !== right.type) {
+      return left.type === 'directory' ? -1 : 1
+    }
+    return left.name.localeCompare(right.name, 'zh-Hans-CN', { sensitivity: 'base' })
+  })
+}
+
+function resolveNodeGitStatus(node, statusMap = {}) {
+  const directStatus = statusMap[node.path]
+  if (directStatus) {
+    if (node.type === 'directory') {
+      return 'dot'
+    }
+    return directStatus === '?' ? '+' : directStatus
+  }
+
+  if (node.type !== 'directory') {
+    return ''
+  }
+
+  const prefix = `${node.path}/`
+  const descendantStatuses = Object.entries(statusMap)
+    .filter(([filePath]) => filePath.startsWith(prefix))
+    .map(([, status]) => status)
+
+  if (descendantStatuses.length === 0) return ''
+  return 'dot'
+}
+
+function applyGitStatuses(nodes = [], statusMap = {}) {
+  return nodes.map(node => {
+    const nextChildren = node.children?.length ? applyGitStatuses(node.children, statusMap) : (node.children || [])
+    return {
+      ...node,
+      children: nextChildren,
+      gitStatus: resolveNodeGitStatus({ ...node, children: nextChildren }, statusMap)
+    }
+  })
 }
 
 function getParentPath(targetPath = '') {
@@ -52,7 +95,12 @@ function createTabBase(filePath, options = {}) {
     loading: !!options.loading,
     error: options.error || null,
     updatedAt: options.updatedAt || null,
-    size: options.size || 0
+    size: options.size || 0,
+    diffMode: !!options.diffMode,
+    diffBaseContent: options.diffBaseContent || '',
+    diffBaseLoaded: !!options.diffBaseLoaded,
+    diffBaseLoading: !!options.diffBaseLoading,
+    diffBaseError: options.diffBaseError || null
   }
 }
 
@@ -71,10 +119,13 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
   const previewTabId = ref('')
   const isTreeLoading = ref(false)
   const treeError = ref('')
+  const gitStatusMap = ref({})
+  let removeProjectFilesChangedListener = null
 
   const projectPath = computed(() => appStore.currentProject?.path || '')
 
   const activeTab = computed(() => tabs.value.find(tab => tab.path === activeFilePath.value) || null)
+  const activeFileGitStatus = computed(() => gitStatusMap.value[activeFilePath.value] || '')
   const hasOpenFiles = computed(() => tabs.value.length > 0 || !!activeFilePath.value)
   const shouldShowPreviewPanel = computed(() => isPreviewPanelVisible.value)
 
@@ -90,6 +141,29 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     isTreeLoading.value = false
     treeError.value = ''
     isPreviewPanelVisible.value = false
+    gitStatusMap.value = {}
+  }
+
+  async function refreshGitStatus() {
+    if (!projectPath.value) {
+      gitStatusMap.value = {}
+      return {}
+    }
+
+    try {
+      const result = await window.electronAPI.getProjectGitStatus({
+        projectPath: projectPath.value
+      })
+
+      gitStatusMap.value = result?.success ? (result.statuses || {}) : {}
+      tree.value = applyGitStatuses(tree.value, gitStatusMap.value)
+      return gitStatusMap.value
+    } catch (error) {
+      logger.warn('[FileBrowser] Failed to refresh git status', { error: error.message })
+      gitStatusMap.value = {}
+      tree.value = applyGitStatuses(tree.value, {})
+      return {}
+    }
   }
 
   function setNodeChildren(nodes, targetPath, children) {
@@ -114,6 +188,116 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
       return node
     })
+  }
+
+  function upsertNode(nodes, parentPath, entry) {
+    const normalizedParentPath = normalizePath(parentPath)
+    const normalizedEntryPath = normalizePath(entry.path)
+    const nextNode = createNode(entry)
+
+    if (!normalizedParentPath) {
+      const existingNode = nodes.find(node => node.path === normalizedEntryPath)
+      const mergedNode = existingNode
+        ? { ...existingNode, ...nextNode, children: existingNode.children || [], loaded: existingNode.loaded, loading: false, error: null }
+        : nextNode
+      const remainingNodes = nodes.filter(node => node.path !== normalizedEntryPath)
+      return applyGitStatuses(sortNodes([...remainingNodes, mergedNode]), gitStatusMap.value)
+    }
+
+    return nodes.map(node => {
+      if (node.path === normalizedParentPath) {
+        if (!node.loaded) {
+          return { ...node, hasChildren: true }
+        }
+
+        const children = node.children || []
+        const existingChild = children.find(child => child.path === normalizedEntryPath)
+        const mergedChild = existingChild
+          ? { ...existingChild, ...nextNode, children: existingChild.children || [], loaded: existingChild.loaded, loading: false, error: null }
+          : nextNode
+        const nextChildren = sortNodes([
+          ...children.filter(child => child.path !== normalizedEntryPath),
+          mergedChild
+        ])
+
+        return applyGitStatuses([{
+          ...node,
+          children: nextChildren,
+          hasChildren: nextChildren.length > 0
+        }], gitStatusMap.value)[0]
+      }
+
+      if (node.children?.length) {
+        return {
+          ...node,
+          children: upsertNode(node.children, normalizedParentPath, entry)
+        }
+      }
+
+      return node
+    })
+  }
+
+  function removeNode(nodes, targetPath) {
+    const normalizedTargetPath = normalizePath(targetPath)
+    return applyGitStatuses(nodes
+      .filter(node => node.path !== normalizedTargetPath)
+      .map(node => {
+        if (node.children?.length) {
+          const nextChildren = removeNode(node.children, normalizedTargetPath)
+          return {
+            ...node,
+            children: nextChildren,
+            hasChildren: node.loaded ? nextChildren.length > 0 : node.hasChildren
+          }
+        }
+        return node
+      }), gitStatusMap.value)
+  }
+
+  async function reloadOpenTabIfClean(filePath) {
+    const normalizedPath = normalizePath(filePath)
+    const tab = tabs.value.find(item => item.path === normalizedPath)
+    if (!tab || tab.isDirty) return
+
+    tab.loaded = false
+    tab.error = null
+    await ensureFileLoaded(normalizedPath)
+  }
+
+  async function handleExternalFileChange(relativePath = '') {
+    const normalizedPath = normalizePath(relativePath)
+
+    if (!normalizedPath) {
+      await refreshGitStatus()
+      return
+    }
+
+    await refreshGitStatus()
+    if (window.electronAPI?.statProjectEntry == null) {
+      return
+    }
+
+    if (normalizedPath && !normalizedPath.endsWith('/')) {
+      await reloadOpenTabIfClean(normalizedPath)
+    }
+
+    const statResult = await window.electronAPI.statProjectEntry({
+      projectPath: projectPath.value,
+      targetPath: normalizedPath
+    })
+
+    if (!statResult?.success) {
+      return
+    }
+
+    if (statResult.exists && statResult.entry) {
+      const parentPath = getParentPath(normalizedPath)
+      tree.value = upsertNode(tree.value, parentPath, statResult.entry)
+      return
+    }
+
+    tree.value = removeNode(tree.value, normalizedPath)
   }
 
   function findNodeByPath(nodes, targetPath) {
@@ -173,9 +357,9 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       const children = (result.entries || []).map(entry => createNode(entry))
 
       if (!normalizedPath) {
-        tree.value = children
+        tree.value = applyGitStatuses(children, gitStatusMap.value)
       } else {
-        tree.value = setNodeChildren(tree.value, normalizedPath, children)
+        tree.value = applyGitStatuses(setNodeChildren(tree.value, normalizedPath, children), gitStatusMap.value)
       }
 
       return children
@@ -210,6 +394,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       return
     }
 
+    await refreshGitStatus()
     await loadDirectory('')
 
     const expandedPaths = [...expandedDirs.value].sort((left, right) => {
@@ -271,6 +456,37 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       return currentTab
     } finally {
       currentTab.loading = false
+    }
+  }
+
+  async function ensureDiffBaseLoaded(filePath) {
+    const normalizedPath = normalizePath(filePath)
+    const currentTab = tabs.value.find(tab => tab.path === normalizedPath)
+    if (!currentTab) return null
+    if (currentTab.diffBaseLoaded || currentTab.diffBaseLoading) return currentTab
+
+    currentTab.diffBaseLoading = true
+    currentTab.diffBaseError = null
+
+    try {
+      const result = await window.electronAPI.getProjectFileGitBase({
+        projectPath: projectPath.value,
+        filePath: normalizedPath
+      })
+
+      if (!result?.success) {
+        throw new Error(result?.error || '读取 Diff 基线失败')
+      }
+
+      currentTab.diffBaseContent = result.originalContent || ''
+      currentTab.diffBaseLoaded = true
+      currentTab.diffBaseError = null
+      return currentTab
+    } catch (error) {
+      currentTab.diffBaseError = error.message || '读取 Diff 基线失败'
+      return currentTab
+    } finally {
+      currentTab.diffBaseLoading = false
     }
   }
 
@@ -343,6 +559,25 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
   async function pinFile(filePath) {
     return openFile(filePath, { preview: false, pinned: true })
+  }
+
+  async function toggleTabDiff(filePath) {
+    const normalizedPath = normalizePath(filePath)
+    const tab = tabs.value.find(item => item.path === normalizedPath)
+    if (!tab) return { success: false, error: '文件未打开' }
+
+    if (tab.diffMode) {
+      tab.diffMode = false
+      return { success: true, enabled: false }
+    }
+
+    await ensureDiffBaseLoaded(normalizedPath)
+    if (tab.diffBaseError) {
+      return { success: false, error: tab.diffBaseError }
+    }
+
+    tab.diffMode = true
+    return { success: true, enabled: true }
   }
 
   function generateUniqueName(parentNodePath, baseName, type) {
@@ -550,6 +785,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       tab.updatedAt = result.file?.updatedAt || null
       tab.size = result.file?.size || tab.size
       tab.error = null
+      await refreshGitStatus()
 
       return { success: true }
     } catch (error) {
@@ -596,10 +832,22 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
   watch(projectPath, async (nextProjectPath, previousProjectPath) => {
     if (nextProjectPath === previousProjectPath) return
     resetState()
+    await window.electronAPI.unwatchProjectFiles?.()
     if (nextProjectPath) {
       await refreshTree()
+      await window.electronAPI.watchProjectFiles?.({ projectPath: nextProjectPath })
     }
   }, { immediate: true })
+
+  if (!removeProjectFilesChangedListener && window.electronEvents?.onProjectFilesChanged) {
+    removeProjectFilesChangedListener = window.electronEvents.onProjectFilesChanged(async (payload) => {
+      if (!payload?.projectPath || normalizePath(payload.projectPath) !== normalizePath(projectPath.value)) {
+        return
+      }
+
+      await handleExternalFileChange(payload.relativePath || '')
+    })
+  }
 
   return {
     isFilePanelVisible,
@@ -610,6 +858,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     selectedNodePath,
     editingNodePath,
     activeTab,
+    activeFileGitStatus,
     hasOpenFiles,
     shouldShowPreviewPanel,
     tabs,
@@ -617,8 +866,10 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     isTreeLoading,
     treeError,
     projectPath,
+    gitStatusMap,
     toggleFilePanel,
     refreshTree,
+    refreshGitStatus,
     toggleDirectory,
     setSelectedNode,
     startRenaming,
@@ -635,6 +886,9 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     closeOtherTabs,
     hidePreviewPanel,
     togglePreviewPanel,
-    ensureFileLoaded
+    ensureFileLoaded,
+    ensureDiffBaseLoaded,
+    toggleTabDiff,
+    handleExternalFileChange
   }
 })

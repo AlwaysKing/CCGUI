@@ -62,7 +62,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -694,7 +694,8 @@ defineExpose({
       </div>
       <button class="toggle-btn" @click="emit('toggle')" title="折叠">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="15 18 9 12 15 6"/>
+          <path d="M14 6l-6 6 6 6"/>
+          <path d="M20 5v14"/>
         </svg>
       </button>
     </div>
@@ -784,6 +785,7 @@ defineExpose({
         v-if="isFilePanelVisible"
         class="file-tree-section"
         :style="{ flexBasis: `${fileSectionHeight}%` }"
+        :project-path="projectPath"
         :tree="fileTree"
         :is-loading="fileTreeLoading"
         :error="fileTreeError"
@@ -804,6 +806,7 @@ defineExpose({
         @rename-node="emit('renameFileNode', $event)"
         @create-entry="emit('createFileNode', $event)"
         @delete-node="emit('deleteFileNode', $event)"
+        @add-to-chat="emit('addFileToChat', $event)"
       />
 
       <div

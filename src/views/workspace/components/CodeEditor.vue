@@ -13,9 +13,17 @@ const props = defineProps({
     type: String,
     default: ''
   },
+  originalValue: {
+    type: String,
+    default: ''
+  },
   language: {
     type: String,
     default: 'plaintext'
+  },
+  diffMode: {
+    type: Boolean,
+    default: false
   },
   readOnly: {
     type: Boolean,
@@ -27,7 +35,9 @@ const emit = defineEmits(['update:modelValue', 'save'])
 
 const containerRef = ref(null)
 let editor = null
+let diffEditor = null
 let model = null
+let originalModel = null
 let isApplyingExternalValue = false
 
 if (!globalThis.MonacoEnvironment) {
@@ -69,12 +79,11 @@ function normalizeLanguage(language) {
 function initEditor() {
   if (!containerRef.value) return
 
+  disposeEditor()
   model = monaco.editor.createModel(props.modelValue || '', normalizeLanguage(props.language))
 
-  editor = monaco.editor.create(containerRef.value, {
-    model,
+  const baseOptions = {
     theme: 'vs-dark',
-    readOnly: props.readOnly,
     automaticLayout: true,
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
@@ -104,11 +113,33 @@ function initEditor() {
       verticalScrollbarSize: 6,
       horizontalScrollbarSize: 6
     }
-  })
+  }
 
-  editor.onDidChangeModelContent(() => {
+  if (props.diffMode) {
+    originalModel = monaco.editor.createModel(props.originalValue || '', normalizeLanguage(props.language))
+    diffEditor = monaco.editor.createDiffEditor(containerRef.value, {
+      ...baseOptions,
+      readOnly: props.readOnly,
+      originalEditable: false,
+      enableSplitViewResizing: true,
+      renderSideBySide: true
+    })
+    diffEditor.setModel({
+      original: originalModel,
+      modified: model
+    })
+    editor = diffEditor.getModifiedEditor()
+  } else {
+    editor = monaco.editor.create(containerRef.value, {
+      ...baseOptions,
+      model,
+      readOnly: props.readOnly
+    })
+  }
+
+  model.onDidChangeContent(() => {
     if (isApplyingExternalValue) return
-    emit('update:modelValue', editor.getValue())
+    emit('update:modelValue', model.getValue())
   })
 
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
@@ -117,9 +148,18 @@ function initEditor() {
 }
 
 function disposeEditor() {
+  if (diffEditor) {
+    diffEditor.dispose()
+    diffEditor = null
+    editor = null
+  }
   if (editor) {
     editor.dispose()
     editor = null
+  }
+  if (originalModel) {
+    originalModel.dispose()
+    originalModel = null
   }
   if (model) {
     model.dispose()
@@ -156,11 +196,37 @@ watch(() => props.modelValue, (nextValue) => {
 watch(() => props.language, (nextLanguage) => {
   if (!model) return
   monaco.editor.setModelLanguage(model, normalizeLanguage(nextLanguage))
+  if (originalModel) {
+    monaco.editor.setModelLanguage(originalModel, normalizeLanguage(nextLanguage))
+  }
+})
+
+watch(() => props.originalValue, (nextValue) => {
+  if (!originalModel) return
+  if (nextValue === originalModel.getValue()) return
+
+  originalModel.pushEditOperations(
+    [],
+    [
+      {
+        range: originalModel.getFullModelRange(),
+        text: nextValue || ''
+      }
+    ],
+    () => null
+  )
 })
 
 watch(() => props.readOnly, (nextReadOnly) => {
-  if (!editor) return
-  editor.updateOptions({ readOnly: nextReadOnly })
+  if (diffEditor) {
+    diffEditor.updateOptions({ readOnly: nextReadOnly })
+  } else if (editor) {
+    editor.updateOptions({ readOnly: nextReadOnly })
+  }
+})
+
+watch(() => props.diffMode, () => {
+  initEditor()
 })
 </script>
 

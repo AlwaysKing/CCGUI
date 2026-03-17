@@ -46,6 +46,7 @@ const isDirectory = computed(() => props.node.type === 'directory')
 const isActive = computed(() => props.activeFilePath === props.node.path)
 const isSelected = computed(() => props.selectedNodePath === props.node.path)
 const isEditing = computed(() => props.editingNodePath === props.node.path)
+const gitStatusCode = computed(() => props.node.gitStatus || '')
 
 function getFileIcon() {
   if (isDirectory.value) {
@@ -135,6 +136,18 @@ watch(isEditing, async (nextValue) => {
       </span>
       <span class="tree-icon">{{ getFileIcon() }}</span>
       <span class="tree-name">{{ node.name }}</span>
+      <span
+        v-if="gitStatusCode"
+        class="tree-git-status"
+        :class="[
+          gitStatusCode === 'dot' ? 'status-dot' : '',
+          gitStatusCode === '+' ? 'status-added' : '',
+          `status-${String(gitStatusCode).toLowerCase()}`
+        ]"
+      >
+        <span v-if="gitStatusCode === 'dot'" class="tree-git-dot"></span>
+        <template v-else>{{ gitStatusCode }}</template>
+      </span>
       <span v-if="node.loading" class="tree-meta-inline">加载中</span>
     </button>
 
@@ -239,6 +252,46 @@ watch(isEditing, async (nextValue) => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+}
+
+.tree-git-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #F59E0B;
+  min-width: 14px;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-git-status.status-added {
+  color: #22C55E;
+}
+
+.tree-git-status.status-m {
+  color: #60A5FA;
+}
+
+.tree-git-status.status-d,
+.tree-git-status.status-u {
+  color: #EF4444;
+}
+
+.tree-git-status.status-r {
+  color: #60A5FA;
+}
+
+.tree-git-status.status-dot {
+  min-width: 10px;
+}
+
+.tree-git-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #60A5FA;
 }
 
 .tree-meta,

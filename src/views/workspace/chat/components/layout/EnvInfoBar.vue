@@ -15,13 +15,13 @@ const props = defineProps({
     type: String,
     default: ''
   },
-  sidebarCollapsed: {
-    type: Boolean,
-    default: false
-  },
   permissionMode: {
     type: String,
     default: 'default'
+  },
+  showSidebarToggle: {
+    type: Boolean,
+    default: false
   },
   showCollapseToggle: {
     type: Boolean,
@@ -87,18 +87,15 @@ function handlePidClick() {
 </script>
 
 <template>
-  <div v-if="envInfo || sidebarCollapsed || showCollapseToggle" class="top-bar" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-    <!-- 展开按钮 (当侧边栏折叠时) -->
-    <button
-      v-if="sidebarCollapsed"
-      class="expand-btn-top"
-      @click="emit('toggleSidebar')"
-      title="展开侧边栏"
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="9 18 15 12 9 6"/>
-      </svg>
-    </button>
+  <div v-if="envInfo || showCollapseToggle || showSidebarToggle" class="top-bar">
+    <div v-if="showSidebarToggle" class="sidebar-safe-spacer">
+      <button class="sidebar-safe-btn" title="展开侧边栏" @click="emit('toggleSidebar')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10 6l6 6-6 6"></path>
+          <path d="M4 5v14"></path>
+        </svg>
+      </button>
+    </div>
 
     <button
       v-if="showCollapseToggle"
@@ -117,7 +114,7 @@ function handlePidClick() {
     </button>
 
     <!-- 环境信息栏 -->
-    <div v-if="envInfo" class="env-bar" :class="{ 'with-expand-btn': sidebarCollapsed, 'with-collapse-btn': showCollapseToggle }">
+    <div v-if="envInfo" class="env-bar" :class="{ 'with-collapse-btn': showCollapseToggle }">
       <div class="env-main">
         <span class="env-item env-item-clickable" @click="handlePidClick" :title="envInfo.claudePid ? '点击关闭 Claude' : '点击启动 Claude'">
           <span class="env-icon">⚙️</span>
@@ -202,30 +199,35 @@ function handlePidClick() {
   -webkit-app-region: drag;
 }
 
-.top-bar.sidebar-collapsed {
+.sidebar-safe-spacer {
+  width: 124px;
+  flex: 0 0 124px;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
   padding-left: 80px;
+  background: #17191E;
+  border-right: 1px solid var(--bg-tertiary);
+  -webkit-app-region: drag;
 }
 
-.expand-btn-top {
-  padding: 4px;
-  background: transparent;
+.sidebar-safe-btn {
+  width: 43px;
+  height: 41.5px;
+  padding: 0;
   border: none;
-  color: var(--text-muted);
-  border-radius: var(--radius-sm);
-  align-self: center;
+  background: #17191E;
+  color: #E4E4E7;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-right: 1px solid var(--bg-tertiary);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast);
   -webkit-app-region: no-drag;
-  flex-shrink: 0;
 }
 
-.expand-btn-top:hover {
-  background: var(--bg-hover);
-  color: var(--text-secondary);
+.sidebar-safe-btn:hover {
+  background: #23262D;
 }
 
 .collapse-chat-btn {
@@ -256,10 +258,6 @@ function handlePidClick() {
   padding: 9.25px 16px;
   font-size: var(--font-size-sm);
   cursor: move;
-}
-
-.env-bar.with-expand-btn {
-  padding-left: 8px;
 }
 
 .env-bar.with-collapse-btn {

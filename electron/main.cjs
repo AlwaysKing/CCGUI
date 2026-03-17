@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, session, dialog, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -14,6 +14,8 @@ let isDev = process.env.NODE_ENV === 'development'
 
 let mainWindow
 let sessionManager
+let projectFileWatcher = null
+let projectFileWatcherPath = ''
 
 /**
  * Get app icon path
@@ -72,6 +74,7 @@ function createWindow() {
   initSessionManager()
 
   mainWindow.on('closed', () => {
+    stopProjectFileWatcher()
     mainWindow = null
   })
 }
@@ -226,6 +229,198 @@ function ensureProjectParentDirectory(projectPath, parentPath = '') {
     throw new Error('父级目标不是目录')
   }
   return absoluteParentPath
+}
+
+function execFileAsync(command, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, options, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr || error.message || '命令执行失败'))
+        return
+      }
+      resolve({ stdout, stderr })
+    })
+  })
+}
+
+function parseGitStatusPorcelainToRepoPaths(output = '') {
+  const statusMap = {}
+  const lines = String(output || '').split(/\r?\n/).filter(Boolean)
+
+  for (const line of lines) {
+    if (line.length < 4) continue
+
+    const x = line[0]
+    const y = line[1]
+    const rawPath = line.slice(3).trim()
+    const normalizedPath = normalizePathSlashes(rawPath.includes(' -> ') ? rawPath.split(' -> ').pop() : rawPath)
+
+    if (!normalizedPath) continue
+
+    let code = ''
+    if (x === '?' && y === '?') {
+      code = '?'
+    } else if (x === 'U' || y === 'U') {
+      code = 'U'
+    } else if (x === 'A' || y === 'A') {
+      code = 'A'
+    } else if (x === 'D' || y === 'D') {
+      code = 'D'
+    } else if (x === 'R' || y === 'R') {
+      code = 'R'
+    } else if (x === 'M' || y === 'M' || x === 'T' || y === 'T' || x === 'C' || y === 'C') {
+      code = 'M'
+    }
+
+    if (code) {
+      statusMap[normalizedPath] = code
+    }
+  }
+
+  return statusMap
+}
+
+function collectNestedGitRepoRoots(projectPath) {
+  const absoluteProjectPath = path.resolve(projectPath)
+  const repoRoots = new Set()
+  const queue = [absoluteProjectPath]
+
+  while (queue.length > 0) {
+    const currentPath = queue.shift()
+    let dirEntries = []
+
+    try {
+      dirEntries = fs.readdirSync(currentPath, { withFileTypes: true })
+    } catch (error) {
+      continue
+    }
+
+    const hasGitMarker = dirEntries.some(entry => entry.name === '.git')
+    if (hasGitMarker) {
+      repoRoots.add(currentPath)
+      continue
+    }
+
+    for (const entry of dirEntries) {
+      if (!entry.isDirectory()) continue
+      if (FILE_TREE_IGNORES.has(entry.name)) continue
+      queue.push(path.join(currentPath, entry.name))
+    }
+  }
+
+  return [...repoRoots]
+}
+
+async function resolveProjectGitRepoRoots(projectPath) {
+  const absoluteProjectPath = path.resolve(projectPath)
+  const repoRoots = new Set()
+
+  try {
+    await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: absoluteProjectPath })
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: absoluteProjectPath })
+    const rootPath = path.resolve(String(stdout || '').trim())
+    repoRoots.add(rootPath)
+  } catch (error) {
+    // The project root itself is not inside a git work tree.
+  }
+
+  for (const nestedRoot of collectNestedGitRepoRoots(absoluteProjectPath)) {
+    repoRoots.add(path.resolve(nestedRoot))
+  }
+
+  return [...repoRoots]
+}
+
+async function resolveOwningGitRepoRoot(projectPath, targetPath) {
+  const absoluteProjectPath = path.resolve(projectPath)
+  const absoluteTargetPath = resolveProjectTargetPath(projectPath, targetPath)
+  const repoRoots = await resolveProjectGitRepoRoots(absoluteProjectPath)
+
+  const matchedRoots = repoRoots
+    .filter(repoRoot => {
+      const relativePath = path.relative(repoRoot, absoluteTargetPath)
+      return relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath)
+    })
+    .sort((left, right) => right.length - left.length)
+
+  return matchedRoots[0] || null
+}
+
+async function getProjectGitStatusMap(projectPath) {
+  const absoluteProjectPath = path.resolve(projectPath)
+  const projectRelativeStatuses = {}
+
+  for (const repoRootPath of await resolveProjectGitRepoRoots(absoluteProjectPath)) {
+    let stdout = ''
+
+    try {
+      const result = await execFileAsync(
+        'git',
+        ['status', '--porcelain=v1', '--untracked-files=all'],
+        { cwd: repoRootPath }
+      )
+      stdout = result.stdout || ''
+    } catch (error) {
+      continue
+    }
+
+    const repoRelativeStatuses = parseGitStatusPorcelainToRepoPaths(stdout)
+
+    for (const [repoRelativePath, status] of Object.entries(repoRelativeStatuses)) {
+      const absoluteEntryPath = path.resolve(repoRootPath, repoRelativePath)
+      const projectRelativePath = normalizePathSlashes(path.relative(absoluteProjectPath, absoluteEntryPath))
+
+      if (
+        !projectRelativePath ||
+        projectRelativePath.startsWith('..') ||
+        path.isAbsolute(projectRelativePath)
+      ) {
+        continue
+      }
+
+      projectRelativeStatuses[projectRelativePath] = status
+    }
+  }
+
+  return projectRelativeStatuses
+}
+
+async function openPathInSystemFileManager(targetPath, { reveal = false } = {}) {
+  if (process.platform === 'darwin') {
+    const args = reveal ? ['-R', targetPath] : [targetPath]
+    await execFileAsync('open', args)
+    return
+  }
+
+  if (process.platform === 'win32') {
+    if (reveal) {
+      await execFileAsync('explorer.exe', ['/select,', targetPath])
+    } else {
+      await execFileAsync('explorer.exe', [targetPath])
+    }
+    return
+  }
+
+  const openError = await shell.openPath(reveal ? path.dirname(targetPath) : targetPath)
+  if (openError) {
+    throw new Error(openError)
+  }
+}
+
+function stopProjectFileWatcher() {
+  if (projectFileWatcher) {
+    projectFileWatcher.close()
+    projectFileWatcher = null
+    projectFileWatcherPath = ''
+  }
+}
+
+function shouldIgnoreWatchedPath(relativePath = '') {
+  const normalizedPath = normalizePathSlashes(relativePath)
+  if (!normalizedPath) return false
+
+  const segments = normalizedPath.split('/').filter(Boolean)
+  return segments.some(segment => FILE_TREE_IGNORES.has(segment))
 }
 
 
@@ -1180,6 +1375,64 @@ ipcMain.handle('list-project-files', async (event, { projectPath, relativePath =
   }
 })
 
+ipcMain.handle('get-project-git-status', async (event, { projectPath }) => {
+  try {
+    if (!projectPath) {
+      throw new Error('缺少项目路径')
+    }
+
+    const statuses = await getProjectGitStatusMap(projectPath)
+    return { success: true, statuses }
+  } catch (error) {
+    logger.warn('[Files] Failed to read project git status', { projectPath, error: error.message })
+    return { success: false, error: error.message, statuses: {} }
+  }
+})
+
+ipcMain.handle('watch-project-files', async (event, { projectPath }) => {
+  try {
+    if (!projectPath) {
+      throw new Error('缺少项目路径')
+    }
+
+    const absoluteProjectPath = path.resolve(projectPath)
+    if (projectFileWatcher && projectFileWatcherPath === absoluteProjectPath) {
+      return { success: true }
+    }
+
+    stopProjectFileWatcher()
+
+    projectFileWatcher = fs.watch(
+      absoluteProjectPath,
+      { recursive: process.platform === 'darwin' || process.platform === 'win32' },
+      (eventType, filename) => {
+        const relativePath = normalizePathSlashes(filename || '')
+        if (shouldIgnoreWatchedPath(relativePath)) {
+          return
+        }
+
+        event.sender.send('project-files-changed', {
+          projectPath: absoluteProjectPath,
+          eventType,
+          relativePath
+        })
+      }
+    )
+
+    projectFileWatcherPath = absoluteProjectPath
+    return { success: true }
+  } catch (error) {
+    logger.error('[Files] Failed to watch project files', { projectPath, error: error.message })
+    stopProjectFileWatcher()
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('unwatch-project-files', async () => {
+  stopProjectFileWatcher()
+  return { success: true }
+})
+
 ipcMain.handle('read-project-file', async (event, { projectPath, filePath }) => {
   try {
     if (!projectPath || !filePath) {
@@ -1233,6 +1486,103 @@ ipcMain.handle('read-project-file', async (event, { projectPath, filePath }) => 
     }
   } catch (error) {
     logger.error('[Files] Failed to read project file', { projectPath, filePath, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('stat-project-entry', async (event, { projectPath, targetPath }) => {
+  try {
+    if (!projectPath || !targetPath) {
+      throw new Error('缺少目标路径')
+    }
+
+    const absoluteTargetPath = resolveProjectTargetPath(projectPath, targetPath)
+    if (!fs.existsSync(absoluteTargetPath)) {
+      return { success: true, exists: false }
+    }
+
+    const stat = fs.statSync(absoluteTargetPath)
+    const isDirectory = stat.isDirectory()
+    let hasChildren = false
+
+    if (isDirectory) {
+      try {
+        hasChildren = fs.readdirSync(absoluteTargetPath).some(childName => !FILE_TREE_IGNORES.has(childName))
+      } catch (error) {
+        hasChildren = false
+      }
+    }
+
+    return {
+      success: true,
+      exists: true,
+      entry: {
+        name: path.basename(absoluteTargetPath),
+        path: normalizePathSlashes(path.relative(projectPath, absoluteTargetPath)),
+        type: isDirectory ? 'directory' : 'file',
+        extension: isDirectory ? '' : path.extname(absoluteTargetPath).toLowerCase(),
+        hasChildren
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to stat project entry', { projectPath, targetPath, error: error.message })
+    return { success: false, error: error.message, exists: false }
+  }
+})
+
+ipcMain.handle('get-project-file-git-base', async (event, { projectPath, filePath }) => {
+  try {
+    if (!projectPath || !filePath) {
+      throw new Error('缺少文件路径')
+    }
+
+    const absoluteFilePath = resolveProjectTargetPath(projectPath, filePath)
+    const repoRootPath = await resolveOwningGitRepoRoot(projectPath, filePath)
+
+    if (!repoRootPath) {
+      return {
+        success: true,
+        hasBase: false,
+        originalContent: '',
+        originalLabel: 'HEAD',
+        modifiedLabel: 'Working Tree'
+      }
+    }
+
+    const repoRelativePath = normalizePathSlashes(path.relative(repoRootPath, absoluteFilePath))
+    if (!repoRelativePath || repoRelativePath.startsWith('..') || path.isAbsolute(repoRelativePath)) {
+      return {
+        success: true,
+        hasBase: false,
+        originalContent: '',
+        originalLabel: 'HEAD',
+        modifiedLabel: 'Working Tree'
+      }
+    }
+
+    try {
+      const { stdout } = await execFileAsync('git', ['show', `HEAD:${repoRelativePath}`], {
+        cwd: repoRootPath
+      })
+
+      return {
+        success: true,
+        hasBase: true,
+        originalContent: stdout || '',
+        originalLabel: 'HEAD',
+        modifiedLabel: 'Working Tree'
+      }
+    } catch (error) {
+      return {
+        success: true,
+        hasBase: false,
+        originalContent: '',
+        originalLabel: 'HEAD',
+        modifiedLabel: 'Working Tree'
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to get project file git base', { projectPath, filePath, error: error.message })
     return { success: false, error: error.message }
   }
 })
@@ -1391,6 +1741,35 @@ ipcMain.handle('delete-project-entry', async (event, { projectPath, targetPath }
   } catch (error) {
     logger.error('[Files] Failed to delete project entry', { projectPath, targetPath, error: error.message })
     return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('open-project-entry-in-finder', async (event, { projectPath, targetPath, mode = 'reveal' }) => {
+  try {
+    if (!projectPath || !targetPath) {
+      throw new Error('缺少目标路径')
+    }
+
+    if (!['reveal', 'open'].includes(mode)) {
+      throw new Error('无效的打开模式')
+    }
+
+    const absoluteTargetPath = resolveProjectTargetPath(projectPath, targetPath)
+    if (!fs.existsSync(absoluteTargetPath)) {
+      throw new Error('目标不存在')
+    }
+
+    const stat = fs.statSync(absoluteTargetPath)
+    if (!stat.isDirectory() || mode === 'reveal') {
+      await openPathInSystemFileManager(absoluteTargetPath, { reveal: true })
+    } else {
+      await openPathInSystemFileManager(absoluteTargetPath)
+    }
+
+    return { success: true }
+  } catch (error) {
+    logger.error('[Files] Failed to open project entry in finder', { projectPath, targetPath, mode, error: error.message })
+    return { success: false, error: error.message || '打开失败' }
   }
 })
 

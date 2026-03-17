@@ -47,6 +47,10 @@ const props = defineProps({
   isCollapsedByPreview: {
     type: Boolean,
     default: false
+  },
+  showSidebarToggle: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -68,6 +72,7 @@ const inputMessage = computed({
 
 const isProcessing = computed(() => sessionStore.isProcessing)
 const messagesContainer = ref(null)
+const chatInputRef = ref(null)
 // pendingPermission and pendingControlRequest are now computed from sessionStore (defined above)
 // pendingQuestion is also now computed from sessionStore
 const workingDirectory = ref('') // 工作目录
@@ -452,7 +457,8 @@ onUnmounted(() => {
 })
 
 defineExpose({
-  refreshModelConfig: loadModelConfigContext
+  refreshModelConfig: loadModelConfigContext,
+  appendTextToInput: (text) => chatInputRef.value?.appendText(text)
 })
 
 watch(
@@ -1483,7 +1489,7 @@ async function handleQuestionAnswer(requestId, answers) {
     <EnvInfoBar
       :env-info="envInfo"
       :project-path="appStore.currentProject?.path"
-      :sidebar-collapsed="sidebarCollapsed"
+      :show-sidebar-toggle="showSidebarToggle"
       :permission-mode="permissionMode"
       :show-collapse-toggle="showCollapseToggle"
       :is-chat-collapsed="isCollapsedByPreview"
@@ -1532,6 +1538,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
     <!-- Input Area -->
     <ChatInput
+      ref="chatInputRef"
       v-model="inputMessage"
       :is-processing="isProcessing"
       :has-permission="pendingPermission !== null || pendingControlRequest !== null"

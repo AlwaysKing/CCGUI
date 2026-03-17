@@ -90,6 +90,7 @@ function initEditor() {
     renderLineHighlight: 'line',
     lineNumbersMinChars: 3,
     lineDecorationsWidth: 20,
+    selectOnLineNumbers: false,
     tabSize: 2,
     insertSpaces: true,
     bracketPairColorization: { enabled: true },
@@ -214,5 +215,14 @@ watch(() => props.readOnly, (nextReadOnly) => {
 
 .code-editor :deep(.monaco-editor .decorationsOverviewRuler) {
   opacity: 0.85;
+}
+
+.code-editor :deep(.monaco-editor .margin),
+.code-editor :deep(.monaco-editor .margin-view-overlays),
+.code-editor :deep(.monaco-editor .line-numbers),
+.code-editor :deep(.monaco-editor .glyph-margin),
+.code-editor :deep(.monaco-editor .margin-view-overlays *) {
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 </style>

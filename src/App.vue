@@ -10,6 +10,44 @@ const store = useAppStore()
 const isClaudeReady = ref(false)
 let initUnsub = null
 
+function isEditableTarget(target) {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+
+  if (target.isContentEditable) {
+    return true
+  }
+
+  const tagName = target.tagName?.toLowerCase()
+  if (tagName === 'textarea') {
+    return true
+  }
+
+  if (tagName === 'input') {
+    const inputType = (target.getAttribute('type') || 'text').toLowerCase()
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(inputType)
+  }
+
+  if (target.closest('.monaco-editor textarea, .monaco-editor .inputarea')) {
+    return true
+  }
+
+  return false
+}
+
+function handleGlobalSelectAll(event) {
+  if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'a') {
+    return
+  }
+
+  if (isEditableTarget(event.target)) {
+    return
+  }
+
+  event.preventDefault()
+}
+
 // 当前视图: 'welcome' | 'workspace'
 const currentView = computed(() => {
   return store.currentProject ? 'workspace' : 'welcome'
@@ -71,6 +109,8 @@ onMounted(async () => {
   // Update window title on mount
   updateWindowTitle()
 
+  document.addEventListener('keydown', handleGlobalSelectAll, true)
+
   // Get Claude info
   try {
     const info = await window.electronAPI.getClaudeInfo()
@@ -90,6 +130,7 @@ onUnmounted(() => {
   if (initUnsub) {
     initUnsub()
   }
+  document.removeEventListener('keydown', handleGlobalSelectAll, true)
 })
 </script>
 

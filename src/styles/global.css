@@ -24,6 +24,30 @@ body {
   overflow: hidden;
 }
 
+body,
+#app,
+.app-container {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+.markdown-content,
+.markdown-content *,
+.message-text,
+.message-text *,
+.thinking-preview,
+.session-preview,
+.monaco-editor textarea,
+.monaco-editor .inputarea,
+.monaco-editor .view-lines,
+.monaco-editor .view-line {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* Modern scrollbar styles for Webkit browsers (Chrome, Edge, Safari) */
 ::-webkit-scrollbar {
   width: 8px;

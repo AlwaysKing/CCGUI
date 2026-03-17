@@ -1,7 +1,12 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
-import hljs from 'highlight.js'
-import 'highlight.js/styles/github-dark.css'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import * as monaco from 'monaco-editor'
+import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
+import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
+import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
+import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
+import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
+import 'monaco-editor/min/vs/editor/editor.main.css'
 
 const props = defineProps({
   modelValue: {
@@ -20,168 +25,194 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue', 'save'])
 
-const textareaRef = ref(null)
-const lineNumbersRef = ref(null)
-const highlightRef = ref(null)
-const highlightContentRef = ref(null)
+const containerRef = ref(null)
+let editor = null
+let model = null
+let isApplyingExternalValue = false
 
-const lineNumbers = computed(() => {
-  const lines = (props.modelValue || '').split('\n').length
-  return Array.from({ length: Math.max(lines, 1) }, (_, index) => index + 1)
-})
-
-const highlightedHtml = computed(() => {
-  const value = props.modelValue || ''
-  const safeLanguage = props.language && hljs.getLanguage(props.language) ? props.language : null
-  try {
-    if (safeLanguage) {
-      return hljs.highlight(value, { language: safeLanguage }).value
+if (!globalThis.MonacoEnvironment) {
+  globalThis.MonacoEnvironment = {
+    getWorker(_, label) {
+      if (label === 'json') return new jsonWorker()
+      if (label === 'css' || label === 'scss' || label === 'less') return new cssWorker()
+      if (label === 'html' || label === 'handlebars' || label === 'razor') return new htmlWorker()
+      if (label === 'typescript' || label === 'javascript') return new tsWorker()
+      return new editorWorker()
     }
-    return hljs.highlightAuto(value).value
-  } catch {
-    return value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
   }
+}
+
+function normalizeLanguage(language) {
+  const map = {
+    javascript: 'javascript',
+    typescript: 'typescript',
+    json: 'json',
+    css: 'css',
+    scss: 'scss',
+    less: 'less',
+    html: 'html',
+    xml: 'html',
+    markdown: 'markdown',
+    yaml: 'yaml',
+    ini: 'ini',
+    plaintext: 'plaintext',
+    bash: 'shell',
+    python: 'python',
+    rust: 'rust',
+    go: 'go',
+    java: 'java'
+  }
+
+  return map[language] || 'plaintext'
+}
+
+function initEditor() {
+  if (!containerRef.value) return
+
+  model = monaco.editor.createModel(props.modelValue || '', normalizeLanguage(props.language))
+
+  editor = monaco.editor.create(containerRef.value, {
+    model,
+    theme: 'vs-dark',
+    readOnly: props.readOnly,
+    automaticLayout: true,
+    minimap: { enabled: false },
+    scrollBeyondLastLine: false,
+    fontSize: 12,
+    lineHeight: 19,
+    fontFamily: "'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace",
+    wordWrap: 'off',
+    folding: true,
+    foldingHighlight: true,
+    foldingStrategy: 'auto',
+    showFoldingControls: 'always',
+    glyphMargin: false,
+    renderLineHighlight: 'line',
+    lineNumbersMinChars: 3,
+    lineDecorationsWidth: 20,
+    tabSize: 2,
+    insertSpaces: true,
+    bracketPairColorization: { enabled: true },
+    guides: {
+      indentation: true,
+      bracketPairs: true,
+      folding: true
+    },
+    overviewRulerBorder: false,
+    scrollbar: {
+      verticalScrollbarSize: 6,
+      horizontalScrollbarSize: 6
+    }
+  })
+
+  editor.onDidChangeModelContent(() => {
+    if (isApplyingExternalValue) return
+    emit('update:modelValue', editor.getValue())
+  })
+
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+    emit('save')
+  })
+}
+
+function disposeEditor() {
+  if (editor) {
+    editor.dispose()
+    editor = null
+  }
+  if (model) {
+    model.dispose()
+    model = null
+  }
+}
+
+onMounted(() => {
+  initEditor()
 })
 
-function syncScroll() {
-  if (!textareaRef.value) return
-  const top = textareaRef.value.scrollTop
-  const left = textareaRef.value.scrollLeft
+onBeforeUnmount(() => {
+  disposeEditor()
+})
 
-  if (lineNumbersRef.value) {
-    lineNumbersRef.value.scrollTop = top
-  }
-  if (highlightContentRef.value) {
-    highlightContentRef.value.style.transform = `translate(${-left}px, ${-top}px)`
-  }
-}
+watch(() => props.modelValue, (nextValue) => {
+  if (!editor || !model) return
+  if (nextValue === model.getValue()) return
 
-function handleInput(event) {
-  emit('update:modelValue', event.target.value)
-}
+  isApplyingExternalValue = true
+  model.pushEditOperations(
+    [],
+    [
+      {
+        range: model.getFullModelRange(),
+        text: nextValue || ''
+      }
+    ],
+    () => null
+  )
+  isApplyingExternalValue = false
+})
 
-function handleKeydown(event) {
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-    event.preventDefault()
-    emit('save')
-  }
-}
+watch(() => props.language, (nextLanguage) => {
+  if (!model) return
+  monaco.editor.setModelLanguage(model, normalizeLanguage(nextLanguage))
+})
 
-watch(() => props.modelValue, () => {
-  requestAnimationFrame(() => {
-    syncScroll()
-  })
+watch(() => props.readOnly, (nextReadOnly) => {
+  if (!editor) return
+  editor.updateOptions({ readOnly: nextReadOnly })
 })
 </script>
 
 <template>
-  <div class="code-editor">
-    <div ref="lineNumbersRef" class="line-numbers" aria-hidden="true">
-      <span v-for="line in lineNumbers" :key="line">{{ line }}</span>
-    </div>
-
-    <div class="editor-main">
-      <pre ref="highlightRef" class="highlight-layer"><code ref="highlightContentRef" class="hljs highlight-content" v-html="highlightedHtml"></code></pre>
-      <textarea
-        ref="textareaRef"
-        class="editor-input"
-        spellcheck="false"
-        :readonly="readOnly"
-        :value="modelValue"
-        @input="handleInput"
-        @scroll="syncScroll"
-        @keydown="handleKeydown"
-      />
-    </div>
-  </div>
+  <div ref="containerRef" class="code-editor"></div>
 </template>
 
 <style scoped>
 .code-editor {
-  display: flex;
   flex: 1;
-  min-height: 0;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: #111216;
-  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
-  overflow: hidden;
 }
 
-.line-numbers {
-  width: 52px;
-  flex-shrink: 0;
-  overflow: hidden;
-  border-right: 1px solid #2E3138;
-  background: #15171C;
-  color: #5F6672;
-  text-align: right;
-  padding: 12px 8px 12px 0;
-  line-height: 1.6;
-  font-size: 12px;
+.code-editor :deep(.monaco-editor),
+.code-editor :deep(.monaco-editor-background),
+.code-editor :deep(.margin) {
+  background: #111216 !important;
 }
 
-.line-numbers span {
-  display: block;
-  height: 19.2px;
+.code-editor :deep(.monaco-editor .scroll-decoration) {
+  box-shadow: none !important;
 }
 
-.editor-main {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
+.code-editor :deep(.monaco-editor .scrollbar.vertical) {
+  width: 6px !important;
 }
 
-.highlight-layer,
-.editor-input {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  padding: 12px 16px;
-  line-height: 1.6;
-  font-size: 12px;
-  white-space: pre;
-  tab-size: 2;
+.code-editor :deep(.monaco-editor .scrollbar.horizontal) {
+  height: 6px !important;
 }
 
-.highlight-layer {
-  pointer-events: none;
-  color: #D4D4D8;
-  overflow: hidden;
+.code-editor :deep(.monaco-editor .scrollbar .slider) {
+  border-radius: 3px !important;
+  background: #52525B !important;
+  border: 1px solid #18181B !important;
 }
 
-.highlight-layer code {
-  display: block;
-  min-height: 100%;
-  background: transparent;
-  padding: 0;
-  min-width: 100%;
-  width: max-content;
+.code-editor :deep(.monaco-editor .scrollbar .slider:hover) {
+  background: #71717A !important;
 }
 
-.highlight-content {
-  will-change: transform;
+.code-editor :deep(.monaco-editor .scrollbar .slider.active) {
+  background: #A1A1AA !important;
 }
 
-.editor-input {
-  width: 100%;
-  height: 100%;
-  max-width: 100%;
-  border: none;
-  resize: none;
-  background: transparent;
-  color: transparent;
-  caret-color: #F8FAFC;
-  outline: none;
-  overflow: auto;
+.code-editor :deep(.monaco-editor .scrollbar .scrollbar-shadow) {
+  box-shadow: none !important;
 }
 
-.editor-input::selection {
-  background: rgba(249, 115, 22, 0.28);
+.code-editor :deep(.monaco-editor .decorationsOverviewRuler) {
+  opacity: 0.85;
 }
-
 </style>

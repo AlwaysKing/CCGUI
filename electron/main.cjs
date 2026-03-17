@@ -45,7 +45,17 @@ function createWindow() {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': ["default-src 'self' http://localhost:5173; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5173 ws://localhost:5173; style-src 'self' 'unsafe-inline' http://localhost:5173; connect-src 'self' http://localhost:5173 ws://localhost:5173; img-src 'self' data: http://localhost:5173; font-src 'self' data: http://localhost:5173; object-src 'none';"]
+        'Content-Security-Policy': [
+          "default-src 'self' http://localhost:5173; " +
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5173 ws://localhost:5173; " +
+          "style-src 'self' 'unsafe-inline' http://localhost:5173; " +
+          "connect-src 'self' http://localhost:5173 ws://localhost:5173; " +
+          "img-src 'self' data: http://localhost:5173; " +
+          "font-src 'self' data: http://localhost:5173; " +
+          "worker-src 'self' blob: http://localhost:5173; " +
+          "child-src 'self' blob: http://localhost:5173; " +
+          "object-src 'none';"
+        ]
       }
     })
   })

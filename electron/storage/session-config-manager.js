@@ -127,7 +127,7 @@ function getSession(encodedProjectId, sessionId) {
 }
 
 /**
- * Update session configuration
+ * Update session configuration (creates session if not exists)
  * @param {string} encodedProjectId - Encoded project ID
  * @param {string} sessionId - Session ID
  * @param {object} updates - Fields to update
@@ -135,10 +135,34 @@ function getSession(encodedProjectId, sessionId) {
  */
 function updateSession(encodedProjectId, sessionId, updates) {
   try {
-    const sessionConfig = getSession(encodedProjectId, sessionId)
+    let sessionConfig = getSession(encodedProjectId, sessionId)
 
+    // If session doesn't exist, create it first
     if (!sessionConfig) {
-      throw new Error(`Session not found: ${sessionId}`)
+      logger.info('[SessionConfigManager] Session not found, creating new session', {
+        projectId: encodedProjectId,
+        sessionId
+      })
+
+      // Create session directory
+      const sessionDir = getSessionDir(encodedProjectId, sessionId)
+      ensureDir(sessionDir)
+
+      // Create history directory
+      const historyDir = path.join(sessionDir, 'history')
+      ensureDir(historyDir)
+
+      // Create initial config
+      const now = new Date().toISOString()
+      sessionConfig = {
+        id: sessionId,
+        projectId: encodedProjectId,
+        name: updates.name || `Session ${now.split('T')[0]}`,
+        createdAt: now,
+        updatedAt: now,
+        messageCount: 0,
+        settings: {}
+      }
     }
 
     // Apply updates (preserve immutable fields)

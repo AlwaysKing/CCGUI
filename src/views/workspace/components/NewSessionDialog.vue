@@ -17,6 +17,11 @@ const error = ref('')
 
 const emit = defineEmits(['close', 'created'])
 
+function handleEnterKey(event) {
+  if (event?.isComposing || event?.keyCode === 229) return
+  handleCreate()
+}
+
 async function handleCreate() {
   if (!props.projectId) {
     error.value = '未选择项目'
@@ -59,7 +64,7 @@ async function handleCreate() {
             v-model="sessionName"
             type="text"
             placeholder="留空则自动生成"
-            @keyup.enter="handleCreate"
+            @keyup.enter="handleEnterKey"
           />
         </div>
 

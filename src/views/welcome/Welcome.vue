@@ -17,8 +17,7 @@ const showDeleteConfirm = ref(false)
 const projectToDelete = ref(null)
 const deleteProjectFolder = ref(false)
 const isDragging = ref(false)
-const showDragConfirm = ref(false)
-const draggedPath = ref('')
+const initialProjectPath = ref('') // 新建项目对话框的初始路径
 
 // 10天的毫秒数
 const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000
@@ -200,33 +199,15 @@ async function handleDrop(event) {
       logger.info('Drop: project exists, opening', { projectId: found.id })
       store.selectProject(found)
     } else {
-      // 新项目，显示确认对话框
-      logger.info('Drop: new project, showing confirm dialog', { path: fullPath })
-      draggedPath.value = fullPath
-      showDragConfirm.value = true
+      // 新项目，打开新建项目对话框并预填充路径
+      logger.info('Drop: new project, opening new project dialog', { path: fullPath })
+      initialProjectPath.value = fullPath
+      showNewProjectDialog.value = true
     }
   } catch (error) {
     logger.error('Failed to check dropped path:', error)
     // 确保出错时也重置状态
     isDragging.value = false
-  }
-}
-
-function cancelDragConfirm() {
-  showDragConfirm.value = false
-  draggedPath.value = ''
-}
-
-async function confirmDragProject() {
-  try {
-    const newProject = await store.addProject(draggedPath.value)
-    showDragConfirm.value = false
-    draggedPath.value = ''
-    // 创建后自动打开项目
-    store.selectProject(newProject)
-  } catch (error) {
-    console.error('Failed to add project:', error)
-    alert('添加项目失败: ' + error.message)
   }
 }
 
@@ -482,8 +463,9 @@ onUnmounted(() => {
     <!-- New Project Dialog -->
     <NewProjectDialog
       v-if="showNewProjectDialog"
-      @close="showNewProjectDialog = false"
-      @created="showNewProjectDialog = false"
+      :initial-path="initialProjectPath"
+      @close="showNewProjectDialog = false; initialProjectPath = ''"
+      @created="showNewProjectDialog = false; initialProjectPath = ''"
     />
 
     <!-- Settings Dialog -->
@@ -523,32 +505,6 @@ onUnmounted(() => {
           </button>
           <button class="confirm-dialog-btn confirm" @click="confirmDeleteProject">
             删除
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Drag & Drop Confirmation Dialog -->
-    <div v-if="showDragConfirm" class="confirm-dialog-overlay" @click="cancelDragConfirm">
-      <div class="confirm-dialog" @click.stop>
-        <div class="confirm-dialog-content">
-          <div class="confirm-dialog-icon info">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#60A5FA" stroke-width="2">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-            </svg>
-          </div>
-          <div class="confirm-dialog-text">
-            <h3>添加新项目？</h3>
-            <p>这是一个未打开过的文件夹，是否要将其添加为项目？</p>
-            <p><strong>{{ draggedPath }}</strong></p>
-          </div>
-        </div>
-        <div class="confirm-dialog-actions">
-          <button class="confirm-dialog-btn cancel" @click="cancelDragConfirm">
-            取消
-          </button>
-          <button class="confirm-dialog-btn confirm primary" @click="confirmDragProject">
-            添加
           </button>
         </div>
       </div>
@@ -1138,18 +1094,5 @@ onUnmounted(() => {
   font-size: 24px;
   font-weight: 600;
   margin: 0;
-}
-
-.confirm-dialog-icon.info {
-  color: #60A5FA;
-}
-
-.confirm-dialog-btn.primary {
-  background: #F97316;
-  color: white;
-}
-
-.confirm-dialog-btn.primary:hover {
-  background: #EA580C;
 }
 </style>

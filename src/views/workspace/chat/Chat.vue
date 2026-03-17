@@ -2,6 +2,8 @@
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import { useSessionStore } from '../../../stores/useSessionStore'
 import { useAppStore } from '../../../stores/useAppStore'
+import { logger } from '../../../utils/logger'
+import { barkProvider } from '../../../utils/notifier'
 
 // 引入对话框组件
 import PermissionDialog from './components/dialogs/PermissionDialog.vue'
@@ -32,6 +34,10 @@ const props = defineProps({
   sidebarCollapsed: {
     type: Boolean,
     default: false
+  },
+  sidebarWidth: {
+    type: Number,
+    default: 260
   }
 })
 
@@ -42,8 +48,8 @@ const emit = defineEmits(['toggleSidebar', 'startSession', 'closeSession'])
 const messages = computed(() => sessionStore.currentMessages)
 
 // UI 状态
-const pendingPermission = computed(() => sessionStore.currentSession?.pendingPermission)
-const pendingControlRequest = computed(() => sessionStore.currentSession?.pendingControlRequest)
+const pendingPermission = computed(() => sessionStore.pendingPermission)
+const pendingControlRequest = computed(() => sessionStore.pendingControlRequest)
 const pendingQuestion = computed(() => sessionStore.currentSession?.pendingQuestion)
 const envInfo = computed(() => sessionStore.currentSession?.envInfo)
 const inputMessage = computed({
@@ -86,6 +92,280 @@ const effortOptions = [
   { value: 'medium', label: '中', icon: '🎯', description: '平衡思考与速度' },
   { value: 'high', label: '高', icon: '🔬', description: '深度思考，详细分析' }
 ]
+
+const appConfig = ref(null)
+const projectConfig = ref(null)
+const sessionConfig = ref(null)
+
+const currentSessionStatus = computed(() => {
+  const sessionId = appStore.currentSession?.id
+  if (!sessionId) return null
+  return appStore.sessionStatuses?.[sessionId] || null
+})
+
+const currentSessionMeta = computed(() => {
+  const sessionId = appStore.currentSession?.id
+  if (!sessionId) return null
+  return appStore.currentProjectSessions.find(session => session.id === sessionId) || appStore.currentSession || null
+})
+
+const canQuickSwitchModel = computed(() => {
+  return !!appStore.currentSession?.id
+})
+
+const canConfigureNotifications = computed(() => {
+  return !!appStore.currentSession?.id
+})
+
+const availableModelOptions = computed(() => {
+  const models = appConfig.value?.settings?.models?.filter(model => model.isActive !== false) || []
+  const customOptions = models.flatMap(model => {
+    const cards = model.modelCards?.length ? model.modelCards : [{ id: '', modelName: '' }]
+    return cards.map(card => ({
+      key: `${model.id}:${card.id || 'default'}`,
+      mode: 'custom',
+      modelId: model.id,
+      modelCardId: card.id || null,
+      label: card.modelName
+        ? `${model.friendlyName || model.id}(${card.modelName})`
+        : (model.friendlyName || model.id)
+    }))
+  })
+
+  return [
+    { key: 'system', mode: 'system', modelId: null, modelCardId: null, label: '系统' },
+    { key: 'project', mode: 'project', modelId: null, modelCardId: null, label: '项目' },
+    ...customOptions
+  ]
+})
+
+function normalizeProjectModelSettings(settings = {}) {
+  const modelMode = settings.modelMode || (settings.modelId ? 'custom' : 'system')
+  return {
+    modelMode,
+    modelId: modelMode === 'custom' ? settings.modelId || null : null,
+    modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null
+  }
+}
+
+function normalizeSessionModelSettings(settings = {}) {
+  const modelMode = settings.modelMode || (settings.modelId === '' ? 'system' : (settings.modelId ? 'custom' : 'project'))
+  return {
+    modelMode,
+    modelId: modelMode === 'custom' ? settings.modelId || null : null,
+    modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null
+  }
+}
+
+function formatModelLabel(modelId, modelCardId, fallback = '系统') {
+  if (!modelId) return fallback
+  const model = appConfig.value?.settings?.models?.find(item => item.id === modelId)
+  if (!model) return modelId
+  const cards = model.modelCards || []
+  const card = modelCardId
+    ? cards.find(item => item.id === modelCardId)
+    : (cards.find(item => item.id === model.defaultCardId) || cards[0] || null)
+  const modelName = model.friendlyName || model.id
+  const cardName = card?.modelName || card?.id || null
+  return cardName ? `${modelName}(${cardName})` : modelName
+}
+
+function toPlainObject(value) {
+  return value ? JSON.parse(JSON.stringify(value)) : {}
+}
+
+const currentModelLabel = computed(() => {
+  const normalizedSession = normalizeSessionModelSettings(sessionConfig.value?.settings || {})
+
+  if (!sessionConfig.value?.settings || Object.keys(sessionConfig.value.settings).length === 0) {
+    return '项目'
+  }
+
+  if (normalizedSession.modelMode === 'custom') {
+    return formatModelLabel(normalizedSession.modelId, normalizedSession.modelCardId)
+  }
+  if (normalizedSession.modelMode === 'system') {
+    return '系统'
+  }
+  return '项目'
+})
+
+const currentModelSelectionKey = computed(() => {
+  const normalizedSession = normalizeSessionModelSettings(sessionConfig.value?.settings || {})
+
+  if (!sessionConfig.value?.settings || Object.keys(sessionConfig.value.settings).length === 0) {
+    return 'project'
+  }
+
+  if (normalizedSession.modelMode === 'custom') {
+    return `${normalizedSession.modelId}:${normalizedSession.modelCardId || 'default'}`
+  }
+
+  return normalizedSession.modelMode
+})
+
+const notificationOptions = computed(() => [
+  {
+    value: 'sound',
+    label: '播放系统音'
+  },
+  {
+    value: 'bark',
+    label: 'Bark 通知',
+    disabled: !appConfig.value?.settings?.barkUrl
+  }
+])
+
+const currentNotificationChannels = computed(() => {
+  const settings = sessionConfig.value?.settings || {}
+  if (!Array.isArray(settings.notificationChannels)) {
+    return []
+  }
+  return settings.notificationChannels.filter(channel => channel === 'sound' || channel === 'bark')
+})
+
+async function loadModelConfigContext() {
+  if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
+
+  try {
+    const [appResult, projectResult, sessionResult] = await Promise.all([
+      window.electronAPI.getAppConfig(),
+      window.electronAPI.getProjectConfig({ projectId: appStore.currentProject.id }),
+      window.electronAPI.getSessionConfig({
+        projectId: appStore.currentProject.id,
+        sessionId: appStore.currentSession.id
+      })
+    ])
+
+    if (appResult?.success) {
+      appConfig.value = appResult.config
+    }
+    projectConfig.value = projectResult?.config || null
+    sessionConfig.value = sessionResult?.config || null
+  } catch (error) {
+    logger.error('[Chat] Failed to load model config context', { error: error.message })
+  }
+}
+
+async function handleQuickModelChange(option) {
+  if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
+
+  const plainOption = toPlainObject(option)
+  const existingSettings = toPlainObject(sessionConfig.value?.settings)
+  const normalizedSession = normalizeSessionModelSettings(existingSettings)
+  if (
+    normalizedSession.modelMode === plainOption.mode &&
+    (plainOption.mode !== 'custom' || (
+      normalizedSession.modelId === plainOption.modelId &&
+      (normalizedSession.modelCardId || null) === (plainOption.modelCardId || null)
+    ))
+  ) {
+    return
+  }
+
+  try {
+    const nextSettings = {
+      ...existingSettings,
+      modelMode: plainOption.mode,
+      modelId: plainOption.mode === 'custom' ? plainOption.modelId : null,
+      modelCardId: plainOption.mode === 'custom' ? (plainOption.modelCardId || null) : null
+    }
+
+    await window.electronAPI.updateSessionConfig({
+      projectId: appStore.currentProject.id,
+      sessionId: appStore.currentSession.id,
+      updates: {
+        name: currentSessionMeta.value?.name || appStore.currentSession.name || sessionStore.currentSession?.id?.slice(0, 8) || '新会话',
+        settings: nextSettings
+      }
+    })
+
+    if (currentSessionStatus.value?.ready) {
+      await window.electronAPI.stopClaude({ sessionId: appStore.currentSession.id })
+      await window.electronAPI.startSession({
+        sessionId: appStore.currentSession.id,
+        projectPath: appStore.currentProject.path
+      })
+    }
+
+    await loadModelConfigContext()
+    await appStore.fetchSessions(appStore.currentProject.id)
+    await appStore.fetchRunningSessions()
+  } catch (error) {
+    logger.error('[Chat] Failed to quick switch model', { error: error.message })
+    alert('切换模型失败: ' + error.message)
+  }
+}
+
+async function handleNotificationToggle(option) {
+  if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
+
+  try {
+    const existingSettings = toPlainObject(sessionConfig.value?.settings)
+    const currentChannels = Array.isArray(existingSettings.notificationChannels)
+      ? existingSettings.notificationChannels.filter(channel => channel === 'sound' || channel === 'bark')
+      : []
+
+    let nextChannels
+    if (option.value === 'none') {
+      nextChannels = []
+    } else if (currentChannels.includes(option.value)) {
+      nextChannels = currentChannels.filter(channel => channel !== option.value)
+    } else {
+      nextChannels = [...currentChannels, option.value]
+    }
+
+    const result = await window.electronAPI.updateSessionConfig({
+      projectId: appStore.currentProject.id,
+      sessionId: appStore.currentSession.id,
+      updates: {
+        name: currentSessionMeta.value?.name || appStore.currentSession.name || sessionStore.currentSession?.id?.slice(0, 8) || '新会话',
+        settings: {
+          ...existingSettings,
+          notificationChannels: nextChannels
+        }
+      }
+    })
+
+    if (result?.success) {
+      sessionConfig.value = result.config
+    } else {
+      throw new Error(result?.error || '保存通知配置失败')
+    }
+  } catch (error) {
+    logger.error('[Chat] Failed to update notification channels', { error: error.message })
+    alert('更新通知方式失败: ' + error.message)
+  }
+}
+
+async function handleSessionComplete(event) {
+  if (event.detail?.sessionId !== appStore.currentSession?.id) return
+  if (appConfig.value?.settings?.showNotifications === false) return
+
+  const channels = currentNotificationChannels.value
+  if (!channels.length) return
+
+  const sessionName = currentSessionMeta.value?.name || appStore.currentSession?.name || '当前会话'
+  const message = `会话「${sessionName}」已完成`
+
+  if (channels.includes('sound') && appConfig.value?.settings?.notificationSound) {
+    try {
+      await window.electronAPI.playSystemSound({
+        sound: appConfig.value.settings.notificationSound
+      })
+    } catch (error) {
+      logger.warn('[Chat] Failed to play completion sound', { error: error.message })
+    }
+  }
+
+  if (channels.includes('bark') && appConfig.value?.settings?.barkUrl) {
+    try {
+      await barkProvider.send(appConfig.value.settings.barkUrl, message)
+    } catch (error) {
+      logger.warn('[Chat] Failed to send Bark notification', { error: error.message })
+    }
+  }
+}
 
 // 监听 session 的 permissionMode 变化
 watch(
@@ -134,11 +414,14 @@ onMounted(async () => {
     // Ignore error
   }
 
+  await loadModelConfigContext()
+
   // 注意：所有事件现在通过 SessionStore 的 session-event 通道处理
   // 不再需要旧的事件监听器（onClaudeMessage, onStreamEvent 等）
 
   // 点击外部关闭权限菜单
   document.addEventListener('click', handleClickOutsidePermissionMenu)
+  window.addEventListener('ccgui-session-complete', handleSessionComplete)
 })
 
 // Note: Session history is now loaded by SessionStore/SessionInstance
@@ -156,7 +439,25 @@ onUnmounted(() => {
   document.removeEventListener('click', handleClickOutsidePermissionMenu)
   // 清理窗口大小变化监听器
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('ccgui-session-complete', handleSessionComplete)
 })
+
+defineExpose({
+  refreshModelConfig: loadModelConfigContext
+})
+
+watch(
+  () => [appStore.currentProject?.id, appStore.currentSession?.id],
+  async ([projectId, sessionId]) => {
+    if (projectId && sessionId) {
+      await loadModelConfigContext()
+    } else {
+      projectConfig.value = null
+      sessionConfig.value = null
+    }
+  },
+  { immediate: false }
+)
 
 // 点击外部关闭权限菜单
 function handleClickOutsidePermissionMenu(event) {
@@ -603,12 +904,11 @@ async function handleInterrupt() {
 }
 
 async function handlePermissionApprove(requestId, toolName, displayDetail) {
-  const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
   // 清除权限请求，并保存请求信息用于后续添加权限结果消息
   // 气泡会在 CLI 返回 control_response 后添加
-  sessionStore.clearPendingPermissions(true)
+  sessionStore.clearPendingPermissions(requestId, true)
 
   // 注意: 工具刚刚被批准，还没有执行完成，所以 isExecuting 应该保持 true
   // 工具执行完成后会通过 toolResult 事件来更新状态
@@ -675,11 +975,10 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
 }
 
 async function handlePermissionDeny(requestId) {
-  const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
   // 清除权限请求，并保存请求信息用于后续添加权限结果消息
-  sessionStore.clearPendingPermissions(true)
+  sessionStore.clearPendingPermissions(requestId, true)
 
   // 找到对应的 tool_use 消息并更新状态
   // 对于 control_request，消息使用 tool_use_id 作为 request_id
@@ -719,12 +1018,11 @@ async function handlePermissionDeny(requestId) {
 }
 
 async function handlePermissionApproveAll(requestId) {
-  const permission = pendingPermission.value
   const controlRequest = pendingControlRequest.value
 
   // 清除权限请求，并保存请求信息用于后续添加权限结果消息
   // 气泡会在 CLI 返回 control_response 后添加
-  sessionStore.clearPendingPermissions(true)
+  sessionStore.clearPendingPermissions(requestId, true)
 
   try {
     // Check if this is a control_request (for --permission-prompt-tool stdio)
@@ -1206,6 +1504,12 @@ async function handleQuestionAnswer(requestId, answers) {
       />
     </div>
 
+    <!-- 任务浮动窗口 - 在 messages 容器外,不受滚动影响 -->
+    <TaskFloatingWindow
+      :sidebar-collapsed="sidebarCollapsed"
+      :sidebar-width="sidebarWidth"
+    />
+
     <!-- 可拖拽的分隔条 -->
     <div
       class="resize-handle"
@@ -1220,11 +1524,20 @@ async function handleQuestionAnswer(requestId, answers) {
       :has-permission="pendingPermission !== null || pendingControlRequest !== null"
       :permission-mode="permissionMode"
       :permission-modes="permissionModes"
+      :current-model-label="currentModelLabel"
+      :current-model-key="currentModelSelectionKey"
+      :model-options="availableModelOptions"
+      :can-switch-model="canQuickSwitchModel"
+      :current-notification-channels="currentNotificationChannels"
+      :notification-options="notificationOptions"
+      :can-configure-notifications="canConfigureNotifications"
       :effort="effort"
       :effort-options="effortOptions"
       :input-history="inputHistory"
       @send="handleSendMessage"
       @interrupt="handleInterrupt"
+      @model-change="handleQuickModelChange"
+      @notification-toggle="handleNotificationToggle"
       @permission-mode-change="selectPermissionMode"
       @effort-change="selectEffort"
       @add-to-history="addToHistory"
@@ -1349,9 +1662,6 @@ async function handleQuestionAnswer(requestId, answers) {
       </div>
     </div>
   </Teleport>
-
-  <!-- 任务浮动窗口 -->
-  <TaskFloatingWindow />
 </template>
 
 <style scoped>

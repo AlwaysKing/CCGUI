@@ -10,9 +10,16 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import RenameDialog from './components/RenameDialog.vue'
 import ProjectSwitchDialog from './components/ProjectSwitchDialog.vue'
 import SwitchConfirmDialog from './components/SwitchConfirmDialog.vue'
+import ProjectConfigDialog from './components/ProjectConfigDialog.vue'
+import SessionConfigDialog from './components/SessionConfigDialog.vue'
+import SettingsDialog from '@/views/settings/SettingsDialog.vue'
 
 const store = useAppStore()
 const sessionStore = useSessionStore()
+
+// SessionSidebar ref
+const sessionSidebarRef = ref(null)
+const chatRef = ref(null)
 
 // Dialog states
 const showNewSessionDialog = ref(false)
@@ -20,6 +27,10 @@ const showConfirmDialog = ref(false)
 const showRenameDialog = ref(false)
 const showProjectSwitchDialog = ref(false)
 const showSwitchConfirmDialog = ref(false)
+const showProjectConfigDialog = ref(false)
+const showSessionConfigDialog = ref(false)
+const showSettingsDialog = ref(false)
+const selectedSessionForConfig = ref(null)
 const selectedProject = ref(null)
 const confirmDialogConfig = ref({
   title: '',
@@ -196,6 +207,74 @@ function handleSwitchProject() {
   showProjectSwitchDialog.value = true
 }
 
+function handleGoHomeFromSidebar() {
+  handleGoHomeFromDialog(store.hasProcessingSessions)
+}
+
+// Project config handler
+function handleOpenProjectConfig() {
+  showProjectConfigDialog.value = true
+}
+
+function handleProjectConfigSaved() {
+  showProjectConfigDialog.value = false
+  sessionSidebarRef.value?.refreshConfig()
+}
+
+async function handleSettingsSaved() {
+  await Promise.all([
+    sessionSidebarRef.value?.refreshConfig?.(),
+    chatRef.value?.refreshModelConfig?.()
+  ])
+}
+
+// Session config handlers
+function handleOpenSessionConfig(session) {
+  selectedSessionForConfig.value = session
+  showSessionConfigDialog.value = true
+}
+
+async function handleDeleteSessionConfig(session) {
+  confirmDialogConfig.value = {
+    title: '删除独立配置',
+    message: `确定要删除会话 "${session.name || session.id.slice(0, 8)}" 的独立配置吗？\n删除后将使用项目配置。`,
+    onConfirm: async () => {
+      try {
+        await window.electronAPI.deleteSessionConfig({
+          projectId: store.currentProject?.id,
+          sessionId: session.id
+        })
+        showConfirmDialog.value = false
+        sessionSidebarRef.value?.refreshConfig()
+      } catch (e) {
+        alert('删除配置失败: ' + e.message)
+      }
+    }
+  }
+  showConfirmDialog.value = true
+}
+
+async function handleCopySession(session) {
+  try {
+    const result = await window.electronAPI.copySession({
+      projectId: store.currentProject?.id,
+      sessionId: session.id
+    })
+    if (result.success) {
+      await store.fetchSessions(store.currentProject?.id)
+    } else {
+      alert('复制会话失败: ' + result.error)
+    }
+  } catch (e) {
+    alert('复制会话失败: ' + e.message)
+  }
+}
+
+function handleSessionConfigSaved() {
+  showSessionConfigDialog.value = false
+  sessionSidebarRef.value?.refreshConfig()
+}
+
 function handleProjectSelected(project) {
   // If selected current project, just close dialog
   if (project.id === store.currentProject?.id) {
@@ -338,6 +417,7 @@ onUnmounted(() => {
     <div class="workspace-body">
       <!-- Session Sidebar -->
       <SessionSidebar
+        ref="sessionSidebarRef"
         v-show="!sidebarCollapsed"
         :style="{ width: `${sidebarWidth}px` }"
         :sessions="store.currentProjectSessions"
@@ -352,6 +432,12 @@ onUnmounted(() => {
         @toggle="toggleSidebar"
         @rename="handleRenameSession"
         @switchProject="handleSwitchProject"
+        @home="handleGoHomeFromSidebar"
+        @openAppSettings="showSettingsDialog = true"
+        @openProjectConfig="showProjectConfigDialog = true"
+        @openSessionConfig="handleOpenSessionConfig"
+        @deleteSessionConfig="handleDeleteSessionConfig"
+        @copySession="handleCopySession"
       />
 
       <!-- Resize Handle -->
@@ -365,7 +451,9 @@ onUnmounted(() => {
       <main class="main-content">
         <Chat
           v-if="store.currentSession"
+          ref="chatRef"
           :sidebar-collapsed="sidebarCollapsed"
+          :sidebar-width="sidebarWidth"
           @toggleSidebar="toggleSidebar"
           @startSession="handleStartSession"
           @closeSession="handleCloseSession"
@@ -442,6 +530,29 @@ onUnmounted(() => {
       @close="showSwitchConfirmDialog = false"
       @replace="handleReplaceProject"
       @newWindow="handleNewWindow"
+    />
+
+    <ProjectConfigDialog
+      v-if="showProjectConfigDialog"
+      :visible="showProjectConfigDialog"
+      :project-id="store.currentProject?.id"
+      @close="showProjectConfigDialog = false"
+      @saved="handleProjectConfigSaved"
+    />
+
+    <SessionConfigDialog
+      v-if="showSessionConfigDialog"
+      :visible="showSessionConfigDialog"
+      :project-id="store.currentProject?.id"
+      :session-id="selectedSessionForConfig?.id"
+      @close="showSessionConfigDialog = false"
+      @saved="handleSessionConfigSaved"
+    />
+
+    <SettingsDialog
+      v-if="showSettingsDialog"
+      @saved="handleSettingsSaved"
+      @close="showSettingsDialog = false"
     />
   </div>
 </template>

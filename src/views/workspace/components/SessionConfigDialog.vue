@@ -1,27 +1,28 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { useAppStore } from '../../../stores/useAppStore'
 
-const store = useAppStore()
-
-// Props
 const props = defineProps({
-  initialPath: {
+  visible: {
+    type: Boolean,
+    default: false
+  },
+  projectId: {
+    type: String,
+    default: ''
+  },
+  sessionId: {
     type: String,
     default: ''
   }
 })
 
-// 基础字段
-const projectPath = ref('')
-const isCreating = ref(false)
-const error = ref('')
+const emit = defineEmits(['close', 'saved'])
 
 // 配置选项
-const modelMode = ref('system')
-const modelCardMode = ref('default') // 'default' = 使用默认, 'custom' = 自选
-const promptsMode = ref('system')
-const documentsMode = ref('system')
+const modelMode = ref('project')
+const modelCardMode = ref('default')
+const promptsMode = ref('project')
+const documentsMode = ref('project')
 
 // 选择的配置
 const selectedModelId = ref(null)
@@ -34,7 +35,9 @@ const systemModels = ref([])
 const systemPrompts = ref([])
 const systemDocuments = ref([])
 
-const emit = defineEmits(['close', 'created'])
+// 状态
+const loading = ref(false)
+const saving = ref(false)
 
 // 计算属性：可用的模型列表（已激活的）
 const availableModels = computed(() => {
@@ -48,14 +51,14 @@ const availableModelCards = computed(() => {
   return model?.modelCards || []
 })
 
-// 计算属性：基础提示词ID列表（isBase=true）
+// 计算属性：基础提示词ID列表
 const basePromptIds = computed(() => {
   return systemPrompts.value
     .filter(p => p.isBase === true)
     .map(p => p.id)
 })
 
-// 计算属性：基础文档ID列表（isBase!==false）
+// 计算属性：基础文档ID列表
 const baseDocumentIds = computed(() => {
   return systemDocuments.value
     .filter(d => d.isBase !== false)
@@ -81,6 +84,70 @@ async function loadSystemConfig() {
   }
 }
 
+// 加载会话配置
+async function loadSessionConfig() {
+  if (!props.projectId || !props.sessionId) return
+
+  loading.value = true
+  try {
+    const result = await window.electronAPI.getSessionConfig({
+      projectId: props.projectId,
+      sessionId: props.sessionId
+    })
+    if (result && result.config && result.config.settings) {
+      const settings = result.config.settings
+
+      // 模型配置
+      const savedModelMode = settings.modelMode || (settings.modelId === '' ? 'system' : (settings.modelId ? 'custom' : 'project'))
+      if (savedModelMode === 'custom' && settings.modelId) {
+        modelMode.value = 'custom'
+        selectedModelId.value = settings.modelId
+        if (settings.modelCardId) {
+          modelCardMode.value = 'custom'
+          selectedModelCardId.value = settings.modelCardId
+        } else {
+          modelCardMode.value = 'default'
+        }
+      } else {
+        modelMode.value = savedModelMode
+      }
+
+      // 提示词配置
+      const savedPromptMode = settings.promptMode || (
+        Array.isArray(settings.promptIds) ? (settings.promptIds.length > 0 ? 'custom' : 'none') : 'project'
+      )
+      if (savedPromptMode === 'custom') {
+        promptsMode.value = 'custom'
+        selectedPromptIds.value = Array.isArray(settings.promptIds) ? [...settings.promptIds] : []
+      } else {
+        promptsMode.value = savedPromptMode
+        selectedPromptIds.value = []
+      }
+
+      // 规范文档配置
+      const savedDocumentMode = settings.documentMode || (
+        Array.isArray(settings.documentIds) ? (settings.documentIds.length > 0 ? 'custom' : 'none') : 'project'
+      )
+      if (savedDocumentMode === 'custom') {
+        documentsMode.value = 'custom'
+        selectedDocumentIds.value = Array.isArray(settings.documentIds) ? [...settings.documentIds] : []
+      } else {
+        documentsMode.value = savedDocumentMode
+        selectedDocumentIds.value = []
+      }
+    } else {
+      // 没有会话配置，默认跟随项目
+      modelMode.value = 'project'
+      promptsMode.value = 'project'
+      documentsMode.value = 'project'
+    }
+  } catch (e) {
+    console.error('Failed to load session config:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
 // 切换提示词选择
 function togglePrompt(promptId) {
   const index = selectedPromptIds.value.indexOf(promptId)
@@ -101,12 +168,11 @@ function toggleDocument(docId) {
   }
 }
 
-// 模型配置切换时，重置子模型选择并选择默认卡片
+// 模型配置切换时
 function onModelChange() {
   modelCardMode.value = 'default'
   const model = systemModels.value.find(m => m.id === selectedModelId.value)
   if (model?.modelCards?.length > 0) {
-    // 优先选择默认卡片，否则选择第一个
     const defaultCard = model.modelCards.find(c => c.id === model.defaultCardId)
     selectedModelCardId.value = defaultCard?.id || model.modelCards[0].id
   } else {
@@ -123,48 +189,12 @@ function getDefaultModelCardName() {
   return card?.modelName || card?.id || '默认模型'
 }
 
-// 子模型模式切换
-function onModelCardModeChange() {
-  if (modelCardMode.value === 'custom') {
-    // 切换到自选时，保持当前选中的卡片
-    const model = systemModels.value.find(m => m.id === selectedModelId.value)
-    if (model?.modelCards?.length > 0 && !selectedModelCardId.value) {
-      const defaultCard = model.modelCards.find(c => c.id === model.defaultCardId)
-      selectedModelCardId.value = defaultCard?.id || model.modelCards[0].id
-    }
-  }
-}
+// 保存配置
+async function handleSave() {
+  if (!props.projectId || !props.sessionId) return
 
-async function handleBrowse() {
-  if (window.electronAPI?.selectDirectory) {
-    const result = await window.electronAPI.selectDirectory()
-    if (result && !result.canceled && result.filePaths.length > 0) {
-      projectPath.value = result.filePaths[0]
-    }
-  } else {
-    alert('请手动输入项目路径')
-  }
-}
-
-function handleEnterKey(event) {
-  if (event?.isComposing || event?.keyCode === 229) return
-  handleCreate()
-}
-
-async function handleCreate() {
-  if (!projectPath.value.trim()) {
-    error.value = '请选择或输入项目路径'
-    return
-  }
-
-  isCreating.value = true
-  error.value = ''
-
+  saving.value = true
   try {
-    // 构建设置对象
-    // - 模式为 'system' 时，对应字段为 null（跟随系统）
-    // - 模式为 'none' 时，对应字段为空数组（不使用，仅适用于提示词和文档）
-    // - 模式为 'custom' 时，对应字段为具体选择的值
     const settings = {
       modelMode: modelMode.value,
       modelId: modelMode.value === 'custom' ? selectedModelId.value : null,
@@ -175,22 +205,38 @@ async function handleCreate() {
       documentIds: documentsMode.value === 'custom' ? [...selectedDocumentIds.value] : []
     }
 
-    const newProject = await store.addProject(projectPath.value.trim(), settings)
-    emit('created', newProject)
+    await window.electronAPI.updateSessionConfig({
+      projectId: props.projectId,
+      sessionId: props.sessionId,
+      updates: { settings }
+    })
+
+    emit('saved')
+    emit('close')
   } catch (e) {
-    error.value = e.message || '创建项目失败'
+    console.error('Failed to save session config:', e)
+    alert('保存配置失败: ' + e.message)
   } finally {
-    isCreating.value = false
+    saving.value = false
   }
 }
 
-// 监听模式变化，初始化选择
+// 监听可见性变化
+watch(() => props.visible, (visible) => {
+  if (visible) {
+    loadSystemConfig()
+    loadSessionConfig()
+  }
+})
+
+// 监听模式变化
 watch(modelMode, (newVal) => {
   if (newVal === 'custom' && availableModels.value.length > 0) {
-    selectedModelId.value = availableModels.value[0].id
-    // 触发子模型选择
-    onModelChange()
-  } else {
+    if (!selectedModelId.value) {
+      selectedModelId.value = availableModels.value[0].id
+      onModelChange()
+    }
+  } else if (newVal !== 'custom') {
     selectedModelId.value = null
     selectedModelCardId.value = null
   }
@@ -198,38 +244,40 @@ watch(modelMode, (newVal) => {
 
 watch(promptsMode, (newVal) => {
   if (newVal === 'custom') {
-    // 默认选中基础提示词
-    selectedPromptIds.value = [...basePromptIds.value]
+    if (selectedPromptIds.value.length === 0) {
+      selectedPromptIds.value = [...basePromptIds.value]
+    }
   } else {
-    // 'system' 或 'none' 时清空选择
     selectedPromptIds.value = []
   }
 })
 
 watch(documentsMode, (newVal) => {
   if (newVal === 'custom') {
-    // 默认选中基础文档
-    selectedDocumentIds.value = [...baseDocumentIds.value]
+    if (selectedDocumentIds.value.length === 0) {
+      selectedDocumentIds.value = [...baseDocumentIds.value]
+    }
   } else {
-    // 'system' 或 'none' 时清空选择
     selectedDocumentIds.value = []
   }
 })
 
 onMounted(() => {
-  loadSystemConfig()
-  // 如果有初始路径，填充到输入框
-  if (props.initialPath) {
-    projectPath.value = props.initialPath
+  if (props.visible) {
+    loadSystemConfig()
+    loadSessionConfig()
   }
 })
 </script>
 
 <template>
-  <div class="dialog-overlay" @click.self="emit('close')">
+  <div v-if="visible" class="dialog-overlay" @click.self="emit('close')">
     <div class="dialog">
       <div class="dialog-header">
-        <h3>新建项目</h3>
+        <div class="header-content">
+          <h3>会话配置</h3>
+          <span class="session-hint">独立配置优先于项目配置</span>
+        </div>
         <button class="close-btn" @click="emit('close')">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/>
@@ -239,24 +287,11 @@ onMounted(() => {
       </div>
 
       <div class="dialog-body">
-        <!-- 项目路径 -->
-        <div class="form-group">
-          <label>项目路径</label>
-          <div class="input-row">
-            <input
-              v-model="projectPath"
-              type="text"
-              placeholder="选择或输入项目目录路径"
-              @keyup.enter="handleEnterKey"
-            />
-            <button class="browse-btn" @click="handleBrowse">浏览...</button>
-          </div>
+        <div v-if="loading" class="loading-state">
+          <p>加载中...</p>
         </div>
 
-        <!-- 高级配置 -->
-        <div class="advanced-config">
-          <h4 class="config-title">高级配置（可选）</h4>
-
+        <template v-else>
           <!-- 模型选择 -->
           <div class="config-section">
             <label class="config-label">模型</label>
@@ -264,6 +299,10 @@ onMounted(() => {
               <label class="radio-item">
                 <input type="radio" v-model="modelMode" value="system" />
                 <span>系统</span>
+              </label>
+              <label class="radio-item">
+                <input type="radio" v-model="modelMode" value="project" />
+                <span>项目</span>
               </label>
               <label class="radio-item">
                 <input type="radio" v-model="modelMode" value="custom" />
@@ -333,6 +372,10 @@ onMounted(() => {
                 <span>系统</span>
               </label>
               <label class="radio-item">
+                <input type="radio" v-model="promptsMode" value="project" />
+                <span>项目</span>
+              </label>
+              <label class="radio-item">
                 <input type="radio" v-model="promptsMode" value="custom" />
                 <span>自定义</span>
               </label>
@@ -369,6 +412,10 @@ onMounted(() => {
                 <span>系统</span>
               </label>
               <label class="radio-item">
+                <input type="radio" v-model="documentsMode" value="project" />
+                <span>项目</span>
+              </label>
+              <label class="radio-item">
                 <input type="radio" v-model="documentsMode" value="custom" />
                 <span>自定义</span>
               </label>
@@ -395,13 +442,7 @@ onMounted(() => {
               <p v-else class="empty-hint">暂无规范文档</p>
             </div>
           </div>
-        </div>
-
-        <p v-if="error" class="error-message">{{ error }}</p>
-
-        <p class="hint">
-          项目目录将包含 Claude Code 的配置和会话历史
-        </p>
+        </template>
       </div>
 
       <div class="dialog-footer">
@@ -410,10 +451,10 @@ onMounted(() => {
         </button>
         <button
           class="btn btn-confirm"
-          :disabled="isCreating || !projectPath.trim()"
-          @click="handleCreate"
+          :disabled="saving || loading"
+          @click="handleSave"
         >
-          {{ isCreating ? '创建中...' : '创建' }}
+          {{ saving ? '保存中...' : '保存' }}
         </button>
       </div>
     </div>
@@ -441,7 +482,8 @@ onMounted(() => {
   min-width: 480px;
   max-width: 560px;
   max-height: 85vh;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
 
@@ -451,6 +493,13 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
+}
+
+.header-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .dialog-header h3 {
@@ -458,6 +507,11 @@ onMounted(() => {
   font-size: 16px;
   font-weight: 600;
   color: #E5E7EB;
+}
+
+.session-hint {
+  font-size: 11px;
+  color: #6B7280;
 }
 
 .close-btn {
@@ -476,70 +530,19 @@ onMounted(() => {
 
 .dialog-body {
   padding: 20px;
-}
-
-.form-group {
-  margin-bottom: 16px;
-}
-
-.form-group label {
-  display: block;
-  font-size: 13px;
-  color: #9CA3AF;
-  margin-bottom: 8px;
-}
-
-.input-row {
-  display: flex;
-  gap: 8px;
-}
-
-.input-row input {
+  overflow-y: auto;
   flex: 1;
-  padding: 10px 12px;
-  background: #1E1E1E;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
-  color: #E5E7EB;
-  font-size: 13px;
+  min-height: 0;
 }
 
-.input-row input:focus {
-  outline: none;
-  border-color: #F97316;
-}
-
-.browse-btn {
-  padding: 10px 16px;
-  background: #374151;
-  border: 1px solid #4B5563;
-  border-radius: 6px;
-  color: #D1D5DB;
-  font-size: 13px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.browse-btn:hover {
-  background: #4B5563;
-}
-
-/* 高级配置样式 */
-.advanced-config {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #3F3F46;
-}
-
-.config-title {
-  margin: 0 0 16px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #9CA3AF;
+.loading-state {
+  text-align: center;
+  color: #6B7280;
+  padding: 40px;
 }
 
 .config-section {
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 .config-label {
@@ -609,22 +612,12 @@ onMounted(() => {
   margin-bottom: 8px;
 }
 
-.select-row:last-child {
-  margin-bottom: 0;
-}
-
 /* 模型卡片选择样式 */
 .model-cards-wrapper {
   margin-top: 10px;
   padding: 10px;
   border: 1px solid #3F3F46;
   border-radius: 6px;
-}
-
-.model-cards {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 .model-cards-list {
@@ -767,24 +760,13 @@ onMounted(() => {
   padding: 8px 0;
 }
 
-.error-message {
-  margin: 0 0 12px;
-  font-size: 13px;
-  color: #EF4444;
-}
-
-.hint {
-  margin: 0;
-  font-size: 12px;
-  color: #6B7280;
-}
-
 .dialog-footer {
   padding: 16px 20px;
   border-top: 1px solid #3F3F46;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .btn {

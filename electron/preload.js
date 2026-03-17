@@ -162,6 +162,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   updateWindowTitle: (options) => ipcRenderer.invoke('update-window-title', options),
 
+  // ============================================
+  // Project Config API
+  // ============================================
+  getProjectConfig: (options) => ipcRenderer.invoke('get-project-config', options),
+  updateProjectConfig: (options) => ipcRenderer.invoke('update-project-config', options),
+
+  // ============================================
+  // Session Config API
+  // ============================================
+  getSessionConfig: (options) => ipcRenderer.invoke('get-session-config', options),
+  updateSessionConfig: (options) => ipcRenderer.invoke('update-session-config', options),
+  deleteSessionConfig: (options) => ipcRenderer.invoke('delete-session-config', options),
+  copySession: (options) => ipcRenderer.invoke('copy-session', options),
+
   // Platform info
   platform: process.platform,
   nodeVersion: process.version,
@@ -203,5 +217,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   // Notification API
   // ============================================
-  sendNotification: (options) => ipcRenderer.invoke('send-notification', options)
+  sendNotification: (options) => ipcRenderer.invoke('send-notification', options),
+  playSystemSound: (options) => ipcRenderer.invoke('play-system-sound', options)
 })

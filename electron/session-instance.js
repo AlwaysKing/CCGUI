@@ -5,6 +5,10 @@ const crypto = require('crypto')
 const { ClaudeManager } = require('./claude-manager')
 const logger = require('./logger')
 const historyManager = require('./storage/history-manager')
+const projectConfigManager = require('./storage/project-config-manager')
+const sessionConfigManager = require('./storage/session-config-manager')
+const appConfigManager = require('./storage/app-config-manager')
+const { resolveSessionSettings } = require('./config-resolution')
 
 /**
  * SessionInstance
@@ -40,6 +44,9 @@ class SessionInstance {
 
     // Claude 实例（懒加载）
     this.claudeManager = null
+
+    // 标记是否为手动停止（用于区分正常退出和异常退出）
+    this.isManualStop = false
 
     // 环境信息（先用已知信息初始化，收到 system init 后更新）
     this.envInfo = {
@@ -308,11 +315,29 @@ class SessionInstance {
       }
     }
 
+    // 解析最终生效配置（system -> project -> session）
+    let settings = null
+    try {
+      const appConfig = appConfigManager.loadConfig()
+      const projectConfig = projectConfigManager.loadProjectConfig(this.projectId)
+      const sessionConfig = sessionConfigManager.getSession(this.projectId, this.id)
+
+      settings = resolveSessionSettings(
+        appConfig,
+        projectConfig?.settings || {},
+        sessionConfig?.settings || null
+      )
+      logger.info(`[SessionInstance] Using resolved settings:`, settings)
+    } catch (e) {
+      logger.warn(`[SessionInstance] Failed to load settings:`, e.message)
+    }
+
     this.claudeManager = new ClaudeManager(
       this.projectPath,
       this.id,
       isNewSession,
-      this.permissionMode // 传递权限模式
+      this.permissionMode, // 传递权限模式
+      settings // 传递配置（session 或 project）
     )
     this.setupClaudeHandlers()
 
@@ -416,12 +441,37 @@ class SessionInstance {
     // Process exit
     manager.on('exit', ({ code, signal }) => {
       logger.info(`[SessionInstance] Claude process exited for session ${this.id}, code: ${code}, signal: ${signal}`)
+
+      // 判断是否异常退出（非手动停止，且 code !== 0）
+      const isAbnormalExit = !this.isManualStop && code !== 0 && code !== null
+
       // Update envInfo to clear PID
       if (this.envInfo) {
         this.envInfo.claudePid = null
         logger.info(`[SessionInstance] Emitting env-info with cleared PID:`, this.envInfo)
         this.emit('env-info', this.envInfo)
       }
+
+      // 通知前端进程退出
+      if (this.isManualStop) {
+        // 手动停止，发送正常退出通知
+        this.emit('normal-exit', {
+          code,
+          signal,
+          message: 'Claude 进程已停止'
+        })
+      } else if (isAbnormalExit) {
+        // 异常退出
+        logger.warn(`[SessionInstance] Claude process abnormal exit, code: ${code}, signal: ${signal}`)
+        this.emit('abnormal-exit', {
+          code,
+          signal,
+          message: `Claude 进程异常退出 (code: ${code})`
+        })
+      }
+
+      // 重置手动停止标志
+      this.isManualStop = false
     })
   }
 
@@ -534,14 +584,20 @@ class SessionInstance {
     const content = message.message?.content
     if (Array.isArray(content)) {
       const textContent = content.find(c => c.type === 'text')
-      if (textContent) {
+      const thinkingContent = content.find(c => c.type === 'thinking')
+
+      if (textContent || thinkingContent) {
         const messageId = message.uuid || `assistant-${Date.now()}`
 
         // 检查是否已存在该消息（防止重复）
         const existingMsg = this.messages.find(m => m.id === messageId)
         if (existingMsg) {
           // 更新已有消息
-          existingMsg.content = textContent.text
+          if (textContent) existingMsg.content = textContent.text
+          if (thinkingContent) {
+            existingMsg.thinking = thinkingContent.thinking
+            existingMsg.hasThinking = true
+          }
           existingMsg.rawMessage = message
           return
         }
@@ -550,7 +606,9 @@ class SessionInstance {
         const msg = {
           id: messageId,
           role: 'assistant',
-          content: textContent.text,
+          content: textContent?.text || '',
+          thinking: thinkingContent?.thinking || '',
+          hasThinking: !!thinkingContent,
           timestamp: new Date(),
           rawMessage: message
         }
@@ -1194,6 +1252,7 @@ class SessionInstance {
   stop() {
     if (this.claudeManager) {
       logger.info(`[SessionInstance] Stopping Claude for session ${this.id}`)
+      this.isManualStop = true // 标记为手动停止
       this.claudeManager.stop()
       this.claudeManager = null
     }

@@ -7,6 +7,41 @@ import { ref, defineProps, defineEmits } from 'vue'
 import SettingsSection from './common/SettingsSection.vue'
 import SettingItem from './common/SettingItem.vue'
 
+const systemSoundGroups = [
+  {
+    label: '系统提示音',
+    options: [
+      { value: 'Basso', label: 'Basso' },
+      { value: 'Blow', label: 'Blow' },
+      { value: 'Bottle', label: 'Bottle' },
+      { value: 'Frog', label: 'Frog' },
+      { value: 'Funk', label: 'Funk' },
+      { value: 'Glass', label: 'Glass' },
+      { value: 'Hero', label: 'Hero' },
+      { value: 'Morse', label: 'Morse' },
+      { value: 'Ping', label: 'Ping' },
+      { value: 'Pop', label: 'Pop' },
+      { value: 'Purr', label: 'Purr' },
+      { value: 'Sosumi', label: 'Sosumi' },
+      { value: 'Submarine', label: 'Submarine' },
+      { value: 'Tink', label: 'Tink' }
+    ]
+  },
+  {
+    label: '扩展 UI 音效',
+    options: [
+      { value: 'ui-alert', label: 'Alert' },
+      { value: 'ui-error', label: 'Error' },
+      { value: 'ui-focus', label: 'Focus' },
+      { value: 'ui-focus-2', label: 'Focus 2' },
+      { value: 'ui-guide-success', label: 'Guide Success' },
+      { value: 'ui-menu-down', label: 'Menu Down' },
+      { value: 'ui-popup-appeared', label: 'Popup Appeared' },
+      { value: 'ui-window-activated', label: 'Window Activated' }
+    ]
+  }
+]
+
 const props = defineProps({
   settings: {
     type: Object,
@@ -14,11 +49,19 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:settings', 'test-bark', 'save-bark'])
+const emit = defineEmits(['update:settings', 'save-settings', 'test-bark', 'save-bark'])
 
 // Bark 测试和保存状态
 const testingBark = ref(false)
 const savingBark = ref(false)
+const testingSound = ref(false)
+
+function updateSettings(nextSettings, autoSave = false) {
+  emit('update:settings', nextSettings)
+  if (autoSave) {
+    emit('save-settings')
+  }
+}
 
 // 测试 Bark 通知
 async function handleTestBark() {
@@ -39,13 +82,29 @@ async function handleSaveBark() {
     savingBark.value = false
   }
 }
+
+async function handleTestSound() {
+  if (!props.settings.notificationSound) return
+
+  testingSound.value = true
+  try {
+    const result = await window.electronAPI.playSystemSound({
+      sound: props.settings.notificationSound
+    })
+    if (!result?.success) {
+      alert('播放提示音失败: ' + (result?.error || '未知错误'))
+    }
+  } finally {
+    testingSound.value = false
+  }
+}
 </script>
 
 <template>
   <SettingsSection title="软件配置">
     <!-- 主题设置 -->
     <SettingItem title="主题" description="选择应用的主题外观">
-      <select :value="settings.theme" @change="emit('update:settings', { ...settings, theme: $event.target.value })" class="setting-select">
+      <select :value="settings.theme" @change="updateSettings({ ...settings, theme: $event.target.value }, true)" class="setting-select">
         <option value="dark">深色模式</option>
         <option value="light" disabled>浅色模式（开发中）</option>
       </select>
@@ -53,10 +112,29 @@ async function handleSaveBark() {
 
     <!-- 语言设置 -->
     <SettingItem title="语言" description="选择应用的显示语言">
-      <select :value="settings.language" @change="emit('update:settings', { ...settings, language: $event.target.value })" class="setting-select">
+      <select :value="settings.language" @change="updateSettings({ ...settings, language: $event.target.value }, true)" class="setting-select">
         <option value="zh-CN">简体中文</option>
         <option value="en-US" disabled>English (开发中)</option>
       </select>
+    </SettingItem>
+
+    <SettingItem title="提示音" description="选择一个 macOS 系统提示音或扩展 UI 音效，用于后续通知提示">
+      <div class="sound-setting-control">
+        <button class="btn-test" @click="handleTestSound" :disabled="testingSound">
+          {{ testingSound ? '试听中...' : '试听' }}
+        </button>
+        <select
+          :value="settings.notificationSound || 'Glass'"
+          @change="updateSettings({ ...settings, notificationSound: $event.target.value }, true)"
+          class="setting-select"
+        >
+          <optgroup v-for="group in systemSoundGroups" :key="group.label" :label="group.label">
+            <option v-for="option in group.options" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </optgroup>
+        </select>
+      </div>
     </SettingItem>
 
     <!-- Bark 通知设置 -->
@@ -76,7 +154,7 @@ async function handleSaveBark() {
       <input
         type="text"
         :value="settings.barkUrl"
-        @input="emit('update:settings', { ...settings, barkUrl: $event.target.value })"
+        @input="updateSettings({ ...settings, barkUrl: $event.target.value })"
         class="setting-input"
         placeholder="例如: https://example.com/key/"
       >
@@ -127,6 +205,12 @@ async function handleSaveBark() {
 .setting-input:focus {
   outline: none;
   border-color: #F97316;
+}
+
+.sound-setting-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .btn-test,

@@ -3,7 +3,7 @@
  * ChatInput - 聊天输入区域组件
  * 从 ChatWindow.vue 提取的输入组件
  */
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   modelValue: {
@@ -47,13 +47,45 @@ const props = defineProps({
       { value: 'medium', label: '中', icon: '🎯', description: '平衡思考与速度' },
       { value: 'high', label: '高', icon: '🔬', description: '深度思考，详细分析' }
     ]
+  },
+  currentModelLabel: {
+    type: String,
+    default: '系统'
+  },
+  currentModelKey: {
+    type: String,
+    default: 'system'
+  },
+  modelOptions: {
+    type: Array,
+    default: () => []
+  },
+  canSwitchModel: {
+    type: Boolean,
+    default: false
+  },
+  currentNotificationChannels: {
+    type: Array,
+    default: () => []
+  },
+  notificationOptions: {
+    type: Array,
+    default: () => []
+  },
+  canConfigureNotifications: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'addToHistory'])
+const emit = defineEmits(['update:modelValue', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'addToHistory', 'modelChange', 'notificationToggle'])
 
 // 输入区域 ref
 const inputArea = ref(null)
+const modelMenuWrapper = ref(null)
+const permissionMenuWrapper = ref(null)
+const effortMenuWrapper = ref(null)
+const notificationMenuWrapper = ref(null)
 
 // 输入框是否聚焦
 const isInputFocused = ref(false)
@@ -66,6 +98,10 @@ const showPermissionMenu = ref(false)
 
 // 显示思考力度菜单
 const showEffortMenu = ref(false)
+
+// 显示模型菜单
+const showModelMenu = ref(false)
+const showNotificationMenu = ref(false)
 
 // 思考力度选项
 const effortOptions = [
@@ -84,6 +120,14 @@ const enterModeLocked = ref(true)
 function toggleEnterMode() {
   enterModeLocked.value = !enterModeLocked.value
 }
+
+const enterModeIcon = computed(() => {
+  return enterModeLocked.value ? '⏎' : '⏎'
+})
+
+const enterModeTitle = computed(() => {
+  return enterModeLocked.value ? '已启用回车发送 (点击禁用)' : '已禁用回车发送 (点击启用)'
+})
 
 // 显示历史记录选择弹窗
 const showHistoryPicker = ref(false)
@@ -269,11 +313,77 @@ function selectEffort(effort) {
   emit('effortChange', effort)
 }
 
-// 点击外部关闭权限菜单
-function handleClickOutsidePermissionMenu(event) {
-  const wrapper = document.querySelector('.permission-mode-wrapper')
-  if (wrapper && !wrapper.contains(event.target)) {
-    showPermissionMenu.value = false
+function selectModel(option) {
+  showModelMenu.value = false
+  emit('modelChange', option)
+}
+
+const hasEnabledNotifications = computed(() => props.currentNotificationChannels.length > 0)
+
+const notificationButtonTitle = computed(() => {
+  if (!props.currentNotificationChannels.length) {
+    return '通知: 不通知'
+  }
+
+  const labels = props.notificationOptions
+    .filter(option => props.currentNotificationChannels.includes(option.value))
+    .map(option => option.label)
+
+  return `通知: ${labels.join('、') || '已开启'}`
+})
+
+function toggleNotificationMenu() {
+  const nextState = !showNotificationMenu.value
+  closeAllMenus()
+  showNotificationMenu.value = nextState
+}
+
+function toggleNotification(option) {
+  emit('notificationToggle', option)
+}
+
+function closeAllMenus() {
+  showModelMenu.value = false
+  showPermissionMenu.value = false
+  showEffortMenu.value = false
+  showNotificationMenu.value = false
+}
+
+function toggleModelMenu() {
+  const nextState = !showModelMenu.value
+  closeAllMenus()
+  showModelMenu.value = nextState
+}
+
+function togglePermissionMenu() {
+  const nextState = !showPermissionMenu.value
+  closeAllMenus()
+  showPermissionMenu.value = nextState
+}
+
+function toggleEffortMenu() {
+  const nextState = !showEffortMenu.value
+  closeAllMenus()
+  showEffortMenu.value = nextState
+}
+
+function handleGlobalClick(event) {
+  const target = event.target
+  if (
+    modelMenuWrapper.value?.contains(target) ||
+    permissionMenuWrapper.value?.contains(target) ||
+    effortMenuWrapper.value?.contains(target) ||
+    notificationMenuWrapper.value?.contains(target)
+  ) {
+    return
+  }
+
+  closeAllMenus()
+}
+
+function handleGlobalKeydown(event) {
+  if (event.key === 'Escape') {
+    closeAllMenus()
   }
 }
 
@@ -315,6 +425,16 @@ function getHistoryList() {
   return [...props.inputHistory].reverse()
 }
 
+onMounted(() => {
+  document.addEventListener('click', handleGlobalClick)
+  document.addEventListener('keydown', handleGlobalKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleGlobalClick)
+  document.removeEventListener('keydown', handleGlobalKeydown)
+})
+
 // 暴露方法
 defineExpose({
   focus: () => inputArea.value?.focus()
@@ -328,9 +448,34 @@ defineExpose({
       <div class="input-toolbar">
         <!-- 左侧按钮组 -->
         <div class="toolbar-left">
-          <div class="permission-mode-wrapper">
+          <div ref="modelMenuWrapper" class="model-mode-wrapper">
             <button
-              @click="showPermissionMenu = !showPermissionMenu"
+              @click="toggleModelMenu"
+              class="model-mode-btn"
+              title="快速切换模型"
+              :disabled="!canSwitchModel"
+            >
+              <span class="model-mode-icon" aria-hidden="true">✨</span>
+              <span class="model-mode-text">{{ currentModelLabel }}</span>
+            </button>
+
+            <div v-if="showModelMenu && canSwitchModel" class="model-menu">
+              <button
+                v-for="option in modelOptions"
+                :key="option.key"
+                class="model-menu-item"
+                :class="{ active: currentModelKey === option.key }"
+                @click="selectModel(option)"
+              >
+                <span class="model-menu-label">{{ option.label }}</span>
+                <span v-if="currentModelKey === option.key" class="model-menu-check">✓</span>
+              </button>
+            </div>
+          </div>
+
+          <div ref="permissionMenuWrapper" class="permission-mode-wrapper">
+            <button
+              @click="togglePermissionMenu"
               class="permission-mode-btn"
               :title="`权限模式: ${currentModeDescription}`"
               :disabled="isProcessing"
@@ -355,9 +500,9 @@ defineExpose({
           </div>
 
           <!-- 思考力度切换按钮 -->
-          <div class="effort-mode-wrapper">
+          <div ref="effortMenuWrapper" class="effort-mode-wrapper">
             <button
-              @click="showEffortMenu = !showEffortMenu"
+              @click="toggleEffortMenu"
               class="effort-mode-btn"
               :title="`思考力度: ${currentEffortDescription}`"
               :disabled="isProcessing"
@@ -385,15 +530,55 @@ defineExpose({
 
         <!-- 右侧按钮组 -->
         <div class="toolbar-right">
+          <div ref="notificationMenuWrapper" class="notification-mode-wrapper">
+            <button
+              @click="toggleNotificationMenu"
+              class="notification-mode-btn"
+              :class="{ active: hasEnabledNotifications }"
+              :title="notificationButtonTitle"
+              :disabled="!canConfigureNotifications"
+            >
+              {{ hasEnabledNotifications ? '🔔' : '🔕' }}
+            </button>
+            <span v-if="currentNotificationChannels.length > 0" class="notification-count">
+              {{ currentNotificationChannels.length }}
+            </span>
+
+            <div v-if="showNotificationMenu && canConfigureNotifications" class="notification-menu">
+              <button
+                class="notification-menu-item"
+                :class="{ active: currentNotificationChannels.length === 0 }"
+                @click="toggleNotification({ value: 'none' })"
+              >
+                <span class="notification-menu-label">不通知</span>
+                <span v-if="currentNotificationChannels.length === 0" class="notification-menu-check">✓</span>
+              </button>
+              <button
+                v-for="option in notificationOptions"
+                :key="option.value"
+                class="notification-menu-item"
+                :class="{ active: currentNotificationChannels.includes(option.value), disabled: option.disabled }"
+                :disabled="option.disabled"
+                @click="toggleNotification(option)"
+              >
+                <span class="notification-menu-label">{{ option.label }}</span>
+                <span v-if="currentNotificationChannels.includes(option.value)" class="notification-menu-check">✓</span>
+              </button>
+            </div>
+          </div>
+
           <!-- Enter 模式切换按钮 -->
           <button
             @click="toggleEnterMode"
             class="enter-mode-btn"
             :class="{ locked: enterModeLocked }"
-            :title="enterModeLocked ? 'Enter 发送 (点击切换为换行)' : 'Enter 换行 (点击切换为发送)'"
+            :title="enterModeTitle"
             :disabled="isProcessing"
           >
-            {{ enterModeLocked ? '🔒' : '⏎' }}
+            <span class="enter-keycap" :class="{ locked: enterModeLocked }">
+              <span class="enter-keycap-icon">{{ enterModeIcon }}</span>
+              <span v-if="!enterModeLocked" class="enter-keycap-overlay">🚫</span>
+            </span>
           </button>
 
           <!-- 发送/打断按钮 -->
@@ -516,15 +701,13 @@ defineExpose({
   gap: 4px;
 }
 
-/* 权限模式包装器（用于定位菜单） */
-.permission-mode-wrapper {
+.model-mode-wrapper {
   position: relative;
   display: inline-block;
 }
 
-/* 权限模式按钮 */
-.permission-mode-btn {
-  min-width: 90px;
+.model-mode-btn {
+  max-width: 220px;
   padding: 2px 8px;
   background: transparent;
   border: none;
@@ -536,6 +719,113 @@ defineExpose({
   transition: all 0.15s;
   white-space: nowrap;
   text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.model-mode-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.model-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 220px;
+  max-width: 300px;
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+
+.model-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+}
+
+.model-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.model-menu-item.active {
+  color: #F97316;
+}
+
+.model-menu-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-menu-check {
+  color: #F97316;
+}
+
+.model-mode-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.model-mode-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 权限模式包装器（用于定位菜单） */
+.permission-mode-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+/* 权限模式按钮 */
+.permission-mode-btn {
+  min-width: 0;
+  max-width: 140px;
+  padding: 2px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: #A1A1AA;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .permission-mode-btn:hover:not(:disabled) {
@@ -613,7 +903,8 @@ defineExpose({
 
 /* 思考力度按钮 */
 .effort-mode-btn {
-  min-width: 60px;
+  min-width: 0;
+  max-width: 110px;
   padding: 2px 8px;
   background: transparent;
   border: none;
@@ -625,6 +916,8 @@ defineExpose({
   transition: all 0.15s;
   white-space: nowrap;
   text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .effort-mode-btn:hover:not(:disabled) {
@@ -711,6 +1004,112 @@ defineExpose({
   margin-right: -4.5px;
 }
 
+.notification-mode-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.notification-mode-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.notification-mode-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.notification-mode-btn.active {
+  color: #FBBF24;
+}
+
+.notification-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.notification-menu {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 4px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 140px;
+  z-index: 1000;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+
+.notification-count {
+  position: absolute;
+  top: -3px;
+  right: -5px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  background: #F97316;
+  border-radius: 999px;
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.notification-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+}
+
+.notification-menu-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.notification-menu-item.active {
+  color: #F97316;
+}
+
+.notification-menu-item.disabled {
+  opacity: 0.45;
+}
+
+.notification-menu-label {
+  flex: 1;
+}
+
+.notification-menu-check {
+  color: #F97316;
+}
+
 /* Enter 模式切换按钮 */
 .enter-mode-btn {
   display: flex;
@@ -722,7 +1121,6 @@ defineExpose({
   background: transparent;
   border: none;
   border-radius: 4px;
-  font-size: 14px;
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -734,6 +1132,63 @@ defineExpose({
 .enter-mode-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.enter-keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: all 0.15s;
+}
+
+.enter-keycap.locked {
+  background: transparent;
+  border-color: rgba(161, 161, 170, 0.36);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 0 0 1px rgba(161, 161, 170, 0.04);
+}
+
+.enter-keycap-icon {
+  font-size: 12px;
+  line-height: 1;
+  color: #D4D4D8;
+  transform: translateY(0);
+}
+
+.enter-keycap-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  background: transparent;
+  opacity: 0.72;
+}
+
+.enter-mode-btn.locked .enter-keycap {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.enter-mode-btn.locked .enter-keycap-icon {
+  color: #C4C4CC;
+}
+
+.enter-mode-btn:not(.locked) .enter-keycap {
+  box-shadow: none;
 }
 
 /* 发送按钮 */

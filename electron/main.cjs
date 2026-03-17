@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, session, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const { execFile } = require('child_process')
 const { SessionManager } = require('./session-manager')
 const logger = require('./logger')
 
@@ -454,79 +455,125 @@ async function scanProjects() {
 
 /**
  * Get sessions for a specific project
+ * Merges CCGUI sessions with Claude .jsonl sessions, using CCGUI as the primary source
  */
 async function getProjectSessions(projectId) {
   const projectsDir = getClaudeProjectsDir()
   const projectDir = path.join(projectsDir, projectId)
 
-  if (!fs.existsSync(projectDir)) {
-    logger.info('[Sessions] Project directory does not exist:', projectDir)
-    return []
+  // Get CCGUI sessions (primary source for name, settings, etc.)
+  let ccguiSessions = []
+  try {
+    ccguiSessions = sessionConfigManager.getProjectSessions(projectId) || []
+    logger.info(`[Sessions] Found ${ccguiSessions.length} CCGUI sessions for project ${projectId}`)
+  } catch (e) {
+    logger.warn('[Sessions] Error reading CCGUI sessions:', e.message)
   }
 
-  const files = fs.readdirSync(projectDir)
-  const sessions = []
+  // Get Claude .jsonl sessions (source for messageCount, preview, timestamps)
+  const claudeSessions = new Map()
 
-  for (const file of files) {
-    if (!file.endsWith('.jsonl')) continue
+  if (fs.existsSync(projectDir)) {
+    const files = fs.readdirSync(projectDir)
 
-    const filePath = path.join(projectDir, file)
-    const stat = fs.statSync(filePath)
+    for (const file of files) {
+      if (!file.endsWith('.jsonl')) continue
 
-    const sessionId = file.replace('.jsonl', '')
+      const filePath = path.join(projectDir, file)
+      const stat = fs.statSync(filePath)
 
-    let preview = ''
-    let messageCount = 0
+      const sessionId = file.replace('.jsonl', '')
 
-    try {
-      // Only read content if file is not empty
-      if (stat.size > 0) {
-        const content = fs.readFileSync(filePath, 'utf-8')
-        const lines = content.trim().split('\n')
-        messageCount = lines.length
+      let preview = ''
+      let messageCount = 0
 
-        for (const line of lines) {
-          if (!line.trim()) continue
-          try {
-            const data = JSON.parse(line)
-            if (data.type === 'user' && data.message?.content) {
-              const msgContent = data.message.content
-              if (Array.isArray(msgContent)) {
-                const textContent = msgContent.find(c => c.type === 'text')
-                if (textContent?.text) {
-                  preview = textContent.text.slice(0, 100)
+      try {
+        // Only read content if file is not empty
+        if (stat.size > 0) {
+          const content = fs.readFileSync(filePath, 'utf-8')
+          const lines = content.trim().split('\n')
+          messageCount = lines.length
+
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const data = JSON.parse(line)
+              if (data.type === 'user' && data.message?.content) {
+                const msgContent = data.message.content
+                if (Array.isArray(msgContent)) {
+                  const textContent = msgContent.find(c => c.type === 'text')
+                  if (textContent?.text) {
+                    preview = textContent.text.slice(0, 100)
+                    break
+                  }
+                } else if (typeof msgContent === 'string') {
+                  preview = msgContent.slice(0, 100)
                   break
                 }
-              } else if (typeof msgContent === 'string') {
-                preview = msgContent.slice(0, 100)
-                break
               }
+            } catch (e) {
+              // Skip invalid JSON lines
             }
-          } catch (e) {
-            // Skip invalid JSON lines
           }
         }
+      } catch (e) {
+        logger.warn('[Sessions] Error reading session file:', e.message)
       }
-    } catch (e) {
-      logger.warn('[Sessions] Error reading session file:', e.message)
-    }
 
-    sessions.push({
-      id: sessionId,
+      claudeSessions.set(sessionId, {
+        preview,
+        messageCount,
+        createdAt: stat.birthtime.toISOString(),
+        updatedAt: stat.mtime.toISOString()
+      })
+    }
+  }
+
+  // Merge sessions: CCGUI sessions + Claude sessions not in CCGUI
+  const mergedSessions = []
+  const processedIds = new Set()
+
+  // First, add all CCGUI sessions (these are the primary source)
+  for (const ccguiSession of ccguiSessions) {
+    processedIds.add(ccguiSession.id)
+
+    // Get Claude session data if available
+    const claudeData = claudeSessions.get(ccguiSession.id)
+
+    mergedSessions.push({
+      id: ccguiSession.id,
       projectId,
-      name: `会话 ${sessions.length + 1}`,
-      preview,
-      createdAt: stat.birthtime.toISOString(),
-      updatedAt: stat.mtime.toISOString(),
-      messageCount,
-      status: 'idle'
+      name: ccguiSession.name || `会话`,
+      preview: claudeData?.preview || '',
+      createdAt: ccguiSession.createdAt || claudeData?.createdAt,
+      updatedAt: ccguiSession.updatedAt || claudeData?.updatedAt,
+      messageCount: claudeData?.messageCount || ccguiSession.messageCount || 0,
+      status: 'idle',
+      settings: ccguiSession.settings || {}
     })
   }
 
-  sessions.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+  // Then, add Claude sessions that don't exist in CCGUI
+  for (const [sessionId, claudeData] of claudeSessions) {
+    if (!processedIds.has(sessionId)) {
+      mergedSessions.push({
+        id: sessionId,
+        projectId,
+        name: `会话`,
+        preview: claudeData.preview,
+        createdAt: claudeData.createdAt,
+        updatedAt: claudeData.updatedAt,
+        messageCount: claudeData.messageCount,
+        status: 'idle',
+        settings: {}
+      })
+    }
+  }
 
-  logger.info(`[Sessions] Found ${sessions.length} sessions for project ${projectId}`)
-  return sessions
+  mergedSessions.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+
+  logger.info(`[Sessions] Found ${mergedSessions.length} merged sessions for project ${projectId} (CCGUI: ${ccguiSessions.length}, Claude-only: ${claudeSessions.size - processedIds.size})`)
+  return mergedSessions
 }
 
 // Get all projects
@@ -535,7 +582,7 @@ ipcMain.handle('get-projects', async () => {
 })
 
 // Add a new project (by path)
-ipcMain.handle('add-project', async (event, { projectPath }) => {
+ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
   const name = path.basename(projectPath)
 
   let encodedPath = projectPath
@@ -547,14 +594,143 @@ ipcMain.handle('add-project', async (event, { projectPath }) => {
   if (encodedPath.startsWith('-')) {
     encodedPath = encodedPath.slice(1)
   }
-  const encodedName = '-' + encodedPath
+  const projectId = '-' + encodedPath
+
+  // 创建项目配置
+  let projectConfig
+  try {
+    projectConfig = projectConfigManager.createProjectConfig(projectId, projectPath, name)
+
+    // 如果有传入 settings，更新配置
+    if (settings) {
+      projectConfig.settings = settings
+      projectConfigManager.saveProjectConfig(projectId, projectConfig)
+    }
+  } catch (e) {
+    logger.warn('[Projects] Failed to create project config:', e.message)
+    projectConfig = { settings: {} }
+  }
 
   return {
-    id: encodedName,
+    id: projectId,
     name,
     path: projectPath,
     sessionCount: 0,
-    lastActiveAt: new Date().toISOString()
+    lastActiveAt: new Date().toISOString(),
+    settings: projectConfig.settings || {}
+  }
+})
+
+// Get project config
+ipcMain.handle('get-project-config', async (event, { projectId }) => {
+  try {
+    const config = projectConfigManager.loadProjectConfig(projectId)
+    return { success: true, config }
+  } catch (error) {
+    logger.error('[ProjectConfig] Failed to get config', { projectId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Update project config
+ipcMain.handle('update-project-config', async (event, { projectId, updates }) => {
+  try {
+    const updatedConfig = projectConfigManager.updateProjectConfig(projectId, updates)
+    if (updatedConfig) {
+      return { success: true, config: updatedConfig }
+    } else {
+      return { success: false, error: 'Project not found' }
+    }
+  } catch (error) {
+    logger.error('[ProjectConfig] Failed to update config', { projectId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// ============================================
+// Session Config IPC Handlers
+// ============================================
+
+// Get session config
+ipcMain.handle('get-session-config', async (event, { projectId, sessionId }) => {
+  try {
+    const config = sessionConfigManager.getSession(projectId, sessionId)
+    return { success: true, config }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to get config', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Update session config
+ipcMain.handle('update-session-config', async (event, { projectId, sessionId, updates }) => {
+  try {
+    const normalizedUpdates = { ...(updates || {}) }
+    if (!normalizedUpdates.name) {
+      const existingSessions = await getProjectSessions(projectId)
+      const existingSession = existingSessions.find(session => session.id === sessionId)
+      if (existingSession?.name) {
+        normalizedUpdates.name = existingSession.name
+      }
+    }
+
+    const updatedConfig = sessionConfigManager.updateSession(projectId, sessionId, normalizedUpdates)
+    if (updatedConfig) {
+      return { success: true, config: updatedConfig }
+    } else {
+      return { success: false, error: 'Session not found' }
+    }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to update config', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Delete session config (reset settings)
+ipcMain.handle('delete-session-config', async (event, { projectId, sessionId }) => {
+  try {
+    const updatedConfig = sessionConfigManager.updateSession(projectId, sessionId, { settings: {} })
+    if (updatedConfig) {
+      return { success: true, config: updatedConfig }
+    } else {
+      return { success: false, error: 'Session not found' }
+    }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to delete config', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Copy session (creates new session, optionally copying config)
+ipcMain.handle('copy-session', async (event, { projectId, sessionId }) => {
+  try {
+    // Generate incremental name (会话1, 会话2, etc.)
+    const existingSessions = sessionConfigManager.getProjectSessions(projectId) || []
+    let maxNum = 0
+    for (const s of existingSessions) {
+      const match = s.name?.match(/^会话(\d+)$/)
+      if (match) {
+        const num = parseInt(match[1], 10)
+        if (num > maxNum) maxNum = num
+      }
+    }
+    const newName = `会话${maxNum + 1}`
+
+    // Check if source session has config
+    const sourceConfig = sessionConfigManager.getSession(projectId, sessionId)
+    const hasSettings = sourceConfig?.settings && Object.keys(sourceConfig.settings).length > 0
+
+    // Create new session, copy config only if source has one
+    const newSession = sessionConfigManager.createSession(projectId, {
+      name: newName,
+      settings: hasSettings ? { ...sourceConfig.settings } : {}
+    })
+
+    logger.info('[SessionConfig] Session copied', { sourceId: sessionId, newId: newSession.id, hasConfig: hasSettings })
+    return { success: true, session: newSession }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to copy session', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
   }
 })
 
@@ -655,9 +831,19 @@ ipcMain.handle('delete-session', async (event, { sessionId, projectId }) => {
   const projectsDir = getClaudeProjectsDir()
   const sessionFile = path.join(projectsDir, projectId, `${sessionId}.jsonl`)
 
+  // Delete .jsonl file
   if (fs.existsSync(sessionFile)) {
     fs.unlinkSync(sessionFile)
-    console.log('[Sessions] Deleted session:', sessionId)
+    console.log('[Sessions] Deleted session file:', sessionId)
+  }
+
+  // Delete session directory (including config, history, etc.)
+  try {
+    sessionConfigManager.deleteSession(projectId, sessionId)
+    console.log('[Sessions] Deleted session directory:', sessionId)
+  } catch (e) {
+    // Session directory might not exist, that's okay
+    console.log('[Sessions] Session directory not found or already deleted:', sessionId)
   }
 
   return { success: true }
@@ -702,8 +888,41 @@ ipcMain.handle('rename-project', async (event, { projectId, name }) => {
 })
 
 // Rename a session
-ipcMain.handle('rename-session', async (event, { sessionId, name }) => {
-  return { success: true }
+ipcMain.handle('rename-session', async (event, { sessionId, projectId, name }) => {
+  try {
+    if (!sessionId || !name?.trim()) {
+      return { success: false, error: 'Invalid session rename request' }
+    }
+
+    let targetProjectId = projectId
+
+    if (!targetProjectId) {
+      const claudeProjectsDir = getClaudeProjectsDir()
+      if (fs.existsSync(claudeProjectsDir)) {
+        const projectDirs = fs.readdirSync(claudeProjectsDir, { withFileTypes: true })
+          .filter(entry => entry.isDirectory())
+          .map(entry => entry.name)
+
+        targetProjectId = projectDirs.find(candidateProjectId => {
+          const sessionFile = path.join(claudeProjectsDir, candidateProjectId, `${sessionId}.jsonl`)
+          return fs.existsSync(sessionFile) || sessionConfigManager.sessionExists(candidateProjectId, sessionId)
+        })
+      }
+    }
+
+    if (!targetProjectId) {
+      return { success: false, error: 'Session not found' }
+    }
+
+    const updatedSession = sessionConfigManager.updateSession(targetProjectId, sessionId, {
+      name: name.trim()
+    })
+
+    return { success: true, session: updatedSession }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to rename session', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
 })
 
 // Open project in new window
@@ -797,7 +1016,7 @@ ipcMain.handle('update-window-title', async (event, { title }) => {
 // App Config IPC Handlers
 // ============================================
 
-const { appConfigManager, docsManager } = require('./storage')
+const { appConfigManager, docsManager, projectConfigManager, sessionConfigManager } = require('./storage')
 
 // Get app config
 ipcMain.handle('get-app-config', async () => {
@@ -975,6 +1194,63 @@ ipcMain.handle('send-notification', async (event, { url }) => {
   } catch (error) {
     logger.error('[Notification] Failed to send', { error: error.message })
     return { success: false, message: error.message, error: 'UNKNOWN_ERROR' }
+  }
+})
+
+ipcMain.handle('play-system-sound', async (event, { sound }) => {
+  try {
+    if (process.platform !== 'darwin') {
+      return { success: false, error: '当前仅支持 macOS 系统提示音' }
+    }
+
+    const systemSoundMap = {
+      Basso: '/System/Library/Sounds/Basso.aiff',
+      Blow: '/System/Library/Sounds/Blow.aiff',
+      Bottle: '/System/Library/Sounds/Bottle.aiff',
+      Frog: '/System/Library/Sounds/Frog.aiff',
+      Funk: '/System/Library/Sounds/Funk.aiff',
+      Glass: '/System/Library/Sounds/Glass.aiff',
+      Hero: '/System/Library/Sounds/Hero.aiff',
+      Morse: '/System/Library/Sounds/Morse.aiff',
+      Ping: '/System/Library/Sounds/Ping.aiff',
+      Pop: '/System/Library/Sounds/Pop.aiff',
+      Purr: '/System/Library/Sounds/Purr.aiff',
+      Sosumi: '/System/Library/Sounds/Sosumi.aiff',
+      Submarine: '/System/Library/Sounds/Submarine.aiff',
+      Tink: '/System/Library/Sounds/Tink.aiff',
+      'ui-alert': '/System/Library/PrivateFrameworks/ScreenReader.framework/Versions/A/Resources/Sounds/Alert.aiff',
+      'ui-error': '/System/Library/PrivateFrameworks/ScreenReader.framework/Versions/A/Resources/Sounds/Error.aiff',
+      'ui-focus': '/System/Library/PrivateFrameworks/ScreenReader.framework/Versions/A/Resources/Sounds/Focus.aiff',
+      'ui-focus-2': '/System/Library/PrivateFrameworks/ScreenReader.framework/Versions/A/Resources/Sounds/Focus2.aiff',
+      'ui-guide-success': '/System/Library/PrivateFrameworks/ScreenReader.framework/Versions/A/Resources/Sounds/GuideSuccess.aiff',
+      'ui-menu-down': '/System/Library/PrivateFrameworks/ScreenReader.framework/Versions/A/Resources/Sounds/MenuDown.aiff',
+      'ui-popup-appeared': '/System/Library/PrivateFrameworks/ScreenReader.framework/Versions/A/Resources/Sounds/PopupAppeared.aiff',
+      'ui-window-activated': '/System/Library/PrivateFrameworks/ScreenReader.framework/Versions/A/Resources/Sounds/WindowActivated.aiff'
+    }
+
+    const soundPath = systemSoundMap[sound]
+    if (!soundPath) {
+      return { success: false, error: '无效的系统提示音' }
+    }
+
+    if (!fs.existsSync(soundPath)) {
+      return { success: false, error: '系统提示音文件不存在' }
+    }
+
+    await new Promise((resolve, reject) => {
+      execFile('/usr/bin/afplay', [soundPath], (error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve()
+      })
+    })
+
+    return { success: true }
+  } catch (error) {
+    logger.error('[SystemSound] Failed to play sound', { sound, error: error.message })
+    return { success: false, error: error.message }
   }
 })
 

@@ -92,11 +92,11 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function addProject(projectPath) {
+  async function addProject(projectPath, settings = null) {
     try {
       isLoading.value = true
       error.value = null
-      const newProject = await window.electronAPI.addProject({ projectPath })
+      const newProject = await window.electronAPI.addProject({ projectPath, settings })
       projects.value.unshift(newProject)
       return newProject
     } catch (e) {
@@ -256,13 +256,22 @@ export const useAppStore = defineStore('app', () => {
     try {
       isLoading.value = true
       error.value = null
-      await window.electronAPI.renameSession({ sessionId, name: newName })
-      const session = sessions.value.find(s => s.id === sessionId)
-      if (session) {
-        session.name = newName
+      const result = await window.electronAPI.renameSession({
+        sessionId,
+        projectId: currentProject.value?.id,
+        name: newName
+      })
+      if (!result?.success) {
+        throw new Error(result?.error || '重命名会话失败')
+      }
+      if (currentProject.value?.id) {
+        await fetchSessions(currentProject.value.id)
       }
       if (currentSession.value?.id === sessionId) {
-        currentSession.value = { ...currentSession.value, name: newName }
+        const refreshedSession = sessions.value.find(s => s.id === sessionId)
+        currentSession.value = refreshedSession
+          ? { ...currentSession.value, ...refreshedSession, name: refreshedSession.name || newName }
+          : { ...currentSession.value, name: newName }
       }
     } catch (e) {
       error.value = e.message

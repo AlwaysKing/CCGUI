@@ -396,34 +396,79 @@ onUnmounted(() => {
 <style scoped>
 .task-floating-window {
   position: fixed;
-  width: 320px;
-  background: #1E1E1E;
-  border: 1px solid #3F3F46;
-  border-radius: var(--radius-lg);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  width: 300px;
+  background: linear-gradient(135deg, #1a1a1f 0%, #1E1E1E 100%);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  border-radius: 12px;
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset;
   overflow: hidden;
   z-index: 1000;
   cursor: move;
   user-select: none;
+  transition: width 0.2s ease, box-shadow 0.2s ease;
+}
+
+.task-floating-window:hover {
+  border-color: rgba(139, 92, 246, 0.35);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.6),
+    0 0 20px rgba(139, 92, 246, 0.1);
+}
+
+/* 折叠状态更紧凑 */
+.task-floating-window.collapsed {
+  width: 260px;
 }
 
 .task-summary {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  padding: 12px 14px;
   cursor: pointer;
   transition: background 0.15s;
+  position: relative;
+}
+
+.task-summary::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, #8B5CF6, #A78BFA);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.task-floating-window:hover .task-summary::before {
+  opacity: 1;
 }
 
 .task-summary:hover {
-  background: #27272A;
+  background: rgba(139, 92, 246, 0.08);
 }
 
 .task-icon {
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1;
   flex-shrink: 0;
+  filter: drop-shadow(0 0 4px rgba(139, 92, 246, 0.3));
+  animation: iconPulse 2s ease-in-out infinite;
+}
+
+@keyframes iconPulse {
+  0%, 100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 4px rgba(139, 92, 246, 0.3));
+  }
+  50% {
+    transform: scale(1.05);
+    filter: drop-shadow(0 0 8px rgba(139, 92, 246, 0.5));
+  }
 }
 
 .task-info {
@@ -433,80 +478,115 @@ onUnmounted(() => {
 
 .task-description {
   font-size: var(--font-size-sm);
-  color: #E4E4E7;
+  font-weight: 500;
+  color: #F4F4F5;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: 0.01em;
 }
 
 .task-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 10px;
+  margin-top: 6px;
   font-size: var(--font-size-xs);
 }
 
 .progress-text {
-  color: #A78BFA;
-  font-weight: var(--font-weight-medium);
-  min-width: 32px;
+  color: #C4B5FD;
+  font-weight: 600;
+  min-width: 36px;
+  font-variant-numeric: tabular-nums;
 }
 
 .progress-bar-mini {
   flex: 1;
-  max-width: 60px;
-  height: 4px;
-  background: #27272A;
-  border-radius: 2px;
+  max-width: 80px;
+  height: 5px;
+  background: rgba(39, 39, 42, 0.8);
+  border-radius: 3px;
   overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 .progress-fill-mini {
   height: 100%;
-  background: linear-gradient(90deg, #A78BFA, #8B5CF6);
-  border-radius: 2px;
-  transition: width 0.3s ease;
+  background: linear-gradient(90deg, #8B5CF6 0%, #A78BFA 50%, #C4B5FD 100%);
+  border-radius: 3px;
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
+  position: relative;
+}
+
+.progress-fill-mini::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.2) 0%, transparent 100%);
+  border-radius: 3px 3px 0 0;
 }
 
 .running-time {
   color: #71717A;
+  font-variant-numeric: tabular-nums;
 }
 
 .status-icon {
-  font-size: 12px;
+  font-size: 11px;
+  animation: statusPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .expand-btn {
-  font-size: 10px;
-  color: #71717A;
+  font-size: 9px;
+  color: #52525B;
   flex-shrink: 0;
+  transition: transform 0.2s ease, color 0.2s;
+}
+
+.task-summary:hover .expand-btn {
+  color: #A1A1AA;
 }
 
 /* 展开详情 */
 .task-details {
-  padding: 0 14px 12px;
-  border-top: 1px solid #27272A;
-  background: #18181B;
+  padding: 0 14px 14px;
+  border-top: 1px solid rgba(139, 92, 246, 0.15);
+  background: linear-gradient(180deg, rgba(24, 24, 27, 0.8) 0%, rgba(24, 24, 27, 1) 100%);
   cursor: default;
 }
 
 /* Todo 列表 */
 .todo-list {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .todo-item {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 6px 0;
+  gap: 10px;
+  padding: 8px 0;
   font-size: var(--font-size-xs);
-  line-height: 1.4;
+  line-height: 1.5;
+  border-bottom: 1px solid rgba(39, 39, 42, 0.5);
+  transition: background 0.15s;
+}
+
+.todo-item:last-child {
+  border-bottom: none;
 }
 
 .todo-item.completed {
-  color: #71717A;
+  color: #52525B;
 }
 
 .todo-item.completed .todo-content {
@@ -515,16 +595,21 @@ onUnmounted(() => {
 
 .todo-item.in_progress {
   color: #E4E4E7;
+  background: rgba(139, 92, 246, 0.05);
+  margin: 0 -14px;
+  padding: 8px 14px;
+  border-radius: 6px;
 }
 
 .todo-item.pending {
-  color: #A1A1AA;
+  color: #71717A;
 }
 
 .todo-status-icon {
   flex-shrink: 0;
-  width: 14px;
+  width: 16px;
   text-align: center;
+  font-size: 12px;
 }
 
 .todo-item.completed .todo-status-icon {
@@ -533,10 +618,11 @@ onUnmounted(() => {
 
 .todo-item.in_progress .todo-status-icon {
   color: #FCD34D;
+  animation: statusPulse 1.5s ease-in-out infinite;
 }
 
 .todo-item.pending .todo-status-icon {
-  color: #52525B;
+  color: #3F3F46;
 }
 
 .todo-content {
@@ -546,34 +632,44 @@ onUnmounted(() => {
 
 /* 详情区块 */
 .detail-section {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .detail-label {
-  font-size: var(--font-size-xs);
+  font-size: 10px;
   font-weight: var(--font-weight-medium);
-  color: #71717A;
-  margin-bottom: 4px;
+  color: #52525B;
+  margin-bottom: 6px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
 }
 
 .detail-content {
   font-size: var(--font-size-xs);
   color: #A1A1AA;
-  line-height: 1.5;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  background: #0A0A0A;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
+  background: rgba(10, 10, 10, 0.6);
+  padding: 10px 12px;
+  border-radius: 8px;
   max-height: 100px;
   overflow: auto;
   margin: 0;
+  border: 1px solid rgba(39, 39, 42, 0.5);
 }
 
 .usage-info {
   font-size: var(--font-size-xs);
-  color: #71717A;
+  color: #52525B;
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.usage-info span {
+  background: rgba(39, 39, 42, 0.5);
+  padding: 4px 8px;
+  border-radius: 4px;
 }
 </style>

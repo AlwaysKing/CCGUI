@@ -37,8 +37,8 @@ class SessionData {
     this.historyIndex = -1
 
     // 权限相关
-    this.pendingPermission = null
-    this.pendingControlRequest = null
+    this.pendingPermissions = []
+    this.pendingControlRequests = [] // 改为队列以支持并发请求
     this.pendingQuestion = null  // AskUserQuestion 请求
     this.lastPermissionRequest = null // 用于在收到 CLI 响应时添加权限结果消息
 
@@ -89,8 +89,20 @@ export const useSessionStore = defineStore('session', () => {
     return currentSession.value?.isProcessing || false
   })
 
+  // 当前会话的工具权限请求（队列中的第一个）
+  const pendingPermission = computed(() => {
+    const requests = currentSession.value?.pendingPermissions
+    return (requests && requests.length > 0) ? requests[0] : null
+  })
+
   // 当前会话的 AskUserQuestion 请求
   const pendingQuestion = computed(() => currentSession.value?.pendingQuestion || null)
+
+  // 当前会话的控制请求（队列中的第一个）
+  const pendingControlRequest = computed(() => {
+    const requests = currentSession.value?.pendingControlRequests
+    return (requests && requests.length > 0) ? requests[0] : null
+  })
 
   // 当前会话的输入框内容
   const inputMessage = computed({
@@ -133,6 +145,9 @@ export const useSessionStore = defineStore('session', () => {
         sessionData.inputHistory = result.state.inputHistory || []
         sessionData.envInfo = result.state.envInfo || null
         sessionData.claudeReady = result.state.claudeReady || false
+        if (result.state.pendingPermission) {
+          sessionData.pendingPermissions = [reactive(result.state.pendingPermission)]
+        }
       }
 
       // 存储到 Map
@@ -208,6 +223,10 @@ export const useSessionStore = defineStore('session', () => {
     session.inputMessage = ''
     session.isProcessing = true
 
+    // 清理悬浮框中的任务（发起新提问时清理上一轮的任务）
+    session.activeTasks.clear()
+    log('[SessionStore] Cleared active tasks for new message')
+
     try {
       await window.electronAPI.sendMessage({
         sessionId,
@@ -232,7 +251,7 @@ export const useSessionStore = defineStore('session', () => {
     const session = currentSession.value
     if (!session) return
 
-    session.pendingControlRequest = null
+    removePendingControlRequest(session, requestId)
     session.pendingQuestion = null
 
     await window.electronAPI.sendControlResponse({
@@ -250,7 +269,7 @@ export const useSessionStore = defineStore('session', () => {
     const session = currentSession.value
     if (!session) return
 
-    session.pendingPermission = null
+    removePendingPermission(session, toolUseId)
 
     await window.electronAPI.sendToolResult({
       sessionId: session.id,
@@ -440,6 +459,18 @@ export const useSessionStore = defineStore('session', () => {
         handleUnknownMessage(session, data)
         break
 
+      case 'abnormal-exit':
+        // Claude 进程异常退出
+        log('[SessionStore] Claude process abnormal exit:', data)
+        handleAbnormalExit(session, data)
+        break
+
+      case 'normal-exit':
+        // Claude 进程正常停止（用户手动停止）
+        log('[SessionStore] Claude process normal exit:', data)
+        handleNormalExit(session, data)
+        break
+
       default:
         log('[SessionStore] Unknown event type:', eventType)
     }
@@ -584,6 +615,15 @@ export const useSessionStore = defineStore('session', () => {
 
     // 解锁输入
     session.isProcessing = false
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ccgui-session-complete', {
+        detail: {
+          sessionId: session.id,
+          timestamp: Date.now()
+        }
+      }))
+    }
   }
 
   /**
@@ -677,6 +717,15 @@ export const useSessionStore = defineStore('session', () => {
     Object.assign(msg, updates)
 
     log('[SessionStore] handleMessageUpdate:', messageId, 'updates:', Object.keys(updates))
+
+    // 处理 TodoWrite 工具：显示在悬浮窗中
+    if (msg.role === 'tool_use' && msg.toolName === 'TodoWrite' && updates.toolInput?.todos) {
+      log('[SessionStore] TodoWrite detected in handleMessageUpdate:', {
+        toolUseId: messageId,
+        todosCount: updates.toolInput.todos.length
+      })
+      handleTodoWrite(session, messageId, updates.toolInput.todos)
+    }
   }
 
   /**
@@ -877,6 +926,11 @@ export const useSessionStore = defineStore('session', () => {
               newToolInput: toolUseMsg.toolInput,
               buffer: toolUseMsg.toolInputBuffer
             })
+
+            // 处理 TodoWrite 工具：显示在悬浮窗中
+            if (toolUseMsg.toolName === 'TodoWrite' && parsedInput.todos) {
+              handleTodoWrite(session, contentBlockId, parsedInput.todos)
+            }
           } catch (e) {
             // JSON 还不完整，忽略 - 继续累积
             log('[SessionStore] JSON not complete yet, buffer length:', toolUseMsg.toolInputBuffer.length)
@@ -889,7 +943,15 @@ export const useSessionStore = defineStore('session', () => {
 
     // Handle content_block_stop
     if (event.type === 'content_block_stop') {
-      // 可以在这里处理内容块结束
+      // 处理 TodoWrite 工具：显示在悬浮窗中
+      const contentBlockId = session.contentBlockIndexToId.get(event.index)
+      if (contentBlockId) {
+        // 使用 request_id 查找,与 input_json_delta 保持一致
+        const toolUseMsg = session.messages.find(m => m.request_id === contentBlockId && m.role === 'tool_use')
+        if (toolUseMsg && toolUseMsg.toolName === 'TodoWrite' && toolUseMsg.toolInput?.todos) {
+          handleTodoWrite(session, contentBlockId, toolUseMsg.toolInput.todos)
+        }
+      }
       return
     }
 
@@ -927,6 +989,9 @@ export const useSessionStore = defineStore('session', () => {
           output_tokens: (currentUsage.output_tokens || 0) + (newUsage.output_tokens || 0),
           cache_read_input_tokens: (currentUsage.cache_read_input_tokens || 0) + (newUsage.cache_read_input_tokens || 0)
         }
+        // 发送 message-update 事件让前端实时更新显示
+        // 注意：这里不使用 handleMessageUpdate，因为那会重新触发 computed 更新
+        // 直接修改 userMsg.usage 已经会触发 Vue 的响应式更新
         break
       }
     }
@@ -996,9 +1061,36 @@ export const useSessionStore = defineStore('session', () => {
       log('[SessionStore] Setting pendingQuestion, request_id:', mergedRequestData.request_id)
       session.pendingQuestion = mergedRequestData
     } else {
-      log('[SessionStore] Setting pendingControlRequest, toolName:', toolName, 'request_id:', mergedRequestData.request_id)
-      session.pendingControlRequest = mergedRequestData
+      // 添加到队列而不是覆盖
+      log('[SessionStore] Adding to pendingControlRequests queue, toolName:', toolName, 'request_id:', mergedRequestData.request_id)
+      session.pendingControlRequests.push(mergedRequestData)
     }
+  }
+
+  function removePendingPermission(session, requestId) {
+    if (!session || !requestId) return null
+
+    const index = session.pendingPermissions.findIndex(permission =>
+      permission?.request_id === requestId ||
+      permission?.tool_use_id === requestId ||
+      permission?.id === requestId
+    )
+
+    if (index === -1) return null
+    return session.pendingPermissions.splice(index, 1)[0] || null
+  }
+
+  function removePendingControlRequest(session, requestId) {
+    if (!session || !requestId) return null
+
+    const index = session.pendingControlRequests.findIndex(request =>
+      request?.request_id === requestId ||
+      request?.tool_use_id === requestId ||
+      request?.id === requestId
+    )
+
+    if (index === -1) return null
+    return session.pendingControlRequests.splice(index, 1)[0] || null
   }
 
   /**
@@ -1275,6 +1367,91 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
+   * 处理 Claude 进程异常退出
+   */
+  function handleAbnormalExit(session, data) {
+    log('[SessionStore] handleAbnormalExit:', data)
+
+    // 停止所有正在流式传输的消息
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      const msg = session.messages[i]
+
+      // 停止流式传输的 assistant 消息
+      if (msg.isStreaming) {
+        msg.isStreaming = false
+        if (msg.startTime && !msg.duration) {
+          msg.duration = Date.now() - msg.startTime
+        }
+      }
+
+      // 停止正在执行的工具
+      if (msg.isExecuting) {
+        msg.isExecuting = false
+        if (msg.startTime && !msg.duration) {
+          msg.duration = Date.now() - msg.startTime
+        }
+      }
+    }
+
+    // 停止处理状态
+    session.isProcessing = false
+
+    // 添加异常退出提示消息（使用 system_notification 类型，显示为居中通知样式）
+    const exitMsg = {
+      id: `abnormal-exit-${Date.now()}`,
+      role: 'system_notification',
+      notificationType: 'claude-exit',
+      data: {
+        code: data.code,
+        message: data.message
+      },
+      timestamp: new Date()
+    }
+    session.messages.push(exitMsg)
+  }
+
+  /**
+   * 处理正常退出（用户手动停止）
+   */
+  function handleNormalExit(session, data) {
+    // 停止所有正在执行的工具和流式传输
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      const msg = session.messages[i]
+
+      // 停止流式传输的 assistant 消息
+      if (msg.isStreaming) {
+        msg.isStreaming = false
+        if (msg.startTime && !msg.duration) {
+          msg.duration = Date.now() - msg.startTime
+        }
+      }
+
+      // 停止正在执行的工具
+      if (msg.isExecuting) {
+        msg.isExecuting = false
+        if (msg.startTime && !msg.duration) {
+          msg.duration = Date.now() - msg.startTime
+        }
+      }
+    }
+
+    // 停止处理状态
+    session.isProcessing = false
+
+    // 添加正常停止提示消息（使用 system_notification 类型，显示为居中通知样式）
+    const exitMsg = {
+      id: `normal-exit-${Date.now()}`,
+      role: 'system_notification',
+      notificationType: 'claude-stopped',
+      data: {
+        message: data.message || '已手动停止'
+      },
+      timestamp: new Date()
+    }
+    session.messages.push(exitMsg)
+  }
+
+  /**
    * 处理系统通知（权限模式切换、快速模式切换、压缩边界等）
    * 添加到消息列表显示为系统通知气泡
    */
@@ -1353,22 +1530,29 @@ export const useSessionStore = defineStore('session', () => {
   function handleTodoWrite(session, toolUseId, todos) {
     log('[SessionStore] handleTodoWrite called:', { toolUseId, todosCount: todos.length })
 
-    const taskId = `todo-${toolUseId}`
+    // TodoWrite 固定使用 'todowrite' 作为 ID
+    const taskId = 'todowrite'
     const existingTask = session.activeTasks.get(taskId)
 
     // 找到当前正在进行的 todo（用于显示描述）
     const currentTodo = todos.find(t => t.status === 'in_progress') || todos[todos.length - 1]
     const completedCount = todos.filter(t => t.status === 'completed').length
 
+    // 创建新的 Map 以触发 Vue 响应式更新
+    const newActiveTasks = new Map(session.activeTasks)
+
     if (existingTask) {
       // 更新现有任务
-      existingTask.todos = todos
-      existingTask.description = currentTodo?.activeForm || currentTodo?.content || '任务列表'
-      existingTask.status = completedCount === todos.length ? 'completed' : 'in_progress'
+      newActiveTasks.set(taskId, {
+        ...existingTask,
+        todos: todos,
+        description: currentTodo?.activeForm || currentTodo?.content || '任务列表',
+        status: completedCount === todos.length ? 'completed' : 'in_progress'
+      })
       log('[SessionStore] Updated todo task:', taskId, `(${completedCount}/${todos.length})`)
     } else {
       // 创建新任务
-      session.activeTasks.set(taskId, {
+      newActiveTasks.set(taskId, {
         id: taskId,
         taskType: 'todo',
         description: currentTodo?.activeForm || currentTodo?.content || '任务列表',
@@ -1379,6 +1563,9 @@ export const useSessionStore = defineStore('session', () => {
       })
       log('[SessionStore] Created todo task:', taskId)
     }
+
+    // 替换整个 Map 以触发响应式更新
+    session.activeTasks = newActiveTasks
   }
 
   /**
@@ -1465,7 +1652,7 @@ export const useSessionStore = defineStore('session', () => {
   function setPendingPermission(permission) {
     const session = currentSession.value
     if (session) {
-      session.pendingPermission = permission
+      session.pendingPermissions.push(permission)
     }
   }
 
@@ -1475,23 +1662,51 @@ export const useSessionStore = defineStore('session', () => {
   function setPendingControlRequest(request) {
     const session = currentSession.value
     if (session) {
-      session.pendingControlRequest = request
+      // 添加到队列而不是覆盖
+      session.pendingControlRequests.push(request)
     }
   }
 
   /**
    * 清除当前会话的权限和控制请求
+   * @param {string|null} requestId - 要清除的请求 ID；为空时清除当前展示中的请求
    * @param {boolean} saveForResponse - 是否保存请求信息用于后续添加权限结果消息
    */
-  function clearPendingPermissions(saveForResponse = false) {
+  function clearPendingPermissions(requestId = null, saveForResponse = false) {
     const session = currentSession.value
     if (session) {
+      const currentPermission = requestId
+        ? session.pendingPermissions.find(permission =>
+            permission?.request_id === requestId ||
+            permission?.tool_use_id === requestId ||
+            permission?.id === requestId
+          ) || null
+        : (session.pendingPermissions[0] || null)
+      const currentRequest = requestId
+        ? session.pendingControlRequests.find(request =>
+            request?.request_id === requestId ||
+            request?.tool_use_id === requestId ||
+            request?.id === requestId
+          ) || null
+        : (session.pendingControlRequests[0] || null)
+
       // 如果需要保存，先保存请求信息
-      if (saveForResponse && (session.pendingPermission || session.pendingControlRequest)) {
-        session.lastPermissionRequest = session.pendingPermission || session.pendingControlRequest
+      if (saveForResponse && (currentPermission || currentRequest)) {
+        session.lastPermissionRequest = currentPermission || currentRequest
       }
-      session.pendingPermission = null
-      session.pendingControlRequest = null
+
+      if (currentPermission) {
+        removePendingPermission(
+          session,
+          currentPermission.request_id || currentPermission.tool_use_id || currentPermission.id
+        )
+      }
+      if (currentRequest) {
+        removePendingControlRequest(
+          session,
+          currentRequest.request_id || currentRequest.tool_use_id || currentRequest.id
+        )
+      }
       session.pendingQuestion = null
     }
   }
@@ -1514,7 +1729,9 @@ export const useSessionStore = defineStore('session', () => {
     currentMessages,
     isProcessing,
     inputMessage,
+    pendingPermission,
     pendingQuestion,
+    pendingControlRequest,
 
     // Actions
     initSession,

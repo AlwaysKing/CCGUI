@@ -2,7 +2,7 @@
 /**
  * SystemNotificationMessage - 系统通知消息组件
  * 显示权限模式切换、快速模式切换、上下文压缩等系统通知
- * 居中显示，黄色背景
+ * 居中显示，不同类型使用不同颜色
  */
 import { computed } from 'vue'
 
@@ -18,6 +18,18 @@ const formattedTime = computed(() => {
   if (!props.message.timestamp) return ''
   const date = new Date(props.message.timestamp)
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+})
+
+// 根据通知类型返回样式类
+const notificationTypeClass = computed(() => {
+  const { notificationType } = props.message
+  if (notificationType === 'claude-exit') {
+    return 'notification-error'
+  }
+  if (notificationType === 'claude-stopped') {
+    return 'notification-success'
+  }
+  return 'notification-warning'
 })
 
 // 通知内容
@@ -82,6 +94,23 @@ const notificationContent = computed(() => {
     }
   }
 
+  if (notificationType === 'claude-exit') {
+    const exitInfo = data.message || `退出码: ${data.code}`
+    return {
+      icon: '⏹',
+      title: 'Claude 进程已结束',
+      description: exitInfo
+    }
+  }
+
+  if (notificationType === 'claude-stopped') {
+    return {
+      icon: '⏸',
+      title: 'Claude 已停止',
+      description: data.message || '会话已手动停止'
+    }
+  }
+
   // 未知通知类型
   return {
     icon: '🔔',
@@ -93,7 +122,7 @@ const notificationContent = computed(() => {
 
 <template>
   <div class="system-notification-wrapper">
-    <div class="system-notification">
+    <div class="system-notification" :class="notificationTypeClass">
       <span class="notification-icon">{{ notificationContent.icon }}</span>
       <div class="notification-content">
         <div class="notification-header">
@@ -126,6 +155,36 @@ const notificationContent = computed(() => {
   min-width: 280px;
   max-width: 80%;
   font-size: var(--font-size-sm);
+}
+
+/* 错误类型通知（红色系） */
+.system-notification.notification-error {
+  background: linear-gradient(135deg, #450A0A 0%, #292524 100%);
+  border-color: #991B1B;
+  border-left-color: #EF4444;
+}
+
+.system-notification.notification-error .notification-title {
+  color: #FCA5A5;
+}
+
+.system-notification.notification-error .notification-time {
+  color: #991B1B;
+}
+
+/* 成功类型通知（绿色系） */
+.system-notification.notification-success {
+  background: linear-gradient(135deg, #052e16 0%, #292524 100%);
+  border-color: #166534;
+  border-left-color: #10B981;
+}
+
+.system-notification.notification-success .notification-title {
+  color: #6EE7B7;
+}
+
+.system-notification.notification-success .notification-time {
+  color: #166534;
 }
 
 .notification-icon {

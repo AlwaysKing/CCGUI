@@ -42,6 +42,11 @@ const inputClass = computed(() => [
 function handleInput(event) {
   emit('update:modelValue', event.target.value)
 }
+
+function handleEnter(event) {
+  if (event?.isComposing || event?.keyCode === 229) return
+  emit('enter', event)
+}
 </script>
 
 <template>
@@ -59,7 +64,7 @@ function handleInput(event) {
       @input="handleInput"
       @focus="$emit('focus', $event)"
       @blur="$emit('blur', $event)"
-      @keyup.enter="$emit('enter', $event)"
+      @keyup.enter="handleEnter"
     />
     <div v-if="$slots.suffix" class="input-suffix">
       <slot name="suffix"></slot>

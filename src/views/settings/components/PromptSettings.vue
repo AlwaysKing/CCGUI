@@ -60,10 +60,10 @@ const hoveredDocumentId = ref(null)
               <button
                 type="button"
                 class="btn-activate"
-                :class="{ active: prompt.isActive }"
+                :class="{ active: prompt.isBase }"
                 @click.stop="emit('toggle-prompt-active', prompt.id)"
               >
-                {{ prompt.isActive ? '激活' : '未激活' }}
+                基础
               </button>
             </h4>
             <div class="card-actions">
@@ -111,7 +111,7 @@ const hoveredDocumentId = ref(null)
           v-for="document in documents"
           :key="document.id"
           class="document-card-item"
-          :class="{ inactive: document.isActive === false }"
+          :class="{ inactive: document.isBase === false }"
           @mouseenter="hoveredDocumentId = document.id"
           @mouseleave="hoveredDocumentId = null"
         >
@@ -121,10 +121,10 @@ const hoveredDocumentId = ref(null)
               <button
                 type="button"
                 class="btn-activate"
-                :class="{ active: document.isActive !== false }"
+                :class="{ active: document.isBase !== false }"
                 @click.stop="emit('toggle-document-active', document.id)"
               >
-                {{ document.isActive !== false ? '激活' : '未激活' }}
+                基础
               </button>
             </h4>
             <div class="card-actions">

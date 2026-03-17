@@ -22,7 +22,7 @@ const formData = ref({
   name: '',
   description: '',
   content: '',
-  isActive: false
+  isBase: false
 })
 
 // 状态
@@ -38,14 +38,14 @@ watch(() => props.prompt, (prompt) => {
       name: prompt.name || '',
       description: prompt.description || '',
       content: prompt.content || '',
-      isActive: prompt.isActive || false
+      isBase: prompt.isBase || false
     }
   } else {
     formData.value = {
       name: '',
       description: '',
       content: '',
-      isActive: false
+      isBase: false
     }
   }
 }, { immediate: true })
@@ -126,11 +126,11 @@ function handleSave() {
           ></textarea>
         </div>
 
-        <!-- 激活状态 -->
+        <!-- 基础状态 -->
         <div class="form-item">
           <label class="form-checkbox">
-            <input type="checkbox" v-model="formData.isActive">
-            <span>立即激活此提示词</span>
+            <input type="checkbox" v-model="formData.isBase">
+            <span>设为基础提示词</span>
           </label>
         </div>
       </div>

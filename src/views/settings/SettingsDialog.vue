@@ -15,7 +15,7 @@ import PromptEditDialog from './components/dialogs/PromptEditDialog.vue'
 import DocumentEditDialog from './components/dialogs/DocumentEditDialog.vue'
 import ModelMappingDialog from './components/dialogs/ModelMappingDialog.vue'
 
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'saved'])
 
 // ========== 导航相关 ==========
 const activeSection = ref('model')
@@ -34,6 +34,7 @@ const navItems = [
 const settings = ref({
   theme: 'dark',
   language: 'zh-CN',
+  notificationSound: 'Glass',
   barkUrl: ''
 })
 
@@ -159,6 +160,7 @@ async function saveAppConfig() {
 
     const result = await window.electronAPI.updateAppConfig({ updates })
     if (result && result.success) {
+      emit('saved')
       return true
     } else {
       alert('保存配置失败: ' + (result?.error || '未知错误'))
@@ -168,6 +170,13 @@ async function saveAppConfig() {
     console.error('Failed to save settings:', error)
     alert('保存配置失败: ' + error.message)
     return false
+  }
+}
+
+async function saveSoftwareSettings() {
+  const success = await saveAppConfig()
+  if (!success) {
+    alert('保存软件配置失败')
   }
 }
 
@@ -419,7 +428,7 @@ async function handleDeletePrompt(promptId) {
 async function handleTogglePromptActive(promptId) {
   const prompt = prompts.value.find(p => p.id === promptId)
   if (prompt) {
-    prompt.isActive = !prompt.isActive
+    prompt.isBase = !prompt.isBase
     await saveAppConfig()
   }
 }
@@ -433,7 +442,7 @@ async function handleSavePrompt(formData) {
         name: formData.name,
         description: formData.description,
         content: formData.content,
-        isActive: formData.isActive
+        isBase: formData.isBase
       }
     }
   } else {
@@ -442,7 +451,7 @@ async function handleSavePrompt(formData) {
       name: formData.name,
       description: formData.description,
       content: formData.content,
-      isActive: formData.isActive
+      isBase: formData.isBase
     })
   }
 
@@ -456,8 +465,33 @@ function handleAddDocument() {
   showDocumentDialog.value = true
 }
 
-function handleEditDocument(document) {
-  editingDocument.value = document
+async function handleEditDocument(document) {
+  // 使用文档 id（即文件名）从 .md 文件加载内容
+  const docId = document.id || document.name.replace(/[\/\\?%*:|"<>]/g, '_')
+
+  try {
+    const result = await window.electronAPI.getDoc({ docId })
+    if (result && result.doc) {
+      editingDocument.value = {
+        ...document,
+        id: docId,
+        content: result.doc.content || ''
+      }
+    } else {
+      editingDocument.value = {
+        ...document,
+        id: docId,
+        content: ''
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load document content:', e)
+    editingDocument.value = {
+      ...document,
+      id: docId,
+      content: document.content || ''
+    }
+  }
   showDocumentDialog.value = true
 }
 
@@ -471,28 +505,53 @@ async function handleDeleteDocument(documentId) {
 async function handleToggleDocumentActive(documentId) {
   const document = documents.value.find(d => d.id === documentId)
   if (document) {
-    document.isActive = document.isActive === false ? true : false
+    document.isBase = document.isBase === false ? true : false
     await saveAppConfig()
   }
 }
 
 async function handleSaveDocument(formData) {
+  // 使用文档名称作为文件名（替换特殊字符）
+  const sanitizedName = formData.name.replace(/[\/\\?%*:|"<>]/g, '_')
+  const oldName = editingDocument.value?.name?.replace(/[\/\\?%*:|"<>]/g, '_')
+  const isNewDoc = !editingDocument.value
+
+  // 1. 保存文档内容为 .md 文件
+  try {
+    await window.electronAPI.saveDoc({
+      docId: sanitizedName,
+      content: formData.content
+    })
+  } catch (e) {
+    console.error('Failed to save doc file:', e)
+    alert('保存文档文件失败: ' + e.message)
+    return
+  }
+
+  // 2. 如果是编辑且名称改变了，删除旧文件
+  if (editingDocument.value && oldName && oldName !== sanitizedName) {
+    try {
+      await window.electronAPI.deleteDoc({ docId: oldName })
+    } catch (e) {
+      console.warn('Failed to delete old doc file:', e)
+    }
+  }
+
+  // 3. 更新 app.json 中的文档元数据（使用名称作为 id）
   if (editingDocument.value) {
-    const index = documents.value.findIndex(d => d.id === editingDocument.value.id)
+    const index = documents.value.findIndex(d => d.id === editingDocument.value.id || d.name === editingDocument.value.name)
     if (index !== -1) {
       documents.value[index] = {
-        ...documents.value[index],
+        id: sanitizedName,
         name: formData.name,
-        summary: formData.summary,
-        content: formData.content
+        summary: formData.summary
       }
     }
   } else {
     documents.value.push({
-      id: formData.id || generateDocumentId(),
+      id: sanitizedName,
       name: formData.name,
-      summary: formData.summary,
-      content: formData.content
+      summary: formData.summary
     })
   }
 
@@ -630,6 +689,7 @@ function handleClose() {
             <SoftwareSettings
               :settings="settings"
               @update:settings="settings = $event"
+              @save-settings="saveSoftwareSettings"
               @test-bark="testBarkUrl"
               @save-bark="saveBarkUrl"
             />

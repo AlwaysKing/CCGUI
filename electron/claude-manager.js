@@ -3,13 +3,28 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const logger = require('./logger')
+const appConfigManager = require('./storage/app-config-manager')
+
+// Helper to calculate project ID from path (same as SessionInstance)
+function calculateProjectId(projectPath) {
+  let encodedPath = projectPath
+  if (process.platform === 'win32') {
+    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
+  } else {
+    encodedPath = encodedPath.replace(/\//g, '-')
+  }
+  if (encodedPath.startsWith('-')) {
+    encodedPath = encodedPath.slice(1)
+  }
+  return '-' + encodedPath
+}
 
 /**
  * Claude CLI Manager
  * Manages communication with Claude CLI using stream-json format
  */
 class ClaudeManager {
-  constructor(workingDirectory = null, sessionId = null, isNewSession = true, permissionMode = 'default') {
+  constructor(workingDirectory = null, sessionId = null, isNewSession = true, permissionMode = 'default', projectSettings = null) {
     this.process = null
     this.messageHandlers = new Map()
     this.claudePath = null
@@ -18,6 +33,7 @@ class ClaudeManager {
     this.sessionId = sessionId
     this.isNewSession = isNewSession
     this.permissionMode = permissionMode // 权限模式
+    this.projectSettings = projectSettings // 已解析的最终配置 { modelId, modelCardId, promptIds, documentIds }
   }
 
   /**
@@ -84,6 +100,138 @@ class ClaudeManager {
   }
 
   /**
+   * Build system prompt from project settings
+   * @returns {Promise<string|null>} 系统提示词内容
+   */
+  async buildSystemPrompt() {
+    logger.info(`[ClaudeManager] buildSystemPrompt called, projectSettings:`, this.projectSettings)
+
+    if (!this.projectSettings) {
+      logger.info('[ClaudeManager] No projectSettings, returning null')
+      return null
+    }
+
+    const parts = []
+
+    try {
+      const appConfig = appConfigManager.loadConfig()
+      const os = require('os')
+      const path = require('path')
+
+      // 1. 添加提示词（直接添加内容）
+      const promptIds = Array.isArray(this.projectSettings.promptIds) ? this.projectSettings.promptIds : []
+      logger.info(`[ClaudeManager] Checking promptIds:`, promptIds)
+      if (promptIds && Array.isArray(promptIds) && promptIds.length > 0) {
+        const prompts = appConfig.settings?.prompts || []
+        logger.info(`[ClaudeManager] Found ${prompts.length} prompts in app config`)
+        for (const promptId of promptIds) {
+          const prompt = prompts.find(p => p.id === promptId)
+          if (prompt && prompt.content) {
+            parts.push(prompt.content)
+            logger.info(`[ClaudeManager] Added prompt: ${prompt.name || promptId}`)
+          } else {
+            logger.warn(`[ClaudeManager] Prompt not found or no content: ${promptId}`)
+          }
+        }
+      }
+
+      // 2. 添加规范文档路径引用
+      const documentIds = Array.isArray(this.projectSettings.documentIds) ? this.projectSettings.documentIds : []
+      logger.info(`[ClaudeManager] Checking documentIds:`, documentIds)
+      if (documentIds && Array.isArray(documentIds) && documentIds.length > 0) {
+        const docsDir = path.join(os.homedir(), '.ccgui', 'docs')
+        const docPaths = []
+
+        for (const docId of documentIds) {
+          const filePath = path.join(docsDir, `${docId}.md`)
+          // 检查文件是否存在
+          if (require('fs').existsSync(filePath)) {
+            docPaths.push(filePath)
+            logger.info(`[ClaudeManager] Found document file: ${filePath}`)
+          } else {
+            logger.warn(`[ClaudeManager] Document file not found: ${filePath}`)
+          }
+        }
+
+        if (docPaths.length > 0) {
+          parts.push(`请始终遵循如下文档的规范要求: ${docPaths.join(', ')}`)
+          logger.info(`[ClaudeManager] Added document requirements: ${docPaths.join(', ')}`)
+        }
+      }
+    } catch (error) {
+      logger.error('[ClaudeManager] Failed to build system prompt:', error)
+    }
+
+    logger.info(`[ClaudeManager] buildSystemPrompt result: ${parts.length} parts, total ${parts.join('\n\n').length} chars`)
+    if (parts.length === 0) return null
+    return parts.join('\n\n')
+  }
+
+  /**
+   * Get model environment variables from project settings
+   * @returns {object} 环境变量对象
+   */
+  getModelEnvVars() {
+    const envVars = {}
+
+    if (!this.projectSettings || !this.projectSettings.modelId) return envVars
+
+    try {
+      const appConfig = appConfigManager.loadConfig()
+      const models = appConfig.settings?.models || []
+
+      // 查找对应的模型配置
+      const modelConfig = models.find(m => m.id === this.projectSettings.modelId)
+      if (!modelConfig) {
+        logger.warn(`[ClaudeManager] Model config not found: ${this.projectSettings.modelId}`)
+        return envVars
+      }
+
+      // 设置 API URL (ANTHROPIC_BASE_URL)
+      if (modelConfig.apiUrl) {
+        envVars.ANTHROPIC_BASE_URL = modelConfig.apiUrl
+        logger.info(`[ClaudeManager] Setting ANTHROPIC_BASE_URL: ${modelConfig.apiUrl}`)
+      }
+
+      // 设置 Auth Token (ANTHROPIC_AUTH_TOKEN)
+      if (modelConfig.authToken) {
+        envVars.ANTHROPIC_AUTH_TOKEN = modelConfig.authToken
+        logger.info(`[ClaudeManager] Setting ANTHROPIC_AUTH_TOKEN: ${modelConfig.authToken.substring(0, 10)}...`)
+      }
+
+      // 获取模型卡片列表
+      const modelCards = modelConfig.modelCards || []
+      if (modelCards.length === 0) {
+        logger.warn(`[ClaudeManager] No model cards found for: ${this.projectSettings.modelId}`)
+        return envVars
+      }
+
+      // 确定使用哪个 modelCard
+      let targetCard = null
+      if (this.projectSettings.modelCardId) {
+        // 使用指定的 modelCardId
+        targetCard = modelCards.find(c => c.id === this.projectSettings.modelCardId)
+      }
+      if (!targetCard) {
+        // 使用默认的 modelCard
+        const defaultCardId = modelConfig.defaultCardId || modelCards[0]?.id
+        targetCard = modelCards.find(c => c.id === defaultCardId) || modelCards[0]
+      }
+
+      if (targetCard && targetCard.modelName) {
+        envVars.ANTHROPIC_MODEL = targetCard.modelName
+        logger.info(`[ClaudeManager] Setting ANTHROPIC_MODEL: ${targetCard.modelName} (from card: ${targetCard.id})`)
+      } else {
+        logger.warn(`[ClaudeManager] No valid modelName found in model card`)
+      }
+    } catch (error) {
+      logger.error('[ClaudeManager] Failed to get model env vars:', error)
+    }
+
+    return envVars
+  }
+
+  /**
    * Start Claude CLI process
    */
   async start() {
@@ -128,15 +276,40 @@ class ClaudeManager {
       }
     }
 
+    // Add system prompt from project settings
+    const systemPrompt = await this.buildSystemPrompt()
+    if (systemPrompt) {
+      args.push('--append-system-prompt', systemPrompt)
+      logger.info(`[ClaudeManager] Added system prompt (${systemPrompt.length} chars)`)
+    }
+
+    // Get model environment variables
+    const modelEnvVars = this.getModelEnvVars()
+
+    // 构建完整的环境变量
+    const fullEnv = {
+      ...process.env,
+      CLAUDE_CODE_ENABLE_TELEMETRY: '0',
+      DISABLE_TELEMETRY: '1',
+      CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: 'true',  // 启用文件历史快照功能
+      ...modelEnvVars
+    }
+
+    // 打印启动参数供调试
+    logger.info('[ClaudeManager] ========== Claude CLI 启动参数 ==========')
+    logger.info(`[ClaudeManager] Claude路径: ${this.claudePath}`)
+    logger.info(`[ClaudeManager] 工作目录: ${this.workingDirectory}`)
+    logger.info(`[ClaudeManager] 参数: ${JSON.stringify(args, null, 2)}`)
+    logger.info(`[ClaudeManager] 环境变量(自定义): ${JSON.stringify(modelEnvVars, null, 2)}`)
+    if (systemPrompt) {
+      logger.info(`[ClaudeManager] 系统提示词内容: ${systemPrompt.substring(0, 500)}${systemPrompt.length > 500 ? '...' : ''}`)
+    }
+    logger.info('[ClaudeManager] ===========================================')
+
     try {
       this.process = spawn(this.claudePath, args, {
         cwd: this.workingDirectory,
-        env: {
-          ...process.env,
-          CLAUDE_CODE_ENABLE_TELEMETRY: '0',
-          DISABLE_TELEMETRY: '1',
-          CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: 'true'  // 启用文件历史快照功能
-        }
+        env: fullEnv
       })
 
       this.setupStdioHandlers()
@@ -326,6 +499,20 @@ class ClaudeManager {
     if (message.type === 'control_response') {
       const responseHandlers = this.messageHandlers.get('control_response') || []
       responseHandlers.forEach(handler => {
+        try {
+          handler(message)
+        } catch (error) {
+          // Ignore handler errors
+        }
+      })
+      return
+    }
+
+    // Handle control_cancel_request (confirmation of interrupt/cancel)
+    if (message.type === 'control_cancel_request') {
+      logger.info('[ClaudeManager] Received control_cancel_request, treating as interrupt confirmation')
+      const interruptHandlers = this.messageHandlers.get('interrupt') || []
+      interruptHandlers.forEach(handler => {
         try {
           handler(message)
         } catch (error) {

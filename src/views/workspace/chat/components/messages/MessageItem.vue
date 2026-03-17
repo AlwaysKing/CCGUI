@@ -443,9 +443,9 @@ onUnmounted(() => {
             class="message-text"
             :class="{ 'status-text': message.role === 'status' }"
           >
-            <div v-if="message.role !== 'assistant' && message.role !== 'system'">{{ message.content }}</div>
+            <div v-if="message.role !== 'assistant'">{{ message.content }}</div>
           </div>
-          <div class="message-time" v-if="message.role !== 'status' && message.role !== 'assistant' && message.role !== 'user'">
+          <div class="message-time" v-if="message.role !== 'status' && message.role !== 'assistant' && message.role !== 'user' && message.role !== 'system'">
             {{ new Date(message.timestamp).toLocaleTimeString() }}
           </div>
         </div>

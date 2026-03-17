@@ -25,6 +25,11 @@ watch(() => props.initialName, (newName) => {
   name.value = newName || ''
 }, { immediate: true })
 
+function handleEnterKey(event) {
+  if (event?.isComposing || event?.keyCode === 229) return
+  handleConfirm()
+}
+
 function handleConfirm() {
   if (name.value.trim()) {
     emit('confirm', name.value.trim())
@@ -52,7 +57,7 @@ function handleConfirm() {
             v-model="name"
             type="text"
             :placeholder="placeholder"
-            @keyup.enter="handleConfirm"
+            @keyup.enter="handleEnterKey"
             ref="inputRef"
           />
         </div>

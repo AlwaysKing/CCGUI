@@ -27,6 +27,7 @@ function getDefaultConfig() {
       // 软件配置
       theme: 'dark',
       language: 'zh-CN',
+      notificationSound: 'Glass',
       autoStart: false,
       showNotifications: true,
 

@@ -17,7 +17,7 @@ const defaultCustomTerminalThemeText = `{
   "foreground": "#E4E4E7",
   "cursor": "#F97316",
   "cursorAccent": "#111216",
-  "selectionBackground": "rgba(249, 115, 22, 0.28)",
+  "selectionBackground": "rgba(228, 228, 231, 0.18)",
   "black": "#111216",
   "red": "#F87171",
   "green": "#4ADE80",

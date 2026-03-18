@@ -307,8 +307,7 @@ onBeforeUnmount(() => {
   >
     <div class="file-tree-header">
       <div class="header-text">
-        <div class="panel-title">文件</div>
-        <div class="panel-subtitle">当前项目目录</div>
+        <div class="panel-title">文件列表</div>
       </div>
       <div class="header-actions">
         <button class="refresh-btn" title="新建文件" @click.stop="handleCreateFromToolbar('file')">
@@ -332,20 +331,6 @@ onBeforeUnmount(() => {
             <path d="M3 11a9 9 0 0 1 15.55-5.36L21 8"></path>
             <path d="M3 22v-6h6"></path>
             <path d="M21 13a9 9 0 0 1-15.55 5.36L3 16"></path>
-          </svg>
-        </button>
-        <button
-          class="refresh-btn"
-          :title="previewPanelVisible ? '隐藏预览区' : '显示预览区'"
-          @click.stop="emit('toggle-preview-panel')"
-        >
-          <svg v-if="previewPanelVisible" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
-            <path d="M9 4v16"></path>
-          </svg>
-          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
-            <path d="M15 4v16"></path>
           </svg>
         </button>
       </div>
@@ -416,10 +401,12 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px 8px;
-  border-bottom: 1px solid #2C2C31;
-  background: #1A1B1F;
+  min-height: 36px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #27272A;
+  background: #1E1E1E;
   gap: 8px;
+  box-sizing: border-box;
 }
 
 .header-text {
@@ -439,15 +426,9 @@ onBeforeUnmount(() => {
   color: #E4E4E7;
 }
 
-.panel-subtitle {
-  font-size: 10px;
-  color: #71717A;
-  margin-top: 2px;
-}
-
 .refresh-btn {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border: none;
   border-radius: 5px;
   background: transparent;
@@ -461,7 +442,7 @@ onBeforeUnmount(() => {
 }
 
 .refresh-btn:hover {
-  background: #2A2D33;
+  background: #27272A;
   color: #E4E4E7;
 }
 

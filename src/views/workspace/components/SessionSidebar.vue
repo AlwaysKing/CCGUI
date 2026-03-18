@@ -63,6 +63,10 @@ const props = defineProps({
   terminalPanelVisible: {
     type: Boolean,
     default: false
+  },
+  terminalRunningCount: {
+    type: Number,
+    default: 0
   }
 })
 
@@ -214,6 +218,20 @@ onUnmounted(() => {
 
 // 当前项目ID
 const currentProjectId = computed(() => appStore.currentProject?.id)
+
+const readySessionCount = computed(() =>
+  props.sessions.filter(session => {
+    const status = props.sessionStatuses[session.id]
+    return Boolean(status?.ready)
+  }).length
+)
+
+const respondingSessionCount = computed(() =>
+  props.sessions.filter(session => {
+    const status = props.sessionStatuses[session.id]
+    return Boolean(status?.ready && (status.processing || status.streaming))
+  }).length
+)
 
 // 加载系统配置
 async function loadSystemConfig() {
@@ -689,12 +707,6 @@ defineExpose({
       <div class="traffic-light-placeholder"></div>
       <div class="header-actions">
         <span class="app-logo">CCGUI</span>
-        <button class="app-settings-btn" @click="emit('openAppSettings')" title="软件配置">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
-        </button>
       </div>
       <button class="toggle-btn" @click="emit('toggle')" title="折叠">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -703,7 +715,7 @@ defineExpose({
         </svg>
       </button>
     </div>
-    <!-- 第二行：项目名称 | 新建按钮 -->
+    <!-- 第二行：项目名称 -->
     <div class="sidebar-header-row2">
       <button class="home-btn" @click="emit('home')" title="返回首页">
         <svg class="home-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -717,10 +729,26 @@ defineExpose({
       </div>
       <button class="file-toggle-btn" @click.stop="emit('openProjectConfig')" title="项目配置">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="4" y1="21" x2="4" y2="14"/>
+          <line x1="4" y1="10" x2="4" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="12"/>
+          <line x1="12" y1="8" x2="12" y2="3"/>
+          <line x1="20" y1="21" x2="20" y2="16"/>
+          <line x1="20" y1="12" x2="20" y2="3"/>
+          <line x1="2" y1="14" x2="6" y2="14"/>
+          <line x1="10" y1="8" x2="14" y2="8"/>
+          <line x1="18" y1="16" x2="22" y2="16"/>
+        </svg>
+      </button>
+      <button class="app-settings-btn" @click.stop="emit('openAppSettings')" title="软件配置">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="3"/>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
       </button>
+    </div>
+
+    <div class="sidebar-toolbar-row">
       <button
         class="file-toggle-btn"
         :class="{ active: showConfigPanel }"
@@ -731,6 +759,21 @@ defineExpose({
           <rect x="3" y="4" width="18" height="16" rx="2"/>
           <path d="M9 4v16"/>
           <path d="M15 10v10"/>
+        </svg>
+      </button>
+      <button
+        class="file-toggle-btn"
+        :class="{ active: previewPanelVisible }"
+        @click="emit('togglePreviewPanel')"
+        :title="previewPanelVisible ? '隐藏预览区' : '显示预览区'"
+      >
+        <svg v-if="previewPanelVisible" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <path d="M9 4v16"/>
+        </svg>
+        <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <path d="M15 4v16"/>
         </svg>
       </button>
       <button
@@ -754,6 +797,13 @@ defineExpose({
           <path d="M7 9l3 3-3 3"/>
           <path d="M12 15h5"/>
         </svg>
+        <span
+          v-if="!terminalPanelVisible && terminalRunningCount > 0"
+          class="terminal-running-badge"
+          :title="`有 ${terminalRunningCount} 个终端正在运行命令`"
+        >
+          {{ terminalRunningCount > 9 ? '9+' : terminalRunningCount }}
+        </span>
       </button>
     </div>
 
@@ -843,7 +893,20 @@ defineExpose({
               </svg>
             </button>
           </div>
-          <span class="session-section-count">{{ sessions.length }}</span>
+          <div class="session-section-counts">
+            <span class="session-section-count responding" :title="`正在对答会话 ${respondingSessionCount}`">
+              <span class="session-count-dot" />
+              <span>{{ respondingSessionCount }}</span>
+            </span>
+            <span class="session-section-count ready" :title="`已启动会话 ${readySessionCount}`">
+              <span class="session-count-dot" />
+              <span>{{ readySessionCount }}</span>
+            </span>
+            <span class="session-section-count total" :title="`总会话数 ${sessions.length}`">
+              <span class="session-count-dot" />
+              <span>{{ sessions.length }}</span>
+            </span>
+          </div>
         </div>
 
         <div class="session-list">
@@ -996,7 +1059,7 @@ defineExpose({
 
 <style scoped>
 .session-sidebar {
-  background: #18181B;
+  background: #1E1E1E;
   border-right: 1px solid #3F3F46;
   display: flex;
   flex-direction: column;
@@ -1082,6 +1145,17 @@ defineExpose({
   -webkit-app-region: no-drag;
 }
 
+.sidebar-toolbar-row {
+  padding: 6px 16px;
+  border-bottom: 1px solid #3F3F46;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+
 .home-btn {
   padding: 4px;
   background: transparent;
@@ -1103,6 +1177,8 @@ defineExpose({
 .sidebar-title {
   display: flex;
   align-items: center;
+  height: 28px;
+  padding: 0 10px;
   font-size: 20px;
   font-weight: 700;
   color: #E4E4E7;
@@ -1110,25 +1186,27 @@ defineExpose({
   white-space: nowrap;
   overflow: hidden;
   cursor: pointer;
-  transition: color 0.2s;
-  flex: 1;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  transition: background 0.2s, color 0.2s, border-color 0.2s, transform 0.2s;
+  flex: 0 1 auto;
+  max-width: 180px;
+  margin-right: auto;
   min-width: 0;
 }
 
 .project-name {
-  height: 20px;
-  line-height: 20px;
+  line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   display: inline-block;
 }
 
 .sidebar-title:hover {
+  background: #27272A;
+  border-color: #3F3F46;
   color: #F4F4F5;
-}
-
-.sidebar-title + .file-toggle-btn {
-  margin-left: -2px;
+  transform: translateY(-1px);
 }
 
 .add-btn {
@@ -1157,12 +1235,34 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 
-.file-toggle-btn:hover,
+.file-toggle-btn:hover {
+  background: #27272A;
+  color: #E4E4E7;
+}
+
 .file-toggle-btn.active {
-  background: #374151;
-  color: #D1D5DB;
+  background: #27272A;
+  color: #F4F4F5;
+}
+
+.terminal-running-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 4px;
+  border-radius: 9999px;
+  background: #F97316;
+  color: #18181B;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+  box-shadow: 0 0 0 2px #1E1E1E;
 }
 
 .sidebar-body {
@@ -1180,9 +1280,13 @@ defineExpose({
 .file-session-resize {
   height: 5px;
   flex-shrink: 0;
+  margin-top: -2px;
+  margin-bottom: -3px;
   background: transparent;
   cursor: row-resize;
   transition: background 0.15s;
+  position: relative;
+  z-index: 2;
 }
 
 .file-session-resize:hover,
@@ -1202,8 +1306,8 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px 8px;
-  border-bottom: 1px solid #2C2C31;
-  background: #1A1B1F;
+  border-bottom: 1px solid #27272A;
+  background: #1E1E1E;
   color: #D4D4D8;
   font-size: 12px;
   font-weight: 600;
@@ -1215,9 +1319,42 @@ defineExpose({
   gap: 6px;
 }
 
+.session-section-counts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .session-section-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: #71717A;
   font-weight: 500;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.session-count-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.session-section-count.total {
+  color: #71717A;
+}
+
+.session-section-count.ready {
+  color: #60A5FA;
+}
+
+.session-section-count.responding {
+  color: #22C55E;
 }
 
 .session-add-btn {
@@ -1235,7 +1372,7 @@ defineExpose({
 }
 
 .session-add-btn:hover {
-  background: #2A2D33;
+  background: #27272A;
   color: #E4E4E7;
 }
 
@@ -1311,8 +1448,8 @@ defineExpose({
 }
 
 .session-status.ready {
-  background: #22C55E;  /* 绿色 - ready */
-  box-shadow: 0 0 6px rgba(34, 197, 94, 0.45);
+  background: #60A5FA;  /* 蓝色 - ready */
+  box-shadow: 0 0 6px rgba(96, 165, 250, 0.45);
 }
 
 .session-status.streaming {
@@ -1682,7 +1819,7 @@ defineExpose({
 .config-details {
   padding: 8px 16px 12px;
   border-top: 1px solid #2D2D2D;
-  background: #18181B;
+  background: #1E1E1E;
   max-height: 200px;
   overflow-y: auto;
 }

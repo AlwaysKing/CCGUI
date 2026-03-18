@@ -240,13 +240,13 @@ watch(() => props.diffMode, () => {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #111216;
+  background: #1E1E1E;
 }
 
 .code-editor :deep(.monaco-editor),
 .code-editor :deep(.monaco-editor-background),
 .code-editor :deep(.margin) {
-  background: #111216 !important;
+  background: #1E1E1E !important;
 }
 
 .code-editor :deep(.monaco-editor .scroll-decoration) {
@@ -264,7 +264,7 @@ watch(() => props.diffMode, () => {
 .code-editor :deep(.monaco-editor .scrollbar .slider) {
   border-radius: 3px !important;
   background: #52525B !important;
-  border: 1px solid #18181B !important;
+  border: 1px solid #1E1E1E !important;
 }
 
 .code-editor :deep(.monaco-editor .scrollbar .slider:hover) {

@@ -1701,7 +1701,7 @@ async function handleQuestionAnswer(requestId, answers) {
 .top-bar {
   display: flex;
   align-items: stretch;
-  background: #18181B;
+  background: #1E1E1E;
   border-bottom: 1px solid #27272A;
   -webkit-app-region: drag;
 }
@@ -1843,7 +1843,7 @@ async function handleQuestionAnswer(requestId, answers) {
   top: 100%;
   left: 0;
   right: 0;
-  background: #18181B;
+  background: #1E1E1E;
   border-bottom: 1px solid #27272A;
   padding: 12px 16px;
   z-index: 100;
@@ -1895,7 +1895,7 @@ async function handleQuestionAnswer(requestId, answers) {
   position: relative;
   /* Modern scrollbar styling */
   scrollbar-width: thin;
-  scrollbar-color: #52525B #18181B;
+  scrollbar-color: #52525B #1E1E1E;
 }
 
 .message {
@@ -2232,11 +2232,15 @@ async function handleQuestionAnswer(requestId, answers) {
 /* 可拖拽调整大小的分隔条 */
 .resize-handle {
   height: 4px;
+  margin-top: -2px;
+  margin-bottom: -2px;
   background: transparent;
   cursor: ns-resize;
   transition: background 0.2s;
   -webkit-app-region: no-drag;
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
 
 .resize-handle:hover {

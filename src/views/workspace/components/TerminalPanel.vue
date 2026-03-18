@@ -15,6 +15,8 @@ const props = defineProps({
   }
 })
 
+const emit = defineEmits(['running-change'])
+
 const terminals = ref([])
 const activeTerminalId = ref('')
 const isCreatingTerminal = ref(false)
@@ -32,6 +34,7 @@ const terminalWheelCleanup = new Map()
 const terminalResizeCleanup = new Map()
 
 const activeTerminal = computed(() => terminals.value.find(item => item.id === activeTerminalId.value) || null)
+const runningTerminalCount = computed(() => terminals.value.filter(isTerminalRunning).length)
 const terminalSidebarStyle = computed(() => ({
   width: `${terminalSidebarWidth.value}px`,
   flex: `0 0 ${terminalSidebarWidth.value}px`
@@ -39,8 +42,8 @@ const terminalSidebarStyle = computed(() => ({
 const terminalSurfaceStyle = computed(() => {
   const theme = getTerminalTheme(terminalThemeKey.value)
   return {
-    '--terminal-theme-background': theme.background || '#111216',
-    '--terminal-theme-sidebar-background': theme.background || '#17191E'
+    '--terminal-theme-background': theme.background || '#1E1E1E',
+    '--terminal-theme-sidebar-background': theme.background || '#1E1E1E'
   }
 })
 const TERMINAL_SIDEBAR_MIN_WIDTH = 72
@@ -58,15 +61,22 @@ function getTerminalCommandLabel(terminal) {
   return terminal?.currentCommand || terminal?.shellLabel || 'shell'
 }
 
+function isTerminalRunning(terminal) {
+  if (!terminal || terminal.exited) return false
+  const shellLabel = terminal.shellLabel || 'shell'
+  const currentCommand = terminal.currentCommand || shellLabel
+  return currentCommand !== shellLabel && currentCommand !== 'shell'
+}
+
 function getTerminalTheme(themeKey) {
   const themes = {
     'ccgui-dark': {
-      background: '#111216',
+      background: '#1E1E1E',
       foreground: '#E4E4E7',
       cursor: '#F97316',
-      cursorAccent: '#111216',
-      selectionBackground: 'rgba(249, 115, 22, 0.28)',
-      black: '#111216',
+      cursorAccent: '#1E1E1E',
+      selectionBackground: 'rgba(228, 228, 231, 0.18)',
+      black: '#1E1E1E',
       red: '#F87171',
       green: '#4ADE80',
       yellow: '#FBBF24',
@@ -254,6 +264,15 @@ function disposeTerminalInstance(terminalId) {
   const instance = terminalInstances.get(terminalId)
   if (!instance) return
 
+  if (instance.fitFrame) {
+    cancelAnimationFrame(instance.fitFrame)
+    instance.fitFrame = null
+  }
+  if (instance.fitTimer) {
+    clearTimeout(instance.fitTimer)
+    instance.fitTimer = null
+  }
+
   instance.terminal.dispose()
   terminalInstances.delete(terminalId)
 
@@ -311,10 +330,28 @@ function mountTerminal(terminalId, shouldFocus = false) {
 
   const applyTerminalFit = instance => {
     try {
+      if (!props.visible || terminalId !== activeTerminalId.value) {
+        return
+      }
+
+      if (!host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
+        return
+      }
+
       instance.fitAddon.fit()
       const dimensions = instance.terminal.cols && instance.terminal.rows
         ? { cols: instance.terminal.cols, rows: instance.terminal.rows }
         : estimateTerminalSize()
+
+      if (
+        instance.lastDimensions &&
+        instance.lastDimensions.cols === dimensions.cols &&
+        instance.lastDimensions.rows === dimensions.rows
+      ) {
+        return
+      }
+
+      instance.lastDimensions = dimensions
       window.electronAPI.resizeTerminal({
         terminalId,
         cols: dimensions.cols,
@@ -323,6 +360,25 @@ function mountTerminal(terminalId, shouldFocus = false) {
     } catch (error) {
       console.error('[TerminalPanel] Failed to fit terminal:', error)
     }
+  }
+
+  const scheduleTerminalFit = instance => {
+    if (instance.fitFrame) {
+      cancelAnimationFrame(instance.fitFrame)
+      instance.fitFrame = null
+    }
+    if (instance.fitTimer) {
+      clearTimeout(instance.fitTimer)
+      instance.fitTimer = null
+    }
+
+    instance.fitFrame = requestAnimationFrame(() => {
+      instance.fitFrame = null
+      instance.fitTimer = setTimeout(() => {
+        instance.fitTimer = null
+        applyTerminalFit(instance)
+      }, 40)
+    })
   }
 
   let instance = terminalInstances.get(terminalId)
@@ -357,13 +413,17 @@ function mountTerminal(terminalId, shouldFocus = false) {
       viewport?.removeEventListener('wheel', handleWheel)
     })
 
-    instance = { terminal, fitAddon }
+    instance = {
+      terminal,
+      fitAddon,
+      lastDimensions: null,
+      fitFrame: null,
+      fitTimer: null
+    }
     terminalInstances.set(terminalId, instance)
 
     const resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
-        applyTerminalFit(instance)
-      })
+      scheduleTerminalFit(instance)
     })
     resizeObserver.observe(host)
     terminalResizeCleanup.set(terminalId, () => {
@@ -381,11 +441,7 @@ function mountTerminal(terminalId, shouldFocus = false) {
     instance.terminal.open(host)
   }
 
-  requestAnimationFrame(() => {
-    applyTerminalFit(instance)
-    requestAnimationFrame(() => applyTerminalFit(instance))
-    setTimeout(() => applyTerminalFit(instance), 60)
-  })
+  scheduleTerminalFit(instance)
 
   if (shouldFocus && props.visible) {
     instance.terminal.focus()
@@ -480,6 +536,13 @@ watch(() => props.visible, async visible => {
 watch(activeTerminalId, () => {
   fitActiveTerminal()
 })
+
+watch(runningTerminalCount, count => {
+  emit('running-change', {
+    hasRunning: count > 0,
+    count
+  })
+}, { immediate: true })
 
 watch(() => props.projectPath, async (nextPath, previousPath) => {
   if (!previousPath || nextPath === previousPath) return
@@ -600,8 +663,8 @@ defineExpose({
   height: 100%;
   display: flex;
   min-height: 0;
-  background: var(--terminal-theme-background, #111216);
-  border-top: 1px solid #2F3239;
+  background: var(--terminal-theme-background, #1E1E1E);
+  border-top: 1px solid #27272A;
 }
 
 .terminal-main {
@@ -610,7 +673,7 @@ defineExpose({
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--terminal-theme-background, #111216);
+  background: var(--terminal-theme-background, #1E1E1E);
 }
 
 .terminal-stage,
@@ -625,14 +688,14 @@ defineExpose({
 .terminal-stage {
   position: relative;
   overflow: hidden;
-  background: var(--terminal-theme-background, #111216);
+  background: var(--terminal-theme-background, #1E1E1E);
 }
 
 .terminal-instance {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: var(--terminal-theme-background, #111216);
+  background: var(--terminal-theme-background, #1E1E1E);
 }
 
 .terminal-host {
@@ -642,7 +705,7 @@ defineExpose({
   padding: 8px 0 8px 8px;
   box-sizing: border-box;
   overflow: hidden;
-  background: var(--terminal-theme-background, #111216);
+  background: var(--terminal-theme-background, #1E1E1E);
 }
 
 .terminal-shell {
@@ -650,7 +713,7 @@ defineExpose({
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: var(--terminal-theme-background, #111216);
+  background: var(--terminal-theme-background, #1E1E1E);
 }
 
 .terminal-overlay {
@@ -659,15 +722,15 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(17, 18, 22, 0.72);
+  background: rgba(24, 24, 27, 0.72);
   color: #A1A1AA;
   font-size: 12px;
   pointer-events: none;
 }
 
 .terminal-sidebar {
-  border-left: 1px solid #2F3239;
-  background: var(--terminal-theme-sidebar-background, #17191E);
+  border-left: 1px solid #27272A;
+  background: var(--terminal-theme-sidebar-background, #1E1E1E);
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -677,9 +740,13 @@ defineExpose({
 .terminal-sidebar-resize {
   width: 5px;
   flex: 0 0 5px;
+  margin-left: -2px;
+  margin-right: -3px;
   cursor: col-resize;
   background: transparent;
   transition: background 0.15s ease;
+  position: relative;
+  z-index: 2;
 }
 
 .terminal-sidebar-resize:hover,
@@ -690,11 +757,11 @@ defineExpose({
 .terminal-sidebar-list {
   flex: 1;
   min-height: 0;
-  background: var(--terminal-theme-sidebar-background, #17191E);
+  background: var(--terminal-theme-sidebar-background, #1E1E1E);
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
-  scrollbar-color: #52525B #18181B;
+  scrollbar-color: #52525B transparent;
 }
 
 .terminal-sidebar-list::-webkit-scrollbar {
@@ -702,14 +769,14 @@ defineExpose({
 }
 
 .terminal-sidebar-list::-webkit-scrollbar-track {
-  background: #18181B;
+  background: transparent;
   border-radius: 4px;
 }
 
 .terminal-sidebar-list::-webkit-scrollbar-thumb {
   background: #52525B;
   border-radius: 4px;
-  border: 2px solid #18181B;
+  border: 2px solid var(--terminal-theme-sidebar-background, #1E1E1E);
 }
 
 .terminal-sidebar-list::-webkit-scrollbar-thumb:hover {
@@ -718,16 +785,16 @@ defineExpose({
 
 .terminal-sidebar-btn {
   width: 100%;
-  min-height: 40px;
-  padding: 6px 8px;
+  min-height: 30px;
+  padding: 0;
   border: none;
-  border-bottom: 1px solid #2F3239;
+  border-bottom: 1px solid #27272A;
   background: transparent;
   color: #A1A1AA;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 0;
   cursor: pointer;
   position: relative;
   box-sizing: border-box;
@@ -736,25 +803,27 @@ defineExpose({
 
 .terminal-sidebar-btn:hover,
 .terminal-sidebar-btn.active {
-  background: #23262D;
+  background: #27272A;
   color: #F4F4F5;
 }
 
 .terminal-add-btn {
-  min-height: 32px;
-  height: 32px;
+  min-height: 24px;
+  height: 24px;
   padding: 0;
   align-items: center;
   justify-content: center;
-  background: var(--terminal-theme-sidebar-background, #17191E);
+  background: var(--terminal-theme-sidebar-background, #1E1E1E);
 }
 
 .terminal-tab-main {
   min-width: 0;
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 4px;
   flex: 1;
+  padding: 0;
+  margin-left: 4px;
 }
 
 .terminal-tab-index {
@@ -767,7 +836,7 @@ defineExpose({
 .terminal-tab-command {
   flex: 1;
   font-size: 11px;
-  line-height: 1.2;
+  line-height: 1;
   font-weight: 600;
   color: inherit;
   white-space: nowrap;
@@ -777,8 +846,9 @@ defineExpose({
 
 .terminal-tab-close {
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
+  width: 14px;
+  height: 14px;
+  margin-right: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -788,8 +858,7 @@ defineExpose({
   transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 
-.terminal-tab-btn:hover .terminal-tab-close,
-.terminal-tab-btn.active .terminal-tab-close {
+.terminal-tab-btn:hover .terminal-tab-close {
   opacity: 1;
 }
 
@@ -817,25 +886,25 @@ defineExpose({
   padding: 8px 12px;
   border: 1px solid #3F3F46;
   border-radius: 6px;
-  background: #181A20;
+  background: #27272A;
   color: #E4E4E7;
   cursor: pointer;
 }
 
 .terminal-empty-btn:hover {
-  background: #23262D;
+  background: #3F3F46;
 }
 
 .terminal-host :deep(.xterm) {
   height: 100%;
   width: 100%;
   box-sizing: border-box;
-  background: var(--terminal-theme-background, #111216);
+  background: var(--terminal-theme-background, #1E1E1E);
 }
 
 .terminal-host :deep(.xterm-screen),
 .terminal-host :deep(.xterm-rows) {
-  background: var(--terminal-theme-background, #111216);
+  background: var(--terminal-theme-background, #1E1E1E);
 }
 
 .terminal-host :deep(.xterm-viewport) {
@@ -844,9 +913,9 @@ defineExpose({
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: #52525B #18181B;
+  scrollbar-color: #52525B transparent;
   box-sizing: border-box;
-  background: var(--terminal-theme-background, #111216);
+  background: var(--terminal-theme-background, #1E1E1E);
 }
 
 .terminal-host :deep(.xterm-viewport)::-webkit-scrollbar {
@@ -854,14 +923,14 @@ defineExpose({
 }
 
 .terminal-host :deep(.xterm-viewport)::-webkit-scrollbar-track {
-  background: #18181B;
+  background: transparent;
   border-radius: 4px;
 }
 
 .terminal-host :deep(.xterm-viewport)::-webkit-scrollbar-thumb {
   background: #52525B;
   border-radius: 4px;
-  border: 2px solid #18181B;
+  border: 2px solid var(--terminal-theme-background, #1E1E1E);
 }
 
 .terminal-host :deep(.xterm-viewport)::-webkit-scrollbar-thumb:hover {

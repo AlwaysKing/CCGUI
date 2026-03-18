@@ -162,8 +162,8 @@ function handleToggleChatPanel(event) {
   width: 42%;
   min-width: 340px;
   max-width: 58%;
-  border-right: 1px solid #2F3239;
-  background: #111216;
+  border-right: 1px solid #3F3F46;
+  background: #1E1E1E;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -172,8 +172,8 @@ function handleToggleChatPanel(event) {
 .preview-tabs {
   display: flex;
   align-items: stretch;
-  background: #17191E;
-  border-bottom: 1px solid #2F3239;
+  background: #1E1E1E;
+  border-bottom: 1px solid #27272A;
   height: 41.5px;
   overflow: hidden;
   -webkit-app-region: no-drag;
@@ -186,8 +186,8 @@ function handleToggleChatPanel(event) {
   align-items: stretch;
   justify-content: flex-end;
   padding-left: 80px;
-  background: #17191E;
-  border-right: 1px solid #2F3239;
+  background: #1E1E1E;
+  border-right: 1px solid #27272A;
   -webkit-app-region: drag;
 }
 
@@ -196,7 +196,7 @@ function handleToggleChatPanel(event) {
   height: 41.5px;
   padding: 0;
   border: none;
-  background: #17191E;
+  background: #1E1E1E;
   color: #E4E4E7;
   cursor: pointer;
   display: inline-flex;
@@ -206,7 +206,7 @@ function handleToggleChatPanel(event) {
 }
 
 .sidebar-safe-btn:hover {
-  background: #23262D;
+  background: #27272A;
 }
 
 .tabs-list {
@@ -231,8 +231,8 @@ function handleToggleChatPanel(event) {
   height: 41.5px;
   padding: 0;
   border: none;
-  border-left: 1px solid #2F3239;
-  background: #17191E;
+  border-left: 1px solid #27272A;
+  background: #1E1E1E;
   color: #E4E4E7;
   cursor: pointer;
   flex-shrink: 0;
@@ -250,8 +250,8 @@ function handleToggleChatPanel(event) {
   height: 41.5px;
   padding: 0;
   border: none;
-  border-left: 1px solid #2F3239;
-  background: #17191E;
+  border-left: 1px solid #27272A;
+  background: #1E1E1E;
   color: #E4E4E7;
   cursor: pointer;
   flex-shrink: 0;
@@ -266,7 +266,7 @@ function handleToggleChatPanel(event) {
 
 .tab-bar-chat-btn:hover,
 .tab-bar-close-btn:hover {
-  background: #23262D;
+  background: #27272A;
 }
 
 .preview-tab {
@@ -274,7 +274,7 @@ function handleToggleChatPanel(event) {
   max-width: 220px;
   height: 41.5px;
   border: none;
-  background: #1A1D23;
+  background: #1E1E1E;
   color: #A1A1AA;
   display: inline-flex;
   align-items: center;
@@ -288,7 +288,7 @@ function handleToggleChatPanel(event) {
 }
 
 .preview-tab.active {
-  background: #111216;
+  background: #27272A;
   color: #F4F4F5;
 }
 
@@ -331,7 +331,7 @@ function handleToggleChatPanel(event) {
 }
 
 .tab-close:hover {
-  background: #2B2F36;
+  background: #3F3F46;
   color: #F4F4F5;
 }
 
@@ -360,8 +360,8 @@ function handleToggleChatPanel(event) {
 
 .preview-statusbar {
   height: 28px;
-  border-top: 1px solid #2F3239;
-  background: #15181E;
+  border-top: 1px solid #27272A;
+  background: #1E1E1E;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -412,7 +412,7 @@ function handleToggleChatPanel(event) {
 }
 
 .statusbar-btn:hover {
-  background: #23262D;
+  background: #27272A;
 }
 
 .statusbar-btn-text {
@@ -437,7 +437,7 @@ function handleToggleChatPanel(event) {
 
 .statusbar-btn.active {
   border-color: #52525B;
-  background: #23262D;
+  background: #27272A;
 }
 
 .empty-title {

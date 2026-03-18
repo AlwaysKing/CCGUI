@@ -29,6 +29,7 @@ const terminalPanelRef = ref(null)
 const terminalPanelVisible = ref(false)
 const terminalPanelHeight = ref(220)
 const isTerminalResizing = ref(false)
+const terminalRunningState = ref({ hasRunning: false, count: 0 })
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
 const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
@@ -121,6 +122,13 @@ async function toggleTerminalPanel() {
   if (terminalPanelVisible.value) {
     await nextTick()
     terminalPanelRef.value?.fitActiveTerminal?.()
+  }
+}
+
+function handleTerminalRunningChange(nextState) {
+  terminalRunningState.value = {
+    hasRunning: Boolean(nextState?.hasRunning),
+    count: Number(nextState?.count || 0)
   }
 }
 
@@ -347,6 +355,7 @@ onUnmounted(() => {
         :has-open-files="fileBrowserStore.hasOpenFiles"
         :preview-panel-visible="fileBrowserStore.shouldShowPreviewPanel"
         :terminal-panel-visible="terminalPanelVisible"
+        :terminal-running-count="terminalRunningState.count"
         @select="handleSelectSession"
         @delete="handleDeleteSession"
         @start="handleStartSession"
@@ -434,8 +443,8 @@ onUnmounted(() => {
             />
           </div>
           <div v-if="!store.currentSession" class="empty-state-wrapper">
-            <div v-if="sidebarCollapsed" class="empty-top-bar">
-              <div class="sidebar-safe-spacer">
+            <div class="empty-top-bar" :class="{ 'with-sidebar-toggle': sidebarCollapsed }">
+              <div v-if="sidebarCollapsed" class="sidebar-safe-spacer">
                 <button class="sidebar-safe-btn" @click="toggleSidebar" title="展开侧边栏">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M10 6l6 6-6 6"/>
@@ -443,6 +452,7 @@ onUnmounted(() => {
                   </svg>
                 </button>
               </div>
+              <div class="empty-top-drag-fill"></div>
             </div>
 
             <div class="empty-state">
@@ -479,6 +489,7 @@ onUnmounted(() => {
             ref="terminalPanelRef"
             :visible="terminalPanelVisible"
             :project-path="store.currentProject?.path || ''"
+            @running-change="handleTerminalRunningChange"
           />
         </div>
       </main>
@@ -577,9 +588,13 @@ onUnmounted(() => {
 
 .resize-handle {
   width: 4px;
+  margin-left: -2px;
+  margin-right: -2px;
   background: transparent;
   cursor: col-resize;
   transition: background 0.2s;
+  position: relative;
+  z-index: 2;
 }
 
 .resize-handle:hover {
@@ -628,10 +643,14 @@ onUnmounted(() => {
 
 .preview-resize-handle {
   width: 4px;
+  margin-left: -2px;
+  margin-right: -2px;
   background: transparent;
   cursor: col-resize;
   transition: background 0.2s;
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
 
 .preview-resize-handle:hover,
@@ -641,10 +660,14 @@ onUnmounted(() => {
 
 .terminal-resize-handle {
   height: 4px;
+  margin-top: -2px;
+  margin-bottom: -2px;
   background: transparent;
   cursor: row-resize;
   transition: background 0.2s;
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
 
 .terminal-resize-handle:hover,
@@ -656,7 +679,7 @@ onUnmounted(() => {
   flex: 0 0 auto;
   min-height: 0;
   overflow: hidden;
-  border-top: 1px solid #2F3239;
+  border-top: 1px solid #27272A;
 }
 
 .empty-state-wrapper {
@@ -668,9 +691,20 @@ onUnmounted(() => {
 
 .empty-top-bar {
   height: 41.5px;
-  background: #17191E;
-  border-bottom: 1px solid #2F3239;
+  background: #1E1E1E;
   flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  -webkit-app-region: drag;
+}
+
+.empty-top-bar.with-sidebar-toggle {
+  justify-content: flex-start;
+}
+
+.empty-top-drag-fill {
+  flex: 1;
+  min-width: 0;
 }
 
 .sidebar-safe-spacer {
@@ -680,16 +714,15 @@ onUnmounted(() => {
   align-items: stretch;
   justify-content: flex-end;
   padding-left: 80px;
-  background: #17191E;
-  -webkit-app-region: drag;
+  background: #1E1E1E;
 }
 
 .sidebar-safe-btn {
   width: 44px;
   height: 41.5px;
   border: none;
-  border-left: 1px solid #2F3239;
-  background: #17191E;
+  border-left: 1px solid #27272A;
+  background: #1E1E1E;
   color: #E4E4E7;
   display: inline-flex;
   align-items: center;
@@ -700,7 +733,7 @@ onUnmounted(() => {
 }
 
 .sidebar-safe-btn:hover {
-  background: #23262D;
+  background: #27272A;
 }
 
 .empty-state {

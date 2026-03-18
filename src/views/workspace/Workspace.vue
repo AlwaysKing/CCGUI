@@ -1,10 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
 import { useSessionStore } from '../../stores/useSessionStore'
 import { useFileBrowserStore } from '../../stores/useFileBrowserStore'
 import SessionSidebar from './components/SessionSidebar.vue'
 import FilePreviewPanel from './components/FilePreviewPanel.vue'
+import TerminalPanel from './components/TerminalPanel.vue'
 import Chat from './chat/Chat.vue'
 import NewSessionDialog from './components/NewSessionDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -24,10 +25,16 @@ const previewWidth = ref(42)
 const isPreviewResizing = ref(false)
 const isChatCollapsed = ref(false)
 const lastExpandedPreviewWidth = ref(42)
+const terminalPanelRef = ref(null)
+const terminalPanelVisible = ref(false)
+const terminalPanelHeight = ref(220)
+const isTerminalResizing = ref(false)
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
 const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
 const COLLAPSED_SIDEBAR_SAFE_WIDTH = 124
+const TERMINAL_MIN_HEIGHT = 140
+const TERMINAL_MAX_HEIGHT = 420
 const {
   sessionSidebarRef,
   chatRef,
@@ -102,6 +109,14 @@ async function handleDeleteFileNode(targetPath) {
 function handleAddFileToChat(filePath) {
   if (!filePath) return
   chatRef.value?.appendTextToInput?.(filePath)
+}
+
+async function toggleTerminalPanel() {
+  terminalPanelVisible.value = !terminalPanelVisible.value
+  if (terminalPanelVisible.value) {
+    await nextTick()
+    terminalPanelRef.value?.fitActiveTerminal?.()
+  }
 }
 
 const shouldShowChatPanel = computed(() => {
@@ -214,6 +229,27 @@ function stopPreviewResize() {
   isPreviewResizing.value = false
 }
 
+function startTerminalResize(event) {
+  isTerminalResizing.value = true
+  event.preventDefault()
+}
+
+function handleTerminalResize(event) {
+  if (!isTerminalResizing.value) return
+
+  const mainStack = document.querySelector('.main-stack')
+  if (!mainStack) return
+
+  const stackRect = mainStack.getBoundingClientRect()
+  const nextHeight = stackRect.bottom - event.clientY
+  terminalPanelHeight.value = Math.max(TERMINAL_MIN_HEIGHT, Math.min(TERMINAL_MAX_HEIGHT, nextHeight))
+  terminalPanelRef.value?.fitActiveTerminal?.()
+}
+
+function stopTerminalResize() {
+  isTerminalResizing.value = false
+}
+
 watch(() => fileBrowserStore.shouldShowPreviewPanel, (visible) => {
   if (!visible) {
     isChatCollapsed.value = false
@@ -245,6 +281,8 @@ onMounted(async () => {
   window.addEventListener('mouseup', stopResize)
   window.addEventListener('mousemove', handlePreviewResize)
   window.addEventListener('mouseup', stopPreviewResize)
+  window.addEventListener('mousemove', handleTerminalResize)
+  window.addEventListener('mouseup', stopTerminalResize)
 
   // Periodically update running sessions status (every 2 seconds)
   // This also fetches messageCount and updatedAt from memory
@@ -261,6 +299,8 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', stopResize)
   window.removeEventListener('mousemove', handlePreviewResize)
   window.removeEventListener('mouseup', stopPreviewResize)
+  window.removeEventListener('mousemove', handleTerminalResize)
+  window.removeEventListener('mouseup', stopTerminalResize)
 
   // Clear interval
   if (window.runningSessionsInterval) {
@@ -301,6 +341,7 @@ onUnmounted(() => {
         :is-file-panel-visible="fileBrowserStore.isFilePanelVisible"
         :has-open-files="fileBrowserStore.hasOpenFiles"
         :preview-panel-visible="fileBrowserStore.shouldShowPreviewPanel"
+        :terminal-panel-visible="terminalPanelVisible"
         @select="handleSelectSession"
         @delete="handleDeleteSession"
         @start="handleStartSession"
@@ -328,6 +369,7 @@ onUnmounted(() => {
         @createFileNode="handleCreateFileNode"
         @deleteFileNode="handleDeleteFileNode"
         @addFileToChat="handleAddFileToChat"
+        @toggleTerminalPanel="toggleTerminalPanel"
       />
 
       <!-- Resize Handle -->
@@ -338,80 +380,101 @@ onUnmounted(() => {
       />
 
       <!-- Main Content -->
-      <main class="main-content">
-        <FilePreviewPanel
-          :visible="fileBrowserStore.shouldShowPreviewPanel"
-          :style="previewPanelStyle"
-          :tabs="fileBrowserStore.tabs"
-          :active-tab="fileBrowserStore.activeTab"
-          :active-git-status="fileBrowserStore.activeFileGitStatus"
-          :is-chat-collapsed="isChatCollapsed"
-          :show-sidebar-toggle="sidebarCollapsed"
-          @activate-tab="fileBrowserStore.setActiveTab"
-          @close-tab="fileBrowserStore.closeTab"
-          @close-others="fileBrowserStore.closeOtherTabs"
-          @update-content="fileBrowserStore.updateTabContent"
-          @save-file="fileBrowserStore.saveFile"
-          @close-panel="fileBrowserStore.hidePreviewPanel"
-          @toggle-sidebar="toggleSidebar"
-          @toggle-diff="fileBrowserStore.toggleTabDiff"
-          @toggle-chat-panel="toggleChatPanelCollapse"
-        />
-
-        <div
-          v-if="fileBrowserStore.shouldShowPreviewPanel && shouldShowChatPanel"
-          class="preview-resize-handle"
-          :class="{ resizing: isPreviewResizing }"
-          @mousedown="startPreviewResize"
-        ></div>
-
-        <div
-          v-if="store.currentSession"
-          class="chat-panel-host"
-          :class="{ collapsed: !shouldShowChatPanel }"
-          :style="chatPanelHostStyle"
-        >
-          <Chat
-            class="chat-panel"
-            ref="chatRef"
-            :sidebar-collapsed="sidebarCollapsed"
-            :sidebar-width="sidebarWidth"
-            :show-collapse-toggle="fileBrowserStore.shouldShowPreviewPanel"
-            :is-collapsed-by-preview="isChatCollapsed"
-            :show-sidebar-toggle="sidebarCollapsed && !fileBrowserStore.shouldShowPreviewPanel"
-            @toggleSidebar="toggleSidebar"
-            @toggleCollapse="toggleChatPanelCollapse"
-            @startSession="handleStartSession"
-            @closeSession="handleCloseSession"
+      <main class="main-stack">
+        <div class="main-content">
+          <FilePreviewPanel
+            :visible="fileBrowserStore.shouldShowPreviewPanel"
+            :style="previewPanelStyle"
+            :tabs="fileBrowserStore.tabs"
+            :active-tab="fileBrowserStore.activeTab"
+            :active-git-status="fileBrowserStore.activeFileGitStatus"
+            :is-chat-collapsed="isChatCollapsed"
+            :show-sidebar-toggle="sidebarCollapsed"
+            @activate-tab="fileBrowserStore.setActiveTab"
+            @close-tab="fileBrowserStore.closeTab"
+            @close-others="fileBrowserStore.closeOtherTabs"
+            @update-content="fileBrowserStore.updateTabContent"
+            @save-file="fileBrowserStore.saveFile"
+            @close-panel="fileBrowserStore.hidePreviewPanel"
+            @toggle-sidebar="toggleSidebar"
+            @toggle-diff="fileBrowserStore.toggleTabDiff"
+            @toggle-chat-panel="toggleChatPanelCollapse"
           />
-        </div>
-        <div v-if="!store.currentSession" class="empty-state-wrapper">
-          <div v-if="sidebarCollapsed" class="empty-top-bar">
-            <div class="sidebar-safe-spacer">
-              <button class="sidebar-safe-btn" @click="toggleSidebar" title="展开侧边栏">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M10 6l6 6-6 6"/>
-                  <path d="M4 5v14"/>
+
+          <div
+            v-if="fileBrowserStore.shouldShowPreviewPanel && shouldShowChatPanel"
+            class="preview-resize-handle"
+            :class="{ resizing: isPreviewResizing }"
+            @mousedown="startPreviewResize"
+          ></div>
+
+          <div
+            v-if="store.currentSession"
+            class="chat-panel-host"
+            :class="{ collapsed: !shouldShowChatPanel }"
+            :style="chatPanelHostStyle"
+          >
+            <Chat
+              class="chat-panel"
+              ref="chatRef"
+              :sidebar-collapsed="sidebarCollapsed"
+              :sidebar-width="sidebarWidth"
+              :show-collapse-toggle="fileBrowserStore.shouldShowPreviewPanel"
+              :is-collapsed-by-preview="isChatCollapsed"
+              :show-sidebar-toggle="sidebarCollapsed && !fileBrowserStore.shouldShowPreviewPanel"
+              @toggleSidebar="toggleSidebar"
+              @toggleCollapse="toggleChatPanelCollapse"
+              @startSession="handleStartSession"
+              @closeSession="handleCloseSession"
+            />
+          </div>
+          <div v-if="!store.currentSession" class="empty-state-wrapper">
+            <div v-if="sidebarCollapsed" class="empty-top-bar">
+              <div class="sidebar-safe-spacer">
+                <button class="sidebar-safe-btn" @click="toggleSidebar" title="展开侧边栏">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10 6l6 6-6 6"/>
+                    <path d="M4 5v14"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="empty-state">
+              <div class="empty-icon">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                 </svg>
+              </div>
+              <p>选择或创建一个会话开始聊天</p>
+              <button class="start-btn" @click="handleNewSession">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                新建会话
               </button>
             </div>
           </div>
+        </div>
 
-          <div class="empty-state">
-            <div class="empty-icon">
-              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-              </svg>
-            </div>
-            <p>选择或创建一个会话开始聊天</p>
-            <button class="start-btn" @click="handleNewSession">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="12" y1="5" x2="12" y2="19"/>
-                <line x1="5" y1="12" x2="19" y2="12"/>
-              </svg>
-              新建会话
-            </button>
-          </div>
+        <div
+          v-show="terminalPanelVisible"
+          class="terminal-resize-handle"
+          :class="{ resizing: isTerminalResizing }"
+          @mousedown="startTerminalResize"
+        ></div>
+
+        <div
+          v-show="terminalPanelVisible"
+          class="terminal-panel-host"
+          :style="{ height: `${terminalPanelHeight}px` }"
+        >
+          <TerminalPanel
+            ref="terminalPanelRef"
+            :visible="terminalPanelVisible"
+            :project-path="store.currentProject?.path || ''"
+          />
         </div>
       </main>
     </div>
@@ -518,12 +581,22 @@ onUnmounted(() => {
   background: #F97316;
 }
 
+.main-stack {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .main-content {
   flex: 1;
   overflow: hidden;
   display: flex;
   flex-direction: row;
   min-width: 0;
+  min-height: 0;
 }
 
 .chat-panel {
@@ -559,6 +632,26 @@ onUnmounted(() => {
 .preview-resize-handle:hover,
 .preview-resize-handle.resizing {
   background: #F97316;
+}
+
+.terminal-resize-handle {
+  height: 4px;
+  background: transparent;
+  cursor: row-resize;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.terminal-resize-handle:hover,
+.terminal-resize-handle.resizing {
+  background: #F97316;
+}
+
+.terminal-panel-host {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid #2F3239;
 }
 
 .empty-state-wrapper {

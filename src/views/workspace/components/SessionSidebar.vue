@@ -59,10 +59,14 @@ const props = defineProps({
   previewPanelVisible: {
     type: Boolean,
     default: false
+  },
+  terminalPanelVisible: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -737,6 +741,18 @@ defineExpose({
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+        </svg>
+      </button>
+      <button
+        class="file-toggle-btn"
+        :class="{ active: terminalPanelVisible }"
+        @click="emit('toggleTerminalPanel')"
+        :title="terminalPanelVisible ? '隐藏终端面板' : '显示终端面板'"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/>
+          <path d="M7 9l3 3-3 3"/>
+          <path d="M12 15h5"/>
         </svg>
       </button>
     </div>

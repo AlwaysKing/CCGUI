@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, session, dialog, shell } = require('electro
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
-const { execFile } = require('child_process')
+const { execFile, fork } = require('child_process')
 const { SessionManager } = require('./session-manager')
 const logger = require('./logger')
 
@@ -16,12 +16,199 @@ let mainWindow
 let sessionManager
 let projectFileWatcher = null
 let projectFileWatcherPath = ''
+let terminalSequence = 0
+const terminalSessions = new Map()
+let terminalHostProcess = null
+let terminalHostRequestSequence = 0
+const terminalHostPendingRequests = new Map()
+let isAppQuitting = false
 
 /**
  * Get app icon path
  */
 function getIconPath() {
   return path.join(__dirname, '../build/icons/icon.icns')
+}
+
+function getDefaultTerminalShell() {
+  if (process.platform === 'win32') {
+    return process.env.ComSpec || 'powershell.exe'
+  }
+
+  const candidates = [
+    process.env.SHELL,
+    os.userInfo?.().shell,
+    process.platform === 'darwin' ? '/bin/zsh' : null,
+    '/bin/bash',
+    '/bin/sh'
+  ].filter(Boolean)
+
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    if (path.isAbsolute(candidate) && fs.existsSync(candidate)) {
+      return candidate
+    }
+    return candidate
+  }
+
+  return '/bin/sh'
+}
+
+function getTerminalShellArgs(shellPath) {
+  if (process.platform === 'win32') {
+    return []
+  }
+
+  const shellName = path.basename(shellPath || '').toLowerCase()
+  if (shellName === 'bash' || shellName === 'zsh' || shellName === 'sh' || shellName === 'fish') {
+    return ['-i']
+  }
+
+  return []
+}
+
+function buildTerminalName(shellPath) {
+  terminalSequence += 1
+  return `${path.basename(shellPath || 'shell')} ${terminalSequence}`
+}
+
+function rejectPendingTerminalHostRequests(error) {
+  for (const { reject } of terminalHostPendingRequests.values()) {
+    reject(error)
+  }
+  terminalHostPendingRequests.clear()
+}
+
+function handleTerminalHostMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return
+  }
+
+  if (message.type === 'response') {
+    const pending = terminalHostPendingRequests.get(message.requestId)
+    if (!pending) {
+      return
+    }
+
+    terminalHostPendingRequests.delete(message.requestId)
+    if (message.success) {
+      pending.resolve(message)
+    } else {
+      pending.reject(new Error(message.error || '终端主机操作失败'))
+    }
+    return
+  }
+
+  if (message.type === 'terminal-data') {
+    const terminalSession = terminalSessions.get(message.terminalId)
+    if (!terminalSession) return
+    const webContents = getWebContentsById(terminalSession.webContentsId)
+
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('terminal-data', {
+        terminalId: message.terminalId,
+        data: message.data || ''
+      })
+    }
+    return
+  }
+
+  if (message.type === 'terminal-exit') {
+    const terminalSession = terminalSessions.get(message.terminalId)
+    if (!terminalSession) return
+    const webContents = getWebContentsById(terminalSession.webContentsId)
+
+    stopTerminalCommandMonitor(terminalSession)
+    terminalSessions.delete(message.terminalId)
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('terminal-exit', {
+        terminalId: message.terminalId,
+        exitCode: message.exitCode,
+        signal: message.signal
+      })
+    }
+  }
+}
+
+function getWebContentsById(id) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.webContents.id === id) {
+      return window.webContents
+    }
+  }
+  return null
+}
+
+function ensureTerminalHostProcess() {
+  if (terminalHostProcess && !terminalHostProcess.killed) {
+    return terminalHostProcess
+  }
+
+  const child = fork(path.join(__dirname, 'terminal-host.cjs'), [], {
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+  })
+
+  child.on('message', handleTerminalHostMessage)
+  child.on('exit', (code, signal) => {
+    if (terminalHostProcess === child) {
+      terminalHostProcess = null
+    }
+
+    const error = new Error(`终端主机已退出 (${code ?? 'null'} / ${signal ?? 'null'})`)
+    rejectPendingTerminalHostRequests(error)
+
+    for (const [terminalId, terminalSession] of terminalSessions.entries()) {
+      stopTerminalCommandMonitor(terminalSession)
+      const webContents = getWebContentsById(terminalSession.webContentsId)
+      if (webContents && !webContents.isDestroyed()) {
+        webContents.send('terminal-exit', {
+          terminalId,
+          exitCode: code ?? null,
+          signal: signal ?? null
+        })
+      }
+    }
+    terminalSessions.clear()
+  })
+
+  terminalHostProcess = child
+  return child
+}
+
+function sendTerminalHostRequest(type, payload = {}) {
+  const child = ensureTerminalHostProcess()
+  const requestId = `terminal-host-${Date.now()}-${++terminalHostRequestSequence}`
+
+  return new Promise((resolve, reject) => {
+    terminalHostPendingRequests.set(requestId, { resolve, reject })
+    child.send({ type, requestId, payload }, error => {
+      if (!error) {
+        return
+      }
+
+      terminalHostPendingRequests.delete(requestId)
+      reject(error)
+    })
+  })
+}
+
+function disposeTerminalSession(terminalId) {
+  const terminalSession = terminalSessions.get(terminalId)
+  if (!terminalSession) return
+
+  stopTerminalCommandMonitor(terminalSession)
+  terminalSessions.delete(terminalId)
+  sendTerminalHostRequest('close-terminal', { terminalId }).catch(() => {
+    // Ignore host shutdown errors while cleaning up.
+  })
+}
+
+function disposeTerminalsForWebContents(webContentsId) {
+  for (const [terminalId, terminalSession] of terminalSessions.entries()) {
+    if (terminalSession.webContentsId === webContentsId) {
+      disposeTerminalSession(terminalId)
+    }
+  }
 }
 
 /**
@@ -73,7 +260,9 @@ function createWindow() {
   // Initialize Session Manager with callback to send events to renderer
   initSessionManager()
 
+  const mainWindowWebContentsId = mainWindow.webContents.id
   mainWindow.on('closed', () => {
+    disposeTerminalsForWebContents(mainWindowWebContentsId)
     stopProjectFileWatcher()
     mainWindow = null
   })
@@ -241,6 +430,91 @@ function execFileAsync(command, args = [], options = {}) {
       resolve({ stdout, stderr })
     })
   })
+}
+
+function normalizeProcessName(command = '') {
+  const rawName = String(command || '').trim()
+  if (!rawName) return ''
+  return path.basename(rawName).replace(/^-+/, '')
+}
+
+function getTerminalDisplayCommand(command = '', shellPath = '') {
+  return normalizeProcessName(command) || normalizeProcessName(shellPath) || 'shell'
+}
+
+async function resolveForegroundProcessName(terminalPid) {
+  const normalizedPid = Number(terminalPid)
+  if (!Number.isFinite(normalizedPid) || normalizedPid <= 0) {
+    return ''
+  }
+
+  try {
+    const { stdout: tpgidOutput } = await execFileAsync('ps', ['-o', 'tpgid=', '-p', String(normalizedPid)])
+    const foregroundGroupId = String(tpgidOutput || '').trim()
+    if (!foregroundGroupId || foregroundGroupId === '0' || foregroundGroupId === '-1') {
+      return ''
+    }
+
+    const { stdout: processListOutput } = await execFileAsync('ps', ['-o', 'pid=,comm=', '-g', foregroundGroupId])
+    const lines = String(processListOutput || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+    const processes = lines.map(line => {
+      const match = line.match(/^(\d+)\s+(.+)$/)
+      if (!match) return null
+      return {
+        pid: Number(match[1]),
+        command: match[2]
+      }
+    }).filter(Boolean)
+
+    if (processes.length === 0) {
+      return ''
+    }
+
+    const foregroundProcess = processes.find(item => item.pid !== normalizedPid) || processes[0]
+    return foregroundProcess?.command || ''
+  } catch (error) {
+    return ''
+  }
+}
+
+function emitTerminalStatus(terminalSession) {
+  if (!terminalSession) return
+
+  const webContents = getWebContentsById(terminalSession.webContentsId)
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('terminal-status', {
+    terminalId: terminalSession.id,
+    command: terminalSession.currentCommand || getTerminalDisplayCommand('', terminalSession.shell)
+  })
+}
+
+function stopTerminalCommandMonitor(terminalSession) {
+  if (!terminalSession?.monitorTimer) return
+  clearInterval(terminalSession.monitorTimer)
+  terminalSession.monitorTimer = null
+}
+
+function startTerminalCommandMonitor(terminalSession) {
+  if (!terminalSession?.pid) return
+
+  stopTerminalCommandMonitor(terminalSession)
+
+  const refreshCommand = async () => {
+    const activeCommand = await resolveForegroundProcessName(terminalSession.pid)
+    const nextCommand = getTerminalDisplayCommand(activeCommand, terminalSession.shell)
+    if (nextCommand === terminalSession.currentCommand) {
+      return
+    }
+
+    terminalSession.currentCommand = nextCommand
+    emitTerminalStatus(terminalSession)
+  }
+
+  refreshCommand()
+  terminalSession.monitorTimer = setInterval(refreshCommand, 1000)
 }
 
 function parseGitStatusPorcelainToRepoPaths(output = '') {
@@ -1773,6 +2047,82 @@ ipcMain.handle('open-project-entry-in-finder', async (event, { projectPath, targ
   }
 })
 
+ipcMain.handle('create-terminal', async (event, { cwd = '', cols = 120, rows = 30 } = {}) => {
+  try {
+    const result = await sendTerminalHostRequest('create-terminal', { cwd, cols, rows })
+    const terminal = result.terminal
+
+    const terminalSession = {
+      id: terminal.id,
+      name: terminal.name,
+      cwd: terminal.cwd,
+      shell: terminal.shell,
+      pid: terminal.pid,
+      currentCommand: getTerminalDisplayCommand('', terminal.shell),
+      webContentsId: event.sender.id,
+      monitorTimer: null
+    }
+
+    terminalSessions.set(terminal.id, terminalSession)
+    startTerminalCommandMonitor(terminalSession)
+
+    return {
+      success: true,
+      terminal: {
+        ...terminal,
+        command: terminalSession.currentCommand
+      }
+    }
+  } catch (error) {
+    logger.error('[Terminal] Failed to create terminal', { cwd, error: error.message })
+    return { success: false, error: error.message || '创建终端失败' }
+  }
+})
+
+ipcMain.handle('write-terminal', async (event, { terminalId, data = '' } = {}) => {
+  try {
+    const terminalSession = terminalSessions.get(terminalId)
+    if (!terminalSession || terminalSession.webContentsId !== event.sender.id) {
+      throw new Error('终端不存在')
+    }
+
+    await sendTerminalHostRequest('write-terminal', { terminalId, data })
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message || '写入终端失败' }
+  }
+})
+
+ipcMain.handle('resize-terminal', async (event, { terminalId, cols = 120, rows = 30 } = {}) => {
+  try {
+    const terminalSession = terminalSessions.get(terminalId)
+    if (!terminalSession || terminalSession.webContentsId !== event.sender.id) {
+      throw new Error('终端不存在')
+    }
+
+    await sendTerminalHostRequest('resize-terminal', { terminalId, cols, rows })
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message || '调整终端尺寸失败' }
+  }
+})
+
+ipcMain.handle('close-terminal', async (event, { terminalId } = {}) => {
+  try {
+    const terminalSession = terminalSessions.get(terminalId)
+    if (!terminalSession || terminalSession.webContentsId !== event.sender.id) {
+      throw new Error('终端不存在')
+    }
+
+    stopTerminalCommandMonitor(terminalSession)
+    terminalSessions.delete(terminalId)
+    await sendTerminalHostRequest('close-terminal', { terminalId })
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message || '关闭终端失败' }
+  }
+})
+
 // ============================================
 // App Config IPC Handlers
 // ============================================
@@ -2220,6 +2570,7 @@ function openProjectWindow(projectId, projectName, projectPath) {
   }
 
   newWindow.on('closed', () => {
+    disposeTerminalsForWebContents(newWindow.webContents.id)
     logger.info('[Window] Closed window', { projectId })
   })
 
@@ -2300,6 +2651,7 @@ function createNewWindow() {
   }
 
   newWindow.on('closed', () => {
+    disposeTerminalsForWebContents(newWindow.webContents.id)
     logger.info('[Window] Closed new window')
   })
 
@@ -2330,6 +2682,19 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  isAppQuitting = true
+  for (const window of BrowserWindow.getAllWindows()) {
+    const webContents = window.webContents
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('app-before-quit')
+    }
+  }
+
+  terminalSessions.clear()
+  if (terminalHostProcess && !terminalHostProcess.killed) {
+    terminalHostProcess.kill()
+    terminalHostProcess = null
+  }
   if (sessionManager) {
     sessionManager.closeAll()
   }

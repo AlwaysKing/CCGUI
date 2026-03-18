@@ -1,5 +1,32 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
+let appQuitting = false
+
+ipcRenderer.on('app-before-quit', () => {
+  appQuitting = true
+})
+
+process.once('loaded', () => {
+  const nativeAlert = window.alert?.bind(window)
+  const nativeConfirm = window.confirm?.bind(window)
+
+  window.alert = (...args) => {
+    if (appQuitting) {
+      console.warn('[Preload] Suppressed alert during app shutdown:', args[0] || '')
+      return
+    }
+    return nativeAlert?.(...args)
+  }
+
+  window.confirm = (...args) => {
+    if (appQuitting) {
+      console.warn('[Preload] Suppressed confirm during app shutdown:', args[0] || '')
+      return false
+    }
+    return nativeConfirm?.(...args) ?? false
+  }
+})
+
 /**
  * Preload script
  * Exposes secure APIs to the renderer process
@@ -173,6 +200,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   renameProjectEntry: (options) => ipcRenderer.invoke('rename-project-entry', options),
   deleteProjectEntry: (options) => ipcRenderer.invoke('delete-project-entry', options),
   openProjectEntryInFinder: (options) => ipcRenderer.invoke('open-project-entry-in-finder', options),
+  createTerminal: (options) => ipcRenderer.invoke('create-terminal', options),
+  writeTerminal: (options) => ipcRenderer.invoke('write-terminal', options),
+  resizeTerminal: (options) => ipcRenderer.invoke('resize-terminal', options),
+  closeTerminal: (options) => ipcRenderer.invoke('close-terminal', options),
 
   // ============================================
   // Project Config API
@@ -191,6 +222,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Platform info
   platform: process.platform,
   nodeVersion: process.version,
+  isAppQuitting: () => appQuitting,
 
   // ============================================
   // Logging API (前端日志打印到后端终端)
@@ -238,5 +270,20 @@ contextBridge.exposeInMainWorld('electronEvents', {
     const listener = (event, payload) => callback(payload)
     ipcRenderer.on('project-files-changed', listener)
     return () => ipcRenderer.removeListener('project-files-changed', listener)
+  },
+  onTerminalData: (callback) => {
+    const listener = (event, payload) => callback(payload)
+    ipcRenderer.on('terminal-data', listener)
+    return () => ipcRenderer.removeListener('terminal-data', listener)
+  },
+  onTerminalExit: (callback) => {
+    const listener = (event, payload) => callback(payload)
+    ipcRenderer.on('terminal-exit', listener)
+    return () => ipcRenderer.removeListener('terminal-exit', listener)
+  },
+  onTerminalStatus: (callback) => {
+    const listener = (event, payload) => callback(payload)
+    ipcRenderer.on('terminal-status', listener)
+    return () => ipcRenderer.removeListener('terminal-status', listener)
   }
 })

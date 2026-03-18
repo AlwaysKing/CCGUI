@@ -123,6 +123,9 @@ class StorageManager {
           settings: {
             theme: 'dark',
             language: 'zh-CN',
+            terminalTheme: 'ccgui-dark',
+            terminalFontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            customTerminalThemeText: '',
             autoStart: false,
             showNotifications: true,
             systemPrompt: '',

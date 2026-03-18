@@ -13,6 +13,9 @@ export function useSettingsData(emit) {
   const settings = ref({
     theme: 'dark',
     language: 'zh-CN',
+    terminalTheme: 'ccgui-dark',
+    terminalFontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    customTerminalThemeText: '',
     notificationSound: 'Glass',
     barkUrl: ''
   })

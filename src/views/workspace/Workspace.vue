@@ -69,7 +69,7 @@ const {
   handleGoHomeFromSidebar,
   handleOpenProjectConfig,
   handleProjectConfigSaved,
-  handleSettingsSaved,
+  handleSettingsSaved: handleWorkspaceSettingsSaved,
   handleOpenSessionConfig,
   handleDeleteSessionConfig,
   handleCopySession,
@@ -85,6 +85,11 @@ const {
   sessionSidebarRef,
   chatRef
 })
+
+async function handleSettingsSaved() {
+  await handleWorkspaceSettingsSaved()
+  await terminalPanelRef.value?.refreshAppearance?.()
+}
 
 async function handlePreviewFile(node) {
   await fileBrowserStore.previewFile(node.path)

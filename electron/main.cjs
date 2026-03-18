@@ -455,16 +455,17 @@ async function resolveForegroundProcessName(terminalPid) {
       return ''
     }
 
-    const { stdout: processListOutput } = await execFileAsync('ps', ['-o', 'pid=,comm=', '-g', foregroundGroupId])
+    const { stdout: processListOutput } = await execFileAsync('ps', ['-axo', 'pid=,pgid=,comm='])
     const lines = String(processListOutput || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
     const processes = lines.map(line => {
-      const match = line.match(/^(\d+)\s+(.+)$/)
+      const match = line.match(/^(\d+)\s+(\d+)\s+(.+)$/)
       if (!match) return null
       return {
         pid: Number(match[1]),
-        command: match[2]
+        pgid: Number(match[2]),
+        command: match[3]
       }
-    }).filter(Boolean)
+    }).filter(Boolean).filter(item => String(item.pgid) === foregroundGroupId)
 
     if (processes.length === 0) {
       return ''

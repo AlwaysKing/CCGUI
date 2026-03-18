@@ -27,6 +27,9 @@ function getDefaultConfig() {
       // 软件配置
       theme: 'dark',
       language: 'zh-CN',
+      terminalTheme: 'ccgui-dark',
+      terminalFontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      customTerminalThemeText: '',
       notificationSound: 'Glass',
       autoStart: false,
       showNotifications: true,
@@ -73,10 +76,7 @@ function loadConfig() {
     logger.debug('[AppConfigManager] Loaded app config', { configPath })
 
     // 合并默认配置,确保所有字段都存在
-    return {
-      ...getDefaultConfig(),
-      ...config
-    }
+    return deepMerge(getDefaultConfig(), config)
   } catch (error) {
     logger.error('[AppConfigManager] Failed to load config', {
       error: error.message,

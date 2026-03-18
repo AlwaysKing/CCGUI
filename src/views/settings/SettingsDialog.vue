@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted } from 'vue'
 import ModelSettings from './components/ModelSettings.vue'
 import PromptSettings from './components/PromptSettings.vue'
+import TerminalSettings from './components/TerminalSettings.vue'
 import SoftwareSettings from './components/SoftwareSettings.vue'
 import ModelEditDialog from './components/dialogs/ModelEditDialog.vue'
 import DefaultConfigDialog from './components/dialogs/DefaultConfigDialog.vue'
@@ -17,6 +18,7 @@ const {
   contentRef,
   modelSectionRef,
   promptSectionRef,
+  terminalSectionRef,
   softwareSectionRef,
   navItems,
   scrollToSection,
@@ -118,6 +120,10 @@ function handleClose() {
               <line x1="8" y1="21" x2="16" y2="21"/>
               <line x1="12" y1="17" x2="12" y2="21"/>
             </svg>
+            <svg v-else-if="item.icon === 'terminal'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="4 17 10 11 4 5"/>
+              <line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
             <span>{{ item.label }}</span>
           </div>
         </div>
@@ -153,6 +159,14 @@ function handleClose() {
               @edit-document="handleEditDocument"
               @delete-document="handleDeleteDocument"
               @toggle-document-active="handleToggleDocumentActive"
+            />
+          </div>
+
+          <div ref="terminalSectionRef">
+            <TerminalSettings
+              :settings="settings"
+              @update:settings="settings = $event"
+              @save-settings="saveSoftwareSettings"
             />
           </div>
 

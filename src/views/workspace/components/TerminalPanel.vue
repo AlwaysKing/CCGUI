@@ -18,6 +18,11 @@ const props = defineProps({
 const terminals = ref([])
 const activeTerminalId = ref('')
 const isCreatingTerminal = ref(false)
+const terminalSidebarWidth = ref(88)
+const isSidebarResizing = ref(false)
+const terminalThemeKey = ref('ccgui-dark')
+const terminalFontFamily = ref('Menlo, Monaco, "Courier New", monospace')
+const customTerminalThemeText = ref('')
 const terminalHosts = new Map()
 const terminalInstances = new Map()
 let removeTerminalDataListener = null
@@ -27,6 +32,19 @@ const terminalWheelCleanup = new Map()
 const terminalResizeCleanup = new Map()
 
 const activeTerminal = computed(() => terminals.value.find(item => item.id === activeTerminalId.value) || null)
+const terminalSidebarStyle = computed(() => ({
+  width: `${terminalSidebarWidth.value}px`,
+  flex: `0 0 ${terminalSidebarWidth.value}px`
+}))
+const terminalSurfaceStyle = computed(() => {
+  const theme = getTerminalTheme(terminalThemeKey.value)
+  return {
+    '--terminal-theme-background': theme.background || '#111216',
+    '--terminal-theme-sidebar-background': theme.background || '#17191E'
+  }
+})
+const TERMINAL_SIDEBAR_MIN_WIDTH = 72
+const TERMINAL_SIDEBAR_MAX_WIDTH = 180
 
 function getTerminalMeta(terminalId) {
   return terminals.value.find(item => item.id === terminalId) || null
@@ -38,6 +56,144 @@ function getTerminalLabel(index) {
 
 function getTerminalCommandLabel(terminal) {
   return terminal?.currentCommand || terminal?.shellLabel || 'shell'
+}
+
+function getTerminalTheme(themeKey) {
+  const themes = {
+    'ccgui-dark': {
+      background: '#111216',
+      foreground: '#E4E4E7',
+      cursor: '#F97316',
+      cursorAccent: '#111216',
+      selectionBackground: 'rgba(249, 115, 22, 0.28)',
+      black: '#111216',
+      red: '#F87171',
+      green: '#4ADE80',
+      yellow: '#FBBF24',
+      blue: '#60A5FA',
+      magenta: '#C084FC',
+      cyan: '#22D3EE',
+      white: '#E4E4E7',
+      brightBlack: '#52525B',
+      brightRed: '#FCA5A5',
+      brightGreen: '#86EFAC',
+      brightYellow: '#FCD34D',
+      brightBlue: '#93C5FD',
+      brightMagenta: '#D8B4FE',
+      brightCyan: '#67E8F9',
+      brightWhite: '#FAFAFA'
+    },
+    'macos-terminal': {
+      background: '#1e1e1e',
+      foreground: '#bfbfbf',
+      cursor: '#c7c7c7',
+      cursorAccent: '#1e1e1e',
+      selectionBackground: 'rgba(255,255,255,0.22)',
+      black: '#000000',
+      red: '#990000',
+      green: '#00a600',
+      yellow: '#999900',
+      blue: '#0000b2',
+      magenta: '#b200b2',
+      cyan: '#00a6b2',
+      white: '#bfbfbf',
+      brightBlack: '#666666',
+      brightRed: '#e50000',
+      brightGreen: '#00d900',
+      brightYellow: '#e5e500',
+      brightBlue: '#0000ff',
+      brightMagenta: '#e500e5',
+      brightCyan: '#00e5e5',
+      brightWhite: '#e5e5e5'
+    },
+    'iterm2-dark': {
+      background: '#101421',
+      foreground: '#fffbf6',
+      cursor: '#fffbf6',
+      cursorAccent: '#101421',
+      selectionBackground: 'rgba(255,255,255,0.18)',
+      black: '#2e2e2e',
+      red: '#eb4129',
+      green: '#abe047',
+      yellow: '#f6c744',
+      blue: '#47a0f3',
+      magenta: '#7b5cb0',
+      cyan: '#64dbed',
+      white: '#e5e9f0',
+      brightBlack: '#565656',
+      brightRed: '#ec5357',
+      brightGreen: '#c0e17d',
+      brightYellow: '#f9da6a',
+      brightBlue: '#49a4f8',
+      brightMagenta: '#a47de9',
+      brightCyan: '#99faf2',
+      brightWhite: '#ffffff'
+    },
+    'vscode-dark': {
+      background: '#1e1e1e',
+      foreground: '#d4d4d4',
+      cursor: '#aeafad',
+      cursorAccent: '#1e1e1e',
+      selectionBackground: 'rgba(38,79,120,0.6)',
+      black: '#000000',
+      red: '#cd3131',
+      green: '#0dbc79',
+      yellow: '#e5e510',
+      blue: '#2472c8',
+      magenta: '#bc3fbc',
+      cyan: '#11a8cd',
+      white: '#e5e5e5',
+      brightBlack: '#666666',
+      brightRed: '#f14c4c',
+      brightGreen: '#23d18b',
+      brightYellow: '#f5f543',
+      brightBlue: '#3b8eea',
+      brightMagenta: '#d670d6',
+      brightCyan: '#29b8db',
+      brightWhite: '#ffffff'
+    }
+  }
+
+  if (themeKey === 'custom') {
+    try {
+      const parsedTheme = JSON.parse(customTerminalThemeText.value || '{}')
+      return {
+        ...themes['ccgui-dark'],
+        ...parsedTheme
+      }
+    } catch (error) {
+      return themes['ccgui-dark']
+    }
+  }
+
+  return themes[themeKey] || themes['ccgui-dark']
+}
+
+async function loadTerminalAppearance() {
+  try {
+    const result = await window.electronAPI.getAppConfig()
+    const configuredFont = result?.config?.settings?.terminalFontFamily
+    const configuredTheme = result?.config?.settings?.terminalTheme
+    const configuredCustomThemeText = result?.config?.settings?.customTerminalThemeText
+    terminalThemeKey.value = configuredTheme || 'ccgui-dark'
+    terminalFontFamily.value = configuredFont || 'Menlo, Monaco, "Courier New", monospace'
+    customTerminalThemeText.value = configuredCustomThemeText || ''
+  } catch (error) {
+    terminalThemeKey.value = 'ccgui-dark'
+    terminalFontFamily.value = 'Menlo, Monaco, "Courier New", monospace'
+    customTerminalThemeText.value = ''
+  }
+}
+
+function applyTerminalAppearance() {
+  for (const instance of terminalInstances.values()) {
+    instance.terminal.options.fontFamily = terminalFontFamily.value
+    instance.terminal.options.theme = getTerminalTheme(terminalThemeKey.value)
+    if (instance.terminal.rows > 0) {
+      instance.terminal.refresh(0, instance.terminal.rows - 1)
+    }
+  }
+  fitActiveTerminal()
 }
 
 function estimateTerminalSize() {
@@ -176,33 +332,14 @@ function mountTerminal(terminalId, shouldFocus = false) {
       convertEol: false,
       cursorBlink: true,
       cursorStyle: 'block',
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontFamily: terminalFontFamily.value,
       fontSize: 12,
-      lineHeight: 1.3,
+      fontWeight: 'normal',
+      fontWeightBold: '600',
+      lineHeight: 1,
+      letterSpacing: 0,
       scrollback: 5000,
-      theme: {
-        background: '#111216',
-        foreground: '#E4E4E7',
-        cursor: '#F97316',
-        cursorAccent: '#111216',
-        selectionBackground: 'rgba(249, 115, 22, 0.28)',
-        black: '#111216',
-        red: '#F87171',
-        green: '#4ADE80',
-        yellow: '#FBBF24',
-        blue: '#60A5FA',
-        magenta: '#C084FC',
-        cyan: '#22D3EE',
-        white: '#E4E4E7',
-        brightBlack: '#52525B',
-        brightRed: '#FCA5A5',
-        brightGreen: '#86EFAC',
-        brightYellow: '#FCD34D',
-        brightBlue: '#93C5FD',
-        brightMagenta: '#D8B4FE',
-        brightCyan: '#67E8F9',
-        brightWhite: '#FAFAFA'
-      }
+      theme: getTerminalTheme(terminalThemeKey.value)
     })
     const fitAddon = new FitAddon()
     terminal.loadAddon(fitAddon)
@@ -298,6 +435,30 @@ function handleCloseTerminal(event, terminalId) {
   removeTerminal(terminalId, true)
 }
 
+function startSidebarResize(event) {
+  isSidebarResizing.value = true
+  event.preventDefault()
+}
+
+function handleSidebarResize(event) {
+  if (!isSidebarResizing.value) return
+
+  const terminalPanel = document.querySelector('.terminal-panel')
+  if (!terminalPanel) return
+
+  const panelRect = terminalPanel.getBoundingClientRect()
+  const nextWidth = panelRect.right - event.clientX
+  terminalSidebarWidth.value = Math.max(
+    TERMINAL_SIDEBAR_MIN_WIDTH,
+    Math.min(TERMINAL_SIDEBAR_MAX_WIDTH, nextWidth)
+  )
+  fitActiveTerminal()
+}
+
+function stopSidebarResize() {
+  isSidebarResizing.value = false
+}
+
 async function resetTerminals() {
   const terminalIds = terminals.value.map(item => item.id)
   for (const terminalId of terminalIds) {
@@ -333,14 +494,21 @@ onMounted(() => {
   removeTerminalExitListener = window.electronEvents.onTerminalExit(handleTerminalExit)
   removeTerminalStatusListener = window.electronEvents.onTerminalStatus(handleTerminalStatus)
   window.addEventListener('resize', fitActiveTerminal)
+  window.addEventListener('mousemove', handleSidebarResize)
+  window.addEventListener('mouseup', stopSidebarResize)
 
-  if (props.visible) {
-    createTerminal()
-  }
+  loadTerminalAppearance().then(() => {
+    applyTerminalAppearance()
+    if (props.visible) {
+      createTerminal()
+    }
+  })
 })
 
 onUnmounted(async () => {
   window.removeEventListener('resize', fitActiveTerminal)
+  window.removeEventListener('mousemove', handleSidebarResize)
+  window.removeEventListener('mouseup', stopSidebarResize)
   removeTerminalDataListener?.()
   removeTerminalExitListener?.()
   removeTerminalStatusListener?.()
@@ -353,12 +521,16 @@ onUnmounted(async () => {
 
 defineExpose({
   createTerminal,
-  fitActiveTerminal
+  fitActiveTerminal,
+  async refreshAppearance() {
+    await loadTerminalAppearance()
+    applyTerminalAppearance()
+  }
 })
 </script>
 
 <template>
-  <section v-show="visible" class="terminal-panel">
+  <section v-show="visible" class="terminal-panel" :style="terminalSurfaceStyle">
     <div class="terminal-main">
       <div v-if="terminals.length === 0" class="terminal-empty">
         <div class="terminal-empty-title">终端面板</div>
@@ -381,7 +553,13 @@ defineExpose({
       </div>
     </div>
 
-    <aside class="terminal-sidebar">
+    <div
+      class="terminal-sidebar-resize"
+      :class="{ dragging: isSidebarResizing }"
+      @mousedown="startSidebarResize"
+    ></div>
+
+    <aside class="terminal-sidebar" :style="terminalSidebarStyle">
       <button class="terminal-sidebar-btn terminal-add-btn" title="新建终端" @click="createTerminal">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="12" y1="5" x2="12" y2="19"/>
@@ -398,9 +576,19 @@ defineExpose({
           :title="`${getTerminalLabel(index)} · ${getTerminalCommandLabel(terminal)}`"
           @click="handleActivateTerminal(terminal.id)"
         >
-          <span class="terminal-tab-index">{{ index + 1 }}</span>
-          <span class="terminal-tab-command">{{ getTerminalCommandLabel(terminal) }}</span>
-          <span class="terminal-tab-close" title="关闭终端" @click="handleCloseTerminal($event, terminal.id)">×</span>
+          <span class="terminal-tab-main">
+            <span class="terminal-tab-index">{{ index + 1 }}</span>
+            <span class="terminal-tab-command">{{ getTerminalCommandLabel(terminal) }}</span>
+          </span>
+          <span class="terminal-tab-close" title="关闭终端" @click="handleCloseTerminal($event, terminal.id)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18"/>
+              <path d="M8 6V4h8v2"/>
+              <path d="M19 6l-1 14H6L5 6"/>
+              <path d="M10 11v6"/>
+              <path d="M14 11v6"/>
+            </svg>
+          </span>
         </button>
       </div>
     </aside>
@@ -412,7 +600,7 @@ defineExpose({
   height: 100%;
   display: flex;
   min-height: 0;
-  background: #111216;
+  background: var(--terminal-theme-background, #111216);
   border-top: 1px solid #2F3239;
 }
 
@@ -422,7 +610,7 @@ defineExpose({
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #111216;
+  background: var(--terminal-theme-background, #111216);
 }
 
 .terminal-stage,
@@ -437,21 +625,24 @@ defineExpose({
 .terminal-stage {
   position: relative;
   overflow: hidden;
+  background: var(--terminal-theme-background, #111216);
 }
 
 .terminal-instance {
   position: absolute;
   inset: 0;
   overflow: hidden;
+  background: var(--terminal-theme-background, #111216);
 }
 
 .terminal-host {
   display: flex;
   width: 100%;
   height: 100%;
-  padding: 8px 4px 8px 8px;
+  padding: 8px 0 8px 8px;
   box-sizing: border-box;
   overflow: hidden;
+  background: var(--terminal-theme-background, #111216);
 }
 
 .terminal-shell {
@@ -459,6 +650,7 @@ defineExpose({
   width: 100%;
   height: 100%;
   overflow: hidden;
+  background: var(--terminal-theme-background, #111216);
 }
 
 .terminal-overlay {
@@ -474,19 +666,31 @@ defineExpose({
 }
 
 .terminal-sidebar {
-  width: 88px;
-  flex: 0 0 88px;
   border-left: 1px solid #2F3239;
-  background: #17191E;
+  background: var(--terminal-theme-sidebar-background, #17191E);
   display: flex;
   flex-direction: column;
   align-items: stretch;
   min-height: 0;
 }
 
+.terminal-sidebar-resize {
+  width: 5px;
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.terminal-sidebar-resize:hover,
+.terminal-sidebar-resize.dragging {
+  background: #F97316;
+}
+
 .terminal-sidebar-list {
   flex: 1;
   min-height: 0;
+  background: var(--terminal-theme-sidebar-background, #17191E);
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
@@ -514,17 +718,16 @@ defineExpose({
 
 .terminal-sidebar-btn {
   width: 100%;
-  min-height: 52px;
-  padding: 8px 10px;
+  min-height: 40px;
+  padding: 6px 8px;
   border: none;
   border-bottom: 1px solid #2F3239;
   background: transparent;
   color: #A1A1AA;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 3px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   cursor: pointer;
   position: relative;
   box-sizing: border-box;
@@ -538,21 +741,32 @@ defineExpose({
 }
 
 .terminal-add-btn {
-  min-height: 44px;
+  min-height: 32px;
+  height: 32px;
   padding: 0;
   align-items: center;
   justify-content: center;
+  background: var(--terminal-theme-sidebar-background, #17191E);
+}
+
+.terminal-tab-main {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1;
 }
 
 .terminal-tab-index {
   font-size: 11px;
   font-weight: 600;
   color: #A1A1AA;
+  flex: 0 0 auto;
 }
 
 .terminal-tab-command {
-  width: 100%;
-  font-size: 12px;
+  flex: 1;
+  font-size: 11px;
   line-height: 1.2;
   font-weight: 600;
   color: inherit;
@@ -562,18 +776,26 @@ defineExpose({
 }
 
 .terminal-tab-close {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  font-size: 11px;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
   color: #71717A;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 
 .terminal-tab-btn:hover .terminal-tab-close,
 .terminal-tab-btn.active .terminal-tab-close {
   opacity: 1;
+}
+
+.terminal-tab-close:hover {
+  background: rgba(244, 244, 245, 0.08);
+  color: #F4F4F5;
 }
 
 .terminal-empty {
@@ -608,6 +830,12 @@ defineExpose({
   height: 100%;
   width: 100%;
   box-sizing: border-box;
+  background: var(--terminal-theme-background, #111216);
+}
+
+.terminal-host :deep(.xterm-screen),
+.terminal-host :deep(.xterm-rows) {
+  background: var(--terminal-theme-background, #111216);
 }
 
 .terminal-host :deep(.xterm-viewport) {
@@ -618,6 +846,7 @@ defineExpose({
   scrollbar-width: thin;
   scrollbar-color: #52525B #18181B;
   box-sizing: border-box;
+  background: var(--terminal-theme-background, #111216);
 }
 
 .terminal-host :deep(.xterm-viewport)::-webkit-scrollbar {

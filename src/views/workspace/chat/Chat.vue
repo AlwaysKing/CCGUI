@@ -65,6 +65,8 @@ const pendingPermission = computed(() => sessionStore.pendingPermission)
 const pendingControlRequest = computed(() => sessionStore.pendingControlRequest)
 const pendingQuestion = computed(() => sessionStore.currentSession?.pendingQuestion)
 const envInfo = computed(() => sessionStore.currentSession?.envInfo)
+const silentMessages = computed(() => sessionStore.currentSession?.silentMessages || [])
+const runtimeActive = computed(() => envInfo.value?.providerPid != null)
 const inputMessage = computed({
   get: () => sessionStore.inputMessage,
   set: (val) => { sessionStore.inputMessage = val }
@@ -295,7 +297,7 @@ async function handleQuickModelChange(option) {
     })
 
     if (currentSessionStatus.value?.ready) {
-      await window.electronAPI.stopClaude({ sessionId: appStore.currentSession.id })
+      await window.electronAPI.stopSessionRuntime({ sessionId: appStore.currentSession.id })
       await window.electronAPI.startSession({
         sessionId: appStore.currentSession.id,
         projectPath: appStore.currentProject.path
@@ -422,7 +424,7 @@ onMounted(async () => {
 
   // Get working directory
   try {
-    const info = await window.electronAPI.getClaudeInfo()
+    const info = await window.electronAPI.getRuntimeInfo()
     workingDirectory.value = info.workingDirectory || ''
   } catch (error) {
     // Ignore error
@@ -431,7 +433,6 @@ onMounted(async () => {
   await loadModelConfigContext()
 
   // 注意：所有事件现在通过 SessionStore 的 session-event 通道处理
-  // 不再需要旧的事件监听器（onClaudeMessage, onStreamEvent 等）
 
   // 点击外部关闭权限菜单
   document.addEventListener('click', handleClickOutsidePermissionMenu)
@@ -610,17 +611,17 @@ function handleMessageClick(event, message) {
   }
 }
 
-// 处理 PID 点击（启动/关闭 Claude）
+// 处理 PID 点击（启动/关闭运行时）
 function handlePidClick() {
   const currentSession = sessionStore.currentSession
   if (!currentSession) return
 
-  // 根据 PID 状态决定操作
-  if (envInfo.value?.claudePid) {
-    // 有关闭 Claude
+  // 根据运行时状态决定操作
+  if (runtimeActive.value) {
+    // 运行时已启动，执行关闭
     emit('closeSession', { id: currentSession.id })
   } else {
-    // 有启动 Claude
+    // 运行时未启动，执行启动
     emit('startSession', { id: currentSession.id })
   }
 }
@@ -853,8 +854,11 @@ const stickyMessage = computed(() => {
 
 // 判断粘性消息是否正在被回答（基于消息是否有 duration）
 const isStickyMessageProcessing = computed(() => {
-  // 如果粘性消息存在且没有 duration，说明还在处理中
-  return !!(stickyMessage.value && !stickyMessage.value.duration)
+  if (!stickyMessage.value) return false
+  if (stickyMessage.value.role === 'assistant') return !!stickyMessage.value.isStreaming
+  if (stickyMessage.value.role === 'tool_use') return !!stickyMessage.value.isExecuting
+  if (stickyMessage.value.role === 'user') return !!isProcessing.value && !stickyMessage.value.duration
+  return false
 })
 
 // 处理窗口大小变化，将高度变化全部作用到 messages 区域
@@ -975,7 +979,7 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
         is_error: false
       }
 
-      await sessionStore.sendToolResult(requestId, '', false)
+      await sessionStore.sendRuntimeToolResult(requestId, '', false)
     }
   } catch (error) {
     // 找到对应的 tool_use 消息并更新状态
@@ -1023,7 +1027,7 @@ async function handlePermissionDeny(requestId) {
       await sessionStore.sendControlResponse(requestId, false, options)
     } else {
       // Regular tool_use permission
-      await sessionStore.sendToolResult(requestId, 'Permission denied by user', true)
+      await sessionStore.sendRuntimeToolResult(requestId, 'Permission denied by user', true)
     }
   } catch (error) {
     if (toolUseMsg) {
@@ -1092,7 +1096,7 @@ async function handlePermissionApproveAll(requestId) {
         is_error: false
       }
 
-      await sessionStore.sendToolResult(requestId, '', false)
+      await sessionStore.sendRuntimeToolResult(requestId, '', false)
     }
   } catch (error) {
     // Ignore error
@@ -1243,7 +1247,7 @@ async function handleFork({ messageId, messageIndex }) {
   if (!confirmed) return
 
   try {
-    // 后端会自动处理 Claude 启动（如果需要）
+    // 后端会自动处理运行时启动（如果需要）
     const response = await sessionStore.sendControlRequest({
       subtype: 'fork_session',
       message_id: messageId
@@ -1286,7 +1290,7 @@ async function handleRewindAndFork({ messageId, messageIndex }) {
   if (!confirmed) return
 
   try {
-    // 后端会自动处理 Claude 启动（如果需要）
+    // 后端会自动处理运行时启动（如果需要）
     const response = await sessionStore.sendControlRequest({
       subtype: 'rewind_and_fork',
       user_message_id: messageId,
@@ -1340,20 +1344,17 @@ async function handlePermissionModeChange(mode) {
 
   try {
     // 调用 sessionStore 的 setPermissionMode
-    // 后端会自动判断：
-    // - 如果 Claude 已启动，发送 control_request
-    // - 如果 Claude 未启动，保存模式，启动时应用
+    // 后端会自动判断运行时是否已启动，并在适当时机应用新模式
     await sessionStore.setPermissionMode(mode)
 
     // 添加系统通知消息（使用统一的 system_notification 类型）
-    const isClaudeReady = envInfo.value?.claudePid != null
     messages.value.push({
       role: 'system_notification',
       notificationType: 'permission-mode-change',
       data: {
         permissionMode: mode,
         source: 'manual', // 手动切换
-        pending: !isClaudeReady // 是否待生效
+        pending: !runtimeActive.value // 是否待生效
       },
       timestamp: new Date()
     })
@@ -1442,24 +1443,6 @@ async function handleQuestionAnswer(requestId, answers) {
       }
     })
 
-    // 添加一个包含所有问题的问答消息
-    // 注意：resultReceived 将在收到 tool_result 后设置为 true
-    const newMessage = {
-      role: 'question',
-      tool_use_id: toolUseId, // 存储 tool_use_id 以便关联 tool_result
-      questions: questionItems,
-      userAnswers: answers, // 存储用户提交的答案
-      resultReceived: false, // 等待 tool_result 确认
-      answersConsistent: true, // 默认一致，收到 tool_result 后会更新
-      receivedAnswers: null, // 收到 tool_result 后会填充
-      collapsed: false,
-      timestamp: new Date(),
-      rawMessages: [question] // 存储原始请求
-    }
-    messages.value.push(newMessage)
-
-    scrollToBottom(true) // 用户提交答案时强制滚动
-
     // 发送 control_response 必须在 if (question) 块内部
     // 因为需要访问 toolUseId
     try {
@@ -1474,6 +1457,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
       console.log('[ChatWindow] Sending control response with options:', JSON.stringify(options, null, 2))
       await sessionStore.sendControlResponse(requestId, true, options)
+      scrollToBottom(true)
     } catch (error) {
       console.error('[ChatWindow] Failed to send control response:', error)
     }
@@ -1488,6 +1472,7 @@ async function handleQuestionAnswer(requestId, answers) {
     <!-- Top Bar: Environment Bar -->
     <EnvInfoBar
       :env-info="envInfo"
+      :silent-messages="silentMessages"
       :project-path="appStore.currentProject?.path"
       :show-sidebar-toggle="showSidebarToggle"
       :permission-mode="permissionMode"

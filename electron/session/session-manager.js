@@ -1,5 +1,5 @@
 const { SessionInstance } = require('./session-instance')
-const logger = require('./logger')
+const logger = require('../logger')
 
 /**
  * SessionManager
@@ -151,12 +151,12 @@ class SessionManager {
   }
 
   /**
-   * 停止会话的 Claude 进程（不删除 session）
+   * 停止会话的运行时进程（不删除 session）
    */
-  stopClaude(sessionId) {
+  stopSessionRuntime(sessionId) {
     const session = this.sessions.get(sessionId)
     if (session) {
-      logger.info(`[SessionManager] Stopping Claude for session ${sessionId}`)
+      logger.info(`[SessionManager] Stopping runtime for session ${sessionId}`)
       session.stop()
     }
   }

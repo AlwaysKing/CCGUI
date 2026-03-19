@@ -85,6 +85,15 @@ const displayDetail = computed(() => {
     }
   }
 
+  if (name === 'ApplyPatch') {
+    const changes = Array.isArray(input.changes) ? input.changes : []
+    return {
+      label: '变更',
+      value: `${changes.length} 处补丁修改`,
+      description: input.description
+    }
+  }
+
   // Glob 工具显示模式
   if (name === 'Glob' && input.pattern) {
     return {
@@ -99,6 +108,14 @@ const displayDetail = computed(() => {
       label: '搜索',
       value: input.pattern,
       path: input.path
+    }
+  }
+
+  if (name === 'ClientToolCall') {
+    return {
+      label: '工具',
+      value: input.tool || input.name || 'tool_call',
+      description: input.description
     }
   }
 
@@ -144,7 +161,7 @@ function handleApproveAll() {
         </div>
 
         <div class="permission-description" v-else>
-          {{ (toolInput?.description || request.input?.description || request.tool_input?.description || request.toolInput?.description) || 'Claude 需要使用此工具' }}
+          {{ (toolInput?.description || request.input?.description || request.tool_input?.description || request.toolInput?.description) || '运行时需要使用此工具' }}
         </div>
       </div>
 

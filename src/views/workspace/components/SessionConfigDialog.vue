@@ -29,6 +29,7 @@ const selectedModelId = ref(null)
 const selectedModelCardId = ref(null)
 const selectedPromptIds = ref([])
 const selectedDocumentIds = ref([])
+const sessionTool = ref('claude')
 
 // 系统配置数据
 const systemModels = ref([])
@@ -96,6 +97,7 @@ async function loadSessionConfig() {
     })
     if (result && result.config && result.config.settings) {
       const settings = result.config.settings
+      sessionTool.value = settings.tool || settings.provider || 'claude'
 
       // 模型配置
       const savedModelMode = settings.modelMode || (settings.modelId === '' ? 'system' : (settings.modelId ? 'custom' : 'project'))
@@ -137,6 +139,7 @@ async function loadSessionConfig() {
       }
     } else {
       // 没有会话配置，默认跟随项目
+      sessionTool.value = 'claude'
       modelMode.value = 'project'
       promptsMode.value = 'project'
       documentsMode.value = 'project'
@@ -196,6 +199,7 @@ async function handleSave() {
   saving.value = true
   try {
     const settings = {
+      tool: sessionTool.value,
       modelMode: modelMode.value,
       modelId: modelMode.value === 'custom' ? selectedModelId.value : null,
       modelCardId: modelMode.value === 'custom' && modelCardMode.value === 'custom' ? selectedModelCardId.value : null,
@@ -292,6 +296,14 @@ onMounted(() => {
         </div>
 
         <template v-else>
+          <div class="config-section">
+            <label class="config-label">工具</label>
+            <div class="readonly-value">
+              <span class="readonly-badge">{{ sessionTool === 'codex' ? 'Codex' : 'Claude' }}</span>
+            </div>
+            <p class="field-hint">工具在创建会话时确定，创建后不可更换。</p>
+          </div>
+
           <!-- 模型选择 -->
           <div class="config-section">
             <label class="config-label">模型</label>
@@ -582,6 +594,32 @@ onMounted(() => {
   background: #1E1E1E;
   border-radius: 6px;
   border: 1px solid #3F3F46;
+}
+
+.readonly-value {
+  padding: 12px;
+  background: #1E1E1E;
+  border-radius: 6px;
+  border: 1px solid #3F3F46;
+}
+
+.readonly-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(249, 115, 22, 0.12);
+  border: 1px solid rgba(249, 115, 22, 0.28);
+  color: #FED7AA;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.field-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #6B7280;
 }
 
 .model-select-wrapper {

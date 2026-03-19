@@ -14,6 +14,10 @@ const props = defineProps({
     type: Object,
     required: true
   },
+  codexConfig: {
+    type: Object,
+    default: () => ({})
+  },
   models: {
     type: Array,
     default: () => []
@@ -35,6 +39,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'edit-default-config',
+  'edit-codex-config',
   'select-model',
   'edit-model',
   'delete-model',
@@ -46,6 +51,7 @@ const emit = defineEmits([
 
 // 令牌可见性
 const showClaudeToken = ref(false)
+const showCodexToken = ref(false)
 const visibleModelTokens = ref(new Set())
 
 // 复制成功状态
@@ -178,6 +184,104 @@ async function copyToClipboard(text, key) {
             <span v-if="defaultConfig.anthropicSmallFastModel" class="model-metadata-badge">
               SMALL_FAST:{{ defaultConfig.anthropicSmallFastModel }}
             </span>
+          </div>
+        </DetailRow>
+      </div>
+    </div>
+
+    <h4 class="subsection-title">Codex</h4>
+    <div class="default-config-card">
+      <IconButton class="edit-btn-absolute" @click="emit('edit-codex-config')" title="编辑">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+        </svg>
+      </IconButton>
+      <div class="default-config-details">
+        <DetailRow label="API地址">
+          <div class="value-with-copy">
+            <span>{{ codexConfig.apiUrl || '未配置' }}</span>
+            <button
+              v-if="codexConfig.apiUrl"
+              type="button"
+              class="copy-btn"
+              :class="{ copied: copiedKeys.has('codex-api') }"
+              @click.stop="copyToClipboard(codexConfig.apiUrl, 'codex-api')"
+              :title="copiedKeys.has('codex-api') ? '已复制' : '复制'"
+            >
+              <svg v-if="copiedKeys.has('codex-api')" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
+          </div>
+        </DetailRow>
+        <DetailRow label="认证令牌">
+          <div class="token-value">
+            <button
+              v-if="codexConfig.authToken"
+              type="button"
+              class="token-toggle-btn"
+              @click.stop="showCodexToken = !showCodexToken"
+              :title="showCodexToken ? '隐藏' : '显示'"
+            >
+              <svg v-if="showCodexToken" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                <line x1="1" y1="1" x2="23" y2="23"/>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+            <span class="token-text" :class="{ 'has-toggle': codexConfig.authToken }">
+              {{ showCodexToken && codexConfig.authToken ? codexConfig.authToken : (codexConfig.authToken ? '••••••••' : '未配置') }}
+            </span>
+            <button
+              v-if="codexConfig.authToken"
+              type="button"
+              class="copy-btn"
+              :class="{ copied: copiedKeys.has('codex-token') }"
+              @click.stop="copyToClipboard(codexConfig.authToken, 'codex-token')"
+              :title="copiedKeys.has('codex-token') ? '已复制' : '复制'"
+            >
+              <svg v-if="copiedKeys.has('codex-token')" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
+          </div>
+        </DetailRow>
+        <DetailRow label="模型" :code="true">
+          {{ codexConfig.model || '系统默认' }}
+        </DetailRow>
+        <DetailRow label="思考力度">
+          {{ effortOptions.find(o => o.value === codexConfig.modelReasoningEffort)?.label || codexConfig.modelReasoningEffort || '默认' }}
+        </DetailRow>
+        <DetailRow v-if="codexConfig.proxyUrl" label="代理">
+          <div class="value-with-copy">
+            <span>{{ codexConfig.proxyUrl }}</span>
+            <button
+              type="button"
+              class="copy-btn"
+              :class="{ copied: copiedKeys.has('codex-proxy') }"
+              @click.stop="copyToClipboard(codexConfig.proxyUrl, 'codex-proxy')"
+              :title="copiedKeys.has('codex-proxy') ? '已复制' : '复制'"
+            >
+              <svg v-if="copiedKeys.has('codex-proxy')" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
           </div>
         </DetailRow>
       </div>

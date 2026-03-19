@@ -37,6 +37,7 @@ function getDefaultConfig() {
       // 模型配置
       models: [],
       selectedModelId: null,
+      codexProxy: '',
 
       // 提示词配置
       prompts: []

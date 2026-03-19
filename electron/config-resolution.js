@@ -32,14 +32,7 @@ function normalizeProjectSettings(settings = {}) {
 }
 
 function normalizeSessionSettings(settings = {}) {
-  let legacyModelMode = 'project'
-  if (settings.modelId === '') {
-    legacyModelMode = 'system'
-  } else if (settings.modelId) {
-    legacyModelMode = 'custom'
-  }
-
-  const modelMode = settings.modelMode || legacyModelMode
+  const modelMode = settings.modelMode || 'project'
   const promptMode = settings.promptMode || (
     Array.isArray(settings.promptIds) ? (settings.promptIds.length > 0 ? 'custom' : 'none') : 'project'
   )

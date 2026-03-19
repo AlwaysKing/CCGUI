@@ -67,9 +67,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   closeSession: (options) => ipcRenderer.invoke('close-session', options),
 
   // Stop Claude process (keep session alive for restart)
-  stopClaude: (options) => ipcRenderer.invoke('stop-claude', options),
+  stopSessionRuntime: (options) => ipcRenderer.invoke('stop-session-runtime', options),
 
-  // Start session (initialize Claude process without sending message)
+  // Start session (initialize runtime process without sending message)
   startSession: (options) => ipcRenderer.invoke('start-session', options),
 
   // Listen to session events (统一的事件通道 - 新架构推荐使用)
@@ -80,51 +80,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('session-event', listener)
   },
 
-  // ============================================
-  // Legacy Event APIs (向后兼容)
-  // 这些 API 仍然可用，但新代码应该使用 onSessionEvent
-  // ============================================
-
-  onClaudeMessage: (callback) => {
-    const listener = (event, message) => callback(message)
-    ipcRenderer.on('claude-message', listener)
-    return () => ipcRenderer.removeListener('claude-message', listener)
-  },
-
-  onClaudeResult: (callback) => {
-    const listener = (event, message) => callback(message)
-    ipcRenderer.on('claude-result', listener)
-    return () => ipcRenderer.removeListener('claude-result', listener)
-  },
-
-  onClaudeInit: (callback) => {
-    const listener = (event, message) => callback(message)
-    ipcRenderer.on('claude-init', listener)
-    return () => ipcRenderer.removeListener('claude-init', listener)
-  },
-
   onSystemMessage: (callback) => {
     const listener = (event, message) => callback(message)
     ipcRenderer.on('system-message', listener)
     return () => ipcRenderer.removeListener('system-message', listener)
-  },
-
-  onToolUse: (callback) => {
-    const listener = (event, message) => callback(message)
-    ipcRenderer.on('tool-use', listener)
-    return () => ipcRenderer.removeListener('tool-use', listener)
-  },
-
-  onToolResult: (callback) => {
-    const listener = (event, message) => callback(message)
-    ipcRenderer.on('tool-result', listener)
-    return () => ipcRenderer.removeListener('tool-result', listener)
-  },
-
-  onToolUseRequest: (callback) => {
-    const listener = (event, message) => callback(message)
-    ipcRenderer.on('tool-use-request', listener)
-    return () => ipcRenderer.removeListener('tool-use-request', listener)
   },
 
   onControlRequest: (callback) => {
@@ -151,23 +110,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('cli-status', listener)
   },
 
-  onStreamEvent: (callback) => {
-    const listener = (event, message) => callback(message)
-    ipcRenderer.on('stream-event', listener)
-    return () => ipcRenderer.removeListener('stream-event', listener)
-  },
-
   onUnknownMessage: (callback) => {
     const listener = (event, message) => callback(message)
     ipcRenderer.on('unknown-message', listener)
     return () => ipcRenderer.removeListener('unknown-message', listener)
   },
 
-  // Legacy APIs
-  getClaudeInfo: (options) => ipcRenderer.invoke('get-claude-info', options),
-  getInitInfo: () => ipcRenderer.invoke('get-init-info'),
-  isClaudeReady: (options) => ipcRenderer.invoke('is-claude-ready', options),
-  sendToolResult: (options) => ipcRenderer.invoke('send-tool-result', options),
+  getRuntimeInfo: (options) => ipcRenderer.invoke('get-runtime-info', options),
+  getRuntimeInitInfo: () => ipcRenderer.invoke('get-runtime-init-info'),
+  isRuntimeReady: (options) => ipcRenderer.invoke('is-runtime-ready', options),
+  sendRuntimeToolResult: (options) => ipcRenderer.invoke('send-runtime-tool-result', options),
 
   // ============================================
   // Project & Session Management APIs
@@ -248,6 +200,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   getClaudeSettings: () => ipcRenderer.invoke('get-claude-settings'),
   updateClaudeSettings: (options) => ipcRenderer.invoke('update-claude-settings', options),
+
+  // ============================================
+  // Codex Settings API (from ~/.codex/config.toml)
+  // ============================================
+  getCodexSettings: () => ipcRenderer.invoke('get-codex-settings'),
+  updateCodexSettings: (options) => ipcRenderer.invoke('update-codex-settings', options),
 
   // ============================================
   // Docs API (规范文档)

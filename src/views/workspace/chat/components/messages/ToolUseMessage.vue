@@ -190,6 +190,7 @@ const toolIcon = computed(() => {
     Bash: '⌨️',
     Read: '📖',
     Edit: '✏️',
+    ApplyPatch: '🩹',
     Write: '📝',
     Glob: '🔍',
     Grep: '🔎',
@@ -197,6 +198,10 @@ const toolIcon = computed(() => {
     TaskOutput: '📋',
     TaskStop: '⏹️',
     WebSearch: '🌐',
+    ViewImage: '🖼️',
+    GenerateImage: '🎨',
+    ClientToolCall: '🧩',
+    RequestPermissions: '🔐',
     AskUserQuestion: '❓',
     EnterPlanMode: '📋',
     EnterWorktree: '🌳',
@@ -244,6 +249,13 @@ const primaryContent = computed(() => {
         label: '编辑文件',
         value: input.file_path,
         description: editDesc
+      }
+    case 'ApplyPatch':
+      const changes = Array.isArray(input.changes) ? input.changes : []
+      return {
+        label: '补丁修改',
+        value: `${changes.length} 处变更`,
+        description: changes.length ? 'Codex 通过补丁批量修改文件' : (input.description || null)
       }
     case 'Write':
       const content = input.content || ''
@@ -311,6 +323,30 @@ const primaryContent = computed(() => {
         value: input.subagent_type || input.subagentType || '通用代理',
         description: input.description || null
       }
+    case 'ViewImage':
+      return {
+        label: '查看图片',
+        value: input.path || input.image_path || '',
+        description: input.description || null
+      }
+    case 'GenerateImage':
+      return {
+        label: '生成图片',
+        value: input.prompt || '',
+        description: input.description || null
+      }
+    case 'ClientToolCall':
+      return {
+        label: '客户端工具',
+        value: input.tool || input.name || 'tool_call',
+        description: input.description || null
+      }
+    case 'RequestPermissions':
+      return {
+        label: '额外权限',
+        value: Array.isArray(input.permissions) ? input.permissions.join(', ') : (input.permissions || '权限请求'),
+        description: input.description || null
+      }
     default:
       if (input.description) {
         return { label: '描述', value: input.description, description: null }
@@ -371,6 +407,9 @@ const collapsedSummary = computed(() => {
         editOpDesc = `替换 ${oldLen} 字符 → ${newLen} 字符`
       }
       return `${editFilePath}    ${editOpDesc}`
+    case 'ApplyPatch':
+      const patchChanges = Array.isArray(input.changes) ? input.changes : []
+      return `${patchChanges.length} 处补丁变更`
     case 'Glob':
       return input.pattern || ''
     case 'Grep':
@@ -421,6 +460,14 @@ const collapsedSummary = computed(() => {
       const agentDesc = input.description || input.prompt || ''
       const shortDesc = agentDesc.length > 40 ? agentDesc.substring(0, 40) + '...' : agentDesc
       return `🤖 ${agentType}${shortDesc ? ': ' + shortDesc : ''}`
+    case 'ViewImage':
+      return input.path || input.image_path || ''
+    case 'GenerateImage':
+      return input.prompt || ''
+    case 'ClientToolCall':
+      return input.tool || input.name || 'tool_call'
+    case 'RequestPermissions':
+      return input.description || '权限请求'
     default:
       return ''
   }

@@ -62,7 +62,7 @@ const computedDuration = computed(() => {
   if (props.duration) {
     return formatDuration(props.duration)
   }
-  if ((props.isStreaming || props.startTime) && props.currentTime && props.startTime) {
+  if (props.isStreaming && props.currentTime && props.startTime) {
     return formatDuration(props.currentTime - props.startTime)
   }
   return null
@@ -70,7 +70,7 @@ const computedDuration = computed(() => {
 
 // 是否显示实时耗时
 const isDurationStreaming = computed(() => {
-  return !props.duration && (props.isStreaming || props.startTime) && props.currentTime && props.startTime
+  return !props.duration && !!props.isStreaming && !!props.currentTime && !!props.startTime
 })
 
 // 格式化 tokens

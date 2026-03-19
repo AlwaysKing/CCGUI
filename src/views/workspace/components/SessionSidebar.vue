@@ -643,6 +643,11 @@ function getSessionPromptDocCounts(session) {
   }
 }
 
+function getSessionTool(session) {
+  const tool = session?.settings?.tool || session?.settings?.provider || 'claude'
+  return tool === 'codex' ? 'codex' : 'claude'
+}
+
 // 判断会话的标签是否应该折叠
 function shouldUseCompactCountLabels(sessionId) {
   return compactCountLabels.value.has(sessionId)
@@ -952,6 +957,12 @@ defineExpose({
               </div>
               <div class="session-row4">
                 <span>{{ session.messageCount || 0 }} 条消息, {{ formatTime(session.updatedAt) }}</span>
+                <span
+                  class="session-tool-badge"
+                  :class="getSessionTool(session) === 'codex' ? 'codex' : 'claude'"
+                >
+                  {{ getSessionTool(session) === 'codex' ? 'Codex' : 'Claude' }}
+                </span>
               </div>
             </div>
 
@@ -1469,6 +1480,11 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.session-row1,
+.session-row2,
+.session-row3 {
   padding-right: 24px;
 }
 
@@ -1498,8 +1514,38 @@ defineExpose({
 .session-row4 {
   display: flex;
   align-items: center;
+  gap: 6px;
   font-size: 11px;
   color: #71717A;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.session-tool-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  border: 1px solid transparent;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.session-tool-badge.claude {
+  color: #FED7AA;
+  background: rgba(249, 115, 22, 0.14);
+  border-color: rgba(249, 115, 22, 0.28);
+}
+
+.session-tool-badge.codex {
+  color: #BFDBFE;
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.28);
 }
 
 .session-name {

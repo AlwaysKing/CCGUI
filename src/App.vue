@@ -1,14 +1,11 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { useAppStore } from './stores/useAppStore'
 import { logger } from './utils/logger'
 import Welcome from './views/welcome/Welcome.vue'
 import Workspace from './views/workspace/Workspace.vue'
 
 const store = useAppStore()
-
-const isClaudeReady = ref(false)
-let initUnsub = null
 
 function isEditableTarget(target) {
   if (!(target instanceof HTMLElement)) {
@@ -111,25 +108,17 @@ onMounted(async () => {
 
   document.addEventListener('keydown', handleGlobalSelectAll, true)
 
-  // Get Claude info
+  // Get runtime info
   try {
-    const info = await window.electronAPI.getClaudeInfo()
-    logger.info('Claude info retrieved', info)
+    const info = await window.electronAPI.getRuntimeInfo()
+    logger.info('Runtime info retrieved', info)
   } catch (error) {
-    logger.error('Failed to get Claude info', { error: error.message })
+    logger.error('Failed to get runtime info', { error: error.message })
   }
 
-  // Wait for Claude initialization
-  initUnsub = window.electronAPI.onClaudeInit((message) => {
-    logger.info('Claude initialized', message)
-    isClaudeReady.value = true
-  })
 })
 
 onUnmounted(() => {
-  if (initUnsub) {
-    initUnsub()
-  }
   document.removeEventListener('keydown', handleGlobalSelectAll, true)
 })
 </script>

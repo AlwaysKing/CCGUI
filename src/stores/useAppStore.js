@@ -160,11 +160,11 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function createSession(projectId, name) {
+  async function createSession(projectId, name, options = {}) {
     try {
       isLoading.value = true
       error.value = null
-      const newSession = await window.electronAPI.createSession({ projectId, name })
+      const newSession = await window.electronAPI.createSession({ projectId, name, ...options })
       sessions.value.unshift(newSession)
       return newSession
     } catch (e) {

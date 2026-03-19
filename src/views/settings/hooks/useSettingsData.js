@@ -32,6 +32,14 @@ export function useSettingsData(emit) {
     anthropicSmallFastModel: ''
   })
 
+  const codexConfig = ref({
+    apiUrl: '',
+    authToken: '',
+    model: '',
+    modelReasoningEffort: 'medium',
+    proxyUrl: ''
+  })
+
   const models = ref([])
   const selectedModelId = ref(null)
   const prompts = ref([])
@@ -40,6 +48,7 @@ export function useSettingsData(emit) {
   const showModelDialog = ref(false)
   const editingModel = ref(null)
   const showDefaultConfigDialog = ref(false)
+  const showCodexConfigDialog = ref(false)
   const showPromptDialog = ref(false)
   const editingPrompt = ref(null)
   const showDocumentDialog = ref(false)
@@ -86,6 +95,15 @@ export function useSettingsData(emit) {
         defaultConfig.value.anthropicDefaultOpusModel = env.ANTHROPIC_DEFAULT_OPUS_MODEL || ''
         defaultConfig.value.anthropicDefaultHaikuModel = env.ANTHROPIC_DEFAULT_HAIKU_MODEL || ''
         defaultConfig.value.anthropicSmallFastModel = env.ANTHROPIC_SMALL_FAST_MODEL || ''
+      }
+
+      const codexResult = await window.electronAPI.getCodexSettings()
+      if (codexResult?.success && codexResult.settings) {
+        codexConfig.value.apiUrl = codexResult.settings.apiUrl || ''
+        codexConfig.value.authToken = codexResult.settings.authToken || ''
+        codexConfig.value.model = codexResult.settings.model || ''
+        codexConfig.value.modelReasoningEffort = codexResult.settings.modelReasoningEffort || 'medium'
+        codexConfig.value.proxyUrl = codexResult.settings.proxyUrl || ''
       }
     } catch (error) {
       console.error('Failed to load settings:', error)
@@ -289,6 +307,43 @@ export function useSettingsData(emit) {
     await saveAppConfig()
   }
 
+  function handleEditCodexConfig() {
+    showCodexConfigDialog.value = true
+  }
+
+  async function handleSaveCodexConfig(config) {
+    try {
+      const result = await window.electronAPI.updateCodexSettings({
+        updates: {
+          apiUrl: config.apiUrl,
+          authToken: config.authToken,
+          model: config.model,
+          modelReasoningEffort: config.modelReasoningEffort,
+          proxyUrl: config.proxyUrl
+        }
+      })
+
+      if (!result?.success) {
+        alert('保存 Codex 配置失败: ' + (result?.error || '未知错误'))
+        return
+      }
+
+      codexConfig.value = {
+        apiUrl: result.settings?.apiUrl || config.apiUrl || '',
+        authToken: result.settings?.authToken || config.authToken || '',
+        model: result.settings?.model || config.model || '',
+        modelReasoningEffort: result.settings?.modelReasoningEffort || config.modelReasoningEffort || 'medium',
+        proxyUrl: result.settings?.proxyUrl || config.proxyUrl || ''
+      }
+
+      showCodexConfigDialog.value = false
+      emit('saved')
+    } catch (error) {
+      console.error('Failed to save Codex config:', error)
+      alert('保存 Codex 配置失败: ' + error.message)
+    }
+  }
+
   function handleAddPrompt() {
     editingPrompt.value = null
     showPromptDialog.value = true
@@ -464,6 +519,7 @@ export function useSettingsData(emit) {
   return {
     settings,
     defaultConfig,
+    codexConfig,
     models,
     selectedModelId,
     prompts,
@@ -471,6 +527,7 @@ export function useSettingsData(emit) {
     showModelDialog,
     editingModel,
     showDefaultConfigDialog,
+    showCodexConfigDialog,
     showPromptDialog,
     editingPrompt,
     showDocumentDialog,
@@ -491,6 +548,8 @@ export function useSettingsData(emit) {
     handleMappingConfirm,
     handleEditDefaultConfig,
     handleSaveDefaultConfig,
+    handleEditCodexConfig,
+    handleSaveCodexConfig,
     handleAddPrompt,
     handleEditPrompt,
     handleDeletePrompt,

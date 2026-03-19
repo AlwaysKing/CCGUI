@@ -41,6 +41,20 @@ onMounted(async () => {
   await store.fetchProjects()
   await checkProjectsExistence()
 })
+
+async function openProjectInFinder(event, project) {
+  event.stopPropagation()
+
+  if (!project?.path) {
+    return
+  }
+
+  await window.electronAPI.openProjectEntryInFinder({
+    projectPath: project.path,
+    targetPath: '.',
+    mode: 'open'
+  })
+}
 </script>
 
 <template>
@@ -111,19 +125,32 @@ onMounted(async () => {
             class="project-card"
             @click="selectProject(project)"
           >
-            <button class="delete-btn" @click="handleDeleteClick($event, project)" title="删除项目">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"/>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              </svg>
-            </button>
+            <div class="project-actions">
+              <button class="action-btn" @click="openProjectInFinder($event, project)" title="在 Finder 中打开">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2z"/>
+                </svg>
+              </button>
+              <button class="action-btn delete-btn" @click="handleDeleteClick($event, project)" title="删除项目">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+            </div>
             <div class="project-icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
               </svg>
             </div>
             <div class="project-info">
-              <h3 class="project-name">{{ project.name }}</h3>
+              <h3 class="project-name">
+                <span class="project-name-text">{{ project.name }}</span>
+                <span v-if="project.sourceFlags?.claude || project.sourceFlags?.codex" class="project-badges">
+                  <span v-if="project.sourceFlags?.claude" class="source-badge claude-badge">Claude</span>
+                  <span v-if="project.sourceFlags?.codex" class="source-badge codex-badge">Codex</span>
+                </span>
+              </h3>
               <p class="project-path">{{ project.path }}</p>
               <div class="project-meta">
                 <span>{{ project.sessionCount || 0 }} 个会话</span>
@@ -161,19 +188,32 @@ onMounted(async () => {
             class="project-card old"
             @click="selectProject(project)"
           >
-            <button class="delete-btn" @click="handleDeleteClick($event, project)" title="删除项目">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"/>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              </svg>
-            </button>
+            <div class="project-actions">
+              <button class="action-btn" @click="openProjectInFinder($event, project)" title="在 Finder 中打开">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2z"/>
+                </svg>
+              </button>
+              <button class="action-btn delete-btn" @click="handleDeleteClick($event, project)" title="删除项目">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+            </div>
             <div class="project-icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
               </svg>
             </div>
             <div class="project-info">
-              <h3 class="project-name">{{ project.name }}</h3>
+              <h3 class="project-name">
+                <span class="project-name-text">{{ project.name }}</span>
+                <span v-if="project.sourceFlags?.claude || project.sourceFlags?.codex" class="project-badges">
+                  <span v-if="project.sourceFlags?.claude" class="source-badge claude-badge">Claude</span>
+                  <span v-if="project.sourceFlags?.codex" class="source-badge codex-badge">Codex</span>
+                </span>
+              </h3>
               <p class="project-path">{{ project.path }}</p>
               <div class="project-meta">
                 <span>{{ project.sessionCount || 0 }} 个会话</span>
@@ -211,12 +251,19 @@ onMounted(async () => {
             class="project-card missing"
             @click="selectProject(project)"
           >
-            <button class="delete-btn" @click="handleDeleteClick($event, project)" title="删除项目">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"/>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              </svg>
-            </button>
+            <div class="project-actions">
+              <button class="action-btn" @click="openProjectInFinder($event, project)" title="在 Finder 中打开">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2z"/>
+                </svg>
+              </button>
+              <button class="action-btn delete-btn" @click="handleDeleteClick($event, project)" title="删除项目">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+            </div>
             <div class="project-icon missing-icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
@@ -225,7 +272,11 @@ onMounted(async () => {
             </div>
             <div class="project-info">
               <h3 class="project-name">
-                {{ project.name }}
+                <span class="project-name-text">{{ project.name }}</span>
+                <span v-if="project.sourceFlags?.claude || project.sourceFlags?.codex" class="project-badges">
+                  <span v-if="project.sourceFlags?.claude" class="source-badge claude-badge">Claude</span>
+                  <span v-if="project.sourceFlags?.codex" class="source-badge codex-badge">Codex</span>
+                </span>
                 <span class="missing-badge">不存在</span>
               </h3>
               <p class="project-path">{{ project.path }}</p>
@@ -509,7 +560,7 @@ onMounted(async () => {
 
 .projects-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 16px;
   width: 100%;
 }
@@ -527,16 +578,16 @@ onMounted(async () => {
   position: relative;
 }
 
-.project-card:hover {
-  background: #2D2D30;
-  border-color: #52525B;
-  transform: translateY(-2px);
-}
-
-.delete-btn {
+.project-actions {
   position: absolute;
   top: 12px;
   right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-btn {
   padding: 6px;
   background: transparent;
   border: none;
@@ -550,13 +601,61 @@ onMounted(async () => {
   justify-content: center;
 }
 
+.action-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #D4D4D8;
+}
+
+.project-card:hover .action-btn {
+  opacity: 1;
+}
+
+.project-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  border: 1px solid transparent;
+}
+
+.claude-badge {
+  color: #FED7AA;
+  background: rgba(249, 115, 22, 0.14);
+  border-color: rgba(249, 115, 22, 0.28);
+}
+
+.codex-badge {
+  color: #BFDBFE;
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+.project-card:hover {
+  background: #2D2D30;
+  border-color: #52525B;
+  transform: translateY(-2px);
+}
+
+.delete-btn {
+  color: #71717A;
+}
+
 .delete-btn:hover {
   background: rgba(239, 68, 68, 0.1);
   color: #EF4444;
-}
-
-.project-card:hover .delete-btn {
-  opacity: 1;
 }
 
 .project-card.new-project {
@@ -617,6 +716,7 @@ onMounted(async () => {
 .project-info {
   flex: 1;
   min-width: 0;
+  padding-right: 72px;
 }
 
 .project-name {
@@ -624,12 +724,18 @@ onMounted(async () => {
   font-weight: 600;
   color: #F4F4F5;
   margin: 0 0 4px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.project-name-text {
+  min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .missing-badge {

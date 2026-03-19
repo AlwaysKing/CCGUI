@@ -6,6 +6,7 @@ import TerminalSettings from './components/TerminalSettings.vue'
 import SoftwareSettings from './components/SoftwareSettings.vue'
 import ModelEditDialog from './components/dialogs/ModelEditDialog.vue'
 import DefaultConfigDialog from './components/dialogs/DefaultConfigDialog.vue'
+import CodexConfigDialog from './components/dialogs/CodexConfigDialog.vue'
 import PromptEditDialog from './components/dialogs/PromptEditDialog.vue'
 import DocumentEditDialog from './components/dialogs/DocumentEditDialog.vue'
 import ModelMappingDialog from './components/dialogs/ModelMappingDialog.vue'
@@ -29,6 +30,7 @@ const {
 const {
   settings,
   defaultConfig,
+  codexConfig,
   models,
   selectedModelId,
   prompts,
@@ -36,6 +38,7 @@ const {
   showModelDialog,
   editingModel,
   showDefaultConfigDialog,
+  showCodexConfigDialog,
   showPromptDialog,
   editingPrompt,
   showDocumentDialog,
@@ -56,6 +59,8 @@ const {
   handleMappingConfirm,
   handleEditDefaultConfig,
   handleSaveDefaultConfig,
+  handleEditCodexConfig,
+  handleSaveCodexConfig,
   handleAddPrompt,
   handleEditPrompt,
   handleDeletePrompt,
@@ -133,10 +138,12 @@ function handleClose() {
           <div ref="modelSectionRef">
             <ModelSettings
               :default-config="defaultConfig"
+              :codex-config="codexConfig"
               :models="models"
               :selected-model-id="selectedModelId"
               :effort-options="effortOptions"
               @edit-default-config="handleEditDefaultConfig"
+              @edit-codex-config="handleEditCodexConfig"
               @select-model="handleSelectModel"
               @edit-model="handleEditModel"
               @delete-model="handleDeleteModel"
@@ -197,6 +204,14 @@ function handleClose() {
       :config="defaultConfig"
       @save="handleSaveDefaultConfig"
       @close="showDefaultConfigDialog = false"
+    />
+
+    <CodexConfigDialog
+      v-model:visible="showCodexConfigDialog"
+      :config="codexConfig"
+      :effort-options="effortOptions"
+      @save="handleSaveCodexConfig"
+      @close="showCodexConfigDialog = false"
     />
 
     <!-- 提示词编辑对话框 -->

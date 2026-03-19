@@ -102,11 +102,11 @@ export function useWorkspaceDialogs({
         sessionState.isProcessing = false
       }
 
-      await window.electronAPI.stopClaude({ sessionId: session.id })
-      logger.info('[Workspace] Claude process stopped for session:', session.id)
+      await window.electronAPI.stopSessionRuntime({ sessionId: session.id })
+      logger.info('[Workspace] Runtime process stopped for session:', session.id)
     } catch (error) {
-      logger.error('[Workspace] Failed to close Claude process:', { error: error.message })
-      alert('关闭 Claude 进程失败: ' + error.message)
+      logger.error('[Workspace] Failed to close runtime process:', { error: error.message })
+      alert('关闭运行时进程失败: ' + error.message)
     }
   }
 
@@ -134,11 +134,11 @@ export function useWorkspaceDialogs({
         sessionId: session.id,
         projectPath: store.currentProject?.path
       })
-      logger.info('[Workspace] Claude process started for session:', session.id)
+      logger.info('[Workspace] Runtime process started for session:', session.id)
       await store.fetchRunningSessions()
     } catch (error) {
-      logger.error('[Workspace] Failed to start Claude process:', { error: error.message })
-      alert('启动 Claude 进程失败: ' + error.message)
+      logger.error('[Workspace] Failed to start runtime process:', { error: error.message })
+      alert('启动运行时进程失败: ' + error.message)
     }
   }
 

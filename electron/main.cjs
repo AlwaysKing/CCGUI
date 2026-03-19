@@ -2,8 +2,8 @@ const { app, BrowserWindow, ipcMain, session, dialog, shell } = require('electro
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
-const { execFile, fork } = require('child_process')
-const { SessionManager } = require('./session-manager')
+const { execFile, fork, spawn } = require('child_process')
+const { SessionManager } = require('./session/session-manager')
 const logger = require('./logger')
 
 // 初始化日志系统
@@ -22,6 +22,7 @@ let terminalHostProcess = null
 let terminalHostRequestSequence = 0
 const terminalHostPendingRequests = new Map()
 let isAppQuitting = false
+const pendingDockProjectOpens = []
 
 /**
  * Get app icon path
@@ -812,9 +813,7 @@ ipcMain.handle('send-message', async (event, { sessionId, message, content }) =>
   logger.info('[IPC] send-message:', { sessionId, contentLength: content?.length || message?.length })
 
   try {
-    // Support both 'content' (new) and 'message' (legacy) parameters
-    const messageContent = content || message
-    await sessionManager.sendMessage(sessionId, messageContent)
+    await sessionManager.sendMessage(sessionId, content)
     return { success: true }
   } catch (error) {
     logger.error('[IPC] send-message error:', error)
@@ -893,12 +892,7 @@ ipcMain.handle('set-permission-mode', async (event, { sessionId, mode }) => {
   }
 })
 
-// ============================================
-// Legacy IPC Handlers (向后兼容)
-// ============================================
-
-// Get Claude info (legacy)
-ipcMain.handle('get-claude-info', async (event, options) => {
+ipcMain.handle('get-runtime-info', async (event, options) => {
   const sessionId = options?.sessionId
 
   // Safely get session if sessionId is provided and sessionManager is initialized
@@ -910,13 +904,12 @@ ipcMain.handle('get-claude-info', async (event, options) => {
   return {
     version: '1.0.0',
     tools: ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep'],
-    isReady: session?.isClaudeReady?.() || false,
+    isReady: session?.isRuntimeReady?.() || false,
     workingDirectory: session?.projectPath || process.cwd()
   }
 })
 
-// Get init info (legacy) - returns env info from active session
-ipcMain.handle('get-init-info', async (event, options) => {
+ipcMain.handle('get-runtime-init-info', async (event, options) => {
   const sessionId = options?.sessionId
 
   // Try to get env info from the specified session or any active session
@@ -933,8 +926,7 @@ ipcMain.handle('get-init-info', async (event, options) => {
   return null
 })
 
-// Check if Claude is ready (legacy)
-ipcMain.handle('is-claude-ready', async (event, options) => {
+ipcMain.handle('is-runtime-ready', async (event, options) => {
   const sessionId = options?.sessionId
 
   if (!sessionManager) {
@@ -942,12 +934,11 @@ ipcMain.handle('is-claude-ready', async (event, options) => {
   }
 
   const session = sessionId ? sessionManager.getSession(sessionId) : null
-  return session?.isClaudeReady?.() || false
+  return session?.isRuntimeReady?.() || false
 })
 
-// Send tool result (legacy - for permission approval)
-ipcMain.handle('send-tool-result', async (event, { sessionId, toolUseId, content, isError }) => {
-  logger.info('[IPC] send-tool-result:', { sessionId, toolUseId, isError })
+ipcMain.handle('send-runtime-tool-result', async (event, { sessionId, toolUseId, content, isError }) => {
+  logger.info('[IPC] send-runtime-tool-result:', { sessionId, toolUseId, isError })
 
   try {
     const session = sessionManager.getSession(sessionId)
@@ -955,29 +946,28 @@ ipcMain.handle('send-tool-result', async (event, { sessionId, toolUseId, content
       return { success: false, error: 'Session not found' }
     }
 
-    // Use ClaudeManager's sendToolResult method
-    if (session.claudeManager) {
-      session.claudeManager.sendToolResult(toolUseId, content, isError)
+    if (typeof session.sendRuntimeToolResult === 'function') {
+      session.sendRuntimeToolResult(toolUseId, content, isError)
     }
     return { success: true }
   } catch (error) {
-    logger.error('[IPC] send-tool-result error:', error)
+    logger.error('[IPC] send-runtime-tool-result error:', error)
     return { success: false, error: error.message }
   }
 })
 
-// Start session (legacy - for backwards compatibility)
+// Start session
 ipcMain.handle('start-session', async (event, { sessionId, projectPath }) => {
-  logger.info('[IPC] start-session (legacy):', { sessionId, projectPath })
+  logger.info('[IPC] start-session:', { sessionId, projectPath })
 
   try {
     // Use select-session internally, passing webContents for multi-window support
     const session = await sessionManager.getOrCreateSession(sessionId, projectPath, event.sender, true)
 
-    // Start Claude process
+    // Start runtime process
     await session.start()
 
-    logger.info('[IPC] start-session completed:', { sessionId, ready: session.isClaudeReady() })
+    logger.info('[IPC] start-session completed:', { sessionId, ready: session.isRuntimeReady() })
     return { success: true, sessionId }
   } catch (error) {
     logger.error('[IPC] start-session error:', error)
@@ -992,10 +982,10 @@ ipcMain.handle('close-session', async (event, { sessionId }) => {
   return { success: true }
 })
 
-// Stop Claude process (keep session alive for restart)
-ipcMain.handle('stop-claude', async (event, { sessionId }) => {
-  logger.info('[IPC] stop-claude:', sessionId)
-  sessionManager.stopClaude(sessionId)
+// Stop runtime process (keep session alive for restart)
+ipcMain.handle('stop-session-runtime', async (event, { sessionId }) => {
+  logger.info('[IPC] stop-session-runtime:', sessionId)
+  sessionManager.stopSessionRuntime(sessionId)
   return { success: true }
 })
 
@@ -1008,6 +998,30 @@ ipcMain.handle('stop-claude', async (event, { sessionId }) => {
  */
 function getClaudeProjectsDir() {
   return path.join(os.homedir(), '.claude', 'projects')
+}
+
+function getCodexExecutablePath() {
+  const possiblePaths = [
+    '/Applications/Codex.app/Contents/Resources/codex',
+    '/opt/homebrew/bin/codex',
+    '/usr/local/bin/codex',
+    path.join(os.homedir(), '.local', 'bin', 'codex')
+  ]
+
+  return possiblePaths.find(candidate => fs.existsSync(candidate)) || null
+}
+
+function encodeProjectPath(projectPath) {
+  let encodedPath = projectPath
+  if (process.platform === 'win32') {
+    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
+  } else {
+    encodedPath = encodedPath.replace(/\//g, '-')
+  }
+  if (encodedPath.startsWith('-')) {
+    encodedPath = encodedPath.slice(1)
+  }
+  return '-' + encodedPath
 }
 
 /**
@@ -1029,10 +1043,42 @@ function decodeProjectPath(encodedName) {
  * Scan all projects from ~/.claude/projects directory
  */
 async function scanProjects() {
+  const ccguiProjects = scanCCGUIProjects()
+  const claudeProjects = scanClaudeProjects()
+  const codexProjects = await scanCodexProjects()
+
+  const merged = mergeProjectsByPath(ccguiProjects, claudeProjects, codexProjects)
+  logger.info(`[Projects] Found ${merged.length} merged projects (ccgui=${ccguiProjects.length}, claude=${claudeProjects.length}, codex=${codexProjects.length})`)
+  return merged
+}
+
+function scanCCGUIProjects() {
+  try {
+    const projects = projectConfigManager.getAllProjects() || []
+    return projects.map(project => ({
+      id: project.id || encodeProjectPath(project.path),
+      name: project.name || path.basename(project.path),
+      path: project.path,
+      sessionCount: project.sessionCount || 0,
+      lastActiveAt: project.updatedAt || project.createdAt || null,
+      settings: project.settings || {},
+      sourceFlags: {
+        ccgui: true,
+        claude: false,
+        codex: false
+      }
+    }))
+  } catch (error) {
+    logger.warn('[Projects] Failed to scan CCGUI projects', { error: error.message })
+    return []
+  }
+}
+
+function scanClaudeProjects() {
   const projectsDir = getClaudeProjectsDir()
 
   if (!fs.existsSync(projectsDir)) {
-    logger.info('[Projects] Projects directory does not exist:', projectsDir)
+    logger.info('[Projects] Claude projects directory does not exist:', projectsDir)
     return []
   }
 
@@ -1063,7 +1109,13 @@ async function scanProjects() {
       name,
       path: projectPath,
       sessionCount: sessionFiles.length,
-      lastActiveAt
+      lastActiveAt,
+      settings: {},
+      sourceFlags: {
+        ccgui: false,
+        claude: true,
+        codex: false
+      }
     })
   }
 
@@ -1073,8 +1125,171 @@ async function scanProjects() {
     return new Date(b.lastActiveAt) - new Date(a.lastActiveAt)
   })
 
-  logger.info(`[Projects] Found ${projects.length} projects`)
   return projects
+}
+
+async function scanCodexProjects() {
+  const codexPath = getCodexExecutablePath()
+  if (!codexPath) {
+    logger.info('[Projects] Codex executable not found, skip codex project scan')
+    return []
+  }
+
+  let child = null
+  try {
+    child = spawn(codexPath, ['app-server', '--listen', 'stdio://'], {
+      cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+
+    const readline = require('readline')
+    const rl = readline.createInterface({ input: child.stdout })
+    const pending = new Map()
+    let requestId = 0
+
+    const send = (payload) => {
+      child.stdin.write(JSON.stringify(payload) + '\n')
+    }
+
+    const request = (method, params) => {
+      const id = String(++requestId)
+      send({ id, method, params })
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject })
+        setTimeout(() => {
+          if (!pending.has(id)) return
+          pending.delete(id)
+          reject(new Error(`Codex request timeout: ${method}`))
+        }, 10000)
+      })
+    }
+
+    rl.on('line', (line) => {
+      if (!line.trim()) return
+      let message = null
+      try {
+        message = JSON.parse(line)
+      } catch (error) {
+        return
+      }
+
+      if (message.id !== undefined) {
+        const key = String(message.id)
+        const entry = pending.get(key)
+        if (!entry) return
+        pending.delete(key)
+        if (message.error) {
+          entry.reject(new Error(message.error.message || 'Codex request failed'))
+        } else {
+          entry.resolve(message.result)
+        }
+      }
+    })
+
+    await request('initialize', {
+      clientInfo: { name: 'ccgui-project-scan', version: '1.0.0' },
+      capabilities: { experimentalApi: true }
+    })
+    send({ method: 'initialized' })
+
+    const result = await request('thread/list', {
+      limit: 200,
+      archived: false
+    })
+
+    const threadMap = new Map()
+    for (const thread of result?.data || []) {
+      if (!thread?.cwd) continue
+      const projectId = encodeProjectPath(thread.cwd)
+      const current = threadMap.get(projectId)
+      const updatedAt = thread.updatedAt ? new Date(thread.updatedAt * 1000).toISOString() : null
+      const nextProject = {
+        id: projectId,
+        name: path.basename(thread.cwd),
+        path: thread.cwd,
+        sessionCount: (current?.sessionCount || 0) + 1,
+        lastActiveAt: updatedAt,
+        settings: current?.settings || {},
+        sourceFlags: {
+          ccgui: false,
+          claude: false,
+          codex: true
+        }
+      }
+
+      if (!current || (updatedAt && (!current.lastActiveAt || new Date(updatedAt) > new Date(current.lastActiveAt)))) {
+        threadMap.set(projectId, nextProject)
+      } else {
+        threadMap.set(projectId, {
+          ...current,
+          sessionCount: nextProject.sessionCount,
+          sourceFlags: nextProject.sourceFlags
+        })
+      }
+    }
+
+    rl.close()
+    child.kill('SIGTERM')
+    return Array.from(threadMap.values())
+  } catch (error) {
+    logger.warn('[Projects] Failed to scan Codex projects', { error: error.message })
+    if (child) {
+      child.kill('SIGTERM')
+    }
+    return []
+  }
+}
+
+function mergeProjectsByPath(...projectLists) {
+  const merged = new Map()
+
+  for (const projects of projectLists) {
+    for (const project of projects) {
+      if (!project?.path) continue
+
+      const existing = merged.get(project.path)
+      if (!existing) {
+        merged.set(project.path, {
+          ...project,
+          id: project.id || encodeProjectPath(project.path),
+          sourceFlags: {
+            ccgui: !!project.sourceFlags?.ccgui,
+            claude: !!project.sourceFlags?.claude,
+            codex: !!project.sourceFlags?.codex
+          }
+        })
+        continue
+      }
+
+      merged.set(project.path, {
+        ...existing,
+        ...project,
+        id: existing.id || project.id || encodeProjectPath(project.path),
+        name: existing.name || project.name || path.basename(project.path),
+        settings: existing.settings && Object.keys(existing.settings).length > 0 ? existing.settings : (project.settings || {}),
+        sessionCount: Math.max(existing.sessionCount || 0, project.sessionCount || 0),
+        lastActiveAt: pickLatestTimestamp(existing.lastActiveAt, project.lastActiveAt),
+        sourceFlags: {
+          ccgui: !!(existing.sourceFlags?.ccgui || project.sourceFlags?.ccgui),
+          claude: !!(existing.sourceFlags?.claude || project.sourceFlags?.claude),
+          codex: !!(existing.sourceFlags?.codex || project.sourceFlags?.codex)
+        }
+      })
+    }
+  }
+
+  return Array.from(merged.values())
+    .sort((a, b) => {
+      if (!a.lastActiveAt) return 1
+      if (!b.lastActiveAt) return -1
+      return new Date(b.lastActiveAt) - new Date(a.lastActiveAt)
+    })
+}
+
+function pickLatestTimestamp(a, b) {
+  if (!a) return b || null
+  if (!b) return a || null
+  return new Date(a) >= new Date(b) ? a : b
 }
 
 /**
@@ -1208,17 +1423,7 @@ ipcMain.handle('get-projects', async () => {
 // Add a new project (by path)
 ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
   const name = path.basename(projectPath)
-
-  let encodedPath = projectPath
-  if (process.platform === 'win32') {
-    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
-  } else {
-    encodedPath = encodedPath.replace(/\//g, '-')
-  }
-  if (encodedPath.startsWith('-')) {
-    encodedPath = encodedPath.slice(1)
-  }
-  const projectId = '-' + encodedPath
+  const projectId = encodeProjectPath(projectPath)
 
   // 创建项目配置
   let projectConfig
@@ -1241,7 +1446,12 @@ ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
     path: projectPath,
     sessionCount: 0,
     lastActiveAt: new Date().toISOString(),
-    settings: projectConfig.settings || {}
+    settings: projectConfig.settings || {},
+    sourceFlags: {
+      ccgui: true,
+      claude: false,
+      codex: false
+    }
   }
 })
 
@@ -1409,7 +1619,7 @@ ipcMain.handle('get-running-sessions', async () => {
     const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null
 
     sessionStatuses[sessionId] = {
-      ready: session.isClaudeReady(),
+      ready: session.isRuntimeReady(),
       processing: session.isProcessing,
       streaming: session.currentStreamingAssistantId !== null,
       // 添加实时统计信息
@@ -1421,7 +1631,7 @@ ipcMain.handle('get-running-sessions', async () => {
 })
 
 // Create a new session
-ipcMain.handle('create-session', async (event, { projectId, name }) => {
+ipcMain.handle('create-session', async (event, { projectId, name, settings }) => {
   const projectsDir = getClaudeProjectsDir()
   const projectDir = path.join(projectsDir, projectId)
 
@@ -1429,21 +1639,25 @@ ipcMain.handle('create-session', async (event, { projectId, name }) => {
     fs.mkdirSync(projectDir, { recursive: true })
   }
 
-  const sessionId = require('crypto').randomUUID()
-  const sessionFile = path.join(projectDir, `${sessionId}.jsonl`)
+  const sessionConfig = sessionConfigManager.createSession(projectId, {
+    name: name || '新会话',
+    settings: settings || {}
+  })
+  const sessionFile = path.join(projectDir, `${sessionConfig.id}.jsonl`)
 
   // Create empty file - will be deleted before first use if still empty
   fs.writeFileSync(sessionFile, '')
 
   return {
-    id: sessionId,
+    id: sessionConfig.id,
     projectId,
-    name: name || `新会话`,
+    name: sessionConfig.name,
     preview: '',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: sessionConfig.createdAt,
+    updatedAt: sessionConfig.updatedAt,
     messageCount: 0,
-    status: 'idle'
+    status: 'idle',
+    settings: sessionConfig.settings || {}
   }
 })
 
@@ -2250,6 +2464,311 @@ ipcMain.handle('update-claude-settings', async (event, { updates, clearMappings 
   }
 })
 
+function getCodexConfigPath() {
+  return path.join(os.homedir(), '.codex', 'config.toml')
+}
+
+function getCodexAuthPath() {
+  return path.join(os.homedir(), '.codex', 'auth.json')
+}
+
+function parseTopLevelTomlValue(rawValue) {
+  const value = rawValue.trim()
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+function stringifyTomlString(value) {
+  return `"${String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+function readCodexConfigFile() {
+  const codexConfigPath = getCodexConfigPath()
+  if (!fs.existsSync(codexConfigPath)) {
+    return {
+      model: '',
+      modelProvider: '',
+      modelReasoningEffort: 'medium',
+      apiUrl: '',
+      rawContent: ''
+    }
+  }
+
+  const rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
+  const result = {
+    model: '',
+    modelProvider: '',
+    modelReasoningEffort: 'medium',
+    apiUrl: '',
+    rawContent
+  }
+
+  let currentSection = null
+  for (const line of rawContent.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+
+    const sectionMatch = trimmed.match(/^\[(.+)\]$/)
+    if (sectionMatch) {
+      currentSection = sectionMatch[1]
+      continue
+    }
+
+    const entryMatch = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*(.+?)\s*$/)
+    if (!entryMatch) continue
+
+    const [, key, rawValue] = entryMatch
+    if (!currentSection) {
+      if (key === 'model') {
+        result.model = parseTopLevelTomlValue(rawValue)
+      } else if (key === 'model_provider') {
+        result.modelProvider = parseTopLevelTomlValue(rawValue)
+      } else if (key === 'model_reasoning_effort') {
+        result.modelReasoningEffort = parseTopLevelTomlValue(rawValue) || 'medium'
+      }
+    } else if (currentSection === 'model_providers.ccgui' && key === 'base_url') {
+      result.apiUrl = parseTopLevelTomlValue(rawValue)
+    }
+  }
+
+  return result
+}
+
+function readCodexAuthFile() {
+  const codexAuthPath = getCodexAuthPath()
+  if (!fs.existsSync(codexAuthPath)) {
+    return { authToken: '', raw: {} }
+  }
+
+  const raw = JSON.parse(fs.readFileSync(codexAuthPath, 'utf-8'))
+  return {
+    authToken: raw.OPENAI_API_KEY || '',
+    raw
+  }
+}
+
+function writeCodexConfigFile(updates = {}) {
+  const codexConfigPath = getCodexConfigPath()
+  const codexDir = path.dirname(codexConfigPath)
+  if (!fs.existsSync(codexDir)) {
+    fs.mkdirSync(codexDir, { recursive: true })
+  }
+
+  const current = readCodexConfigFile()
+  const currentAuth = readCodexAuthFile()
+  const rawContent = current.rawContent || ''
+  const lines = rawContent ? rawContent.split(/\r?\n/) : []
+  const nextModel = updates.model !== undefined ? updates.model : current.model
+  const nextProvider = updates.modelProvider !== undefined ? updates.modelProvider : (current.modelProvider || 'ccgui')
+  const nextEffort = updates.modelReasoningEffort !== undefined ? updates.modelReasoningEffort : current.modelReasoningEffort
+  const nextApiUrl = updates.apiUrl !== undefined ? updates.apiUrl : current.apiUrl
+  const nextAuthToken = updates.authToken !== undefined ? updates.authToken : currentAuth.authToken
+  const shouldWriteCcguiProvider = Boolean((nextApiUrl || '').trim() && (nextAuthToken || '').trim())
+
+  const pendingTopLevel = new Map([
+    ['model', stringifyTomlString(nextModel || '')],
+    ['model_reasoning_effort', stringifyTomlString(nextEffort || 'medium')]
+  ])
+
+  if (shouldWriteCcguiProvider) {
+    pendingTopLevel.set('model_provider', stringifyTomlString(nextProvider || 'ccgui'))
+  }
+
+  const ccguiProviderEntries = [
+    `name = ${stringifyTomlString('ccgui')}`,
+    `base_url = ${stringifyTomlString(nextApiUrl || '')}`,
+    `wire_api = ${stringifyTomlString('responses')}`
+  ]
+
+  let currentSection = null
+  let skippingCcguiSection = false
+  let skippingLegacyNetworkSection = false
+  const output = []
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    const sectionMatch = trimmed.match(/^\[(.+)\]$/)
+    if (sectionMatch) {
+      if (!currentSection && pendingTopLevel.size > 0) {
+        for (const [key, value] of pendingTopLevel.entries()) {
+          output.push(`${key} = ${value}`)
+        }
+        pendingTopLevel.clear()
+        if (output.length > 0 && output[output.length - 1] !== '') {
+          output.push('')
+        }
+      }
+
+      if (skippingCcguiSection) {
+        if (shouldWriteCcguiProvider) {
+          output.push('')
+          output.push('[model_providers.ccgui]')
+          output.push(...ccguiProviderEntries)
+          output.push('')
+        }
+        skippingCcguiSection = false
+      }
+
+      if (skippingLegacyNetworkSection) {
+        skippingLegacyNetworkSection = false
+      }
+
+      currentSection = sectionMatch[1]
+      if (currentSection === 'model_providers.ccgui') {
+        skippingCcguiSection = true
+        continue
+      }
+
+      if (currentSection === 'permissions.ccgui.network') {
+        skippingLegacyNetworkSection = true
+        continue
+      }
+
+      output.push(line)
+      continue
+    }
+
+    if (skippingCcguiSection || skippingLegacyNetworkSection) {
+      continue
+    }
+
+    if (!currentSection) {
+      const entryMatch = line.match(/^(\s*)([A-Za-z0-9_-]+)(\s*=\s*)(.+?)(\s*)$/)
+      if (entryMatch) {
+        const [, indent, key, separator, , trailingSpace] = entryMatch
+        if (key === 'default_permissions') {
+          continue
+        }
+        if (key === 'model_provider' && !shouldWriteCcguiProvider) {
+          continue
+        }
+        if (pendingTopLevel.has(key)) {
+          output.push(`${indent}${key}${separator}${pendingTopLevel.get(key)}${trailingSpace}`)
+          pendingTopLevel.delete(key)
+          continue
+        }
+      }
+    }
+
+    output.push(line)
+  }
+
+  if (skippingCcguiSection) {
+    if (shouldWriteCcguiProvider) {
+      output.push('')
+      output.push('[model_providers.ccgui]')
+      output.push(...ccguiProviderEntries)
+    }
+    skippingCcguiSection = false
+  }
+
+  if (pendingTopLevel.size > 0) {
+    if (output.length > 0 && output[output.length - 1].trim() !== '') {
+      output.push('')
+    }
+    for (const [key, value] of pendingTopLevel.entries()) {
+      output.push(`${key} = ${value}`)
+    }
+  }
+
+  const hasCcguiSection = output.some(line => line.trim() === '[model_providers.ccgui]')
+  if (shouldWriteCcguiProvider && !hasCcguiSection) {
+    if (output.length > 0 && output[output.length - 1].trim() !== '') {
+      output.push('')
+    }
+    output.push('[model_providers.ccgui]')
+    output.push(...ccguiProviderEntries)
+  }
+
+  const finalContent = output.join('\n').replace(/\n{3,}/g, '\n\n') + '\n'
+  fs.writeFileSync(codexConfigPath, finalContent, 'utf-8')
+
+  return {
+    model: nextModel || '',
+    modelProvider: shouldWriteCcguiProvider ? (nextProvider || 'ccgui') : '',
+    modelReasoningEffort: nextEffort || 'medium',
+    apiUrl: nextApiUrl || ''
+  }
+}
+
+function writeCodexAuthFile(updates = {}) {
+  const codexAuthPath = getCodexAuthPath()
+  const codexDir = path.dirname(codexAuthPath)
+  if (!fs.existsSync(codexDir)) {
+    fs.mkdirSync(codexDir, { recursive: true })
+  }
+
+  const current = readCodexAuthFile()
+  const nextRaw = {
+    ...(current.raw || {})
+  }
+
+  if (updates.authToken !== undefined) {
+    nextRaw.OPENAI_API_KEY = updates.authToken || ''
+  }
+
+  if (!nextRaw.auth_mode) {
+    nextRaw.auth_mode = 'api_key'
+  }
+
+  fs.writeFileSync(codexAuthPath, JSON.stringify(nextRaw, null, 2), 'utf-8')
+  return {
+    authToken: nextRaw.OPENAI_API_KEY || ''
+  }
+}
+
+// Get Codex settings from ~/.codex/config.toml
+ipcMain.handle('get-codex-settings', async () => {
+  try {
+    const settings = readCodexConfigFile()
+    const appConfig = appConfigManager.loadConfig()
+    return {
+      success: true,
+      settings: {
+        model: settings.model || '',
+        modelProvider: settings.modelProvider || '',
+        modelReasoningEffort: settings.modelReasoningEffort || 'medium',
+        apiUrl: settings.apiUrl || '',
+        proxyUrl: appConfig.settings?.codexProxy || '',
+        authToken: readCodexAuthFile().authToken || ''
+      }
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to load settings', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Update Codex settings to ~/.codex/config.toml
+ipcMain.handle('update-codex-settings', async (event, { updates }) => {
+  try {
+    const settings = writeCodexConfigFile({
+      ...(updates || {}),
+      modelProvider: 'ccgui'
+    })
+    const authSettings = writeCodexAuthFile(updates || {})
+    const appConfig = appConfigManager.updateConfig({
+      settings: {
+        codexProxy: updates?.proxyUrl || ''
+      }
+    })
+    logger.info('[CodexSettings] Settings updated successfully')
+    return {
+      success: true,
+      settings: {
+        ...settings,
+        proxyUrl: appConfig.settings?.codexProxy || '',
+        authToken: authSettings.authToken || ''
+      }
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to update settings', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 // ============================================
 // Notification IPC Handlers
 // ============================================
@@ -2498,6 +3017,16 @@ app.on('open-file', (event, filePath) => {
   // Create project ID from path
   const projectId = encodeProjectPath(filePath)
 
+  if (!app.isReady()) {
+    logger.info('[Dock] App not ready yet, queueing project open:', filePath)
+    pendingDockProjectOpens.push({
+      projectId,
+      projectName: path.basename(filePath),
+      projectPath: filePath
+    })
+    return
+  }
+
   // Open in new window
   openProjectWindow(projectId, path.basename(filePath), filePath)
 })
@@ -2554,6 +3083,7 @@ function openProjectWindow(projectId, projectName, projectPath) {
       nodeIntegration: false
     }
   })
+  const newWindowWebContentsId = newWindow.webContents.id
 
   // Store project info
   newWindow.projectId = projectId
@@ -2571,13 +3101,35 @@ function openProjectWindow(projectId, projectName, projectPath) {
   }
 
   newWindow.on('closed', () => {
-    disposeTerminalsForWebContents(newWindow.webContents.id)
+    disposeTerminalsForWebContents(newWindowWebContentsId)
     logger.info('[Window] Closed window', { projectId })
   })
 
   logger.info('[Window] Created new window for project', { projectName, projectId })
 
   return newWindow
+}
+
+function flushPendingDockProjectOpens() {
+  if (!app.isReady() || pendingDockProjectOpens.length === 0) {
+    return
+  }
+
+  const queuedOpens = pendingDockProjectOpens.splice(0, pendingDockProjectOpens.length)
+  for (const pendingProject of queuedOpens) {
+    const existingWindow = findWindowByProjectPath(pendingProject.projectPath)
+    if (existingWindow) {
+      logger.info('[Dock] Found existing window for queued project, focusing it')
+      existingWindow.focus()
+      continue
+    }
+
+    openProjectWindow(
+      pendingProject.projectId,
+      pendingProject.projectName,
+      pendingProject.projectPath
+    )
+  }
 }
 
 /**
@@ -2642,6 +3194,7 @@ function createNewWindow() {
       nodeIntegration: false
     }
   })
+  const newWindowWebContentsId = newWindow.webContents.id
 
   // Load app without project ID (shows hello page)
   if (isDev) {
@@ -2652,7 +3205,7 @@ function createNewWindow() {
   }
 
   newWindow.on('closed', () => {
-    disposeTerminalsForWebContents(newWindow.webContents.id)
+    disposeTerminalsForWebContents(newWindowWebContentsId)
     logger.info('[Window] Closed new window')
   })
 
@@ -2668,6 +3221,7 @@ app.whenReady().then(() => {
 
   createWindow()
   setupDockMenu()
+  flushPendingDockProjectOpens()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

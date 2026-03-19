@@ -80,7 +80,7 @@ const formattedTokens = computed(() => {
 
 // 是否显示实时耗时
 const isDurationStreaming = computed(() => {
-  return !props.message.duration && props.isProcessing && props.message.startTime && props.currentTime
+  return !props.message.duration && !!props.isProcessing && !!props.message.startTime && !!props.currentTime
 })
 
 // CSS 变量

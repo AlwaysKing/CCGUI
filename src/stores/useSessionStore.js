@@ -44,9 +44,10 @@ class SessionData {
 
     // 环境信息
     this.envInfo = null
+    this.silentMessages = []
 
-    // Claude 状态
-    this.claudeReady = false
+    // Runtime 状态
+    this.runtimeReady = false
 
     // 流式状态
     this.currentAssistantMessageIndex = -1
@@ -144,7 +145,8 @@ export const useSessionStore = defineStore('session', () => {
         sessionData.messages = (result.state.messages || []).map(msg => reactive(msg))
         sessionData.inputHistory = result.state.inputHistory || []
         sessionData.envInfo = result.state.envInfo || null
-        sessionData.claudeReady = result.state.claudeReady || false
+        sessionData.silentMessages = (result.state.silentMessages || []).map(msg => reactive(msg))
+        sessionData.runtimeReady = result.state.runtimeReady || false
         if (result.state.pendingPermission) {
           sessionData.pendingPermissions = [reactive(result.state.pendingPermission)]
         }
@@ -265,13 +267,13 @@ export const useSessionStore = defineStore('session', () => {
   /**
    * 发送工具结果（用于普通 tool_use 权限响应）
    */
-  async function sendToolResult(toolUseId, content, isError = false) {
+  async function sendRuntimeToolResult(toolUseId, content, isError = false) {
     const session = currentSession.value
     if (!session) return
 
     removePendingPermission(session, toolUseId)
 
-    await window.electronAPI.sendToolResult({
+    await window.electronAPI.sendRuntimeToolResult({
       sessionId: session.id,
       toolUseId,
       content,
@@ -380,13 +382,12 @@ export const useSessionStore = defineStore('session', () => {
         handleMessageUpdate(session, data)
         break
 
-      case 'result':
-        handleResult(session, data)
+      case 'tool-result':
+        handleToolResult(session, data)
         break
 
-      case 'stream-event':
-        // 保留旧的事件转发（兼容）
-        handleStreamEvent(session, data)
+      case 'result':
+        handleResult(session, data)
         break
 
       case 'control-request':
@@ -405,18 +406,14 @@ export const useSessionStore = defineStore('session', () => {
         session.envInfo = data
         break
 
+      case 'silent-message':
+        session.silentMessages.push(reactive(data))
+        break
+
       case 'cli-status':
         // CLI 状态消息，显示在消息列表中
         log('[CLI Status]', data.message)
         handleCliStatus(session, data)
-        break
-
-      case 'tool-use':
-        handleToolUse(session, data)
-        break
-
-      case 'tool-result':
-        handleToolResult(session, data)
         break
 
       case 'state-update':
@@ -424,7 +421,7 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'permission-mode-change':
-        // Claude 主动切换权限模式
+        // Runtime 主动切换权限模式
         log('[SessionStore] Permission mode changed:', data)
         session.permissionMode = data
         break
@@ -460,14 +457,14 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'abnormal-exit':
-        // Claude 进程异常退出
-        log('[SessionStore] Claude process abnormal exit:', data)
+        // Runtime 进程异常退出
+        log('[SessionStore] Runtime process abnormal exit:', data)
         handleAbnormalExit(session, data)
         break
 
       case 'normal-exit':
-        // Claude 进程正常停止（用户手动停止）
-        log('[SessionStore] Claude process normal exit:', data)
+        // Runtime 进程正常停止（用户手动停止）
+        log('[SessionStore] Runtime process normal exit:', data)
         handleNormalExit(session, data)
         break
 
@@ -549,7 +546,7 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] handleResult called')
     log('[SessionStore] Full result object:', JSON.stringify(result, null, 2))
 
-    // 移除 status 消息（如"正在启动 Claude..."）
+    // 移除 status 消息（如"正在启动运行时..."）
     const statusIndex = session.messages.findIndex(m => m.role === 'status')
     if (statusIndex >= 0) {
       session.messages.splice(statusIndex, 1)
@@ -557,11 +554,48 @@ export const useSessionStore = defineStore('session', () => {
 
     // 清除流式消息标记
     session.currentStreamingAssistantId = null
+    session.pendingQuestion = null
+    session.pendingPermissions = []
+    session.pendingControlRequests = []
 
-    // 提取数据 - 支持多种可能的字段名格式
-    const durationMs = result.duration_ms || result.durationMs || result.duration || null
-    const numTurns = result.num_turns || result.numTurns || result.turns || null
-    const usage = result.usage || result.tokenUsage || null
+    // 强制收尾残留的流式/执行态，避免某些边缘事件没成对回来时 UI 一直卡住
+    session.messages.forEach(msg => {
+      if (msg.isStreaming) {
+        msg.isStreaming = false
+        if (!msg.duration && msg.startTime) {
+          msg.duration = Date.now() - msg.startTime
+        }
+      }
+
+      if (msg.isExecuting) {
+        msg.isExecuting = false
+        if (!msg.duration && msg.startTime) {
+          msg.duration = Date.now() - msg.startTime
+        }
+      }
+    })
+
+    // 提取统一 result 语义
+    const latestUserMessage = [...session.messages].reverse().find(msg => msg.role === 'user') || null
+    const latestAssistantMessage = [...session.messages].reverse().find(msg =>
+      msg.role === 'assistant' && ((msg.content && msg.content.trim()) || (msg.thinking && msg.thinking.trim()))
+    ) || [...session.messages].reverse().find(msg => msg.role === 'assistant') || null
+
+    const durationMs =
+      result.duration_ms ??
+      latestUserMessage?.duration ??
+      (latestUserMessage?.startTime ? Date.now() - latestUserMessage.startTime : null)
+
+    const numTurns =
+      result.num_turns ??
+      latestUserMessage?.numTurns ??
+      1
+
+    const usage =
+      result.usage ??
+      latestUserMessage?.usage ??
+      latestAssistantMessage?.usage ??
+      null
 
     log('[SessionStore] Extracted: durationMs=', durationMs, 'numTurns=', numTurns, 'usage=', usage)
 
@@ -626,11 +660,63 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  function getLatestUserMessage(session) {
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      if (session.messages[i].role === 'user') {
+        return session.messages[i]
+      }
+    }
+    return null
+  }
+
+  function syncUserRealtimeStats(session, updates = {}) {
+    const userMsg = getLatestUserMessage(session)
+    if (!userMsg) return
+
+    const nextStats = {}
+
+    if (updates.turnNumber !== undefined && updates.turnNumber !== null) {
+      nextStats.numTurns = updates.turnNumber
+    }
+
+    if (updates.usage !== undefined && updates.usage !== null) {
+      nextStats.usage = updates.usage
+    }
+
+    if (Object.keys(nextStats).length > 0) {
+      Object.assign(userMsg, nextStats)
+    }
+  }
+
   /**
    * 处理消息创建事件（来自后端）
    */
   function handleMessageStart(session, message) {
     log('[SessionStore] handleMessageStart:', message.role, message.id)
+
+    const existingIndex = session.messages.findIndex(item => item.id === message.id)
+    if (existingIndex >= 0) {
+      const existingMessage = session.messages[existingIndex]
+      Object.assign(existingMessage, {
+        ...message,
+        content: existingMessage.content || message.content || '',
+        thinking: existingMessage.thinking || message.thinking || '',
+        hasThinking: existingMessage.hasThinking || message.hasThinking || false
+      })
+
+      if (message.role === 'assistant') {
+        session.currentAssistantMessageIndex = existingIndex
+      }
+      session.currentStreamingAssistantId = message.id
+      if (message.role === 'assistant') {
+        syncUserRealtimeStats(session, {
+          turnNumber: message.turnNumber,
+          usage: message.usage
+        })
+      }
+      log('[SessionStore] handleMessageStart: reused existing message', message.id)
+      return
+    }
 
     // 添加消息到列表
     session.messages.push(reactive(message))
@@ -639,6 +725,10 @@ export const useSessionStore = defineStore('session', () => {
     // 根据角色设置初始状态
     if (message.role === 'assistant') {
       session.currentAssistantMessageIndex = session.messages.length - 1
+      syncUserRealtimeStats(session, {
+        turnNumber: message.turnNumber,
+        usage: message.usage
+      })
     } else if (message.role === 'tool_use') {
       // 记录 tool_use 的索引
       if (typeof message.request_id === 'number') {
@@ -689,6 +779,9 @@ export const useSessionStore = defineStore('session', () => {
     // 应用更新
     const msg = session.messages[msgIndex]
     Object.assign(msg, updates)
+    if (!msg.duration && msg.startTime) {
+      msg.duration = Date.now() - msg.startTime
+    }
 
     // 清除流式标记
     if (msg.role === 'assistant') {
@@ -715,6 +808,16 @@ export const useSessionStore = defineStore('session', () => {
     // 应用更新
     const msg = session.messages[msgIndex]
     Object.assign(msg, updates)
+    if ((updates.isStreaming === false || updates.isExecuting === false) && !msg.duration && msg.startTime) {
+      msg.duration = Date.now() - msg.startTime
+    }
+
+    if (msg.role === 'assistant') {
+      syncUserRealtimeStats(session, {
+        turnNumber: updates.turnNumber ?? msg.turnNumber,
+        usage: updates.usage ?? msg.usage
+      })
+    }
 
     log('[SessionStore] handleMessageUpdate:', messageId, 'updates:', Object.keys(updates))
 
@@ -728,281 +831,30 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  /**
-   * 处理流式事件（来自后端 - 旧格式兼容）
-   * 处理 content_block_start, content_block_delta, message_start 等
-   */
-  function handleStreamEvent(session, message) {
-    const event = message.event
-    if (!event) return
+  function handleToolResult(session, data) {
+    const toolUseId = data?.toolUseId
+    if (!toolUseId) return
 
-    // Handle turn_start - 统计 turn 数量
-    if (event.type === 'turn_start') {
-      session.currentTurnNumber++
-      updateUserMessageTurns(session, session.currentTurnNumber)
-      return
-    }
-
-    // 检查是否有 usage 信息，并更新到当前 assistant 消息
-    const usage = message.usage || event.usage || event.message?.usage || event.content_block?.usage
-    if (usage && session.currentAssistantMessageIndex >= 0 && session.messages[session.currentAssistantMessageIndex]) {
-      // 更新当前 assistant 消息的 usage（每个 assistant 消息对应一个 turn）
-      const assistantMsg = session.messages[session.currentAssistantMessageIndex]
-      assistantMsg.usage = { ...usage }
-
-      // 同时累加到 user 消息（用于显示总的使用量）
-      accumulateUserMessageUsage(session, usage)
-    }
-
-    // Handle message_start - 创建消息并显示"正在思考"状态
-    if (event.type === 'message_start') {
-      // 移除 status 消息（如"正在启动 Claude..."）
-      const statusIndex = session.messages.findIndex(m => m.role === 'status')
-      if (statusIndex >= 0) {
-        session.messages.splice(statusIndex, 1)
-      }
-
-      session.currentAssistantMessageIndex = -1
-      session.currentContentBlockType = null
-      session.contentBlockIndexToId.clear()
-      session.currentTurnNumber = 0
-      session.hasSeenToolUseInCurrentTurn = false
-
-      const initialUsage = event.message?.usage || null
-      const messageId = event.message?.id || `assistant-${Date.now()}`
-
-      // 保存当前流式消息 ID，用于去重
-      session.currentStreamingAssistantId = messageId
-
-      session.messages.push({
-        id: messageId,
-        role: 'assistant',
-        content: '',
-        thinking: '',
-        hasThinking: false,
-        isStreaming: true,
-        startTime: Date.now(),
-        timestamp: new Date(),
-        usage: initialUsage,
-        turnNumber: 1,
-        rawMessages: [message]
-      })
-      session.currentAssistantMessageIndex = session.messages.length - 1
-
-      updateUserMessageTurns(session, 1)
-      if (initialUsage) {
-        // 累加到 user 消息的 usage 统计
-        accumulateUserMessageUsage(session, initialUsage)
-      }
-      return
-    }
-
-    // Handle content_block_start
-    if (event.type === 'content_block_start') {
-      const contentBlock = event.content_block
-      session.currentContentBlockType = contentBlock?.type
-
-      log('[SessionStore] content_block_start:', {
-        contentType: contentBlock?.type,
-        currentAssistantMessageIndex: session.currentAssistantMessageIndex
-      })
-
-      if (contentBlock?.type === 'thinking') {
-        if (session.hasSeenToolUseInCurrentTurn) {
-          session.currentTurnNumber++
-          session.hasSeenToolUseInCurrentTurn = false
-        }
-        const currentMsg = session.currentAssistantMessageIndex >= 0 ? session.messages[session.currentAssistantMessageIndex] : null
-        if (currentMsg && currentMsg.role === 'assistant') {
-          currentMsg.hasThinking = true
-          currentMsg.thinkingCollapsed = false
-          currentMsg.turnNumber = session.currentTurnNumber + 1
-          if (session.currentTurnNumber > 0) {
-            currentMsg.showTurnSeparator = true
-          }
-        }
-      } else if (contentBlock?.type === 'tool_use') {
-        session.hasSeenToolUseInCurrentTurn = true
-        if (contentBlock.name === 'AskUserQuestion') {
-          return
-        }
-        const toolUseData = contentBlock
-        log('[SessionStore] content_block_start tool_use:', {
-          toolName: toolUseData.name,
-          toolUseId: toolUseData.id,
-          inputKeys: toolUseData.input ? Object.keys(toolUseData.input) : [],
-          input: toolUseData.input,
-          fullEvent: event
-        })
-        if (typeof event.index === 'number') {
-          session.contentBlockIndexToId.set(event.index, toolUseData.id)
-        }
-        session.messages.push({
-          id: toolUseData.id || `tool-${Date.now()}`,
-          role: 'tool_use',
-          toolName: toolUseData.name,
-          toolInput: toolUseData.input ? { ...toolUseData.input } : {},
-          toolInputBuffer: '', // 用于累积 input_json_delta 片段
-          result: '',
-          isError: false,
-          isExecuting: true,
-          request_id: toolUseData.id,
-          collapsed: false,
-          thinking: '',
-          hasThinking: false,
-          timestamp: new Date(),
-          startTime: Date.now(),
-          rawMessages: [message]
-        })
-      }
-      return
-    }
-
-    // Handle content_block_delta
-    if (event.type === 'content_block_delta') {
-      const delta = event.delta
-
-      // Handle thinking_delta
-      if (delta?.type === 'thinking_delta' && delta.thinking) {
-        log('[SessionStore] thinking_delta received:', {
-          deltaType: delta.type,
-          thinkingLength: delta.thinking?.length,
-          currentAssistantMessageIndex: session.currentAssistantMessageIndex
-        })
-        if (session.currentAssistantMessageIndex >= 0 && session.messages[session.currentAssistantMessageIndex]) {
-          const msg = session.messages[session.currentAssistantMessageIndex]
-          msg.thinking = (msg.thinking || '') + delta.thinking
-          msg.hasThinking = true
-          if (!msg.rawMessages) msg.rawMessages = []
-          msg.rawMessages.push(message)
-          log('[SessionStore] Updated thinking, total length:', msg.thinking.length)
-        } else {
-          log('[SessionStore] WARNING: Cannot update thinking, currentAssistantMessageIndex:', session.currentAssistantMessageIndex)
-        }
-      }
-
-      // Handle text_delta
-      if (delta?.type === 'text_delta' && delta.text) {
-        if (session.currentAssistantMessageIndex >= 0 && session.messages[session.currentAssistantMessageIndex]) {
-          const msg = session.messages[session.currentAssistantMessageIndex]
-          msg.content = (msg.content || '') + delta.text
-          if (!msg.rawMessages) msg.rawMessages = []
-          msg.rawMessages.push(message)
-        }
-      }
-
-      // Handle input_json_delta (tool use partial JSON)
-      if (delta?.type === 'input_json_delta' && delta.partial_json) {
-        const contentBlockId = session.contentBlockIndexToId.get(event.index)
-        const toolUseMsgIndex = session.messages.findLastIndex(m =>
-          m.role === 'tool_use' && m.request_id === contentBlockId
-        )
-
-        if (toolUseMsgIndex >= 0) {
-          const toolUseMsg = session.messages[toolUseMsgIndex]
-
-          // 累积 partial_json 片段
-          if (!toolUseMsg.toolInputBuffer) {
-            toolUseMsg.toolInputBuffer = ''
-          }
-          toolUseMsg.toolInputBuffer += delta.partial_json
-
-          log('[SessionStore] input_json_delta:', {
-            contentBlockId,
-            toolUseMsgIndex,
-            partial_json: delta.partial_json,
-            bufferLength: toolUseMsg.toolInputBuffer.length,
-            currentToolInput: toolUseMsg.toolInput,
-            toolName: toolUseMsg.toolName
-          })
-
-          // 尝试解析累积的缓冲区
-          try {
-            const parsedInput = JSON.parse(toolUseMsg.toolInputBuffer)
-            toolUseMsg.toolInput = { ...parsedInput }
-            log('[SessionStore] Updated toolInput from buffer:', {
-              toolUseId: contentBlockId,
-              parsedInputKeys: Object.keys(parsedInput),
-              newToolInput: toolUseMsg.toolInput,
-              buffer: toolUseMsg.toolInputBuffer
-            })
-
-            // 处理 TodoWrite 工具：显示在悬浮窗中
-            if (toolUseMsg.toolName === 'TodoWrite' && parsedInput.todos) {
-              handleTodoWrite(session, contentBlockId, parsedInput.todos)
-            }
-          } catch (e) {
-            // JSON 还不完整，忽略 - 继续累积
-            log('[SessionStore] JSON not complete yet, buffer length:', toolUseMsg.toolInputBuffer.length)
-          }
-        }
-      }
-
-      return
-    }
-
-    // Handle content_block_stop
-    if (event.type === 'content_block_stop') {
-      // 处理 TodoWrite 工具：显示在悬浮窗中
-      const contentBlockId = session.contentBlockIndexToId.get(event.index)
-      if (contentBlockId) {
-        // 使用 request_id 查找,与 input_json_delta 保持一致
-        const toolUseMsg = session.messages.find(m => m.request_id === contentBlockId && m.role === 'tool_use')
-        if (toolUseMsg && toolUseMsg.toolName === 'TodoWrite' && toolUseMsg.toolInput?.todos) {
-          handleTodoWrite(session, contentBlockId, toolUseMsg.toolInput.todos)
-        }
-      }
-      return
-    }
-
-    // Handle message_stop - 计算并设置 duration
-    if (event.type === 'message_stop') {
-      if (session.currentAssistantMessageIndex >= 0 && session.messages[session.currentAssistantMessageIndex]) {
-        const assistantMsg = session.messages[session.currentAssistantMessageIndex]
-        assistantMsg.isStreaming = false
-
-        // 计算并设置 duration（从消息开始到现在的耗时）
-        if (assistantMsg.startTime && !assistantMsg.duration) {
-          assistantMsg.duration = Date.now() - assistantMsg.startTime
-        }
-
-        // 自动折叠思考过程（如果有的话）
-        if (assistantMsg.hasThinking && assistantMsg.thinking) {
-          assistantMsg.thinkingCollapsed = true
-        }
-      }
-      session.currentAssistantMessageIndex = -1
-      session.currentContentBlockType = null
-      // 注意：不清除 currentStreamingAssistantId，等待 result 或 assistant 消息到达后再清除
-      return
-    }
-  }
-
-  // 辅助函数：累加更新用户消息的 usage 统计
-  function accumulateUserMessageUsage(session, newUsage) {
     for (let i = session.messages.length - 1; i >= 0; i--) {
-      if (session.messages[i].role === 'user') {
-        const userMsg = session.messages[i]
-        const currentUsage = userMsg.usage || { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }
-        userMsg.usage = {
-          input_tokens: (currentUsage.input_tokens || 0) + (newUsage.input_tokens || 0),
-          output_tokens: (currentUsage.output_tokens || 0) + (newUsage.output_tokens || 0),
-          cache_read_input_tokens: (currentUsage.cache_read_input_tokens || 0) + (newUsage.cache_read_input_tokens || 0)
-        }
-        // 发送 message-update 事件让前端实时更新显示
-        // 注意：这里不使用 handleMessageUpdate，因为那会重新触发 computed 更新
-        // 直接修改 userMsg.usage 已经会触发 Vue 的响应式更新
-        break
+      const msg = session.messages[i]
+      if (msg.role === 'question' && msg.tool_use_id === toolUseId) {
+        msg.resultReceived = true
+        msg.receivedAnswers = data.answers || null
+        msg.answersConsistent = data.answers ? compareAnswers(msg.userAnswers, data.answers) : true
+        return
       }
     }
-  }
 
-  // 辅助函数：更新用户消息的 turn 数量
-  function updateUserMessageTurns(session, numTurns) {
     for (let i = session.messages.length - 1; i >= 0; i--) {
-      if (session.messages[i].role === 'user') {
-        session.messages[i].numTurns = numTurns
-        break
+      const msg = session.messages[i]
+      if (msg.role === 'tool_use' && (msg.id === toolUseId || msg.request_id === toolUseId)) {
+        msg.isExecuting = false
+        msg.isError = !!data.isError
+        msg.result = data.content || '(无输出)'
+        if (!msg.duration && msg.startTime) {
+          msg.duration = Date.now() - msg.startTime
+        }
+        return
       }
     }
   }
@@ -1103,63 +955,7 @@ export const useSessionStore = defineStore('session', () => {
     // 检查是否是权限确认的响应（包含 behavior 字段）
     const responseData = data.response?.response || data.response
     if (responseData?.behavior && session.lastPermissionRequest) {
-      const behavior = responseData.behavior // 'allow' or 'deny'
-      const updatedInput = responseData.updatedInput || {}
-      const updatedPermissions = responseData.updatedPermissions || []
-      const toolName = session.lastPermissionRequest.tool_name || session.lastPermissionRequest.toolName || 'Unknown'
-
-      // 判断是否是 "allow all"（有 updatedPermissions 且不为空）
-      const isAllowAll = behavior === 'allow' && updatedPermissions.length > 0
-
-      // 构建消息内容
-      let content = ''
-      if (behavior === 'deny') {
-        content = `❌ 已拒绝: ${toolName}`
-      } else if (isAllowAll) {
-        content = `✅ 已允许 (所有): ${toolName}`
-      } else {
-        content = `✅ 已允许: ${toolName}`
-      }
-
-      // 根据工具类型添加详细信息 - 先显示说明，再显示具体内容
-      if (updatedInput.command) {
-        // Bash 工具：先显示说明，再显示命令
-        if (updatedInput.description) {
-          content += `\n说明: ${updatedInput.description}`
-        }
-        content += `\n命令: ${updatedInput.command}`
-      } else if (updatedInput.file_path) {
-        if (updatedInput.description) {
-          content += `\n说明: ${updatedInput.description}`
-        }
-        content += `\n文件: ${updatedInput.file_path}`
-      } else if (updatedInput.pattern) {
-        if (updatedInput.description) {
-          content += `\n说明: ${updatedInput.description}`
-        }
-        content += `\n模式: ${updatedInput.pattern}`
-        if (updatedInput.path) {
-          content += `\n路径: ${updatedInput.path}`
-        }
-      } else if (updatedInput.query) {
-        if (updatedInput.description) {
-          content += `\n说明: ${updatedInput.description}`
-        }
-        content += `\n查询: ${updatedInput.query}`
-      } else if (updatedInput.description) {
-        content += `\n说明: ${updatedInput.description}`
-      }
-
-      // 添加权限结果消息
-      session.messages.push({
-        id: `permission-result-${Date.now()}`,
-        role: 'permission_result',
-        content: content,
-        timestamp: new Date()
-      })
-
-      // 清除保存的请求信息
-      session.lastPermissionRequest = null
+      addPermissionResultMessage(session, responseData)
     }
 
     // 检查是否有待处理的控制请求
@@ -1186,123 +982,59 @@ export const useSessionStore = defineStore('session', () => {
     })
   }
 
-  /**
-   * 处理工具使用
-   */
-  function handleToolUse(session, data) {
-    log('[SessionStore] handleToolUse called:', {
-      dataKeys: Object.keys(data),
-      hasMessage: !!data.message,
-      hasContent: !!data.content,
-      messageContentKeys: data.message?.content ? data.message.content.map(c => c.type) : [],
-      directContentKeys: data.content ? data.content.map(c => c.type) : []
+  function addPermissionResultMessage(session, responseData = {}) {
+    if (!session?.lastPermissionRequest) return
+
+    const behavior = responseData.behavior
+    const updatedInput = responseData.updatedInput || {}
+    const updatedPermissions = responseData.updatedPermissions || []
+    const toolName = session.lastPermissionRequest.tool_name || session.lastPermissionRequest.toolName || 'Unknown'
+    const isAllowAll = behavior === 'allow' && updatedPermissions.length > 0
+
+    let content = ''
+    if (behavior === 'deny') {
+      content = `❌ 已拒绝: ${toolName}`
+    } else if (isAllowAll) {
+      content = `✅ 已允许 (所有): ${toolName}`
+    } else {
+      content = `✅ 已允许: ${toolName}`
+    }
+
+    if (updatedInput.command) {
+      if (updatedInput.description) {
+        content += `\n说明: ${updatedInput.description}`
+      }
+      content += `\n命令: ${updatedInput.command}`
+    } else if (updatedInput.file_path) {
+      if (updatedInput.description) {
+        content += `\n说明: ${updatedInput.description}`
+      }
+      content += `\n文件: ${updatedInput.file_path}`
+    } else if (updatedInput.pattern) {
+      if (updatedInput.description) {
+        content += `\n说明: ${updatedInput.description}`
+      }
+      content += `\n模式: ${updatedInput.pattern}`
+      if (updatedInput.path) {
+        content += `\n路径: ${updatedInput.path}`
+      }
+    } else if (updatedInput.query) {
+      if (updatedInput.description) {
+        content += `\n说明: ${updatedInput.description}`
+      }
+      content += `\n查询: ${updatedInput.query}`
+    } else if (updatedInput.description) {
+      content += `\n说明: ${updatedInput.description}`
+    }
+
+    session.messages.push({
+      id: `permission-result-${Date.now()}`,
+      role: 'permission_result',
+      content,
+      timestamp: new Date()
     })
 
-    // 支持两种格式：data.message.content 或 data.content
-    const content = data.message?.content || data.content
-    if (content) {
-      const toolUseContent = content.find(c => c.type === 'tool_use')
-      if (toolUseContent) {
-        log('[SessionStore] toolUseContent found:', {
-          toolName: toolUseContent.name,
-          toolUseId: toolUseContent.id,
-          inputKeys: toolUseContent.input ? Object.keys(toolUseContent.input) : [],
-          input: toolUseContent.input
-        })
-        // 查找是否已存在相同的 tool_use 消息（通过 id 或 request_id 匹配）
-        const existingMsgIndex = session.messages.findIndex(m =>
-          (m.role === 'tool_use' && m.id === toolUseContent.id) ||
-          (m.role === 'tool_use' && m.request_id === toolUseContent.id)
-        )
-
-        if (existingMsgIndex >= 0) {
-          // 更新现有消息
-          const existingMsg = session.messages[existingMsgIndex]
-          log('[SessionStore] Updating existing tool_use message:', {
-            index: existingMsgIndex,
-            existingToolInput: existingMsg.toolInput,
-            newToolInput: toolUseContent.input
-          })
-          existingMsg.toolInput = toolUseContent.input || {}
-          existingMsg.toolName = toolUseContent.name
-          existingMsg.isExecuting = true
-          // 保留其他字段（如 startTime, timestamp 等）
-        } else {
-          // 创建新消息（如果流式传输没有创建）
-          log('[SessionStore] Creating new tool_use message (no streamed version found)')
-          session.messages.push({
-            id: toolUseContent.id || `tool-${Date.now()}`,
-            role: 'tool_use',
-            toolName: toolUseContent.name,
-            toolInput: toolUseContent.input,
-            toolInputBuffer: '', // 用于一致性，虽然可能不需要
-            result: '',
-            isError: false,
-            isExecuting: true,
-            timestamp: new Date(),
-            startTime: Date.now()
-          })
-        }
-
-        // 处理 TodoWrite 工具：显示在悬浮窗中
-        if (toolUseContent.name === 'TodoWrite' && toolUseContent.input?.todos) {
-          handleTodoWrite(session, toolUseContent.id, toolUseContent.input.todos)
-        }
-      }
-    }
-  }
-
-  /**
-   * 处理工具结果
-   */
-  function handleToolResult(session, data) {
-    log('[SessionStore] handleToolResult called')
-    log('[SessionStore] Full data:', JSON.stringify(data, null, 2))
-
-    if (data.message?.content) {
-      const toolResultContent = data.message.content.find(c => c.type === 'tool_result')
-      if (toolResultContent) {
-        const toolUseId = toolResultContent.tool_use_id
-        log('[SessionStore] tool_result for tool_use_id:', toolUseId)
-
-        // 先检查是否是 AskUserQuestion 的结果（对应 role === 'question' 的消息）
-        for (let i = session.messages.length - 1; i >= 0; i--) {
-          const msg = session.messages[i]
-          if (msg.role === 'question' && msg.tool_use_id === toolUseId) {
-            log('[SessionStore] Found question message for AskUserQuestion result')
-            msg.resultReceived = true
-
-            // 从 data.tool_use_result.answers 获取实际收到的答案
-            // 这是原始的 JSON 答案对象，而不是 content 中的处理后的文本
-            if (data.tool_use_result?.answers) {
-              msg.receivedAnswers = data.tool_use_result.answers
-              log('[SessionStore] receivedAnswers from tool_use_result:', JSON.stringify(msg.receivedAnswers))
-
-              // 比较用户提交的答案和收到的答案是否一致
-              if (msg.userAnswers) {
-                msg.answersConsistent = compareAnswers(msg.userAnswers, msg.receivedAnswers)
-                log('[SessionStore] userAnswers:', JSON.stringify(msg.userAnswers))
-                log('[SessionStore] answersConsistent:', msg.answersConsistent)
-              }
-            }
-
-            break
-          }
-        }
-
-        // 然后检查普通的 tool_use 消息
-        for (let i = session.messages.length - 1; i >= 0; i--) {
-          const msg = session.messages[i]
-          if (msg.role === 'tool_use' && msg.id === toolUseId) {
-            msg.isExecuting = false
-            msg.isError = toolResultContent.is_error
-            msg.result = toolResultContent.content || '(无输出)'
-            msg.duration = Date.now() - (msg.startTime || Date.now())
-            break
-          }
-        }
-      }
-    }
+    session.lastPermissionRequest = null
   }
 
   /**
@@ -1367,7 +1099,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 处理 Claude 进程异常退出
+   * 处理运行时进程异常退出
    */
   function handleAbnormalExit(session, data) {
     log('[SessionStore] handleAbnormalExit:', data)
@@ -1400,7 +1132,7 @@ export const useSessionStore = defineStore('session', () => {
     const exitMsg = {
       id: `abnormal-exit-${Date.now()}`,
       role: 'system_notification',
-      notificationType: 'claude-exit',
+      notificationType: 'runtime-exit',
       data: {
         code: data.code,
         message: data.message
@@ -1442,7 +1174,7 @@ export const useSessionStore = defineStore('session', () => {
     const exitMsg = {
       id: `normal-exit-${Date.now()}`,
       role: 'system_notification',
-      notificationType: 'claude-stopped',
+      notificationType: 'runtime-stopped',
       data: {
         message: data.message || '已手动停止'
       },
@@ -1569,7 +1301,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 处理 CLI 状态消息（如"正在启动 Claude..."）
+   * 处理 CLI 状态消息（如"正在启动运行时..."）
    * 添加一个临时的 status 消息到消息列表
    */
   function handleCliStatus(session, data) {
@@ -1736,11 +1468,10 @@ export const useSessionStore = defineStore('session', () => {
     // Actions
     initSession,
     switchToSession,
-    openSession: switchToSession, // 别名，兼容旧代码
     closeSession,
     sendMessage,
     sendControlResponse,
-    sendToolResult,
+    sendRuntimeToolResult,
     sendInterrupt,
     sendControlRequest,
     setPermissionMode,

@@ -543,7 +543,7 @@ onUnmounted(() => {
 <style scoped>
 .message {
   display: flex;
-  margin-bottom: 16px;
+  margin-bottom: 36px;
   gap: 12px;
   transition: opacity 0.15s;
 }

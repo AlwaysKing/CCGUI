@@ -67,9 +67,18 @@ function createDefaultMetadata() {
       input: 0,
       output: 0
     },
+    envInfo: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   }
+}
+
+function cloneSerializable(value) {
+  if (value === undefined) {
+    return null
+  }
+
+  return JSON.parse(JSON.stringify(value))
 }
 
 /**
@@ -121,6 +130,21 @@ function saveMetadata(projectId, sessionId, metadata) {
     return true
   } catch (error) {
     logger.error('[HistoryManager] Failed to save metadata', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return false
+  }
+}
+
+function updateSessionEnvInfo(projectId, sessionId, envInfo) {
+  try {
+    const metadata = loadMetadata(projectId, sessionId)
+    metadata.envInfo = cloneSerializable(envInfo)
+    return saveMetadata(projectId, sessionId, metadata)
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to update session envInfo', {
       projectId,
       sessionId,
       error: error.message
@@ -404,6 +428,7 @@ module.exports = {
   getMetadataFilePath,
   loadMetadata,
   saveMetadata,
+  updateSessionEnvInfo,
   appendMessage,
   updateMessage,
   loadHistory,

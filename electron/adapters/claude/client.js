@@ -2,8 +2,8 @@ const { spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
-const logger = require('./logger')
-const appConfigManager = require('./storage/app-config-manager')
+const logger = require('../../logger')
+const appConfigManager = require('../../storage/app-config-manager')
 
 // Helper to calculate project ID from path (same as SessionInstance)
 function calculateProjectId(projectPath) {
@@ -20,10 +20,10 @@ function calculateProjectId(projectPath) {
 }
 
 /**
- * Claude CLI Manager
- * Manages communication with Claude CLI using stream-json format
+ * Claude CLI client
+ * Handles raw process I/O and protocol transport for Claude.
  */
-class ClaudeManager {
+class ClaudeClient {
   constructor(workingDirectory = null, sessionId = null, isNewSession = true, permissionMode = 'default', projectSettings = null) {
     this.process = null
     this.messageHandlers = new Map()
@@ -104,10 +104,10 @@ class ClaudeManager {
    * @returns {Promise<string|null>} 系统提示词内容
    */
   async buildSystemPrompt() {
-    logger.info(`[ClaudeManager] buildSystemPrompt called, projectSettings:`, this.projectSettings)
+    logger.info(`[ClaudeClient] buildSystemPrompt called, projectSettings:`, this.projectSettings)
 
     if (!this.projectSettings) {
-      logger.info('[ClaudeManager] No projectSettings, returning null')
+      logger.info('[ClaudeClient] No projectSettings, returning null')
       return null
     }
 
@@ -120,24 +120,24 @@ class ClaudeManager {
 
       // 1. 添加提示词（直接添加内容）
       const promptIds = Array.isArray(this.projectSettings.promptIds) ? this.projectSettings.promptIds : []
-      logger.info(`[ClaudeManager] Checking promptIds:`, promptIds)
+      logger.info(`[ClaudeClient] Checking promptIds:`, promptIds)
       if (promptIds && Array.isArray(promptIds) && promptIds.length > 0) {
         const prompts = appConfig.settings?.prompts || []
-        logger.info(`[ClaudeManager] Found ${prompts.length} prompts in app config`)
+        logger.info(`[ClaudeClient] Found ${prompts.length} prompts in app config`)
         for (const promptId of promptIds) {
           const prompt = prompts.find(p => p.id === promptId)
           if (prompt && prompt.content) {
             parts.push(prompt.content)
-            logger.info(`[ClaudeManager] Added prompt: ${prompt.name || promptId}`)
+            logger.info(`[ClaudeClient] Added prompt: ${prompt.name || promptId}`)
           } else {
-            logger.warn(`[ClaudeManager] Prompt not found or no content: ${promptId}`)
+            logger.warn(`[ClaudeClient] Prompt not found or no content: ${promptId}`)
           }
         }
       }
 
       // 2. 添加规范文档路径引用
       const documentIds = Array.isArray(this.projectSettings.documentIds) ? this.projectSettings.documentIds : []
-      logger.info(`[ClaudeManager] Checking documentIds:`, documentIds)
+      logger.info(`[ClaudeClient] Checking documentIds:`, documentIds)
       if (documentIds && Array.isArray(documentIds) && documentIds.length > 0) {
         const docsDir = path.join(os.homedir(), '.ccgui', 'docs')
         const docPaths = []
@@ -147,22 +147,22 @@ class ClaudeManager {
           // 检查文件是否存在
           if (require('fs').existsSync(filePath)) {
             docPaths.push(filePath)
-            logger.info(`[ClaudeManager] Found document file: ${filePath}`)
+            logger.info(`[ClaudeClient] Found document file: ${filePath}`)
           } else {
-            logger.warn(`[ClaudeManager] Document file not found: ${filePath}`)
+            logger.warn(`[ClaudeClient] Document file not found: ${filePath}`)
           }
         }
 
         if (docPaths.length > 0) {
           parts.push(`请始终遵循如下文档的规范要求: ${docPaths.join(', ')}`)
-          logger.info(`[ClaudeManager] Added document requirements: ${docPaths.join(', ')}`)
+          logger.info(`[ClaudeClient] Added document requirements: ${docPaths.join(', ')}`)
         }
       }
     } catch (error) {
-      logger.error('[ClaudeManager] Failed to build system prompt:', error)
+      logger.error('[ClaudeClient] Failed to build system prompt:', error)
     }
 
-    logger.info(`[ClaudeManager] buildSystemPrompt result: ${parts.length} parts, total ${parts.join('\n\n').length} chars`)
+    logger.info(`[ClaudeClient] buildSystemPrompt result: ${parts.length} parts, total ${parts.join('\n\n').length} chars`)
     if (parts.length === 0) return null
     return parts.join('\n\n')
   }
@@ -183,26 +183,26 @@ class ClaudeManager {
       // 查找对应的模型配置
       const modelConfig = models.find(m => m.id === this.projectSettings.modelId)
       if (!modelConfig) {
-        logger.warn(`[ClaudeManager] Model config not found: ${this.projectSettings.modelId}`)
+        logger.warn(`[ClaudeClient] Model config not found: ${this.projectSettings.modelId}`)
         return envVars
       }
 
       // 设置 API URL (ANTHROPIC_BASE_URL)
       if (modelConfig.apiUrl) {
         envVars.ANTHROPIC_BASE_URL = modelConfig.apiUrl
-        logger.info(`[ClaudeManager] Setting ANTHROPIC_BASE_URL: ${modelConfig.apiUrl}`)
+        logger.info(`[ClaudeClient] Setting ANTHROPIC_BASE_URL: ${modelConfig.apiUrl}`)
       }
 
       // 设置 Auth Token (ANTHROPIC_AUTH_TOKEN)
       if (modelConfig.authToken) {
         envVars.ANTHROPIC_AUTH_TOKEN = modelConfig.authToken
-        logger.info(`[ClaudeManager] Setting ANTHROPIC_AUTH_TOKEN: ${modelConfig.authToken.substring(0, 10)}...`)
+        logger.info(`[ClaudeClient] Setting ANTHROPIC_AUTH_TOKEN: ${modelConfig.authToken.substring(0, 10)}...`)
       }
 
       // 获取模型卡片列表
       const modelCards = modelConfig.modelCards || []
       if (modelCards.length === 0) {
-        logger.warn(`[ClaudeManager] No model cards found for: ${this.projectSettings.modelId}`)
+        logger.warn(`[ClaudeClient] No model cards found for: ${this.projectSettings.modelId}`)
         return envVars
       }
 
@@ -220,12 +220,12 @@ class ClaudeManager {
 
       if (targetCard && targetCard.modelName) {
         envVars.ANTHROPIC_MODEL = targetCard.modelName
-        logger.info(`[ClaudeManager] Setting ANTHROPIC_MODEL: ${targetCard.modelName} (from card: ${targetCard.id})`)
+        logger.info(`[ClaudeClient] Setting ANTHROPIC_MODEL: ${targetCard.modelName} (from card: ${targetCard.id})`)
       } else {
-        logger.warn(`[ClaudeManager] No valid modelName found in model card`)
+        logger.warn(`[ClaudeClient] No valid modelName found in model card`)
       }
     } catch (error) {
-      logger.error('[ClaudeManager] Failed to get model env vars:', error)
+      logger.error('[ClaudeClient] Failed to get model env vars:', error)
     }
 
     return envVars
@@ -260,7 +260,7 @@ class ClaudeManager {
     // Add permission mode if not default
     if (this.permissionMode && this.permissionMode !== 'default') {
       args.push('--permission-mode', this.permissionMode)
-      logger.info(`[ClaudeManager] Setting permission mode: ${this.permissionMode}`)
+      logger.info(`[ClaudeClient] Setting permission mode: ${this.permissionMode}`)
     }
 
     // Add session-id to resume or create session
@@ -268,11 +268,11 @@ class ClaudeManager {
       if (this.isNewSession) {
         // New session: use --session-id to create a new session with specific ID
         args.push('--session-id', this.sessionId)
-        logger.info(`[ClaudeManager] Creating new session with ID: ${this.sessionId}`)
+        logger.info(`[ClaudeClient] Creating new session with ID: ${this.sessionId}`)
       } else {
         // Existing session: use --resume to resume the session
         args.push('--resume', this.sessionId)
-        logger.info(`[ClaudeManager] Resuming session with ID: ${this.sessionId}`)
+        logger.info(`[ClaudeClient] Resuming session with ID: ${this.sessionId}`)
       }
     }
 
@@ -280,7 +280,7 @@ class ClaudeManager {
     const systemPrompt = await this.buildSystemPrompt()
     if (systemPrompt) {
       args.push('--append-system-prompt', systemPrompt)
-      logger.info(`[ClaudeManager] Added system prompt (${systemPrompt.length} chars)`)
+      logger.info(`[ClaudeClient] Added system prompt (${systemPrompt.length} chars)`)
     }
 
     // Get model environment variables
@@ -296,15 +296,15 @@ class ClaudeManager {
     }
 
     // 打印启动参数供调试
-    logger.info('[ClaudeManager] ========== Claude CLI 启动参数 ==========')
-    logger.info(`[ClaudeManager] Claude路径: ${this.claudePath}`)
-    logger.info(`[ClaudeManager] 工作目录: ${this.workingDirectory}`)
-    logger.info(`[ClaudeManager] 参数: ${JSON.stringify(args, null, 2)}`)
-    logger.info(`[ClaudeManager] 环境变量(自定义): ${JSON.stringify(modelEnvVars, null, 2)}`)
+    logger.info('[ClaudeClient] ========== Claude CLI 启动参数 ==========')
+    logger.info(`[ClaudeClient] Claude路径: ${this.claudePath}`)
+    logger.info(`[ClaudeClient] 工作目录: ${this.workingDirectory}`)
+    logger.info(`[ClaudeClient] 参数: ${JSON.stringify(args, null, 2)}`)
+    logger.info(`[ClaudeClient] 环境变量(自定义): ${JSON.stringify(modelEnvVars, null, 2)}`)
     if (systemPrompt) {
-      logger.info(`[ClaudeManager] 系统提示词内容: ${systemPrompt.substring(0, 500)}${systemPrompt.length > 500 ? '...' : ''}`)
+      logger.info(`[ClaudeClient] 系统提示词内容: ${systemPrompt.substring(0, 500)}${systemPrompt.length > 500 ? '...' : ''}`)
     }
-    logger.info('[ClaudeManager] ===========================================')
+    logger.info('[ClaudeClient] ===========================================')
 
     try {
       this.process = spawn(this.claudePath, args, {
@@ -340,8 +340,13 @@ class ClaudeManager {
         tools: []
       })
 
-      // Send initialize control request to enable file history
-      await this.sendInitializeRequest()
+      // Newer Claude Code builds may not emit an initialize response.
+      // Treat initialization as best-effort so session startup is not blocked.
+      try {
+        await this.sendInitializeRequest()
+      } catch (error) {
+        logger.warn(`[ClaudeClient] Initialize request did not complete, continuing startup: ${error.message}`)
+      }
 
     } catch (error) {
       this.process = null
@@ -355,20 +360,35 @@ class ClaudeManager {
   async sendInitializeRequest() {
     return new Promise((resolve, reject) => {
       const requestId = `init_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      let settled = false
+      let timeout = null
+
+      const cleanup = () => {
+        if (timeout) {
+          clearTimeout(timeout)
+          timeout = null
+        }
+        this.off('control_response', responseHandler)
+      }
 
       // Set up one-time handler for the response
       const responseHandler = (message) => {
+        if (settled) {
+          return
+        }
+
         if (message.type === 'control_response' &&
             message.response?.request_id === requestId) {
-          this.off('control_response', responseHandler)
-          logger.info('[ClaudeManager] Initialize response received:', message)
+          settled = true
+          cleanup()
+          logger.info('[ClaudeClient] Initialize response received:', message)
 
           // Check if initialization was successful
           if (message.response?.subtype === 'success') {
-            logger.info('[ClaudeManager] Claude initialized successfully, file history should be enabled')
+            logger.info('[ClaudeClient] Claude initialized successfully, file history should be enabled')
             resolve(message)
           } else {
-            logger.error('[ClaudeManager] Initialize failed:', message.response?.error)
+            logger.error('[ClaudeClient] Initialize failed:', message.response?.error)
             reject(new Error(`Initialize failed: ${message.response?.error}`))
           }
         }
@@ -389,12 +409,16 @@ class ClaudeManager {
         }
       }
 
-      logger.info('[ClaudeManager] Sending initialize request:', initRequest)
+      logger.info('[ClaudeClient] Sending initialize request:', initRequest)
       this.sendMessage(initRequest)
 
       // Timeout after 10 seconds
-      setTimeout(() => {
-        this.off('control_response', responseHandler)
+      timeout = setTimeout(() => {
+        if (settled) {
+          return
+        }
+        settled = true
+        cleanup()
         reject(new Error('Initialize request timeout'))
       }, 10000)
     })
@@ -510,7 +534,7 @@ class ClaudeManager {
 
     // Handle control_cancel_request (confirmation of interrupt/cancel)
     if (message.type === 'control_cancel_request') {
-      logger.info('[ClaudeManager] Received control_cancel_request, treating as interrupt confirmation')
+      logger.info('[ClaudeClient] Received control_cancel_request, treating as interrupt confirmation')
       const interruptHandlers = this.messageHandlers.get('interrupt') || []
       interruptHandlers.forEach(handler => {
         try {
@@ -766,6 +790,20 @@ class ClaudeManager {
   }
 
   /**
+   * Emit an event to registered handlers
+   */
+  emit(messageType, payload) {
+    const handlers = this.messageHandlers.get(messageType) || []
+    handlers.forEach(handler => {
+      try {
+        handler(payload)
+      } catch (error) {
+        logger.error('[ClaudeClient] Handler error', { messageType, error: error.message })
+      }
+    })
+  }
+
+  /**
    * Stop Claude CLI process
    */
   stop() {
@@ -790,4 +828,4 @@ class ClaudeManager {
   }
 }
 
-module.exports = { ClaudeManager }
+module.exports = { ClaudeClient }

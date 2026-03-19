@@ -23,10 +23,10 @@ const formattedTime = computed(() => {
 // 根据通知类型返回样式类
 const notificationTypeClass = computed(() => {
   const { notificationType } = props.message
-  if (notificationType === 'claude-exit') {
+  if (notificationType === 'runtime-exit') {
     return 'notification-error'
   }
-  if (notificationType === 'claude-stopped') {
+  if (notificationType === 'runtime-stopped') {
     return 'notification-success'
   }
   return 'notification-warning'
@@ -50,7 +50,7 @@ const notificationContent = computed(() => {
 
     let description = `已切换到: ${modeNames[data.permissionMode] || data.permissionMode}`
     if (pending) {
-      description += ' (将在 Claude 启动时生效)'
+        description += ' (将在运行时启动时生效)'
     }
 
     return {
@@ -94,19 +94,38 @@ const notificationContent = computed(() => {
     }
   }
 
-  if (notificationType === 'claude-exit') {
+  if (notificationType === 'context_compacted') {
+    const summary = data.summary || data.metadata?.summary || data.metadata?.compactSummary || ''
+    return {
+      icon: '📦',
+      title: '上下文已压缩',
+      description: summary || '已完成上下文压缩'
+    }
+  }
+
+  if (notificationType === 'model-rerouted') {
+    const from = data.requestedModel || '原始模型'
+    const to = data.reroutedModel || '实际模型'
+    return {
+      icon: '🔀',
+      title: '模型已切换',
+      description: `${from} -> ${to}`
+    }
+  }
+
+  if (notificationType === 'runtime-exit') {
     const exitInfo = data.message || `退出码: ${data.code}`
     return {
       icon: '⏹',
-      title: 'Claude 进程已结束',
+      title: '运行时进程已结束',
       description: exitInfo
     }
   }
 
-  if (notificationType === 'claude-stopped') {
+  if (notificationType === 'runtime-stopped') {
     return {
       icon: '⏸',
-      title: 'Claude 已停止',
+      title: '运行时已停止',
       description: data.message || '会话已手动停止'
     }
   }

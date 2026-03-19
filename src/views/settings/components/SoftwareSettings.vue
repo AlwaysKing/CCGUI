@@ -3,7 +3,7 @@
  * SoftwareSettings - 软件配置区域
  * 包含主题、语言、Bark通知、关于信息
  */
-import { ref, defineProps, defineEmits } from 'vue'
+import { ref } from 'vue'
 import SettingsSection from './common/SettingsSection.vue'
 import SettingItem from './common/SettingItem.vue'
 

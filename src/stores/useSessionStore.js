@@ -6,15 +6,11 @@ import { logger } from '../utils/logger'
  * 日志工具 - 使用新的文件日志系统
  */
 function log(...args) {
-  // 使用新的日志系统
   const message = args.map(arg =>
     typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
   ).join(' ')
 
   logger.info(`[SessionStore] ${message}`)
-
-  // 同时也保留控制台输出（方便调试）
-  console.log('[SessionStore]', ...args)
 }
 
 /**

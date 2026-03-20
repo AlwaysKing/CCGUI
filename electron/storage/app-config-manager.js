@@ -35,8 +35,12 @@ function getDefaultConfig() {
       showNotifications: true,
 
       // 模型配置
-      models: [],
-      selectedModelId: null,
+      claudeModels: [],
+      codexModels: [],
+      selectedClaudeModelId: null,
+      selectedCodexModelId: null,
+      codexAccounts: [],
+      selectedCodexAccountId: null,
       codexProxy: '',
 
       // 提示词配置
@@ -77,7 +81,7 @@ function loadConfig() {
     logger.debug('[AppConfigManager] Loaded app config', { configPath })
 
     // 合并默认配置,确保所有字段都存在
-    return deepMerge(getDefaultConfig(), config)
+    return migrateModelSettings(deepMerge(getDefaultConfig(), config))
   } catch (error) {
     logger.error('[AppConfigManager] Failed to load config', {
       error: error.message,
@@ -87,6 +91,26 @@ function loadConfig() {
     // 出错时返回默认配置
     return getDefaultConfig()
   }
+}
+
+function migrateModelSettings(config) {
+  const settings = config?.settings
+  if (!settings) {
+    return config
+  }
+
+  if (Array.isArray(settings.models) && settings.models.length > 0 && (!Array.isArray(settings.claudeModels) || settings.claudeModels.length === 0)) {
+    settings.claudeModels = settings.models
+  }
+
+  if (settings.selectedModelId && !settings.selectedClaudeModelId) {
+    settings.selectedClaudeModelId = settings.selectedModelId
+  }
+
+  delete settings.models
+  delete settings.selectedModelId
+
+  return config
 }
 
 /**

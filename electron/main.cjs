@@ -5,6 +5,9 @@ const os = require('os')
 const { execFile, fork, spawn } = require('child_process')
 const { SessionManager } = require('./session/session-manager')
 const logger = require('./logger')
+const { encodeProjectPath } = require('./project-paths')
+const appService = require('./services/app-service')
+const projectService = require('./services/project-service')
 
 // 初始化日志系统
 logger.initialize()
@@ -755,22 +758,6 @@ ipcMain.handle('write-app-log', async (event, { entry }) => {
   }
 })
 
-// Write stream log for a session
-ipcMain.handle('write-stream-log', async (event, { sessionId, entry }) => {
-  try {
-    // 解析流日志条目并写入
-    const streamEntry = JSON.parse(entry)
-    const { direction, data } = streamEntry
-
-    // 使用日志模块写入
-    logger.writeStreamLog(sessionId, direction, data)
-    return { success: true }
-  } catch (error) {
-    logger.error('[IPC] write-stream-log error:', error)
-    return { success: false, error: error.message }
-  }
-})
-
 // Select/Activate a session - creates SessionInstance and returns state
 ipcMain.handle('select-session', async (event, { sessionId, projectId, projectPath }) => {
   logger.info('[IPC] select-session:', { sessionId, projectId, projectPath })
@@ -993,464 +980,29 @@ ipcMain.handle('stop-session-runtime', async (event, { sessionId }) => {
 // Project & Session Management IPC Handlers
 // ============================================
 
-/**
- * Get the Claude projects directory path
- */
-function getClaudeProjectsDir() {
-  return path.join(os.homedir(), '.claude', 'projects')
-}
+// Get all projects
+ipcMain.handle('get-projects', async () => {
+  return projectService.scanProjects()
+})
 
-function getCodexExecutablePath() {
-  const possiblePaths = [
-    '/Applications/Codex.app/Contents/Resources/codex',
-    '/opt/homebrew/bin/codex',
-    '/usr/local/bin/codex',
-    path.join(os.homedir(), '.local', 'bin', 'codex')
-  ]
-
-  return possiblePaths.find(candidate => fs.existsSync(candidate)) || null
-}
-
-function encodeProjectPath(projectPath) {
-  let encodedPath = projectPath
-  if (process.platform === 'win32') {
-    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
-  } else {
-    encodedPath = encodedPath.replace(/\//g, '-')
-  }
-  if (encodedPath.startsWith('-')) {
-    encodedPath = encodedPath.slice(1)
-  }
-  return '-' + encodedPath
-}
-
-/**
- * Decode project directory name back to original path
- * e.g., '-Users-alwaysking-Desktop-CCGUI' -> '/Users/alwaysking/Desktop/CCGUI'
- */
-function decodeProjectPath(encodedName) {
-  let decoded = encodedName.startsWith('-') ? encodedName.slice(1) : encodedName
-  if (process.platform === 'win32') {
-    decoded = decoded.replace(/^([A-Za-z])-/, '$1:/')
-    decoded = decoded.slice(2).replace(/-/g, '/')
-  } else {
-    decoded = '/' + decoded.replace(/-/g, '/')
-  }
-  return decoded
-}
-
-/**
- * Scan all projects from ~/.claude/projects directory
- */
-async function scanProjects() {
-  const ccguiProjects = scanCCGUIProjects()
-  const claudeProjects = scanClaudeProjects()
-  const codexProjects = await scanCodexProjects()
-
-  const merged = mergeProjectsByPath(ccguiProjects, claudeProjects, codexProjects)
-  logger.info(`[Projects] Found ${merged.length} merged projects (ccgui=${ccguiProjects.length}, claude=${claudeProjects.length}, codex=${codexProjects.length})`)
-  return merged
-}
-
-function scanCCGUIProjects() {
+// Add a new project (by path)
+ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
   try {
-    const projects = projectConfigManager.getAllProjects() || []
-    return projects.map(project => ({
-      id: project.id || encodeProjectPath(project.path),
-      name: project.name || path.basename(project.path),
-      path: project.path,
-      sessionCount: project.sessionCount || 0,
-      lastActiveAt: project.updatedAt || project.createdAt || null,
-      settings: project.settings || {},
+    return projectService.addProject(projectPath, settings)
+  } catch (e) {
+    logger.warn('[Projects] Failed to create project config:', e.message)
+    return {
+      id: encodeProjectPath(projectPath),
+      name: path.basename(projectPath),
+      path: projectPath,
+      sessionCount: 0,
+      lastActiveAt: new Date().toISOString(),
+      settings: {},
       sourceFlags: {
         ccgui: true,
         claude: false,
         codex: false
       }
-    }))
-  } catch (error) {
-    logger.warn('[Projects] Failed to scan CCGUI projects', { error: error.message })
-    return []
-  }
-}
-
-function scanClaudeProjects() {
-  const projectsDir = getClaudeProjectsDir()
-
-  if (!fs.existsSync(projectsDir)) {
-    logger.info('[Projects] Claude projects directory does not exist:', projectsDir)
-    return []
-  }
-
-  const entries = fs.readdirSync(projectsDir, { withFileTypes: true })
-  const projects = []
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-
-    const projectPath = decodeProjectPath(entry.name)
-    const fullProjectDir = path.join(projectsDir, entry.name)
-
-    const files = fs.readdirSync(fullProjectDir)
-    const sessionFiles = files.filter(f => f.endsWith('.jsonl') && !fs.statSync(path.join(fullProjectDir, f)).isDirectory())
-
-    let lastActiveAt = null
-    try {
-      const stats = fs.statSync(fullProjectDir)
-      lastActiveAt = stats.mtime.toISOString()
-    } catch (e) {
-      // Ignore stat errors
-    }
-
-    const name = path.basename(projectPath)
-
-    projects.push({
-      id: entry.name,
-      name,
-      path: projectPath,
-      sessionCount: sessionFiles.length,
-      lastActiveAt,
-      settings: {},
-      sourceFlags: {
-        ccgui: false,
-        claude: true,
-        codex: false
-      }
-    })
-  }
-
-  projects.sort((a, b) => {
-    if (!a.lastActiveAt) return 1
-    if (!b.lastActiveAt) return -1
-    return new Date(b.lastActiveAt) - new Date(a.lastActiveAt)
-  })
-
-  return projects
-}
-
-async function scanCodexProjects() {
-  const codexPath = getCodexExecutablePath()
-  if (!codexPath) {
-    logger.info('[Projects] Codex executable not found, skip codex project scan')
-    return []
-  }
-
-  let child = null
-  try {
-    child = spawn(codexPath, ['app-server', '--listen', 'stdio://'], {
-      cwd: process.cwd(),
-      stdio: ['pipe', 'pipe', 'pipe']
-    })
-
-    const readline = require('readline')
-    const rl = readline.createInterface({ input: child.stdout })
-    const pending = new Map()
-    let requestId = 0
-
-    const send = (payload) => {
-      child.stdin.write(JSON.stringify(payload) + '\n')
-    }
-
-    const request = (method, params) => {
-      const id = String(++requestId)
-      send({ id, method, params })
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject })
-        setTimeout(() => {
-          if (!pending.has(id)) return
-          pending.delete(id)
-          reject(new Error(`Codex request timeout: ${method}`))
-        }, 10000)
-      })
-    }
-
-    rl.on('line', (line) => {
-      if (!line.trim()) return
-      let message = null
-      try {
-        message = JSON.parse(line)
-      } catch (error) {
-        return
-      }
-
-      if (message.id !== undefined) {
-        const key = String(message.id)
-        const entry = pending.get(key)
-        if (!entry) return
-        pending.delete(key)
-        if (message.error) {
-          entry.reject(new Error(message.error.message || 'Codex request failed'))
-        } else {
-          entry.resolve(message.result)
-        }
-      }
-    })
-
-    await request('initialize', {
-      clientInfo: { name: 'ccgui-project-scan', version: '1.0.0' },
-      capabilities: { experimentalApi: true }
-    })
-    send({ method: 'initialized' })
-
-    const result = await request('thread/list', {
-      limit: 200,
-      archived: false
-    })
-
-    const threadMap = new Map()
-    for (const thread of result?.data || []) {
-      if (!thread?.cwd) continue
-      const projectId = encodeProjectPath(thread.cwd)
-      const current = threadMap.get(projectId)
-      const updatedAt = thread.updatedAt ? new Date(thread.updatedAt * 1000).toISOString() : null
-      const nextProject = {
-        id: projectId,
-        name: path.basename(thread.cwd),
-        path: thread.cwd,
-        sessionCount: (current?.sessionCount || 0) + 1,
-        lastActiveAt: updatedAt,
-        settings: current?.settings || {},
-        sourceFlags: {
-          ccgui: false,
-          claude: false,
-          codex: true
-        }
-      }
-
-      if (!current || (updatedAt && (!current.lastActiveAt || new Date(updatedAt) > new Date(current.lastActiveAt)))) {
-        threadMap.set(projectId, nextProject)
-      } else {
-        threadMap.set(projectId, {
-          ...current,
-          sessionCount: nextProject.sessionCount,
-          sourceFlags: nextProject.sourceFlags
-        })
-      }
-    }
-
-    rl.close()
-    child.kill('SIGTERM')
-    return Array.from(threadMap.values())
-  } catch (error) {
-    logger.warn('[Projects] Failed to scan Codex projects', { error: error.message })
-    if (child) {
-      child.kill('SIGTERM')
-    }
-    return []
-  }
-}
-
-function mergeProjectsByPath(...projectLists) {
-  const merged = new Map()
-
-  for (const projects of projectLists) {
-    for (const project of projects) {
-      if (!project?.path) continue
-
-      const existing = merged.get(project.path)
-      if (!existing) {
-        merged.set(project.path, {
-          ...project,
-          id: project.id || encodeProjectPath(project.path),
-          sourceFlags: {
-            ccgui: !!project.sourceFlags?.ccgui,
-            claude: !!project.sourceFlags?.claude,
-            codex: !!project.sourceFlags?.codex
-          }
-        })
-        continue
-      }
-
-      merged.set(project.path, {
-        ...existing,
-        ...project,
-        id: existing.id || project.id || encodeProjectPath(project.path),
-        name: existing.name || project.name || path.basename(project.path),
-        settings: existing.settings && Object.keys(existing.settings).length > 0 ? existing.settings : (project.settings || {}),
-        sessionCount: Math.max(existing.sessionCount || 0, project.sessionCount || 0),
-        lastActiveAt: pickLatestTimestamp(existing.lastActiveAt, project.lastActiveAt),
-        sourceFlags: {
-          ccgui: !!(existing.sourceFlags?.ccgui || project.sourceFlags?.ccgui),
-          claude: !!(existing.sourceFlags?.claude || project.sourceFlags?.claude),
-          codex: !!(existing.sourceFlags?.codex || project.sourceFlags?.codex)
-        }
-      })
-    }
-  }
-
-  return Array.from(merged.values())
-    .sort((a, b) => {
-      if (!a.lastActiveAt) return 1
-      if (!b.lastActiveAt) return -1
-      return new Date(b.lastActiveAt) - new Date(a.lastActiveAt)
-    })
-}
-
-function pickLatestTimestamp(a, b) {
-  if (!a) return b || null
-  if (!b) return a || null
-  return new Date(a) >= new Date(b) ? a : b
-}
-
-/**
- * Get sessions for a specific project
- * Merges CCGUI sessions with Claude .jsonl sessions, using CCGUI as the primary source
- */
-async function getProjectSessions(projectId) {
-  const projectsDir = getClaudeProjectsDir()
-  const projectDir = path.join(projectsDir, projectId)
-
-  // Get CCGUI sessions (primary source for name, settings, etc.)
-  let ccguiSessions = []
-  try {
-    ccguiSessions = sessionConfigManager.getProjectSessions(projectId) || []
-    logger.info(`[Sessions] Found ${ccguiSessions.length} CCGUI sessions for project ${projectId}`)
-  } catch (e) {
-    logger.warn('[Sessions] Error reading CCGUI sessions:', e.message)
-  }
-
-  // Get Claude .jsonl sessions (source for messageCount, preview, timestamps)
-  const claudeSessions = new Map()
-
-  if (fs.existsSync(projectDir)) {
-    const files = fs.readdirSync(projectDir)
-
-    for (const file of files) {
-      if (!file.endsWith('.jsonl')) continue
-
-      const filePath = path.join(projectDir, file)
-      const stat = fs.statSync(filePath)
-
-      const sessionId = file.replace('.jsonl', '')
-
-      let preview = ''
-      let messageCount = 0
-
-      try {
-        // Only read content if file is not empty
-        if (stat.size > 0) {
-          const content = fs.readFileSync(filePath, 'utf-8')
-          const lines = content.trim().split('\n')
-          messageCount = lines.length
-
-          for (const line of lines) {
-            if (!line.trim()) continue
-            try {
-              const data = JSON.parse(line)
-              if (data.type === 'user' && data.message?.content) {
-                const msgContent = data.message.content
-                if (Array.isArray(msgContent)) {
-                  const textContent = msgContent.find(c => c.type === 'text')
-                  if (textContent?.text) {
-                    preview = textContent.text.slice(0, 100)
-                    break
-                  }
-                } else if (typeof msgContent === 'string') {
-                  preview = msgContent.slice(0, 100)
-                  break
-                }
-              }
-            } catch (e) {
-              // Skip invalid JSON lines
-            }
-          }
-        }
-      } catch (e) {
-        logger.warn('[Sessions] Error reading session file:', e.message)
-      }
-
-      claudeSessions.set(sessionId, {
-        preview,
-        messageCount,
-        createdAt: stat.birthtime.toISOString(),
-        updatedAt: stat.mtime.toISOString()
-      })
-    }
-  }
-
-  // Merge sessions: CCGUI sessions + Claude sessions not in CCGUI
-  const mergedSessions = []
-  const processedIds = new Set()
-
-  // First, add all CCGUI sessions (these are the primary source)
-  for (const ccguiSession of ccguiSessions) {
-    processedIds.add(ccguiSession.id)
-
-    // Get Claude session data if available
-    const claudeData = claudeSessions.get(ccguiSession.id)
-
-    mergedSessions.push({
-      id: ccguiSession.id,
-      projectId,
-      name: ccguiSession.name || `会话`,
-      preview: claudeData?.preview || '',
-      createdAt: ccguiSession.createdAt || claudeData?.createdAt,
-      updatedAt: ccguiSession.updatedAt || claudeData?.updatedAt,
-      messageCount: claudeData?.messageCount || ccguiSession.messageCount || 0,
-      status: 'idle',
-      settings: ccguiSession.settings || {}
-    })
-  }
-
-  // Then, add Claude sessions that don't exist in CCGUI
-  for (const [sessionId, claudeData] of claudeSessions) {
-    if (!processedIds.has(sessionId)) {
-      mergedSessions.push({
-        id: sessionId,
-        projectId,
-        name: `会话`,
-        preview: claudeData.preview,
-        createdAt: claudeData.createdAt,
-        updatedAt: claudeData.updatedAt,
-        messageCount: claudeData.messageCount,
-        status: 'idle',
-        settings: {}
-      })
-    }
-  }
-
-  mergedSessions.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
-
-  logger.info(`[Sessions] Found ${mergedSessions.length} merged sessions for project ${projectId} (CCGUI: ${ccguiSessions.length}, Claude-only: ${claudeSessions.size - processedIds.size})`)
-  return mergedSessions
-}
-
-// Get all projects
-ipcMain.handle('get-projects', async () => {
-  return scanProjects()
-})
-
-// Add a new project (by path)
-ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
-  const name = path.basename(projectPath)
-  const projectId = encodeProjectPath(projectPath)
-
-  // 创建项目配置
-  let projectConfig
-  try {
-    projectConfig = projectConfigManager.createProjectConfig(projectId, projectPath, name)
-
-    // 如果有传入 settings，更新配置
-    if (settings) {
-      projectConfig.settings = settings
-      projectConfigManager.saveProjectConfig(projectId, projectConfig)
-    }
-  } catch (e) {
-    logger.warn('[Projects] Failed to create project config:', e.message)
-    projectConfig = { settings: {} }
-  }
-
-  return {
-    id: projectId,
-    name,
-    path: projectPath,
-    sessionCount: 0,
-    lastActiveAt: new Date().toISOString(),
-    settings: projectConfig.settings || {},
-    sourceFlags: {
-      ccgui: true,
-      claude: false,
-      codex: false
     }
   }
 })
@@ -1458,7 +1010,7 @@ ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
 // Get project config
 ipcMain.handle('get-project-config', async (event, { projectId }) => {
   try {
-    const config = projectConfigManager.loadProjectConfig(projectId)
+    const config = projectService.getProjectConfig(projectId)
     return { success: true, config }
   } catch (error) {
     logger.error('[ProjectConfig] Failed to get config', { projectId, error: error.message })
@@ -1469,7 +1021,7 @@ ipcMain.handle('get-project-config', async (event, { projectId }) => {
 // Update project config
 ipcMain.handle('update-project-config', async (event, { projectId, updates }) => {
   try {
-    const updatedConfig = projectConfigManager.updateProjectConfig(projectId, updates)
+    const updatedConfig = projectService.updateProjectConfig(projectId, updates)
     if (updatedConfig) {
       return { success: true, config: updatedConfig }
     } else {
@@ -1488,7 +1040,7 @@ ipcMain.handle('update-project-config', async (event, { projectId, updates }) =>
 // Get session config
 ipcMain.handle('get-session-config', async (event, { projectId, sessionId }) => {
   try {
-    const config = sessionConfigManager.getSession(projectId, sessionId)
+    const config = projectService.getSessionConfig(projectId, sessionId)
     return { success: true, config }
   } catch (error) {
     logger.error('[SessionConfig] Failed to get config', { projectId, sessionId, error: error.message })
@@ -1499,17 +1051,11 @@ ipcMain.handle('get-session-config', async (event, { projectId, sessionId }) => 
 // Update session config
 ipcMain.handle('update-session-config', async (event, { projectId, sessionId, updates }) => {
   try {
-    const normalizedUpdates = { ...(updates || {}) }
-    if (!normalizedUpdates.name) {
-      const existingSessions = await getProjectSessions(projectId)
-      const existingSession = existingSessions.find(session => session.id === sessionId)
-      if (existingSession?.name) {
-        normalizedUpdates.name = existingSession.name
-      }
-    }
-
-    const updatedConfig = sessionConfigManager.updateSession(projectId, sessionId, normalizedUpdates)
+    const updatedConfig = await projectService.updateSessionConfig(projectId, sessionId, updates)
     if (updatedConfig) {
+      if (Object.prototype.hasOwnProperty.call(updates || {}, 'settings')) {
+        sessionManager.applySessionSettings(sessionId, updatedConfig.settings || {})
+      }
       return { success: true, config: updatedConfig }
     } else {
       return { success: false, error: 'Session not found' }
@@ -1523,7 +1069,7 @@ ipcMain.handle('update-session-config', async (event, { projectId, sessionId, up
 // Delete session config (reset settings)
 ipcMain.handle('delete-session-config', async (event, { projectId, sessionId }) => {
   try {
-    const updatedConfig = sessionConfigManager.updateSession(projectId, sessionId, { settings: {} })
+    const updatedConfig = projectService.resetSessionConfig(projectId, sessionId)
     if (updatedConfig) {
       return { success: true, config: updatedConfig }
     } else {
@@ -1538,29 +1084,9 @@ ipcMain.handle('delete-session-config', async (event, { projectId, sessionId }) 
 // Copy session (creates new session, optionally copying config)
 ipcMain.handle('copy-session', async (event, { projectId, sessionId }) => {
   try {
-    // Generate incremental name (会话1, 会话2, etc.)
-    const existingSessions = sessionConfigManager.getProjectSessions(projectId) || []
-    let maxNum = 0
-    for (const s of existingSessions) {
-      const match = s.name?.match(/^会话(\d+)$/)
-      if (match) {
-        const num = parseInt(match[1], 10)
-        if (num > maxNum) maxNum = num
-      }
-    }
-    const newName = `会话${maxNum + 1}`
-
-    // Check if source session has config
-    const sourceConfig = sessionConfigManager.getSession(projectId, sessionId)
-    const hasSettings = sourceConfig?.settings && Object.keys(sourceConfig.settings).length > 0
-
-    // Create new session, copy config only if source has one
-    const newSession = sessionConfigManager.createSession(projectId, {
-      name: newName,
-      settings: hasSettings ? { ...sourceConfig.settings } : {}
-    })
-
-    logger.info('[SessionConfig] Session copied', { sourceId: sessionId, newId: newSession.id, hasConfig: hasSettings })
+    const newSession = projectService.copySession(projectId, sessionId)
+    const hasConfig = !!(newSession?.settings && Object.keys(newSession.settings).length > 0)
+    logger.info('[SessionConfig] Session copied', { sourceId: sessionId, newId: newSession.id, hasConfig })
     return { success: true, session: newSession }
   } catch (error) {
     logger.error('[SessionConfig] Failed to copy session', { projectId, sessionId, error: error.message })
@@ -1570,40 +1096,17 @@ ipcMain.handle('copy-session', async (event, { projectId, sessionId }) => {
 
 // Remove a project
 ipcMain.handle('remove-project', async (event, { projectId, deleteFolder }) => {
-  const projectsDir = getClaudeProjectsDir()
-  const projectDir = path.join(projectsDir, projectId)
-
-  // Get project metadata to find the actual project path
-  let projectPath = null
-  const projects = await scanProjects()
-  const project = projects.find(p => p.id === projectId)
-  if (project) {
-    projectPath = project.path
+  try {
+    return await projectService.removeProject(projectId, deleteFolder)
+  } catch (error) {
+    logger.error('[Projects] Failed to remove project', { projectId, deleteFolder, error: error.message })
+    throw new Error(`删除项目失败: ${error.message}`)
   }
-
-  // Delete CCGUI project data
-  if (fs.existsSync(projectDir)) {
-    fs.rmSync(projectDir, { recursive: true })
-    logger.info('[Projects] Removed project data:', projectId)
-  }
-
-  // Delete actual project folder if requested
-  if (deleteFolder && projectPath && fs.existsSync(projectPath)) {
-    try {
-      fs.rmSync(projectPath, { recursive: true })
-      logger.info('[Projects] Removed project folder:', projectPath)
-    } catch (error) {
-      logger.error('[Projects] Failed to remove project folder:', { error: error.message, projectPath })
-      throw new Error(`删除项目文件夹失败: ${error.message}`)
-    }
-  }
-
-  return { success: true }
 })
 
 // Get sessions for a project
 ipcMain.handle('get-sessions', async (event, { projectId }) => {
-  return getProjectSessions(projectId)
+  return projectService.getProjectSessions(projectId)
 })
 
 // Get running sessions with full status
@@ -1632,21 +1135,7 @@ ipcMain.handle('get-running-sessions', async () => {
 
 // Create a new session
 ipcMain.handle('create-session', async (event, { projectId, name, settings }) => {
-  const projectsDir = getClaudeProjectsDir()
-  const projectDir = path.join(projectsDir, projectId)
-
-  if (!fs.existsSync(projectDir)) {
-    fs.mkdirSync(projectDir, { recursive: true })
-  }
-
-  const sessionConfig = sessionConfigManager.createSession(projectId, {
-    name: name || '新会话',
-    settings: settings || {}
-  })
-  const sessionFile = path.join(projectDir, `${sessionConfig.id}.jsonl`)
-
-  // Create empty file - will be deleted before first use if still empty
-  fs.writeFileSync(sessionFile, '')
+  const sessionConfig = projectService.createSession(projectId, name, settings)
 
   return {
     id: sessionConfig.id,
@@ -1665,23 +1154,11 @@ ipcMain.handle('create-session', async (event, { projectId, name, settings }) =>
 ipcMain.handle('delete-session', async (event, { sessionId, projectId }) => {
   // Also close the session instance if it's open
   sessionManager.closeSession(sessionId)
-
-  const projectsDir = getClaudeProjectsDir()
-  const sessionFile = path.join(projectsDir, projectId, `${sessionId}.jsonl`)
-
-  // Delete .jsonl file
-  if (fs.existsSync(sessionFile)) {
-    fs.unlinkSync(sessionFile)
-    console.log('[Sessions] Deleted session file:', sessionId)
-  }
-
-  // Delete session directory (including config, history, etc.)
   try {
-    sessionConfigManager.deleteSession(projectId, sessionId)
-    console.log('[Sessions] Deleted session directory:', sessionId)
+    await projectService.deleteSession(projectId, sessionId)
+    logger.info('[Sessions] Deleted session', { sessionId, projectId })
   } catch (e) {
-    // Session directory might not exist, that's okay
-    console.log('[Sessions] Session directory not found or already deleted:', sessionId)
+    logger.info('[Sessions] Failed to delete session cleanly', { sessionId, projectId, error: e.message })
   }
 
   return { success: true }
@@ -1689,35 +1166,7 @@ ipcMain.handle('delete-session', async (event, { sessionId, projectId }) => {
 
 // Open a session (returns session info for compatibility)
 ipcMain.handle('open-session', async (event, { sessionId }) => {
-  const projectsDir = getClaudeProjectsDir()
-
-  if (!fs.existsSync(projectsDir)) {
-    return null
-  }
-
-  const projectDirs = fs.readdirSync(projectsDir, { withFileTypes: true })
-    .filter(e => e.isDirectory())
-    .map(e => e.name)
-
-  for (const projectId of projectDirs) {
-    const sessionFile = path.join(projectsDir, projectId, `${sessionId}.jsonl`)
-    if (fs.existsSync(sessionFile)) {
-      const stat = fs.statSync(sessionFile)
-      const projectPath = decodeProjectPath(projectId)
-
-      return {
-        id: sessionId,
-        projectId,
-        projectPath,
-        name: `会话`,
-        createdAt: stat.birthtime.toISOString(),
-        updatedAt: stat.mtime.toISOString(),
-        status: 'idle'
-      }
-    }
-  }
-
-  return null
+  return projectService.openSession(sessionId)
 })
 
 // Rename a project
@@ -1732,29 +1181,10 @@ ipcMain.handle('rename-session', async (event, { sessionId, projectId, name }) =
       return { success: false, error: 'Invalid session rename request' }
     }
 
-    let targetProjectId = projectId
-
-    if (!targetProjectId) {
-      const claudeProjectsDir = getClaudeProjectsDir()
-      if (fs.existsSync(claudeProjectsDir)) {
-        const projectDirs = fs.readdirSync(claudeProjectsDir, { withFileTypes: true })
-          .filter(entry => entry.isDirectory())
-          .map(entry => entry.name)
-
-        targetProjectId = projectDirs.find(candidateProjectId => {
-          const sessionFile = path.join(claudeProjectsDir, candidateProjectId, `${sessionId}.jsonl`)
-          return fs.existsSync(sessionFile) || sessionConfigManager.sessionExists(candidateProjectId, sessionId)
-        })
-      }
-    }
-
-    if (!targetProjectId) {
+    const updatedSession = await projectService.renameSession(sessionId, projectId, name)
+    if (!updatedSession) {
       return { success: false, error: 'Session not found' }
     }
-
-    const updatedSession = sessionConfigManager.updateSession(targetProjectId, sessionId, {
-      name: name.trim()
-    })
 
     return { success: true, session: updatedSession }
   } catch (error) {
@@ -1767,7 +1197,7 @@ ipcMain.handle('rename-session', async (event, { sessionId, projectId, name }) =
 ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
   try {
     // Get project info
-    const projects = await scanProjects()
+    const projects = await projectService.scanProjects()
     const project = projects.find(p => p.id === projectId)
 
     if (!project) {
@@ -2342,12 +1772,12 @@ ipcMain.handle('close-terminal', async (event, { terminalId } = {}) => {
 // App Config IPC Handlers
 // ============================================
 
-const { appConfigManager, docsManager, projectConfigManager, sessionConfigManager } = require('./storage')
+const { docsManager } = require('./storage')
 
 // Get app config
 ipcMain.handle('get-app-config', async () => {
   try {
-    const config = appConfigManager.loadConfig()
+    const config = appService.syncCodexAccountsWithAuthConfig()
     return { success: true, config }
   } catch (error) {
     logger.error('[AppConfig] Failed to get config', { error: error.message })
@@ -2358,7 +1788,7 @@ ipcMain.handle('get-app-config', async () => {
 // Save app config
 ipcMain.handle('save-app-config', async (event, { config }) => {
   try {
-    const success = appConfigManager.saveConfig(config)
+    const success = appService.saveAppConfig(config)
     return { success }
   } catch (error) {
     logger.error('[AppConfig] Failed to save config', { error: error.message })
@@ -2369,7 +1799,7 @@ ipcMain.handle('save-app-config', async (event, { config }) => {
 // Update app config
 ipcMain.handle('update-app-config', async (event, { updates }) => {
   try {
-    const config = appConfigManager.updateConfig(updates)
+    const config = appService.updateAppConfig(updates)
     return { success: true, config }
   } catch (error) {
     logger.error('[AppConfig] Failed to update config', { error: error.message })
@@ -2539,12 +1969,29 @@ function readCodexConfigFile() {
 function readCodexAuthFile() {
   const codexAuthPath = getCodexAuthPath()
   if (!fs.existsSync(codexAuthPath)) {
-    return { authToken: '', raw: {} }
+    return {
+      authToken: '',
+      tokens: {
+        idToken: '',
+        accessToken: '',
+        refreshToken: '',
+        accountId: '',
+        lastRefresh: ''
+      },
+      raw: {}
+    }
   }
 
   const raw = JSON.parse(fs.readFileSync(codexAuthPath, 'utf-8'))
   return {
     authToken: raw.OPENAI_API_KEY || '',
+    tokens: {
+      idToken: raw.tokens?.id_token || '',
+      accessToken: raw.tokens?.access_token || '',
+      refreshToken: raw.tokens?.refresh_token || '',
+      accountId: raw.tokens?.account_id || '',
+      lastRefresh: raw.last_refresh || raw.tokens?.last_refresh || ''
+    },
     raw
   }
 }
@@ -2722,8 +2169,9 @@ function writeCodexAuthFile(updates = {}) {
 // Get Codex settings from ~/.codex/config.toml
 ipcMain.handle('get-codex-settings', async () => {
   try {
-    const settings = readCodexConfigFile()
-    const appConfig = appConfigManager.loadConfig()
+    appService.syncCodexModelProviders()
+    const settings = appService.readCodexConfigFile()
+    const appConfig = appService.getAppConfig()
     return {
       success: true,
       settings: {
@@ -2741,17 +2189,72 @@ ipcMain.handle('get-codex-settings', async () => {
   }
 })
 
+ipcMain.handle('load-codex-auth-tokens', async () => {
+  try {
+    const tokens = appService.loadCodexAuthTokens()
+    return {
+      success: true,
+      tokens
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to load auth tokens', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('apply-codex-account', async (event, { account }) => {
+  try {
+    const result = appService.applyCodexAccount(account || {})
+    return {
+      success: true,
+      tokens: result.tokens,
+      config: result.config
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to apply codex account', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('get-codex-usage-status', async (event, options = {}) => {
+  try {
+    const usage = options?.account
+      ? await appService.refreshCodexAccountUsage(options.account)
+      : await appService.getCodexUsageStatus()
+    return {
+      success: true,
+      usage
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to load usage status', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('refresh-codex-auth-token', async () => {
+  try {
+    const result = await appService.refreshCodexAuthToken()
+    return {
+      success: true,
+      ...result
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to refresh auth token', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 // Update Codex settings to ~/.codex/config.toml
 ipcMain.handle('update-codex-settings', async (event, { updates }) => {
   try {
-    const settings = writeCodexConfigFile({
-      ...(updates || {}),
-      modelProvider: 'ccgui'
-    })
+    const settings = appService.writeCodexConfigFile(updates || {})
     const authSettings = writeCodexAuthFile(updates || {})
-    const appConfig = appConfigManager.updateConfig({
+    const currentAppConfig = appService.getAppConfig()
+    const appConfig = appService.updateAppConfig({
       settings: {
-        codexProxy: updates?.proxyUrl || ''
+        codexProxy: updates?.proxyUrl !== undefined
+          ? (updates.proxyUrl || '')
+          : (currentAppConfig.settings?.codexProxy || '')
       }
     })
     logger.info('[CodexSettings] Settings updated successfully')
@@ -2765,6 +2268,19 @@ ipcMain.handle('update-codex-settings', async (event, { updates }) => {
     }
   } catch (error) {
     logger.error('[CodexSettings] Failed to update settings', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('sync-codex-model-providers', async () => {
+  try {
+    const result = appService.syncCodexModelProviders()
+    return {
+      success: true,
+      ...result
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to sync model providers', { error: error.message })
     return { success: false, error: error.message }
   }
 })
@@ -2951,33 +2467,20 @@ ipcMain.handle('delete-doc', async (event, { docId }) => {
 
 // Get session messages (for backwards compatibility, but prefer select-session)
 ipcMain.handle('get-session-messages', async (event, { sessionId, projectId }) => {
-  const projectsDir = getClaudeProjectsDir()
-  const projectDir = path.join(projectsDir, projectId)
-  const sessionFile = path.join(projectDir, `${sessionId}.jsonl`)
-
-  if (!fs.existsSync(sessionFile)) {
-    console.log('[Sessions] Session file does not exist:', sessionFile)
-    return []
-  }
-
   try {
-    const content = fs.readFileSync(sessionFile, 'utf-8')
-    const lines = content.trim().split('\n').filter(line => line.trim())
-    const messages = []
-
-    for (const line of lines) {
-      try {
-        const data = JSON.parse(line)
-        messages.push(data)
-      } catch (e) {
-        // Skip invalid JSON lines
-      }
-    }
-
-    console.log(`[Sessions] Loaded ${messages.length} messages for session ${sessionId}`)
+    const messages = projectService.getSessionMessages(projectId, sessionId)
+    logger.info('[Sessions] Loaded unified session history', {
+      projectId,
+      sessionId,
+      messageCount: messages.length
+    })
     return messages
-  } catch (e) {
-    console.error('[Sessions] Error reading session file:', e.message)
+  } catch (error) {
+    logger.error('[Sessions] Failed to load unified session history', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
     return []
   }
 })
@@ -3042,22 +2545,6 @@ function findWindowByProjectPath(projectPath) {
     }
   }
   return null
-}
-
-/**
- * Encode project path to project ID
- */
-function encodeProjectPath(projectPath) {
-  let encodedPath = projectPath
-  if (process.platform === 'win32') {
-    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
-  } else {
-    encodedPath = encodedPath.replace(/\//g, '-')
-  }
-  if (encodedPath.startsWith('-')) {
-    encodedPath = encodedPath.slice(1)
-  }
-  return '-' + encodedPath
 }
 
 /**
@@ -3218,6 +2705,13 @@ app.whenReady().then(() => {
   // Update isDev flag now that app is ready
   isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
   logger.info('[App] Development mode:', isDev)
+
+  try {
+    appService.syncCodexAccountsWithAuthConfig()
+    appService.startCodexAccountUsagePolling()
+  } catch (error) {
+    logger.warn('[CodexSettings] Failed to sync codex accounts on startup', { error: error.message })
+  }
 
   createWindow()
   setupDockMenu()

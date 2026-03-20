@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 
 const props = defineProps({
   request: {
@@ -9,30 +9,6 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['approve', 'deny', 'approve-all'])
-
-/**
- * 日志工具 - 将日志发送到后端终端
- */
-function log(...args) {
-  if (window.electronAPI?.log) {
-    window.electronAPI.log(...args)
-  }
-  console.log(...args)
-}
-
-onMounted(() => {
-  try {
-    log('[PermissionDialog] Full request object:', JSON.stringify(props.request, null, 2))
-  } catch (e) {
-    log('[PermissionDialog] Cannot serialize request')
-    log('[PermissionDialog] request keys:', Object.keys(props.request || {}).join(', '))
-    log('[PermissionDialog] tool_name:', props.request?.tool_name)
-    log('[PermissionDialog] toolName:', props.request?.toolName)
-    log('[PermissionDialog] tool_input:', props.request?.tool_input)
-    log('[PermissionDialog] toolInput:', props.request?.toolInput)
-    log('[PermissionDialog] input:', props.request?.input)
-  }
-})
 
 // 支持多种字段名格式 (tool_name/toolName)
 const toolName = computed(() => props.request?.tool_name || props.request?.toolName || 'Unknown')

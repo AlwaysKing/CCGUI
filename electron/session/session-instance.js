@@ -1,15 +1,10 @@
-const fs = require('fs')
 const path = require('path')
-const os = require('os')
 const crypto = require('crypto')
 const { ClaudeAdapter } = require('../adapters/claude/adapter')
 const { CodexAdapter } = require('../adapters/codex/adapter')
 const logger = require('../logger')
 const historyManager = require('../storage/history-manager')
-const projectConfigManager = require('../storage/project-config-manager')
-const sessionConfigManager = require('../storage/session-config-manager')
-const appConfigManager = require('../storage/app-config-manager')
-const { resolveSessionSettings } = require('../config-resolution')
+const projectService = require('../services/project-service')
 
 function pickFirstDefined(...values) {
   for (const value of values) {
@@ -149,15 +144,6 @@ class SessionInstance {
   }
 
   /**
-   * 获取 provider 运行时会话文件路径
-   */
-  getSessionFilePath() {
-    if (!this.id || !this.projectPath) return null
-
-    return path.join(os.homedir(), '.claude', 'projects', this.projectId, `${this.id}.jsonl`)
-  }
-
-  /**
    * 计算 projectId（编码后的路径）
    */
   calculateProjectId() {
@@ -266,14 +252,9 @@ class SessionInstance {
   }
 
   loadResolvedRuntimeConfig() {
-    const appConfig = appConfigManager.loadConfig()
-    const projectConfig = projectConfigManager.loadProjectConfig(this.projectId)
-    const sessionConfig = sessionConfigManager.getSession(this.projectId, this.id)
-
-    const settings = resolveSessionSettings(
-      appConfig,
-      projectConfig?.settings || {},
-      sessionConfig?.settings || null
+    const { settings, projectConfig, sessionConfig } = projectService.resolveRuntimeConfig(
+      this.projectId,
+      this.id
     )
 
     this.sessionSettings = sessionConfig?.settings || {}
@@ -308,24 +289,9 @@ class SessionInstance {
 
     logger.info(`[SessionInstance] Starting runtime provider for session ${this.id}`)
 
-    // 判断是否是新会话
-    // 策略：如果文件存在且为空，删除后使用 --session-id 创建新会话
-    // 如果文件存在且有内容，使用 --resume 恢复会话
-    const sessionFile = this.getSessionFilePath()
-    let isNewSession = true
-
-    if (sessionFile && fs.existsSync(sessionFile)) {
-      const stat = fs.statSync(sessionFile)
-      if (stat.size === 0) {
-        // 文件为空，删除后作为新会话处理
-        logger.info(`[SessionInstance] Empty session file found, deleting: ${sessionFile}`)
-        fs.unlinkSync(sessionFile)
-        isNewSession = true
-      } else {
-        // 文件有内容，恢复会话
-        isNewSession = false
-      }
-    }
+    // Session runtime only provides generic resume hints.
+    // Provider-specific resume/new-session resolution belongs in the provider layer.
+    const isNewSession = this.messages.length === 0 && !this.sessionSettings.codexThreadId
 
     // 解析最终生效配置（system -> project -> session）
     let settings = null
@@ -345,7 +311,8 @@ class SessionInstance {
         this.permissionMode,
         settings,
         {
-          resumeThreadId: this.sessionSettings.codexThreadId || null
+          resumeThreadId: this.sessionSettings.codexThreadId || null,
+          debug: this.sessionSettings.debug === true
         }
       )
     } else {
@@ -354,7 +321,10 @@ class SessionInstance {
         this.id,
         isNewSession,
         this.permissionMode,
-        settings
+        settings,
+        {
+          debug: this.sessionSettings.debug === true
+        }
       )
     }
 
@@ -406,9 +376,7 @@ class SessionInstance {
           ...this.sessionSettings,
           ...sessionSettingsPatch
         }
-        sessionConfigManager.updateSession(this.projectId, this.id, {
-          settings: this.sessionSettings
-        })
+        projectService.updateSessionSettings(this.projectId, this.id, this.sessionSettings)
       }
 
       return true
@@ -951,6 +919,14 @@ class SessionInstance {
       logger.info(`[SessionInstance] Provider has no live permission mode handler, will apply on next turn: ${mode}`)
     } else {
       logger.info(`[SessionInstance] Provider not ready, will apply permission mode on start: ${mode}`)
+    }
+  }
+
+  applySessionSettings(settings = null) {
+    this.sessionSettings = settings && typeof settings === 'object' ? { ...settings } : {}
+
+    if (this.runtimeManager && typeof this.runtimeManager.setDebugEnabled === 'function') {
+      this.runtimeManager.setDebugEnabled(this.sessionSettings.debug === true)
     }
   }
 

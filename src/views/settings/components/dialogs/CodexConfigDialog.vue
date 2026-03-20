@@ -261,6 +261,11 @@ function handleSave() {
   padding-right: 44px;
 }
 
+.btn-small {
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
 .input-action-btn {
   position: absolute;
   right: 8px;

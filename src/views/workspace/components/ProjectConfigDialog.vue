@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
+import { getProviderModels } from '../../../utils/provider-models'
 
 const props = defineProps({
   visible: {
@@ -68,7 +69,7 @@ async function loadSystemConfig() {
     if (result && result.success) {
       const config = result.config
       if (config.settings) {
-        systemModels.value = config.settings.models || []
+        systemModels.value = getProviderModels(config, 'claude')
         systemPrompts.value = config.settings.prompts || []
       }
       if (config.documents) {

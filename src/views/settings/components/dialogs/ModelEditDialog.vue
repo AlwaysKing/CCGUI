@@ -12,6 +12,10 @@ const props = defineProps({
   model: {
     type: Object,
     default: null
+  },
+  modelType: {
+    type: String,
+    default: 'claude' // 'claude' 或 'codex'
   }
 })
 
@@ -33,6 +37,13 @@ const loading = ref(false)
 
 // 是否编辑模式
 const isEditing = computed(() => !!props.model)
+
+// 对话框标题
+const dialogTitle = computed(() => {
+  const action = isEditing.value ? '编辑' : '添加'
+  const type = props.modelType === 'claude' ? 'Claude' : 'Codex'
+  return `${action}${type}模型`
+})
 
 // 生成卡片 ID
 function generateCardId() {
@@ -66,7 +77,7 @@ watch(() => props.model, (model) => {
 
     formData.value = {
       friendlyName: model.friendlyName || '',
-      apiUrl: model.apiUrl || '',
+      apiUrl: model.apiUrl || model.baseUrl || '',
       authToken: model.authToken || '',
       defaultCardId: model.defaultCardId || modelCards[0]?.id || null,
       modelCards
@@ -136,7 +147,7 @@ function handleSave() {
   <div v-if="visible" class="dialog-overlay" @click="handleClose">
     <div class="model-dialog" @click.stop>
       <div class="dialog-header">
-        <h2>{{ isEditing ? '编辑模型' : '添加模型' }}</h2>
+        <h2>{{ dialogTitle }}</h2>
         <button class="close-btn" @click="handleClose" title="关闭">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/>
@@ -164,13 +175,13 @@ function handleSave() {
         <div class="form-item">
           <label class="form-label">
             API地址 <span class="required">*</span>
-            <span class="label-hint">API 端点地址</span>
+            <span class="label-hint">API 完整地址</span>
           </label>
           <input
             type="text"
             v-model="formData.apiUrl"
             class="form-input"
-            placeholder="例如: https://api.anthropic.com"
+            :placeholder="modelType === 'claude' ? '例如: https://api.anthropic.com/v1/messages' : '例如: https://api.openai.com/v1'"
           >
         </div>
 

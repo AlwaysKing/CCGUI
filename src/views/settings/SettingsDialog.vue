@@ -5,6 +5,7 @@ import PromptSettings from './components/PromptSettings.vue'
 import TerminalSettings from './components/TerminalSettings.vue'
 import SoftwareSettings from './components/SoftwareSettings.vue'
 import ModelEditDialog from './components/dialogs/ModelEditDialog.vue'
+import CodexAccountEditDialog from './components/dialogs/CodexAccountEditDialog.vue'
 import DefaultConfigDialog from './components/dialogs/DefaultConfigDialog.vue'
 import CodexConfigDialog from './components/dialogs/CodexConfigDialog.vue'
 import PromptEditDialog from './components/dialogs/PromptEditDialog.vue'
@@ -31,14 +32,19 @@ const {
   settings,
   defaultConfig,
   codexConfig,
-  models,
-  selectedModelId,
+  claudeModels,
+  codexModels,
+  selectedClaudeModelId,
+  selectedCodexModelId,
   prompts,
   documents,
   showModelDialog,
   editingModel,
+  editingModelType,
   showDefaultConfigDialog,
   showCodexConfigDialog,
+  showCodexAccountDialog,
+  editingCodexAccount,
   showPromptDialog,
   editingPrompt,
   showDocumentDialog,
@@ -48,19 +54,32 @@ const {
   effortOptions,
   loadSettings,
   saveSoftwareSettings,
-  handleAddModel,
-  handleEditModel,
-  handleDeleteModel,
+  handleAddClaudeModel,
+  handleEditClaudeModel,
+  handleDeleteClaudeModel,
+  handleAddCodexModel,
+  handleEditCodexModel,
+  handleDeleteCodexModel,
   handleSaveModel,
-  handleSelectModel,
-  handleSetModelDefaultCard,
-  handleToggleModelActive,
-  handleApplyModel,
+  handleSelectClaudeModel,
+  handleSelectCodexModel,
+  handleSetClaudeModelDefaultCard,
+  handleSetCodexModelDefaultCard,
+  handleToggleClaudeModelActive,
+  handleToggleCodexModelActive,
+  handleApplyClaudeModel,
+  handleApplyCodexModel,
   handleMappingConfirm,
   handleEditDefaultConfig,
   handleSaveDefaultConfig,
   handleEditCodexConfig,
   handleSaveCodexConfig,
+  handleSaveCodexProxy,
+  handleAddCodexAccount,
+  handleEditCodexAccount,
+  handleSaveCodexAccount,
+  handleDeleteCodexAccount,
+  handleApplyCodexAccount,
   handleAddPrompt,
   handleEditPrompt,
   handleDeletePrompt,
@@ -139,18 +158,32 @@ function handleClose() {
             <ModelSettings
               :default-config="defaultConfig"
               :codex-config="codexConfig"
-              :models="models"
-              :selected-model-id="selectedModelId"
+              :claude-models="claudeModels"
+              :codex-models="codexModels"
+              :selected-claude-model-id="selectedClaudeModelId"
+              :selected-codex-model-id="selectedCodexModelId"
               :effort-options="effortOptions"
               @edit-default-config="handleEditDefaultConfig"
               @edit-codex-config="handleEditCodexConfig"
-              @select-model="handleSelectModel"
-              @edit-model="handleEditModel"
-              @delete-model="handleDeleteModel"
-              @add-model="handleAddModel"
-              @set-model-default-card="handleSetModelDefaultCard"
-              @toggle-model-active="handleToggleModelActive"
-              @apply-model="handleApplyModel"
+              @save-codex-proxy="handleSaveCodexProxy"
+              @add-codex-account="handleAddCodexAccount"
+              @edit-codex-account="handleEditCodexAccount"
+              @delete-codex-account="handleDeleteCodexAccount"
+              @apply-codex-account="handleApplyCodexAccount"
+              @select-claude-model="handleSelectClaudeModel"
+              @select-codex-model="handleSelectCodexModel"
+              @edit-claude-model="handleEditClaudeModel"
+              @edit-codex-model="handleEditCodexModel"
+              @delete-claude-model="handleDeleteClaudeModel"
+              @delete-codex-model="handleDeleteCodexModel"
+              @add-claude-model="handleAddClaudeModel"
+              @add-codex-model="handleAddCodexModel"
+              @set-claude-model-default-card="handleSetClaudeModelDefaultCard"
+              @set-codex-model-default-card="handleSetCodexModelDefaultCard"
+              @toggle-claude-model-active="handleToggleClaudeModelActive"
+              @toggle-codex-model-active="handleToggleCodexModelActive"
+              @apply-claude-model="handleApplyClaudeModel"
+              @apply-codex-model="handleApplyCodexModel"
             />
           </div>
 
@@ -194,6 +227,7 @@ function handleClose() {
     <ModelEditDialog
       v-model:visible="showModelDialog"
       :model="editingModel"
+      :model-type="editingModelType"
       @save="handleSaveModel"
       @close="showModelDialog = false"
     />
@@ -212,6 +246,13 @@ function handleClose() {
       :effort-options="effortOptions"
       @save="handleSaveCodexConfig"
       @close="showCodexConfigDialog = false"
+    />
+
+    <CodexAccountEditDialog
+      v-model:visible="showCodexAccountDialog"
+      :account="editingCodexAccount"
+      @save="handleSaveCodexAccount"
+      @close="showCodexAccountDialog = false"
     />
 
     <!-- 提示词编辑对话框 -->

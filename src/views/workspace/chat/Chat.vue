@@ -4,6 +4,7 @@ import { useSessionStore } from '../../../stores/useSessionStore'
 import { useAppStore } from '../../../stores/useAppStore'
 import { logger } from '../../../utils/logger'
 import { barkProvider } from '../../../utils/notifier'
+import { findProviderModel, getProviderModels } from '../../../utils/provider-models'
 
 // 引入对话框组件
 import PermissionDialog from './components/dialogs/PermissionDialog.vue'
@@ -133,8 +134,12 @@ const canConfigureNotifications = computed(() => {
   return !!appStore.currentSession?.id
 })
 
+const currentModelProvider = computed(() => {
+  return sessionConfig.value?.settings?.tool || sessionConfig.value?.settings?.provider || envInfo.value?.provider || currentSessionMeta.value?.tool || 'claude'
+})
+
 const availableModelOptions = computed(() => {
-  const models = appConfig.value?.settings?.models?.filter(model => model.isActive !== false) || []
+  const models = getProviderModels(appConfig.value, currentModelProvider.value).filter(model => model.isActive !== false)
   const customOptions = models.flatMap(model => {
     const cards = model.modelCards?.length ? model.modelCards : [{ id: '', modelName: '' }]
     return cards.map(card => ({
@@ -175,7 +180,7 @@ function normalizeSessionModelSettings(settings = {}) {
 
 function formatModelLabel(modelId, modelCardId, fallback = '系统') {
   if (!modelId) return fallback
-  const model = appConfig.value?.settings?.models?.find(item => item.id === modelId)
+  const model = findProviderModel(appConfig.value, currentModelProvider.value, modelId)
   if (!model) return modelId
   const cards = model.modelCards || []
   const card = modelCardId
@@ -1105,8 +1110,6 @@ async function handlePermissionApproveAll(requestId) {
 
 // 处理代码还原 - 接收 MessageList 发出的事件对象
 async function handleRewind({ messageId, messageIndex }) {
-  console.log('[Rewind] handleRewind called with messageId:', messageId, 'index:', messageIndex)
-
   // 先显示对话框（用于测试）
   rewindTargetMessageId.value = messageId
   rewindTargetMessageIndex.value = messageIndex
@@ -1116,9 +1119,7 @@ async function handleRewind({ messageId, messageIndex }) {
     deletions: 0
   }
 
-  console.log('[Rewind] Setting showRewindDialog to true (before API call)')
   showRewindDialog.value = true
-  console.log('[Rewind] showRewindDialog is now:', showRewindDialog.value)
 
   try {
     // 调用 dry_run: true 获取预览
@@ -1127,22 +1128,16 @@ async function handleRewind({ messageId, messageIndex }) {
       user_message_id: messageId,
       dry_run: true
     })
-
-    console.log('[Rewind] Preview response:', previewResponse)
-    console.log('[Rewind] previewResponse.response:', previewResponse?.response)
-
     // 更新预览数据
     let data = null
     if (previewResponse && previewResponse.response) {
       data = previewResponse.response.response || previewResponse.response
-      console.log('[Rewind] Extracted data:', data)
 
       rewindPreviewData.value = {
         files: data?.filesChanged || data?.restored_files || [],
         insertions: data?.insertions || data?.lines_added || 0,
         deletions: data?.deletions || data?.lines_removed || 0
       }
-      console.log('[Rewind] Updated rewindPreviewData:', rewindPreviewData.value)
     }
 
   } catch (error) {
@@ -1171,8 +1166,6 @@ async function confirmRewind() {
       user_message_id: rewindTargetMessageId.value,
       dry_run: false
     })
-
-    console.log('[Rewind] Response:', response)
 
     // 显示还原结果
     if (response && response.response) {
@@ -1253,8 +1246,6 @@ async function handleFork({ messageId, messageIndex }) {
       message_id: messageId
     })
 
-    console.log('[Fork] Response:', response)
-
     if (response && response.response) {
       const result = response.response
       messages.value.push({
@@ -1296,8 +1287,6 @@ async function handleRewindAndFork({ messageId, messageIndex }) {
       user_message_id: messageId,
       dry_run: false
     })
-
-    console.log('[RewindAndFork] Response:', response)
 
     if (response && response.response) {
       const result = response.response
@@ -1383,26 +1372,15 @@ function selectPermissionMode(mode) {
 function selectEffort(newEffort) {
   effort.value = newEffort
   // TODO: 实际修改 effort 需要重启 CLI，暂只保存状态
-  console.log('[Chat] Effort changed to:', newEffort)
 }
 
 async function handleQuestionAnswer(requestId, answers) {
-  console.log('[ChatWindow] handleQuestionAnswer called, requestId:', requestId, 'answers:', answers)
   const question = pendingQuestion.value
-  console.log('[ChatWindow] question:', question ? 'exists' : 'null')
-  if (question) {
-    console.log('[ChatWindow] question.tool_use_id:', question.tool_use_id)
-    console.log('[ChatWindow] question.toolUseId:', question.toolUseId)
-    console.log('[ChatWindow] question.id:', question.id)
-    console.log('[ChatWindow] question.request_id:', question.request_id)
-    console.log('[ChatWindow] Full question object:', JSON.stringify(question, null, 2))
-  }
   sessionStore.clearPendingQuestion()
 
   if (question) {
     // 获取 tool_use_id - 支持多种可能的字段名
     const toolUseId = question.tool_use_id || question.toolUseId || question.id || requestId
-    console.log('[ChatWindow] Using toolUseId:', toolUseId)
 
     // 获取问题数据 - 支持多种字段名格式
     let toolInput = question.input || question.tool_input || question.toolInput
@@ -1411,9 +1389,8 @@ async function handleQuestionAnswer(requestId, answers) {
     if (typeof toolInput === 'string') {
       try {
         toolInput = JSON.parse(toolInput)
-        console.log('[ChatWindow] Parsed toolInput for questions')
       } catch (e) {
-        console.log('[ChatWindow] Failed to parse toolInput:', e.message)
+        // Ignore invalid JSON string input and fall back to raw value.
       }
     }
 
@@ -1423,8 +1400,6 @@ async function handleQuestionAnswer(requestId, answers) {
     } else if (question.questions) {
       questionsData = question.questions
     }
-
-    console.log('[ChatWindow] questionsData count:', questionsData.length)
 
     // 构建问题列表用于显示
     const questionItems = questionsData.map((questionData, index) => {
@@ -1442,20 +1417,14 @@ async function handleQuestionAnswer(requestId, answers) {
         multiSelect: multiSelect
       }
     })
-
-    // 发送 control_response 必须在 if (question) 块内部
-    // 因为需要访问 toolUseId
     try {
-      // 对于 AskUserQuestion，发送 control_response 并包含所有答案
-      // 答案格式：{ "问题": "答案" }
       const options = {
-        toolUseID: toolUseId, // 必须传递 toolUseID 以便关联响应
+        toolUseID: toolUseId,
         updatedInput: {
           answers: answers
         }
       }
 
-      console.log('[ChatWindow] Sending control response with options:', JSON.stringify(options, null, 2))
       await sessionStore.sendControlResponse(requestId, true, options)
       scrollToBottom(true)
     } catch (error) {
@@ -1524,6 +1493,7 @@ async function handleQuestionAnswer(requestId, answers) {
     <!-- Input Area -->
     <ChatInput
       ref="chatInputRef"
+      :class="{ 'resizable-expanded': !!messagesHeight }"
       v-model="inputMessage"
       :is-processing="isProcessing"
       :has-permission="pendingPermission !== null || pendingControlRequest !== null"

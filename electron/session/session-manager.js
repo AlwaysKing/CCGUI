@@ -150,6 +150,15 @@ class SessionManager {
     return session.setPermissionMode(mode)
   }
 
+  applySessionSettings(sessionId, settings) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      return
+    }
+
+    session.applySessionSettings(settings)
+  }
+
   /**
    * 停止会话的运行时进程（不删除 session）
    */

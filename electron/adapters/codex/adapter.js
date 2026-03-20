@@ -55,6 +55,22 @@ class CodexAdapter extends CodexClient {
         })
         this.turnStats.delete(params.turn.id)
         this.turnAssistantState.delete(params.turn.id)
+
+        // 处理 turn 失败错误
+        if (params.turn?.status === 'failed' && params.turn?.error) {
+          const error = params.turn.error
+          const errorType = error.codexErrorInfo || error.type || 'unknown'
+
+          this.emit('system-notification', {
+            type: 'turn-error',
+            provider: 'codex',
+            errorType,
+            message: error.message || 'Turn failed',
+            additionalDetails: error.additionalDetails || null,
+            turnId: params.turn.id,
+            metadata: error
+          })
+        }
         break
       }
 

@@ -62,7 +62,6 @@ function initialize() {
     // 创建流日志目录
     ensureDir(path.join(config.baseDir, config.streamLogDir))
 
-    console.log(`[Logger] Log system initialized at ${config.baseDir}`)
     return true
   } catch (error) {
     console.error('[Logger] Failed to initialize:', error)
@@ -97,16 +96,6 @@ function writeAppLog(level, message, data = null) {
 
     fs.appendFileSync(logPath, entry + '\n')
 
-    // 同时输出到控制台
-    const consoleMethod = {
-      [LogLevel.DEBUG]: console.debug,
-      [LogLevel.INFO]: console.info,
-      [LogLevel.WARN]: console.warn,
-      [LogLevel.ERROR]: console.error,
-    }[level] || console.log
-
-    consoleMethod(`[${level}] ${message}`, data || '')
-
     return true
   } catch (error) {
     console.error('[Logger] Failed to write app log:', error)
@@ -132,7 +121,11 @@ function writeStreamLog(sessionId, direction, data) {
     // 确保目录存在
     ensureDir(path.dirname(logPath))
 
-    fs.appendFileSync(logPath, entryStr + '\n')
+    fs.appendFile(logPath, entryStr + '\n', (error) => {
+      if (error) {
+        console.error('[Logger] Failed to write stream log:', error)
+      }
+    })
     return true
   } catch (error) {
     console.error('[Logger] Failed to write stream log:', error)

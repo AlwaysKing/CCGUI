@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
+import { getProviderModels } from '../../../utils/provider-models'
 
 const props = defineProps({
   visible: {
@@ -23,6 +24,7 @@ const modelMode = ref('project')
 const modelCardMode = ref('default')
 const promptsMode = ref('project')
 const documentsMode = ref('project')
+const debugEnabled = ref(false)
 
 // 选择的配置
 const selectedModelId = ref(null)
@@ -73,8 +75,8 @@ async function loadSystemConfig() {
     if (result && result.success) {
       const config = result.config
       if (config.settings) {
-        systemModels.value = config.settings.models || []
         systemPrompts.value = config.settings.prompts || []
+        systemModels.value = getProviderModels(config, sessionTool.value)
       }
       if (config.documents) {
         systemDocuments.value = config.documents
@@ -98,6 +100,7 @@ async function loadSessionConfig() {
     if (result && result.config && result.config.settings) {
       const settings = result.config.settings
       sessionTool.value = settings.tool || settings.provider || 'claude'
+      debugEnabled.value = settings.debug === true
 
       // 模型配置
       const savedModelMode = settings.modelMode || (settings.modelId === '' ? 'system' : (settings.modelId ? 'custom' : 'project'))
@@ -143,6 +146,7 @@ async function loadSessionConfig() {
       modelMode.value = 'project'
       promptsMode.value = 'project'
       documentsMode.value = 'project'
+      debugEnabled.value = false
     }
   } catch (e) {
     console.error('Failed to load session config:', e)
@@ -200,6 +204,7 @@ async function handleSave() {
   try {
     const settings = {
       tool: sessionTool.value,
+      debug: debugEnabled.value,
       modelMode: modelMode.value,
       modelId: modelMode.value === 'custom' ? selectedModelId.value : null,
       modelCardId: modelMode.value === 'custom' && modelCardMode.value === 'custom' ? selectedModelCardId.value : null,
@@ -230,6 +235,17 @@ watch(() => props.visible, (visible) => {
   if (visible) {
     loadSystemConfig()
     loadSessionConfig()
+  }
+})
+
+watch(sessionTool, async () => {
+  await loadSystemConfig()
+  if (modelMode.value === 'custom') {
+    const currentStillExists = availableModels.value.some(model => model.id === selectedModelId.value)
+    if (!currentStillExists) {
+      selectedModelId.value = availableModels.value[0]?.id || null
+      onModelChange()
+    }
   }
 })
 
@@ -279,7 +295,10 @@ onMounted(() => {
     <div class="dialog">
       <div class="dialog-header">
         <div class="header-content">
-          <h3>会话配置</h3>
+          <div class="header-title-row">
+            <h3>会话配置</h3>
+            <span class="header-provider-badge">{{ sessionTool === 'codex' ? 'Codex' : 'Claude' }}</span>
+          </div>
           <span class="session-hint">独立配置优先于项目配置</span>
         </div>
         <button class="close-btn" @click="emit('close')">
@@ -296,14 +315,6 @@ onMounted(() => {
         </div>
 
         <template v-else>
-          <div class="config-section">
-            <label class="config-label">工具</label>
-            <div class="readonly-value">
-              <span class="readonly-badge">{{ sessionTool === 'codex' ? 'Codex' : 'Claude' }}</span>
-            </div>
-            <p class="field-hint">工具在创建会话时确定，创建后不可更换。</p>
-          </div>
-
           <!-- 模型选择 -->
           <div class="config-section">
             <label class="config-label">模型</label>
@@ -454,6 +465,16 @@ onMounted(() => {
               <p v-else class="empty-hint">暂无规范文档</p>
             </div>
           </div>
+
+          <div class="config-divider"></div>
+
+          <div class="config-section debug-section">
+            <label class="debug-toggle-row">
+              <input v-model="debugEnabled" type="checkbox" />
+              <span class="debug-toggle-label">Debug</span>
+              <span class="debug-toggle-hint">仅在开启时写入 stream 日志。</span>
+            </label>
+          </div>
         </template>
       </div>
 
@@ -514,11 +535,30 @@ onMounted(() => {
   gap: 2px;
 }
 
+.header-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .dialog-header h3 {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
   color: #E5E7EB;
+}
+
+.header-provider-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(249, 115, 22, 0.12);
+  border: 1px solid rgba(249, 115, 22, 0.24);
+  color: #FED7AA;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .session-hint {
@@ -596,28 +636,41 @@ onMounted(() => {
   border: 1px solid #3F3F46;
 }
 
-.readonly-value {
-  padding: 12px;
-  background: #1E1E1E;
-  border-radius: 6px;
-  border: 1px solid #3F3F46;
-}
-
-.readonly-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: rgba(249, 115, 22, 0.12);
-  border: 1px solid rgba(249, 115, 22, 0.28);
-  color: #FED7AA;
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .field-hint {
   margin: 8px 0 0;
+  font-size: 12px;
+  color: #6B7280;
+}
+
+.config-divider {
+  height: 1px;
+  margin: 24px 0 20px;
+  background: #3F3F46;
+}
+
+.debug-section {
+  margin-bottom: 0;
+}
+
+.debug-toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #D1D5DB;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.debug-toggle-row input {
+  accent-color: #F97316;
+  cursor: pointer;
+}
+
+.debug-toggle-label {
+  font-weight: 500;
+}
+
+.debug-toggle-hint {
   font-size: 12px;
   color: #6B7280;
 }

@@ -4,6 +4,7 @@ const fs = require('fs')
 const os = require('os')
 const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
+const { findProviderModel } = require('../shared/model-config')
 
 // Helper to calculate project ID from path (same as SessionInstance)
 function calculateProjectId(projectPath) {
@@ -24,7 +25,7 @@ function calculateProjectId(projectPath) {
  * Handles raw process I/O and protocol transport for Claude.
  */
 class ClaudeClient {
-  constructor(workingDirectory = null, sessionId = null, isNewSession = true, permissionMode = 'default', projectSettings = null) {
+  constructor(workingDirectory = null, sessionId = null, isNewSession = true, permissionMode = 'default', projectSettings = null, options = {}) {
     this.process = null
     this.messageHandlers = new Map()
     this.claudePath = null
@@ -34,6 +35,7 @@ class ClaudeClient {
     this.isNewSession = isNewSession
     this.permissionMode = permissionMode // 权限模式
     this.projectSettings = projectSettings // 已解析的最终配置 { modelId, modelCardId, promptIds, documentIds }
+    this.debugEnabled = options.debug === true
   }
 
   /**
@@ -41,6 +43,10 @@ class ClaudeClient {
    */
   getWorkingDirectory() {
     return this.workingDirectory
+  }
+
+  setDebugEnabled(enabled) {
+    this.debugEnabled = enabled === true
   }
 
   /**
@@ -62,6 +68,22 @@ class ClaudeClient {
     const projectId = '-' + encodedPath
 
     return path.join(os.homedir(), '.claude', 'projects', projectId, `${this.sessionId}.jsonl`)
+  }
+
+  resolveSessionMode() {
+    const sessionFile = this.getSessionFilePath()
+    if (!sessionFile || !fs.existsSync(sessionFile)) {
+      return this.isNewSession ? 'new' : 'resume'
+    }
+
+    const stat = fs.statSync(sessionFile)
+    if (stat.size === 0) {
+      logger.info(`[ClaudeClient] Empty session file found, deleting: ${sessionFile}`)
+      fs.unlinkSync(sessionFile)
+      return 'new'
+    }
+
+    return 'resume'
   }
 
   /**
@@ -178,10 +200,7 @@ class ClaudeClient {
 
     try {
       const appConfig = appConfigManager.loadConfig()
-      const models = appConfig.settings?.models || []
-
-      // 查找对应的模型配置
-      const modelConfig = models.find(m => m.id === this.projectSettings.modelId)
+      const modelConfig = findProviderModel(appConfig, 'claude', this.projectSettings.modelId)
       if (!modelConfig) {
         logger.warn(`[ClaudeClient] Model config not found: ${this.projectSettings.modelId}`)
         return envVars
@@ -263,9 +282,11 @@ class ClaudeClient {
       logger.info(`[ClaudeClient] Setting permission mode: ${this.permissionMode}`)
     }
 
+    const sessionMode = this.resolveSessionMode()
+
     // Add session-id to resume or create session
     if (this.sessionId) {
-      if (this.isNewSession) {
+      if (sessionMode === 'new') {
         // New session: use --session-id to create a new session with specific ID
         args.push('--session-id', this.sessionId)
         logger.info(`[ClaudeClient] Creating new session with ID: ${this.sessionId}`)
@@ -493,11 +514,9 @@ class ClaudeClient {
    */
   handleMessage(message) {
     // 记录接收到的消息到数据流日志
-    if (this.sessionId) {
+    if (this.debugEnabled && this.sessionId) {
       logger.logReceive(this.sessionId, message)
     }
-    // 打印所有接收到的消息
-    console.log('[RECEIVED]', JSON.stringify(message, null, 2))
 
     // Handle stream_event (thinking_delta, text_delta, message_start, etc.)
     if (message.type === 'stream_event') {
@@ -729,11 +748,9 @@ class ClaudeClient {
     if (this.process && this.process.stdin.writable) {
       const jsonMessage = JSON.stringify(message) + '\n'
       // 记录发送的消息到数据流日志
-      if (this.sessionId) {
+      if (this.debugEnabled && this.sessionId) {
         logger.logSend(this.sessionId, message)
       }
-      // 同时保留控制台输出（方便调试）
-      console.log('[SENT]', JSON.stringify(message, null, 2))
       this.process.stdin.write(jsonMessage)
     } else {
       throw new Error('Claude process not ready')

@@ -1,13 +1,25 @@
 const { spawn } = require('child_process')
 const fs = require('fs')
+const https = require('https')
 const os = require('os')
 const path = require('path')
 const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
 const {
+  buildCodexModelProviderId,
+  findProviderModel
+} = require('../shared/model-config')
+const {
   createEmptyTurnUsage,
   mergeTurnUsage
 } = require('../shared/usage')
+
+let HttpsProxyAgent = null
+try {
+  HttpsProxyAgent = require('https-proxy-agent').HttpsProxyAgent
+} catch (error) {
+  HttpsProxyAgent = null
+}
 
 function pickFirstDefined(...values) {
   for (const value of values) {
@@ -16,6 +28,149 @@ function pickFirstDefined(...values) {
     }
   }
   return null
+}
+
+function parseTomlTopLevelValue(rawValue) {
+  if (typeof rawValue !== 'string') {
+    return null
+  }
+
+  const trimmed = rawValue.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+
+  return trimmed
+}
+
+function readCodexDefaultModelProvider() {
+  try {
+    const configPath = path.join(os.homedir(), '.codex', 'config.toml')
+    if (!fs.existsSync(configPath)) {
+      return null
+    }
+
+    const content = fs.readFileSync(configPath, 'utf8')
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('[')) {
+        continue
+      }
+
+      const separatorIndex = trimmed.indexOf('=')
+      if (separatorIndex === -1) {
+        continue
+      }
+
+      const key = trimmed.slice(0, separatorIndex).trim()
+      if (key !== 'model_provider') {
+        continue
+      }
+
+      const value = parseTomlTopLevelValue(trimmed.slice(separatorIndex + 1))
+      return value || null
+    }
+
+    return null
+  } catch (error) {
+    logger.warn('[CodexClient] Failed to read default model provider from config.toml', {
+      error: error.message
+    })
+    return null
+  }
+}
+
+function readCodexAuthAccountId() {
+  try {
+    const authPath = path.join(os.homedir(), '.codex', 'auth.json')
+    if (!fs.existsSync(authPath)) {
+      return ''
+    }
+
+    const raw = JSON.parse(fs.readFileSync(authPath, 'utf8'))
+    return raw?.tokens?.account_id || ''
+  } catch (error) {
+    logger.warn('[CodexClient] Failed to read auth account id', { error: error.message })
+    return ''
+  }
+}
+
+function buildCodexEnvRateLimits(usage = null, accountName = '') {
+  if (!usage || typeof usage !== 'object') {
+    return null
+  }
+
+  const primary = usage.primaryWindow
+  const secondary = usage.secondaryWindow
+  const hasPrimary = primary && primary.remainingPercent !== null
+  const hasSecondary = secondary && secondary.remainingPercent !== null
+
+  if (!hasPrimary && !hasSecondary) {
+    return null
+  }
+
+  return {
+    planType: usage.planType || null,
+    limitName: accountName || usage.email || usage.accountId || null,
+    primary: hasPrimary
+      ? {
+          label: '5小时',
+          used: primary.usedPercent,
+          resetAfter: primary.resetAfterSeconds || null
+        }
+      : null,
+    secondary: hasSecondary
+      ? {
+          label: '1周',
+          used: secondary.usedPercent,
+          resetAfter: secondary.resetAfterSeconds || null
+        }
+      : null
+  }
+}
+
+function resolveActiveCodexAccountUsage() {
+  try {
+    const appConfig = appConfigManager.loadConfig()
+    const accounts = Array.isArray(appConfig.settings?.codexAccounts)
+      ? appConfig.settings.codexAccounts
+      : []
+    const authAccountId = readCodexAuthAccountId()
+    const selectedAccountId = appConfig.settings?.selectedCodexAccountId || null
+
+    const matchedAccount = accounts.find(account => account?.accountId === authAccountId)
+      || accounts.find(account => account?.id === selectedAccountId)
+      || null
+
+    if (!matchedAccount?.usage) {
+      return null
+    }
+
+    const accountName =
+      matchedAccount.name ||
+      matchedAccount.email ||
+      matchedAccount.accountId ||
+      ''
+
+    return {
+      accountId: matchedAccount.accountId || authAccountId || '',
+      accountName,
+      usage: matchedAccount.usage,
+      rateLimits: buildCodexEnvRateLimits(matchedAccount.usage, accountName)
+    }
+  } catch (error) {
+    logger.warn('[CodexClient] Failed to resolve active codex account usage', {
+      error: error.message
+    })
+    return null
+  }
 }
 
 const TOOL_NAME_ALIASES = new Map([
@@ -147,6 +302,79 @@ function getTextFromUserMessage(message) {
   return textPart?.text || ''
 }
 
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== 'string') {
+    return null
+  }
+
+  const segments = token.split('.')
+  if (segments.length < 2) {
+    return null
+  }
+
+  try {
+    return JSON.parse(Buffer.from(segments[1], 'base64url').toString('utf8'))
+  } catch (error) {
+    return null
+  }
+}
+
+function extractChatGptAccountId(token) {
+  const payload = decodeJwtPayload(token)
+  const auth = payload?.['https://api.openai.com/auth']
+  const accountId = auth?.chatgpt_account_id
+  return typeof accountId === 'string' ? accountId : null
+}
+
+function buildDesktopUserAgent() {
+  return `Codex Desktop/1.0.0 (${process.platform}; ${process.arch})`
+}
+
+function buildProxyAgent(proxyUrl) {
+  if (!proxyUrl || !HttpsProxyAgent) {
+    return null
+  }
+
+  try {
+    return new HttpsProxyAgent(proxyUrl)
+  } catch (error) {
+    logger.warn('[CodexClient] Failed to create proxy agent', { error: error.message })
+    return null
+  }
+}
+
+function requestJson(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const request = https.request(url, options, response => {
+      let body = ''
+      response.setEncoding('utf8')
+      response.on('data', chunk => {
+        body += chunk
+      })
+      response.on('end', () => {
+        let parsedBody = null
+        if (body) {
+          try {
+            parsedBody = JSON.parse(body)
+          } catch (error) {
+            parsedBody = null
+          }
+        }
+
+        resolve({
+          statusCode: response.statusCode || 0,
+          headers: response.headers,
+          body,
+          json: parsedBody
+        })
+      })
+    })
+
+    request.on('error', reject)
+    request.end()
+  })
+}
+
 class CodexClient {
   constructor(workingDirectory = null, sessionId = null, isNewSession = true, permissionMode = 'default', projectSettings = null, options = {}) {
     this.process = null
@@ -158,6 +386,7 @@ class CodexClient {
     this.permissionMode = permissionMode
     this.projectSettings = projectSettings
     this.resumeThreadId = options.resumeThreadId || null
+    this.debugEnabled = options.debug === true
 
     this.requestCounter = 0
     this.pendingRequests = new Map()
@@ -177,6 +406,10 @@ class CodexClient {
       providerPid: null,
       tools: []
     }
+    this.initialized = false
+    this.authTokenCache = null
+    this.authTokenPromise = null
+    this.accountUsageRefreshTimer = null
   }
 
   on(messageType, handler) {
@@ -209,6 +442,10 @@ class CodexClient {
     })
   }
 
+  setDebugEnabled(enabled) {
+    this.debugEnabled = enabled === true
+  }
+
   detectCodexPath() {
     const possiblePaths = [
       '/Applications/Codex.app/Contents/Resources/codex',
@@ -227,15 +464,14 @@ class CodexClient {
     throw new Error('Codex CLI not found. Please install Codex first.')
   }
 
-  resolveModelName() {
-    if (!this.projectSettings?.modelId) {
+  resolveModelRuntime() {
+    if (this.projectSettings?.modelMode !== 'custom' || !this.projectSettings?.modelId) {
       return null
     }
 
     try {
       const appConfig = appConfigManager.loadConfig()
-      const models = appConfig.settings?.models || []
-      const modelConfig = models.find(model => model.id === this.projectSettings.modelId)
+      const modelConfig = findProviderModel(appConfig, 'codex', this.projectSettings.modelId)
       if (!modelConfig) {
         return null
       }
@@ -250,11 +486,70 @@ class CodexClient {
         targetCard = cards.find(card => card.id === defaultCardId) || cards[0]
       }
 
-      return targetCard?.modelName || null
+      return {
+        modelName: targetCard?.modelName || null,
+        modelProvider: buildCodexModelProviderId(modelConfig.id),
+        authToken: modelConfig.authToken || null
+      }
     } catch (error) {
-      logger.warn('[CodexClient] Failed to resolve model name', { error: error.message })
+      logger.warn('[CodexClient] Failed to resolve model runtime', { error: error.message })
       return null
     }
+  }
+
+  async buildDeveloperInstructions() {
+    if (!this.projectSettings) {
+      return null
+    }
+
+    const parts = []
+
+    try {
+      const appConfig = appConfigManager.loadConfig()
+      const promptIds = Array.isArray(this.projectSettings.promptIds)
+        ? this.projectSettings.promptIds
+        : []
+
+      if (promptIds.length > 0) {
+        const prompts = appConfig.settings?.prompts || []
+        for (const promptId of promptIds) {
+          const prompt = prompts.find(item => item.id === promptId)
+          if (prompt?.content) {
+            parts.push(prompt.content)
+          }
+        }
+      }
+
+      const documentIds = Array.isArray(this.projectSettings.documentIds)
+        ? this.projectSettings.documentIds
+        : []
+
+      if (documentIds.length > 0) {
+        const docsDir = path.join(os.homedir(), '.ccgui', 'docs')
+        const docPaths = []
+
+        for (const docId of documentIds) {
+          const filePath = path.join(docsDir, `${docId}.md`)
+          if (fs.existsSync(filePath)) {
+            docPaths.push(filePath)
+          }
+        }
+
+        if (docPaths.length > 0) {
+          parts.push(`请始终遵循如下文档的规范要求: ${docPaths.join(', ')}`)
+        }
+      }
+    } catch (error) {
+      logger.warn('[CodexClient] Failed to build developer instructions', {
+        error: error.message
+      })
+    }
+
+    if (parts.length === 0) {
+      return null
+    }
+
+    return parts.join('\n\n')
   }
 
   mapPermissionModeToApprovalPolicy() {
@@ -271,13 +566,120 @@ class CodexClient {
   }
 
   async start() {
-    if (this.process) {
+    await this.ensureInitialized()
+
+    if (this.currentThreadId) {
+      return
+    }
+
+    const threadParams = {
+      cwd: this.workingDirectory,
+      approvalPolicy: this.mapPermissionModeToApprovalPolicy(),
+      sandbox: 'workspace-write',
+      modelProvider: readCodexDefaultModelProvider() || 'openai',
+      experimentalRawEvents: false,
+      persistExtendedHistory: true,
+      ephemeral: false
+    }
+
+    const modelRuntime = this.resolveModelRuntime()
+    if (this.projectSettings?.modelMode === 'custom' && modelRuntime) {
+      if (modelRuntime.modelName) {
+        threadParams.model = modelRuntime.modelName
+      }
+      if (modelRuntime.modelProvider) {
+        threadParams.modelProvider = modelRuntime.modelProvider
+      }
+    }
+
+    const developerInstructions = await this.buildDeveloperInstructions()
+    if (developerInstructions) {
+      threadParams.developerInstructions = developerInstructions
+    }
+
+    const response = this.resumeThreadId
+      ? await this.request('thread/resume', {
+          threadId: this.resumeThreadId,
+          cwd: threadParams.cwd,
+          approvalPolicy: threadParams.approvalPolicy,
+          sandbox: threadParams.sandbox,
+          model: threadParams.model || null,
+          modelProvider: threadParams.modelProvider,
+          persistExtendedHistory: threadParams.persistExtendedHistory,
+          developerInstructions: threadParams.developerInstructions || null
+        })
+      : await this.request('thread/start', threadParams)
+
+    if (response?.thread?.id) {
+      const activeCodexAccountUsage =
+        threadParams.modelProvider === 'openai' ? resolveActiveCodexAccountUsage() : null
+
+      this.currentThreadId = response.thread.id
+      this.envInfo = applyCodexEnvInfoPatch({
+        ...this.envInfo,
+        session_id: response.thread.id,
+        model: response.model || modelRuntime?.modelName || null,
+        providerPid: this.getPid(),
+        rate_limits: activeCodexAccountUsage?.rateLimits || null
+      }, {
+        provider: 'codex',
+        providerPid: this.getPid()
+      })
+      this.emit('env-info', this.envInfo)
+
+      if (threadParams.modelProvider === 'openai') {
+        this.startAccountUsageRefresh()
+      } else {
+        this.stopAccountUsageRefresh()
+      }
+    }
+  }
+
+  refreshOpenAiAccountUsageEnvInfo() {
+    const activeCodexAccountUsage = resolveActiveCodexAccountUsage()
+    if (!activeCodexAccountUsage || !this.envInfo) {
+      return
+    }
+
+    this.envInfo = applyCodexEnvInfoPatch({
+      ...this.envInfo,
+      rate_limits: activeCodexAccountUsage.rateLimits || null
+    }, {
+      provider: 'codex',
+      providerPid: this.getPid()
+    })
+    this.emit('env-info', this.envInfo)
+  }
+
+  startAccountUsageRefresh() {
+    this.stopAccountUsageRefresh()
+    this.refreshOpenAiAccountUsageEnvInfo()
+    this.accountUsageRefreshTimer = setInterval(() => {
+      this.refreshOpenAiAccountUsageEnvInfo()
+    }, 60 * 1000)
+  }
+
+  stopAccountUsageRefresh() {
+    if (this.accountUsageRefreshTimer) {
+      clearInterval(this.accountUsageRefreshTimer)
+      this.accountUsageRefreshTimer = null
+    }
+  }
+
+  async ensureInitialized() {
+    if (this.process && this.initialized) {
+      return
+    }
+
+    if (this.process && !this.initialized) {
+      await this.initializeAppServer()
       return
     }
 
     this.codexPath = this.detectCodexPath()
     const appConfig = appConfigManager.loadConfig()
     const proxyUrl = appConfig.settings?.codexProxy || ''
+    const modelRuntime = this.resolveModelRuntime()
     const codexEnv = {
       ...process.env
     }
@@ -286,6 +688,10 @@ class CodexClient {
       codexEnv.HTTP_PROXY = proxyUrl
       codexEnv.HTTPS_PROXY = proxyUrl
       codexEnv.ALL_PROXY = proxyUrl
+    }
+
+    if (modelRuntime?.authToken) {
+      codexEnv.OPENAI_API_KEY = modelRuntime.authToken
     }
 
     this.process = spawn(this.codexPath, ['app-server', '--listen', 'stdio://'], {
@@ -309,6 +715,14 @@ class CodexClient {
       })
     })
 
+    await this.initializeAppServer()
+  }
+
+  async initializeAppServer() {
+    if (this.initialized) {
+      return
+    }
+
     await this.request('initialize', {
       clientInfo: {
         name: 'ccgui',
@@ -320,47 +734,7 @@ class CodexClient {
     })
 
     this.sendNotification('initialized')
-
-    const threadParams = {
-      cwd: this.workingDirectory,
-      approvalPolicy: this.mapPermissionModeToApprovalPolicy(),
-      sandbox: 'workspace-write',
-      modelProvider: 'openai',
-      experimentalRawEvents: false,
-      persistExtendedHistory: true,
-      ephemeral: false
-    }
-
-    const model = this.resolveModelName()
-    if (model) {
-      threadParams.model = model
-    }
-
-    const response = this.resumeThreadId
-      ? await this.request('thread/resume', {
-          threadId: this.resumeThreadId,
-          cwd: threadParams.cwd,
-          approvalPolicy: threadParams.approvalPolicy,
-          sandbox: threadParams.sandbox,
-          model: threadParams.model || null,
-          modelProvider: threadParams.modelProvider,
-          persistExtendedHistory: threadParams.persistExtendedHistory
-        })
-      : await this.request('thread/start', threadParams)
-
-    if (response?.thread?.id) {
-      this.currentThreadId = response.thread.id
-      this.envInfo = applyCodexEnvInfoPatch({
-        ...this.envInfo,
-        session_id: response.thread.id,
-        model: response.model || model || null,
-        providerPid: this.getPid()
-      }, {
-        provider: 'codex',
-        providerPid: this.getPid()
-      })
-      this.emit('env-info', this.envInfo)
-    }
+    this.initialized = true
   }
 
   setupStdioHandlers() {
@@ -405,7 +779,9 @@ class CodexClient {
 
   handleMessage(message) {
     if (this.sessionId) {
-      logger.logReceive(this.sessionId, message)
+      if (this.debugEnabled && this.sessionId) {
+        logger.logReceive(this.sessionId, message)
+      }
     }
 
     if (message.id !== undefined) {
@@ -446,6 +822,8 @@ class CodexClient {
   }
 
   async sendMessage(message) {
+    await this.ensureInitialized()
+
     if (!this.currentThreadId) {
       throw new Error('Codex thread not initialized')
     }
@@ -472,6 +850,8 @@ class CodexClient {
   }
 
   async sendInterrupt() {
+    await this.ensureInitialized()
+
     if (!this.currentThreadId || !this.currentTurnId) {
       return
     }
@@ -483,10 +863,132 @@ class CodexClient {
   }
 
   async sendControlRequest(request) {
+    await this.ensureInitialized()
+
     if (request?.subtype === 'set_permission_mode' && request.mode) {
       this.permissionMode = request.mode
       return
     }
+  }
+
+  async requestAuthStatus(options = {}) {
+    const refreshToken = options.refreshToken === true
+    const includeToken = options.includeToken !== false
+
+    await this.ensureInitialized()
+
+    return this.request('getAuthStatus', {
+      includeToken,
+      refreshToken
+    })
+  }
+
+  async getAuthToken(options = {}) {
+    const refreshToken = options.refreshToken === true
+
+    await this.ensureInitialized()
+
+    if (!refreshToken && this.authTokenCache) {
+      return this.authTokenCache
+    }
+
+    if (refreshToken) {
+      return this.fetchAuthToken(true)
+    }
+
+    if (this.authTokenPromise) {
+      return this.authTokenPromise
+    }
+
+    this.authTokenPromise = this.fetchAuthToken(false)
+      .finally(() => {
+        this.authTokenPromise = null
+      })
+
+    return this.authTokenPromise
+  }
+
+  async fetchAuthToken(refreshToken = false) {
+    const status = await this.requestAuthStatus({
+      refreshToken,
+      includeToken: true
+    })
+
+    const token =
+      (status?.authMethod === 'chatgpt'
+        ? pickFirstDefined(status?.authToken, status?.accessToken)
+        : null) || null
+
+    this.authTokenCache = token
+    return token
+  }
+
+  clearAuthTokenCache() {
+    this.authTokenCache = null
+    this.authTokenPromise = null
+  }
+
+  async refreshAuthToken() {
+    const status = await this.requestAuthStatus({
+      refreshToken: true,
+      includeToken: true
+    })
+
+    this.clearAuthTokenCache()
+    const authToken = await this.getAuthToken({ refreshToken: false })
+
+    return {
+      ...status,
+      authToken
+    }
+  }
+
+  async getUsageStatus() {
+    await this.ensureInitialized()
+
+    const appConfig = appConfigManager.loadConfig()
+    const proxyUrl = appConfig.settings?.codexProxy || ''
+    const agent = buildProxyAgent(proxyUrl)
+
+    const execute = async authToken => {
+      if (!authToken) {
+        throw new Error('Missing Codex auth token')
+      }
+
+      const accountId = extractChatGptAccountId(authToken)
+      const headers = {
+        Accept: 'application/json',
+        Authorization: `Bearer ${authToken}`,
+        originator: 'Codex Desktop',
+        'User-Agent': buildDesktopUserAgent()
+      }
+
+      if (accountId) {
+        headers['ChatGPT-Account-Id'] = accountId
+      }
+
+      return requestJson('https://chatgpt.com/backend-api/wham/usage', {
+        method: 'GET',
+        headers,
+        agent
+      })
+    }
+
+    let authToken = await this.getAuthToken({ refreshToken: false })
+    let response = await execute(authToken)
+
+    if (response.statusCode === 401) {
+      authToken = await this.getAuthToken({ refreshToken: true })
+      response = await execute(authToken)
+    }
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(
+        `Codex usage request failed: ${response.statusCode} ${response.body || ''}`.trim()
+      )
+    }
+
+    return response.json || null
   }
 
   request(method, params) {
@@ -494,7 +996,9 @@ class CodexClient {
     const payload = { id, method, params }
 
     if (this.sessionId) {
-      logger.logSend(this.sessionId, payload)
+      if (this.debugEnabled && this.sessionId) {
+        logger.logSend(this.sessionId, payload)
+      }
     }
 
     this.process.stdin.write(JSON.stringify(payload) + '\n')
@@ -515,7 +1019,9 @@ class CodexClient {
   sendNotification(method, params = undefined) {
     const payload = params === undefined ? { method } : { method, params }
     if (this.sessionId) {
-      logger.logSend(this.sessionId, payload)
+      if (this.debugEnabled && this.sessionId) {
+        logger.logSend(this.sessionId, payload)
+      }
     }
     this.process.stdin.write(JSON.stringify(payload) + '\n')
   }
@@ -523,16 +1029,21 @@ class CodexClient {
   sendResponse(id, result) {
     const payload = { id, result }
     if (this.sessionId) {
-      logger.logSend(this.sessionId, payload)
+      if (this.debugEnabled && this.sessionId) {
+        logger.logSend(this.sessionId, payload)
+      }
     }
     this.process.stdin.write(JSON.stringify(payload) + '\n')
   }
 
   stop() {
+    this.stopAccountUsageRefresh()
     if (this.process) {
       this.process.kill('SIGTERM')
       this.process = null
     }
+    this.initialized = false
+    this.clearAuthTokenCache()
   }
 
   isReady() {
@@ -556,5 +1067,9 @@ module.exports = {
   normalizeControlRequest,
   applyCodexEnvInfoPatch,
   createEmptyTurnUsage,
-  mergeTurnUsage
+  mergeTurnUsage,
+  extractChatGptAccountId,
+  buildDesktopUserAgent,
+  buildProxyAgent,
+  requestJson
 }

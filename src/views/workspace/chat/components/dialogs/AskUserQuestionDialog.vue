@@ -14,20 +14,7 @@ const questions = ref([])
 const answers = ref({})
 const currentTabIndex = ref(0)
 
-/**
- * 日志工具 - 将日志发送到后端终端
- */
-function log(...args) {
-  if (window.electronAPI?.log) {
-    window.electronAPI.log(...args)
-  }
-  console.log(...args)
-}
-
 onMounted(() => {
-  // 详细记录原始请求的所有字段
-  log('[AskUserQuestionDialog] request keys:', Object.keys(props.request))
-
   // Parse the questions from tool input
   // 支持多种可能的字段名格式：input, tool_input, toolInput
   let toolInput = props.request.input || props.request.tool_input || props.request.toolInput
@@ -36,13 +23,10 @@ onMounted(() => {
   if (typeof toolInput === 'string') {
     try {
       toolInput = JSON.parse(toolInput)
-      log('[AskUserQuestionDialog] Parsed input as JSON, keys:', toolInput ? Object.keys(toolInput).join(', ') : 'null')
     } catch (e) {
-      log('[AskUserQuestionDialog] Failed to parse input as JSON:', e.message)
+      // Ignore invalid JSON string input and fall back to raw value.
     }
   }
-
-  log('[AskUserQuestionDialog] toolInput after parse:', typeof toolInput, toolInput ? 'exists' : 'null/undefined')
 
   if (toolInput && toolInput.questions) {
     questions.value = toolInput.questions
@@ -66,7 +50,6 @@ onMounted(() => {
     })
   }
 
-  log('[AskUserQuestionDialog] questions count:', questions.value.length)
 })
 
 const currentQuestion = computed(() => {

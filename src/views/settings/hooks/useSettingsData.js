@@ -9,6 +9,33 @@ function toDeepPlain(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function normalizeCodexAccounts(accounts = []) {
+  let changed = false
+  const normalized = (Array.isArray(accounts) ? accounts : []).map(account => {
+    const email = account?.email || account?.usage?.email || ''
+    const name = account?.name || email || ''
+    if (email !== (account?.email || '') || name !== (account?.name || '')) {
+      changed = true
+    }
+    return {
+      ...account,
+      email,
+      name
+    }
+  })
+
+  return { accounts: normalized, changed }
+}
+
+function buildCodexProviderId(modelId = '') {
+  const suffix = String(modelId || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  return suffix ? `ccgui_model_${suffix}` : 'ccgui'
+}
+
 export function useSettingsData(emit) {
   const settings = ref({
     theme: 'dark',
@@ -37,18 +64,25 @@ export function useSettingsData(emit) {
     authToken: '',
     model: '',
     modelReasoningEffort: 'medium',
-    proxyUrl: ''
+    proxyUrl: '',
+    accounts: [],
+    selectedAccountId: null
   })
 
-  const models = ref([])
-  const selectedModelId = ref(null)
+  const claudeModels = ref([])
+  const codexModels = ref([])
+  const selectedClaudeModelId = ref(null)
+  const selectedCodexModelId = ref(null)
   const prompts = ref([])
   const documents = ref([])
 
   const showModelDialog = ref(false)
   const editingModel = ref(null)
+  const editingModelType = ref('claude') // 'claude' 或 'codex'
   const showDefaultConfigDialog = ref(false)
   const showCodexConfigDialog = ref(false)
+  const showCodexAccountDialog = ref(false)
+  const editingCodexAccount = ref(null)
   const showPromptDialog = ref(false)
   const editingPrompt = ref(null)
   const showDocumentDialog = ref(false)
@@ -72,9 +106,17 @@ export function useSettingsData(emit) {
         const config = result.config
         if (config.settings) {
           settings.value = { ...settings.value, ...config.settings }
-          models.value = config.settings.models || []
+          claudeModels.value = config.settings.claudeModels || []
+          codexModels.value = config.settings.codexModels || []
           prompts.value = config.settings.prompts || []
-          selectedModelId.value = config.settings.selectedModelId || null
+          selectedClaudeModelId.value = config.settings.selectedClaudeModelId || null
+          selectedCodexModelId.value = config.settings.selectedCodexModelId || null
+          const normalizedCodexAccounts = normalizeCodexAccounts(config.settings.codexAccounts || [])
+          codexConfig.value.accounts = normalizedCodexAccounts.accounts
+          codexConfig.value.selectedAccountId = config.settings.selectedCodexAccountId || null
+          if (normalizedCodexAccounts.changed) {
+            await saveAppConfig()
+          }
         }
         if (config.documents) {
           documents.value = config.documents
@@ -115,9 +157,13 @@ export function useSettingsData(emit) {
       const updates = {
         settings: {
           ...toDeepPlain(settings.value),
-          models: toDeepPlain(models.value),
+          claudeModels: toDeepPlain(claudeModels.value),
+          codexModels: toDeepPlain(codexModels.value),
           prompts: toDeepPlain(prompts.value),
-          selectedModelId: selectedModelId.value
+          selectedClaudeModelId: selectedClaudeModelId.value,
+          selectedCodexModelId: selectedCodexModelId.value,
+          codexAccounts: toDeepPlain(codexConfig.value.accounts || []),
+          selectedCodexAccountId: codexConfig.value.selectedAccountId || null
         },
         documents: toDeepPlain(documents.value)
       }
@@ -144,24 +190,49 @@ export function useSettingsData(emit) {
     }
   }
 
-  function handleAddModel() {
+  function handleAddClaudeModel() {
     editingModel.value = null
+    editingModelType.value = 'claude'
     showModelDialog.value = true
   }
 
-  function handleEditModel(model) {
+  function handleEditClaudeModel(model) {
     editingModel.value = model
+    editingModelType.value = 'claude'
     showModelDialog.value = true
   }
 
-  async function handleDeleteModel(modelId) {
-    if (!confirm('确定要删除这个模型吗？')) return
+  function handleAddCodexModel() {
+    editingModel.value = null
+    editingModelType.value = 'codex'
+    showModelDialog.value = true
+  }
 
-    models.value = models.value.filter(model => model.id !== modelId)
-    if (selectedModelId.value === modelId) {
-      selectedModelId.value = models.value[0]?.id || null
+  function handleEditCodexModel(model) {
+    editingModel.value = model
+    editingModelType.value = 'codex'
+    showModelDialog.value = true
+  }
+
+  async function handleDeleteClaudeModel(modelId) {
+    if (!confirm('确定要删除这个 Claude 模型吗？')) return
+
+    claudeModels.value = claudeModels.value.filter(model => model.id !== modelId)
+    if (selectedClaudeModelId.value === modelId) {
+      selectedClaudeModelId.value = claudeModels.value[0]?.id || null
     }
     await saveAppConfig()
+  }
+
+  async function handleDeleteCodexModel(modelId) {
+    if (!confirm('确定要删除这个 Codex 模型吗？')) return
+
+    codexModels.value = codexModels.value.filter(model => model.id !== modelId)
+    if (selectedCodexModelId.value === modelId) {
+      selectedCodexModelId.value = codexModels.value[0]?.id || null
+    }
+    await saveAppConfig()
+    await window.electronAPI.syncCodexModelProviders()
   }
 
   async function handleSaveModel(formData) {
@@ -174,64 +245,95 @@ export function useSettingsData(emit) {
       ? formData.defaultCardId
       : finalCards[0]?.id || null
 
+    const modelData = {
+      friendlyName: formData.friendlyName,
+      apiUrl: formData.apiUrl,
+      authToken: formData.authToken,
+      defaultCardId,
+      modelCards: finalCards
+    }
+
+    const modelType = editingModelType.value
+    const models = modelType === 'claude' ? claudeModels : codexModels
+    const selectedId = modelType === 'claude' ? selectedClaudeModelId : selectedCodexModelId
+
     if (editingModel.value) {
       const index = models.value.findIndex(model => model.id === editingModel.value.id)
       if (index !== -1) {
         models.value[index] = {
           ...models.value[index],
-          friendlyName: formData.friendlyName,
-          apiUrl: formData.apiUrl,
-          authToken: formData.authToken,
-          defaultCardId,
-          modelCards: finalCards
+          ...modelData
         }
       }
     } else {
       const newModel = {
         id: formData.id || Date.now().toString(),
-        friendlyName: formData.friendlyName,
-        apiUrl: formData.apiUrl,
-        authToken: formData.authToken,
-        defaultCardId,
-        modelCards: finalCards
+        ...modelData
       }
       models.value.push(newModel)
       if (models.value.length === 1) {
-        selectedModelId.value = newModel.id
+        if (modelType === 'claude') {
+          selectedClaudeModelId.value = newModel.id
+        } else {
+          selectedCodexModelId.value = newModel.id
+        }
       }
     }
 
     showModelDialog.value = false
     await saveAppConfig()
+    if (modelType === 'codex') {
+      await window.electronAPI.syncCodexModelProviders()
+    }
   }
 
-  function handleSelectModel(modelId) {
-    selectedModelId.value = modelId
+  function handleSelectClaudeModel(modelId) {
+    selectedClaudeModelId.value = modelId
   }
 
-  async function handleSetModelDefaultCard({ modelId, cardId }) {
-    const model = models.value.find(item => item.id === modelId)
+  function handleSelectCodexModel(modelId) {
+    selectedCodexModelId.value = modelId
+  }
+
+  async function handleSetClaudeModelDefaultCard({ modelId, cardId }) {
+    const model = claudeModels.value.find(item => item.id === modelId)
     if (!model) return
 
     model.defaultCardId = cardId
     await saveAppConfig()
   }
 
-  async function handleToggleModelActive({ modelId, active }) {
-    const model = models.value.find(item => item.id === modelId)
+  async function handleSetCodexModelDefaultCard({ modelId, cardId }) {
+    const model = codexModels.value.find(item => item.id === modelId)
+    if (!model) return
+
+    model.defaultCardId = cardId
+    await saveAppConfig()
+  }
+
+  async function handleToggleClaudeModelActive({ modelId, active }) {
+    const model = claudeModels.value.find(item => item.id === modelId)
     if (!model) return
 
     model.isActive = active
     await saveAppConfig()
   }
 
-  function handleApplyModel(model) {
+  async function handleToggleCodexModelActive({ modelId, active }) {
+    const model = codexModels.value.find(item => item.id === modelId)
+    if (!model) return
+
+    model.isActive = active
+    await saveAppConfig()
+  }
+
+  function handleApplyClaudeModel(model) {
     if (!model) return
 
     const cardCount = model.modelCards?.length || 0
     if (cardCount <= 1) {
       const defaultModelName = cardCount === 1 ? model.modelCards[0].modelName : ''
-      applyModelWithMappings(model, {
+      applyClaudeModelWithMappings(model, {
         ANTHROPIC_MODEL: defaultModelName,
         model: defaultModelName
       }, true)
@@ -242,18 +344,48 @@ export function useSettingsData(emit) {
     showMappingDialog.value = true
   }
 
+  async function handleApplyCodexModel(model) {
+    if (!model) return
+
+    try {
+      const result = await window.electronAPI.updateCodexSettings({
+        updates: {
+          apiUrl: model.apiUrl || '',
+          authToken: model.authToken || '',
+          model: model.modelCards?.[0]?.modelName || model.model || '',
+          modelProvider: buildCodexProviderId(model.id)
+        }
+      })
+
+      if (!result?.success) {
+        alert('应用 Codex 模型配置失败: ' + (result?.error || '未知错误'))
+        return
+      }
+
+      codexConfig.value.apiUrl = model.apiUrl || ''
+      codexConfig.value.authToken = model.authToken || ''
+      codexConfig.value.model = model.modelCards?.[0]?.modelName || ''
+
+      await saveAppConfig()
+      alert('Codex 模型配置已应用')
+    } catch (error) {
+      console.error('应用 Codex 模型失败:', error)
+      alert('应用 Codex 模型配置失败: ' + error.message)
+    }
+  }
+
   async function handleMappingConfirm(mappings) {
     if (!pendingModel.value) return
 
     try {
-      await applyModelWithMappings(pendingModel.value, mappings)
+      await applyClaudeModelWithMappings(pendingModel.value, mappings)
     } finally {
       showMappingDialog.value = false
       pendingModel.value = null
     }
   }
 
-  async function applyModelWithMappings(model, mappings, clearMappings = false) {
+  async function applyClaudeModelWithMappings(model, mappings, clearMappings = false) {
     try {
       const env = {
         ANTHROPIC_BASE_URL: model.apiUrl || '',
@@ -274,7 +406,7 @@ export function useSettingsData(emit) {
       const result = await window.electronAPI.updateClaudeSettings({ updates, clearMappings })
 
       if (!result?.success) {
-        alert('应用模型配置失败: ' + (result?.error || '未知错误'))
+        alert('应用 Claude 模型配置失败: ' + (result?.error || '未知错误'))
         return
       }
 
@@ -290,10 +422,10 @@ export function useSettingsData(emit) {
       }
 
       await saveAppConfig()
-      alert('模型配置已应用')
+      alert('Claude 模型配置已应用')
     } catch (error) {
-      console.error('应用模型失败:', error)
-      alert('应用模型配置失败: ' + error.message)
+      console.error('应用 Claude 模型失败:', error)
+      alert('应用 Claude 模型配置失败: ' + error.message)
     }
   }
 
@@ -319,7 +451,8 @@ export function useSettingsData(emit) {
           authToken: config.authToken,
           model: config.model,
           modelReasoningEffort: config.modelReasoningEffort,
-          proxyUrl: config.proxyUrl
+          proxyUrl: config.proxyUrl,
+          modelProvider: 'ccgui'
         }
       })
 
@@ -333,15 +466,96 @@ export function useSettingsData(emit) {
         authToken: result.settings?.authToken || config.authToken || '',
         model: result.settings?.model || config.model || '',
         modelReasoningEffort: result.settings?.modelReasoningEffort || config.modelReasoningEffort || 'medium',
-        proxyUrl: result.settings?.proxyUrl || config.proxyUrl || ''
+        proxyUrl: result.settings?.proxyUrl || config.proxyUrl || '',
+        accounts: config.accounts || codexConfig.value.accounts || [],
+        selectedAccountId: config.selectedAccountId || null
       }
 
       showCodexConfigDialog.value = false
+      await saveAppConfig()
       emit('saved')
     } catch (error) {
       console.error('Failed to save Codex config:', error)
       alert('保存 Codex 配置失败: ' + error.message)
     }
+  }
+
+  async function handleSaveCodexProxy(proxyUrl) {
+    try {
+      const result = await window.electronAPI.updateCodexSettings({
+        updates: {
+          proxyUrl: proxyUrl || ''
+        }
+      })
+
+      if (!result?.success) {
+        alert('保存 Codex 代理失败: ' + (result?.error || '未知错误'))
+        return
+      }
+
+      codexConfig.value.proxyUrl = result.settings?.proxyUrl || proxyUrl || ''
+      emit('saved')
+    } catch (error) {
+      console.error('Failed to save Codex proxy:', error)
+      alert('保存 Codex 代理失败: ' + error.message)
+    }
+  }
+
+  async function handleAddCodexAccount() {
+    editingCodexAccount.value = null
+    showCodexAccountDialog.value = true
+  }
+
+  function handleEditCodexAccount(account) {
+    editingCodexAccount.value = account ? { ...account } : null
+    showCodexAccountDialog.value = true
+  }
+
+  async function handleSaveCodexAccount(accountData) {
+    const accounts = Array.isArray(codexConfig.value.accounts) ? [...codexConfig.value.accounts] : []
+    const nextAccount = {
+      id: accountData.id || generateEntityId(),
+      name: accountData.name || '',
+      email: accountData.email || accountData.usage?.email || '',
+      accountId: accountData.accountId || '',
+      idToken: accountData.idToken || '',
+      accessToken: accountData.accessToken || '',
+      refreshToken: accountData.refreshToken || '',
+      lastRefresh: accountData.lastRefresh || '',
+      usage: accountData.usage || null
+    }
+    const index = accounts.findIndex(account => account.id === nextAccount.id)
+    if (index === -1) {
+      accounts.push(nextAccount)
+    } else {
+      accounts[index] = nextAccount
+    }
+    codexConfig.value.accounts = accounts
+    showCodexAccountDialog.value = false
+    editingCodexAccount.value = null
+    await saveAppConfig()
+  }
+
+  async function handleDeleteCodexAccount(accountId) {
+    const accounts = Array.isArray(codexConfig.value.accounts) ? [...codexConfig.value.accounts] : []
+    codexConfig.value.accounts = accounts.filter(account => account.id !== accountId)
+    if (codexConfig.value.selectedAccountId === accountId) {
+      codexConfig.value.selectedAccountId = null
+    }
+    await saveAppConfig()
+  }
+
+  async function handleApplyCodexAccount(account) {
+    if (!account) return
+    const result = await window.electronAPI.applyCodexAccount({ account })
+    if (!result?.success) {
+      alert('应用账号失败: ' + (result?.error || '未知错误'))
+      return
+    }
+
+    codexConfig.value.accounts = result.config?.settings?.codexAccounts || codexConfig.value.accounts
+    codexConfig.value.selectedAccountId = result.config?.settings?.selectedCodexAccountId || account.id
+    await saveAppConfig()
   }
 
   function handleAddPrompt() {
@@ -520,12 +734,15 @@ export function useSettingsData(emit) {
     settings,
     defaultConfig,
     codexConfig,
-    models,
-    selectedModelId,
+    claudeModels,
+    codexModels,
+    selectedClaudeModelId,
+    selectedCodexModelId,
     prompts,
     documents,
     showModelDialog,
     editingModel,
+    editingModelType,
     showDefaultConfigDialog,
     showCodexConfigDialog,
     showPromptDialog,
@@ -537,19 +754,34 @@ export function useSettingsData(emit) {
     effortOptions,
     loadSettings,
     saveSoftwareSettings,
-    handleAddModel,
-    handleEditModel,
-    handleDeleteModel,
+    handleAddClaudeModel,
+    handleEditClaudeModel,
+    handleDeleteClaudeModel,
+    handleAddCodexModel,
+    handleEditCodexModel,
+    handleDeleteCodexModel,
     handleSaveModel,
-    handleSelectModel,
-    handleSetModelDefaultCard,
-    handleToggleModelActive,
-    handleApplyModel,
+    handleSelectClaudeModel,
+    handleSelectCodexModel,
+    handleSetClaudeModelDefaultCard,
+    handleSetCodexModelDefaultCard,
+    handleToggleClaudeModelActive,
+    handleToggleCodexModelActive,
+    handleApplyClaudeModel,
+    handleApplyCodexModel,
     handleMappingConfirm,
     handleEditDefaultConfig,
     handleSaveDefaultConfig,
     handleEditCodexConfig,
     handleSaveCodexConfig,
+    handleSaveCodexProxy,
+    showCodexAccountDialog,
+    editingCodexAccount,
+    handleAddCodexAccount,
+    handleEditCodexAccount,
+    handleSaveCodexAccount,
+    handleDeleteCodexAccount,
+    handleApplyCodexAccount,
     handleAddPrompt,
     handleEditPrompt,
     handleDeletePrompt,

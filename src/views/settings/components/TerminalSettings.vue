@@ -84,7 +84,6 @@ function updateSettings(nextSettings, autoSave = false) {
     <SettingItem
       title="终端字体"
       description="设置终端面板使用的字体族，支持填写多个字体并用逗号分隔"
-      vertical
     >
       <input
         type="text"

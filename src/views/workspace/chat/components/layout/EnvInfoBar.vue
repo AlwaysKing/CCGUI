@@ -249,8 +249,8 @@ const rateLimitSummary = computed(() => {
     return null
   }
 
-  const primaryValue = formatRateLimitValue(rateLimits.primary)
-  const secondaryValue = formatRateLimitValue(rateLimits.secondary)
+  const primaryValue = formatRateLimitValue(rateLimits.primary?.used)
+  const secondaryValue = formatRateLimitValue(rateLimits.secondary?.used)
   const creditsValue = formatRateLimitValue(rateLimits.credits)
 
   const items = []
@@ -259,9 +259,9 @@ const rateLimitSummary = computed(() => {
     const reset = formatRateLimitReset(rateLimits.primary)
     items.push({
       key: 'primary',
-      label: formatRateLimitLabel(rateLimits.primary, '5小时'),
-      value: primaryValue,
-      reset
+        label: formatRateLimitLabel(rateLimits.primary, '5小时'),
+        value: primaryValue,
+        reset
     })
   }
 
@@ -269,9 +269,9 @@ const rateLimitSummary = computed(() => {
     const reset = formatRateLimitReset(rateLimits.secondary)
     items.push({
       key: 'secondary',
-      label: formatRateLimitLabel(rateLimits.secondary, '1周'),
-      value: secondaryValue,
-      reset
+        label: formatRateLimitLabel(rateLimits.secondary, '1周'),
+        value: secondaryValue,
+        reset
     })
   }
 
@@ -293,6 +293,42 @@ const rateLimitSummary = computed(() => {
     limitName: rateLimits.limitName || null,
     items
   }
+})
+
+const codexUsageSummary = computed(() => {
+  const rateLimits = props.envInfo?.rate_limits
+  if (!rateLimits) {
+    return null
+  }
+
+  const primaryUsed = Number(rateLimits.primary?.used)
+  const secondaryUsed = Number(rateLimits.secondary?.used)
+  const candidates = [
+    Number.isFinite(primaryUsed) ? { key: 'primary', label: '5小时', used: primaryUsed } : null,
+    Number.isFinite(secondaryUsed) ? { key: 'secondary', label: '1周', used: secondaryUsed } : null
+  ].filter(Boolean)
+
+  if (candidates.length === 0) {
+    return null
+  }
+
+  const dominant = candidates.sort((a, b) => b.used - a.used)[0]
+  return {
+    dominant,
+    items: candidates,
+    planType: rateLimits.planType || null
+  }
+})
+
+const codexUsageTitle = computed(() => {
+  const summary = codexUsageSummary.value
+  if (!summary) {
+    return ''
+  }
+
+  return summary.items
+    .map(item => `${item.label} 已使用 ${Math.round(item.used)}%`)
+    .join('\n')
 })
 
 function toggleSilentPanel() {
@@ -376,17 +412,6 @@ function toggleSilentPanel() {
         </div>
 
         <div class="env-right">
-          <span v-if="rateLimitSummary" class="env-item env-item-rate" :title="rateLimitSummary.limitName || rateLimitSummary.planType || 'Codex 限额信息'">
-            <span class="env-icon">⏳</span>
-            <span class="env-label">
-              <template v-for="item in rateLimitSummary.items" :key="item.key">
-                <span class="env-rate-part">
-                  {{ item.label }} {{ item.value }}
-                  <template v-if="item.reset"> · {{ item.reset }}</template>
-                </span>
-              </template>
-            </span>
-          </span>
           <span
             v-if="sessionUsageSummary"
             class="env-item env-item-usage"
@@ -423,6 +448,26 @@ function toggleSilentPanel() {
               <span v-if="sessionUsageSummary.compactSummary" class="env-usage-tooltip-line env-usage-tooltip-summary">
                 {{ sessionUsageSummary.compactSummary }}
               </span>
+            </span>
+          </span>
+          <span
+            v-if="codexUsageSummary"
+            class="env-item env-item-usage env-item-codex-usage"
+            @mouseenter="showUsageTooltip = false"
+            :title="codexUsageTitle"
+          >
+            <span class="env-progress-ring env-progress-ring-codex" aria-hidden="true">
+              <svg viewBox="0 0 20 20">
+                <circle class="env-progress-track" cx="10" cy="10" r="7"></circle>
+                <circle
+                  class="env-progress-value env-progress-value-codex"
+                  cx="10"
+                  cy="10"
+                  r="7"
+                  :stroke-dasharray="2 * Math.PI * 7"
+                  :stroke-dashoffset="2 * Math.PI * 7 * (1 - codexUsageSummary.dominant.used / 100)"
+                ></circle>
+              </svg>
             </span>
           </span>
           <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">
@@ -606,6 +651,10 @@ function toggleSilentPanel() {
   -webkit-app-region: no-drag;
 }
 
+.env-item-codex-usage {
+  margin-left: 2px;
+}
+
 .env-silent-btn {
   border: none;
   border-radius: 999px;
@@ -663,6 +712,14 @@ function toggleSilentPanel() {
   stroke: rgba(255, 255, 255, 0.96);
   stroke-linecap: round;
   transition: stroke-dashoffset 160ms ease;
+}
+
+.env-progress-ring-codex .env-progress-track {
+  stroke: rgba(148, 163, 184, 0.2);
+}
+
+.env-progress-value-codex {
+  stroke: #94A3B8;
 }
 
 .env-usage-tooltip {

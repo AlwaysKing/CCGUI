@@ -652,7 +652,7 @@ defineExpose({
         :class="{ 'drag-over': isDragOver }"
         placeholder="输入消息... (Enter 发送, Shift+Enter 换行，可拖拽文件)"
         rows="3"
-        :disabled="isProcessing || hasPermission"
+        :disabled="hasPermission"
       />
     </div>
   </div>
@@ -668,11 +668,17 @@ defineExpose({
   min-height: 165px;
 }
 
+.input-area.resizable-expanded {
+  flex: 1 1 auto;
+  min-height: 165px;
+}
+
 /* 输入框容器 */
 .input-container {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   background: #27272A;
   border: 1px solid #3F3F46;
   border-radius: 8px;
@@ -1351,6 +1357,10 @@ defineExpose({
   max-height: 400px;
   border-radius: 0 0 8px 8px;
   line-height: 1.5;
+}
+
+.input-area.resizable-expanded .input-container textarea {
+  max-height: none;
 }
 
 .input-container textarea:focus {

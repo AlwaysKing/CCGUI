@@ -23,7 +23,7 @@ const formattedTime = computed(() => {
 // 根据通知类型返回样式类
 const notificationTypeClass = computed(() => {
   const { notificationType } = props.message
-  if (notificationType === 'runtime-exit') {
+  if (notificationType === 'runtime-exit' || notificationType === 'turn-error') {
     return 'notification-error'
   }
   if (notificationType === 'runtime-stopped') {
@@ -127,6 +127,27 @@ const notificationContent = computed(() => {
       icon: '⏸',
       title: '运行时已停止',
       description: data.message || '会话已手动停止'
+    }
+  }
+
+  if (notificationType === 'turn-error') {
+    const errorType = data.errorType || 'unknown'
+    const errorMessage = data.message || '请求失败'
+
+    // 特殊处理 usageLimitExceeded 错误
+    if (errorType === 'usageLimitExceeded') {
+      return {
+        icon: '🚫',
+        title: '使用额度已达上限',
+        description: errorMessage
+      }
+    }
+
+    // 其他 turn 错误
+    return {
+      icon: '⚠️',
+      title: '请求失败',
+      description: `[${errorType}] ${errorMessage}`
     }
   }
 

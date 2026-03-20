@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAppStore } from '../../../stores/useAppStore'
+import { getProviderModels } from '../../../utils/provider-models'
 
 const store = useAppStore()
 
@@ -69,7 +70,7 @@ async function loadSystemConfig() {
     if (result && result.success) {
       const config = result.config
       if (config.settings) {
-        systemModels.value = config.settings.models || []
+        systemModels.value = getProviderModels(config, 'claude')
         systemPrompts.value = config.settings.prompts || []
       }
       if (config.documents) {

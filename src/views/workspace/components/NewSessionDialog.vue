@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '../../../stores/useAppStore'
+import { getProviderModels } from '../../../utils/provider-models'
 
 const store = useAppStore()
 
@@ -64,9 +65,9 @@ async function loadSystemConfig() {
     const result = await window.electronAPI.getAppConfig()
     if (result?.success) {
       const config = result.config || {}
-      systemModels.value = config.settings?.models || []
       systemPrompts.value = config.settings?.prompts || []
       systemDocuments.value = config.documents || []
+      systemModels.value = getProviderModels(config, selectedTool.value)
     }
   } catch (e) {
     console.error('Failed to load system config:', e)
@@ -154,6 +155,18 @@ watch(modelMode, (newValue) => {
       onModelChange()
     }
   } else if (newValue !== 'custom') {
+    selectedModelId.value = null
+    selectedModelCardId.value = null
+  }
+})
+
+watch(selectedTool, async () => {
+  await loadSystemConfig()
+  if (modelMode.value === 'custom') {
+    const firstModel = availableModels.value[0] || null
+    selectedModelId.value = firstModel?.id || null
+    onModelChange()
+  } else {
     selectedModelId.value = null
     selectedModelCardId.value = null
   }

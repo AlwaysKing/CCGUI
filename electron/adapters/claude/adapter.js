@@ -36,7 +36,7 @@ class ClaudeAdapter extends ClaudeClient {
   }
 
   handleMessage(message) {
-    if (this.sessionId) {
+    if (this.debugEnabled && this.sessionId) {
       require('../../logger').logReceive(this.sessionId, message)
     }
 

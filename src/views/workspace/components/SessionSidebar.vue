@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useAppStore } from '../../../stores/useAppStore'
+import { findProviderModel } from '../../../utils/provider-models'
 import FileTreePanel from './FileTreePanel.vue'
 
 const props = defineProps({
@@ -324,9 +325,9 @@ watch([projectConfig, systemConfig], () => {
 loadSystemConfig()
 
 // 根据ID获取模型信息
-function getModelInfo(modelId) {
-  if (!modelId || !systemConfig.value?.settings?.models) return null
-  return systemConfig.value.settings.models.find(m => m.id === modelId)
+function getModelInfo(provider, modelId) {
+  if (!modelId) return null
+  return findProviderModel(systemConfig.value, provider, modelId)
 }
 
 // 根据ID获取模型卡片信息
@@ -388,11 +389,31 @@ function normalizeSessionSettings(settings = {}) {
     modelMode,
     modelId: modelMode === 'custom' ? settings.modelId || null : null,
     modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null,
+    debug: settings.debug === true,
     promptMode,
     promptIds: promptMode === 'custom' && Array.isArray(settings.promptIds) ? settings.promptIds : [],
     documentMode,
     documentIds: documentMode === 'custom' && Array.isArray(settings.documentIds) ? settings.documentIds : []
   }
+}
+
+function getSessionListEntry(sessionId) {
+  return props.sessions.find(session => session.id === sessionId) || null
+}
+
+function hasMeaningfulSessionDisplaySettings(settings = {}) {
+  if (!settings || typeof settings !== 'object') return false
+
+  return (
+    settings.debug === true ||
+    settings.modelMode !== undefined ||
+    settings.modelId !== undefined ||
+    settings.modelCardId !== undefined ||
+    settings.promptMode !== undefined ||
+    settings.documentMode !== undefined ||
+    (Array.isArray(settings.promptIds) && settings.promptIds.length > 0) ||
+    (Array.isArray(settings.documentIds) && settings.documentIds.length > 0)
+  )
 }
 
 function buildPromptDetails(ids) {
@@ -417,7 +438,7 @@ function buildDocumentDetails(ids) {
   })
 }
 
-function buildModelDisplay(modelId, modelCardId, fallbackText) {
+function buildModelDisplay(provider, modelId, modelCardId, fallbackText) {
   if (!modelId) {
     return {
       configName: fallbackText,
@@ -426,7 +447,7 @@ function buildModelDisplay(modelId, modelCardId, fallbackText) {
     }
   }
 
-  const model = getModelInfo(modelId)
+  const model = getModelInfo(provider, modelId)
   if (!model) {
     return {
       configName: modelId,
@@ -449,6 +470,7 @@ function buildModelDisplay(modelId, modelCardId, fallbackText) {
 }
 
 function resolveProjectSettingsForDisplay() {
+  const provider = 'claude'
   const normalized = normalizeProjectSettings(projectConfig.value?.settings || {})
   const promptIds = normalized.promptMode === 'custom'
     ? normalized.promptIds
@@ -457,7 +479,7 @@ function resolveProjectSettingsForDisplay() {
     ? normalized.documentIds
     : (normalized.documentMode === 'none' ? [] : getBaseDocumentIds())
   const modelDisplay = normalized.modelMode === 'custom'
-    ? buildModelDisplay(normalized.modelId, normalized.modelCardId, '系统')
+    ? buildModelDisplay(provider, normalized.modelId, normalized.modelCardId, '系统')
     : { configName: '系统', cardName: null, text: '系统' }
 
   return {
@@ -474,9 +496,12 @@ function resolveProjectSettingsForDisplay() {
 
 function resolveSessionSettingsForDisplay(sessionId) {
   const sessionConfig = sessionConfigs.value[sessionId]
+  const sessionEntry = getSessionListEntry(sessionId)
   const projectResolved = resolveProjectSettingsForDisplay()
+  const effectiveSettings = sessionConfig?.settings || sessionEntry?.settings || {}
+  const provider = effectiveSettings.tool || effectiveSettings.provider || 'claude'
 
-  if (!sessionConfig?.settings || Object.keys(sessionConfig.settings).length === 0) {
+  if (!hasMeaningfulSessionDisplaySettings(effectiveSettings)) {
     return {
       ...projectResolved,
       source: 'project',
@@ -485,7 +510,7 @@ function resolveSessionSettingsForDisplay(sessionId) {
     }
   }
 
-  const normalized = normalizeSessionSettings(sessionConfig.settings)
+  const normalized = normalizeSessionSettings(effectiveSettings)
   const promptIds = normalized.promptMode === 'custom'
     ? normalized.promptIds
     : (normalized.promptMode === 'project'
@@ -497,9 +522,9 @@ function resolveSessionSettingsForDisplay(sessionId) {
         ? projectResolved.documents.map(doc => doc.id)
         : (normalized.documentMode === 'none' ? [] : getBaseDocumentIds()))
   const modelDisplay = normalized.modelMode === 'custom'
-    ? buildModelDisplay(normalized.modelId, normalized.modelCardId, '系统')
+    ? buildModelDisplay(provider, normalized.modelId, normalized.modelCardId, '系统')
     : (normalized.modelMode === 'system' ? { configName: '系统', cardName: null, text: '系统' } : projectResolved.modelDisplay)
-  const hasSessionOverride = normalized.modelMode !== 'project' || normalized.promptMode !== 'project' || normalized.documentMode !== 'project'
+  const hasSessionOverride = normalized.modelMode !== 'project' || normalized.promptMode !== 'project' || normalized.documentMode !== 'project' || normalized.debug === true
 
   return {
     modelMode: normalized.modelMode,
@@ -643,9 +668,19 @@ function getSessionPromptDocCounts(session) {
   }
 }
 
+function hasSessionSecondaryInfo(session) {
+  const modelInfo = getSessionModelInfo(session)
+  const counts = getSessionPromptDocCounts(session)
+  return Boolean(modelInfo || counts.promptCount > 0 || counts.docCount > 0)
+}
+
 function getSessionTool(session) {
   const tool = session?.settings?.tool || session?.settings?.provider || 'claude'
   return tool === 'codex' ? 'codex' : 'claude'
+}
+
+function isSessionDebugEnabled(sessionId) {
+  return resolveSessionSettingsForDisplay(sessionId).sessionMeta?.debug === true
 }
 
 // 判断会话的标签是否应该折叠
@@ -924,7 +959,16 @@ defineExpose({
             @click="handleSelect(session)"
             @contextmenu="handleContextMenu($event, session)"
           >
-            <div class="session-status" :class="getSessionStatus(session.id)" />
+            <div class="session-status-column">
+              <div class="session-status" :class="getSessionStatus(session.id)" />
+              <div
+                v-if="isSessionDebugEnabled(session.id)"
+                class="session-debug-badge"
+                title="Debug 已开启"
+              >
+                <span>🐞</span>
+              </div>
+            </div>
 
             <div class="session-info">
               <div class="session-row1">
@@ -933,7 +977,7 @@ defineExpose({
                   <span class="session-id"> - {{ session.id.slice(0, 8) }}</span>
                 </span>
               </div>
-              <div v-if="sessionHasConfig(session.id)" class="session-row2" :data-session-id="session.id">
+              <div v-if="hasSessionSecondaryInfo(session)" class="session-row2" :data-session-id="session.id">
                 <span v-if="getSessionModelInfo(session)" class="session-model">{{ getSessionModelInfo(session) }}</span>
                 <div class="session-counts-badges">
                   <span v-if="getSessionPromptDocCounts(session).promptCount > 0" class="count-badge-item">
@@ -1454,8 +1498,18 @@ defineExpose({
   height: 8px;
   border-radius: 50%;
   background: #52525B;  /* 灰色 - inactive */
-  margin-top: 4px;
   flex-shrink: 0;
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.session-status-column {
+  width: 16px;
+  min-height: 30px;
+  flex-shrink: 0;
+  position: relative;
 }
 
 .session-status.ready {
@@ -1467,6 +1521,21 @@ defineExpose({
   background: #22C55E;  /* 闪烁绿色 - streaming */
   box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
   animation: pulse 1s infinite;
+}
+
+.session-debug-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: #F97316;
+  opacity: 0.92;
+  flex-shrink: 0;
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 @keyframes pulse {

@@ -186,7 +186,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   ensureLogDir: (options) => ipcRenderer.invoke('ensure-log-dir', options),
   writeAppLog: (options) => ipcRenderer.invoke('write-app-log', options),
-  writeStreamLog: (options) => ipcRenderer.invoke('write-stream-log', options),
 
   // ============================================
   // App Config API
@@ -206,6 +205,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   getCodexSettings: () => ipcRenderer.invoke('get-codex-settings'),
   updateCodexSettings: (options) => ipcRenderer.invoke('update-codex-settings', options),
+  syncCodexModelProviders: () => ipcRenderer.invoke('sync-codex-model-providers'),
+  loadCodexAuthTokens: () => ipcRenderer.invoke('load-codex-auth-tokens'),
+  applyCodexAccount: (options) => ipcRenderer.invoke('apply-codex-account', options),
+  getCodexUsageStatus: (options) => ipcRenderer.invoke('get-codex-usage-status', options),
+  refreshCodexAuthToken: () => ipcRenderer.invoke('refresh-codex-auth-token'),
 
   // ============================================
   // Docs API (规范文档)

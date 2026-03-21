@@ -1,5 +1,19 @@
 const BASE_DOCUMENT_ENABLED = (doc) => doc?.isBase !== false
 const BASE_PROMPT_ENABLED = (prompt) => prompt?.isBase === true
+const SUPPORTED_EFFORT_LEVELS = new Set(['low', 'medium', 'high'])
+
+function normalizeEffortValue(value) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const normalized = value.trim().toLowerCase()
+  if (!normalized || normalized === 'default') {
+    return null
+  }
+
+  return SUPPORTED_EFFORT_LEVELS.has(normalized) ? normalized : null
+}
 
 function getBasePromptIds(appConfig) {
   const prompts = appConfig?.settings?.prompts || []
@@ -24,6 +38,7 @@ function normalizeProjectSettings(settings = {}) {
     modelMode,
     modelId: modelMode === 'custom' ? settings.modelId || null : null,
     modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null,
+    effort: normalizeEffortValue(settings.effort),
     debug: settings.debug === true,
     promptMode,
     promptIds: promptMode === 'custom' && Array.isArray(settings.promptIds) ? settings.promptIds : [],
@@ -45,6 +60,7 @@ function normalizeSessionSettings(settings = {}) {
     modelMode,
     modelId: modelMode === 'custom' ? settings.modelId || null : null,
     modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null,
+    effort: normalizeEffortValue(settings.effort),
     debug: settings.debug === true,
     promptMode,
     promptIds: promptMode === 'custom' && Array.isArray(settings.promptIds) ? settings.promptIds : [],
@@ -61,6 +77,7 @@ function resolveProjectSettings(appConfig, projectSettings = {}) {
   return {
     modelId: normalized.modelMode === 'custom' ? normalized.modelId : null,
     modelCardId: normalized.modelMode === 'custom' ? normalized.modelCardId : null,
+    effort: normalized.effort,
     promptIds: normalized.promptMode === 'custom'
       ? normalized.promptIds
       : (normalized.promptMode === 'none' ? [] : basePromptIds),
@@ -95,6 +112,9 @@ function resolveSessionSettings(appConfig, projectSettings = {}, sessionSettings
     modelCardId: normalizedSession.modelMode === 'custom'
       ? normalizedSession.modelCardId
       : (normalizedSession.modelMode === 'project' ? projectResolved.modelCardId : null),
+    effort: normalizedSession.effort !== null
+      ? normalizedSession.effort
+      : projectResolved.effort,
     promptIds: normalizedSession.promptMode === 'custom'
       ? normalizedSession.promptIds
       : (normalizedSession.promptMode === 'project'

@@ -5,7 +5,7 @@ const os = require('os')
 const { execFile, fork, spawn } = require('child_process')
 const { SessionManager } = require('./session/session-manager')
 const logger = require('./logger')
-const { encodeProjectPath } = require('./project-paths')
+const { encodeProjectPath, decodeProjectPath } = require('./project-paths')
 const appService = require('./services/app-service')
 const projectService = require('./services/project-service')
 
@@ -944,15 +944,15 @@ ipcMain.handle('send-runtime-tool-result', async (event, { sessionId, toolUseId,
 })
 
 // Start session
-ipcMain.handle('start-session', async (event, { sessionId, projectPath }) => {
-  logger.info('[IPC] start-session:', { sessionId, projectPath })
+ipcMain.handle('start-session', async (event, { sessionId, projectPath, reason, postStartNotification }) => {
+  logger.info('[IPC] start-session:', { sessionId, projectPath, reason, hasPostStartNotification: !!postStartNotification })
 
   try {
     // Use select-session internally, passing webContents for multi-window support
     const session = await sessionManager.getOrCreateSession(sessionId, projectPath, event.sender, true)
 
     // Start runtime process
-    await session.start()
+    await session.start({ reason, postStartNotification })
 
     logger.info('[IPC] start-session completed:', { sessionId, ready: session.isRuntimeReady() })
     return { success: true, sessionId }
@@ -970,9 +970,9 @@ ipcMain.handle('close-session', async (event, { sessionId }) => {
 })
 
 // Stop runtime process (keep session alive for restart)
-ipcMain.handle('stop-session-runtime', async (event, { sessionId }) => {
-  logger.info('[IPC] stop-session-runtime:', sessionId)
-  sessionManager.stopSessionRuntime(sessionId)
+ipcMain.handle('stop-session-runtime', async (event, { sessionId, reason, postStartNotification }) => {
+  logger.info('[IPC] stop-session-runtime:', { sessionId, reason, hasPostStartNotification: !!postStartNotification })
+  sessionManager.stopSessionRuntime(sessionId, { reason, postStartNotification })
   return { success: true }
 })
 
@@ -1062,6 +1062,139 @@ ipcMain.handle('update-session-config', async (event, { projectId, sessionId, up
     }
   } catch (error) {
     logger.error('[SessionConfig] Failed to update config', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('list-session-submodels', async (event, { projectId, sessionId, workingDirectory }) => {
+  try {
+    const result = await projectService.listSessionSubmodels(projectId, sessionId, { workingDirectory })
+    return { success: true, ...result }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to list session submodels', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('list-session-effort-options', async (event, { projectId, sessionId, workingDirectory, model }) => {
+  try {
+    const result = await projectService.listSessionReasoningCapabilities(projectId, sessionId, {
+      workingDirectory,
+      model
+    })
+    return { success: true, ...result }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to list session effort options', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('set-session-submodel', async (event, { sessionId, model, reasoningEffort }) => {
+  try {
+    const normalizedModel = typeof model === 'string' ? model.trim() : ''
+    if (!sessionId) {
+      throw new Error('Missing sessionId')
+    }
+    if (!normalizedModel) {
+      throw new Error('Missing model')
+    }
+
+    const result = await sessionManager.setSessionSubmodel(
+      sessionId,
+      normalizedModel,
+      typeof reasoningEffort === 'string' && reasoningEffort.trim()
+        ? reasoningEffort.trim()
+        : 'medium'
+    )
+
+    return {
+      success: true,
+      sessionId,
+      ...result
+    }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to set session submodel', { sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('set-session-model', async (event, {
+  projectId,
+  sessionId,
+  mode,
+  modelId,
+  modelCardId,
+  workingDirectory
+}) => {
+  try {
+    if (!sessionId) {
+      throw new Error('Missing sessionId')
+    }
+
+    const session = await sessionManager.getOrCreateSession(
+      sessionId,
+      workingDirectory || decodeProjectPath(projectId),
+      event.sender,
+      true
+    )
+
+    const result = await session.setSessionModel({
+      mode,
+      modelId,
+      modelCardId
+    })
+
+    return {
+      success: true,
+      ...result
+    }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to set session model', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('set-session-effort', async (event, {
+  projectId,
+  sessionId,
+  effort,
+  workingDirectory,
+  model
+}) => {
+  try {
+    const normalizedEffort = typeof effort === 'string' ? effort.trim() : ''
+    if (!sessionId) {
+      throw new Error('Missing sessionId')
+    }
+    if (!normalizedEffort) {
+      throw new Error('Missing effort')
+    }
+    const session = await sessionManager.getOrCreateSession(
+      sessionId,
+      workingDirectory || decodeProjectPath(projectId),
+      event.sender,
+      true
+    )
+    const result = await session.setSessionEffort(normalizedEffort, {
+      projectId,
+      workingDirectory,
+      model
+    })
+
+    return {
+      success: true,
+      ...result
+    }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to set session effort', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
     return { success: false, error: error.message }
   }
 })
@@ -1894,6 +2027,16 @@ ipcMain.handle('update-claude-settings', async (event, { updates, clearMappings 
   }
 })
 
+ipcMain.handle('list-claude-models', async (event, options) => {
+  try {
+    const result = await appService.listClaudeModels(options || {})
+    return { success: true, ...result }
+  } catch (error) {
+    logger.error('[ClaudeSettings] Failed to list models', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 function getCodexConfigPath() {
   return path.join(os.homedir(), '.codex', 'config.toml')
 }
@@ -1915,255 +2058,19 @@ function stringifyTomlString(value) {
 }
 
 function readCodexConfigFile() {
-  const codexConfigPath = getCodexConfigPath()
-  if (!fs.existsSync(codexConfigPath)) {
-    return {
-      model: '',
-      modelProvider: '',
-      modelReasoningEffort: 'medium',
-      apiUrl: '',
-      rawContent: ''
-    }
-  }
-
-  const rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
-  const result = {
-    model: '',
-    modelProvider: '',
-    modelReasoningEffort: 'medium',
-    apiUrl: '',
-    rawContent
-  }
-
-  let currentSection = null
-  for (const line of rawContent.split(/\r?\n/)) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-
-    const sectionMatch = trimmed.match(/^\[(.+)\]$/)
-    if (sectionMatch) {
-      currentSection = sectionMatch[1]
-      continue
-    }
-
-    const entryMatch = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*(.+?)\s*$/)
-    if (!entryMatch) continue
-
-    const [, key, rawValue] = entryMatch
-    if (!currentSection) {
-      if (key === 'model') {
-        result.model = parseTopLevelTomlValue(rawValue)
-      } else if (key === 'model_provider') {
-        result.modelProvider = parseTopLevelTomlValue(rawValue)
-      } else if (key === 'model_reasoning_effort') {
-        result.modelReasoningEffort = parseTopLevelTomlValue(rawValue) || 'medium'
-      }
-    } else if (currentSection === 'model_providers.ccgui' && key === 'base_url') {
-      result.apiUrl = parseTopLevelTomlValue(rawValue)
-    }
-  }
-
-  return result
+  return appService.readCodexConfigFile()
 }
 
 function readCodexAuthFile() {
-  const codexAuthPath = getCodexAuthPath()
-  if (!fs.existsSync(codexAuthPath)) {
-    return {
-      authToken: '',
-      tokens: {
-        idToken: '',
-        accessToken: '',
-        refreshToken: '',
-        accountId: '',
-        lastRefresh: ''
-      },
-      raw: {}
-    }
-  }
-
-  const raw = JSON.parse(fs.readFileSync(codexAuthPath, 'utf-8'))
-  return {
-    authToken: raw.OPENAI_API_KEY || '',
-    tokens: {
-      idToken: raw.tokens?.id_token || '',
-      accessToken: raw.tokens?.access_token || '',
-      refreshToken: raw.tokens?.refresh_token || '',
-      accountId: raw.tokens?.account_id || '',
-      lastRefresh: raw.last_refresh || raw.tokens?.last_refresh || ''
-    },
-    raw
-  }
+  return appService.readCodexAuthFile()
 }
 
 function writeCodexConfigFile(updates = {}) {
-  const codexConfigPath = getCodexConfigPath()
-  const codexDir = path.dirname(codexConfigPath)
-  if (!fs.existsSync(codexDir)) {
-    fs.mkdirSync(codexDir, { recursive: true })
-  }
-
-  const current = readCodexConfigFile()
-  const currentAuth = readCodexAuthFile()
-  const rawContent = current.rawContent || ''
-  const lines = rawContent ? rawContent.split(/\r?\n/) : []
-  const nextModel = updates.model !== undefined ? updates.model : current.model
-  const nextProvider = updates.modelProvider !== undefined ? updates.modelProvider : (current.modelProvider || 'ccgui')
-  const nextEffort = updates.modelReasoningEffort !== undefined ? updates.modelReasoningEffort : current.modelReasoningEffort
-  const nextApiUrl = updates.apiUrl !== undefined ? updates.apiUrl : current.apiUrl
-  const nextAuthToken = updates.authToken !== undefined ? updates.authToken : currentAuth.authToken
-  const shouldWriteCcguiProvider = Boolean((nextApiUrl || '').trim() && (nextAuthToken || '').trim())
-
-  const pendingTopLevel = new Map([
-    ['model', stringifyTomlString(nextModel || '')],
-    ['model_reasoning_effort', stringifyTomlString(nextEffort || 'medium')]
-  ])
-
-  if (shouldWriteCcguiProvider) {
-    pendingTopLevel.set('model_provider', stringifyTomlString(nextProvider || 'ccgui'))
-  }
-
-  const ccguiProviderEntries = [
-    `name = ${stringifyTomlString('ccgui')}`,
-    `base_url = ${stringifyTomlString(nextApiUrl || '')}`,
-    `wire_api = ${stringifyTomlString('responses')}`
-  ]
-
-  let currentSection = null
-  let skippingCcguiSection = false
-  let skippingLegacyNetworkSection = false
-  const output = []
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    const sectionMatch = trimmed.match(/^\[(.+)\]$/)
-    if (sectionMatch) {
-      if (!currentSection && pendingTopLevel.size > 0) {
-        for (const [key, value] of pendingTopLevel.entries()) {
-          output.push(`${key} = ${value}`)
-        }
-        pendingTopLevel.clear()
-        if (output.length > 0 && output[output.length - 1] !== '') {
-          output.push('')
-        }
-      }
-
-      if (skippingCcguiSection) {
-        if (shouldWriteCcguiProvider) {
-          output.push('')
-          output.push('[model_providers.ccgui]')
-          output.push(...ccguiProviderEntries)
-          output.push('')
-        }
-        skippingCcguiSection = false
-      }
-
-      if (skippingLegacyNetworkSection) {
-        skippingLegacyNetworkSection = false
-      }
-
-      currentSection = sectionMatch[1]
-      if (currentSection === 'model_providers.ccgui') {
-        skippingCcguiSection = true
-        continue
-      }
-
-      if (currentSection === 'permissions.ccgui.network') {
-        skippingLegacyNetworkSection = true
-        continue
-      }
-
-      output.push(line)
-      continue
-    }
-
-    if (skippingCcguiSection || skippingLegacyNetworkSection) {
-      continue
-    }
-
-    if (!currentSection) {
-      const entryMatch = line.match(/^(\s*)([A-Za-z0-9_-]+)(\s*=\s*)(.+?)(\s*)$/)
-      if (entryMatch) {
-        const [, indent, key, separator, , trailingSpace] = entryMatch
-        if (key === 'default_permissions') {
-          continue
-        }
-        if (key === 'model_provider' && !shouldWriteCcguiProvider) {
-          continue
-        }
-        if (pendingTopLevel.has(key)) {
-          output.push(`${indent}${key}${separator}${pendingTopLevel.get(key)}${trailingSpace}`)
-          pendingTopLevel.delete(key)
-          continue
-        }
-      }
-    }
-
-    output.push(line)
-  }
-
-  if (skippingCcguiSection) {
-    if (shouldWriteCcguiProvider) {
-      output.push('')
-      output.push('[model_providers.ccgui]')
-      output.push(...ccguiProviderEntries)
-    }
-    skippingCcguiSection = false
-  }
-
-  if (pendingTopLevel.size > 0) {
-    if (output.length > 0 && output[output.length - 1].trim() !== '') {
-      output.push('')
-    }
-    for (const [key, value] of pendingTopLevel.entries()) {
-      output.push(`${key} = ${value}`)
-    }
-  }
-
-  const hasCcguiSection = output.some(line => line.trim() === '[model_providers.ccgui]')
-  if (shouldWriteCcguiProvider && !hasCcguiSection) {
-    if (output.length > 0 && output[output.length - 1].trim() !== '') {
-      output.push('')
-    }
-    output.push('[model_providers.ccgui]')
-    output.push(...ccguiProviderEntries)
-  }
-
-  const finalContent = output.join('\n').replace(/\n{3,}/g, '\n\n') + '\n'
-  fs.writeFileSync(codexConfigPath, finalContent, 'utf-8')
-
-  return {
-    model: nextModel || '',
-    modelProvider: shouldWriteCcguiProvider ? (nextProvider || 'ccgui') : '',
-    modelReasoningEffort: nextEffort || 'medium',
-    apiUrl: nextApiUrl || ''
-  }
+  return appService.writeCodexConfigFile(updates || {})
 }
 
 function writeCodexAuthFile(updates = {}) {
-  const codexAuthPath = getCodexAuthPath()
-  const codexDir = path.dirname(codexAuthPath)
-  if (!fs.existsSync(codexDir)) {
-    fs.mkdirSync(codexDir, { recursive: true })
-  }
-
-  const current = readCodexAuthFile()
-  const nextRaw = {
-    ...(current.raw || {})
-  }
-
-  if (updates.authToken !== undefined) {
-    nextRaw.OPENAI_API_KEY = updates.authToken || ''
-  }
-
-  if (!nextRaw.auth_mode) {
-    nextRaw.auth_mode = 'api_key'
-  }
-
-  fs.writeFileSync(codexAuthPath, JSON.stringify(nextRaw, null, 2), 'utf-8')
-  return {
-    authToken: nextRaw.OPENAI_API_KEY || ''
-  }
+  return appService.writeCodexAuthFile(updates || {})
 }
 
 // Get Codex settings from ~/.codex/config.toml
@@ -2227,6 +2134,32 @@ ipcMain.handle('get-codex-usage-status', async (event, options = {}) => {
     }
   } catch (error) {
     logger.error('[CodexSettings] Failed to load usage status', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('list-codex-models', async (event, options = {}) => {
+  try {
+    const result = await appService.listCodexModels(options || {})
+    return {
+      success: true,
+      ...result
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to list codex models', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('set-codex-default-model', async (event, options = {}) => {
+  try {
+    const result = await appService.setCodexDefaultModel(options || {})
+    return {
+      success: true,
+      ...result
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to set codex default model', { error: error.message })
     return { success: false, error: error.message }
   }
 })

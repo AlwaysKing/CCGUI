@@ -9,6 +9,7 @@ const {
   buildCodexModelProviderId,
   findProviderModel
 } = require('../shared/model-config')
+const { buildDeveloperInstructions } = require('../shared/developer-instructions')
 const {
   createEmptyTurnUsage,
   mergeTurnUsage
@@ -709,58 +710,14 @@ class CodexClient {
   }
 
   async buildDeveloperInstructions() {
-    if (!this.projectSettings) {
-      return null
-    }
-
-    const parts = []
-
     try {
-      const appConfig = appConfigManager.loadConfig()
-      const promptIds = Array.isArray(this.projectSettings.promptIds)
-        ? this.projectSettings.promptIds
-        : []
-
-      if (promptIds.length > 0) {
-        const prompts = appConfig.settings?.prompts || []
-        for (const promptId of promptIds) {
-          const prompt = prompts.find(item => item.id === promptId)
-          if (prompt?.content) {
-            parts.push(prompt.content)
-          }
-        }
-      }
-
-      const documentIds = Array.isArray(this.projectSettings.documentIds)
-        ? this.projectSettings.documentIds
-        : []
-
-      if (documentIds.length > 0) {
-        const docsDir = path.join(os.homedir(), '.ccgui', 'docs')
-        const docPaths = []
-
-        for (const docId of documentIds) {
-          const filePath = path.join(docsDir, `${docId}.md`)
-          if (fs.existsSync(filePath)) {
-            docPaths.push(filePath)
-          }
-        }
-
-        if (docPaths.length > 0) {
-          parts.push(`请始终遵循如下文档的规范要求: ${docPaths.join(', ')}`)
-        }
-      }
+      return buildDeveloperInstructions(this.projectSettings)
     } catch (error) {
       logger.warn('[CodexClient] Failed to build developer instructions', {
         error: error.message
       })
-    }
-
-    if (parts.length === 0) {
       return null
     }
-
-    return parts.join('\n\n')
   }
 
   mapPermissionModeToApprovalPolicy() {

@@ -66,13 +66,13 @@ class SessionManager {
   /**
    * 启动会话（启动 Claude 进程）
    */
-  async startSession(sessionId) {
+  async startSession(sessionId, options = {}) {
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new Error(`Session ${sessionId} not found`)
     }
 
-    return session.start()
+    return session.start(options)
   }
 
   /**
@@ -150,6 +150,33 @@ class SessionManager {
     return session.setPermissionMode(mode)
   }
 
+  async setSessionEffort(sessionId, effort, options = {}) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return session.setSessionEffort(effort, options)
+  }
+
+  async setSessionModel(sessionId, selection = {}) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return session.setSessionModel(selection)
+  }
+
+  async setSessionSubmodel(sessionId, model, reasoningEffort = 'medium') {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return session.setSessionSubmodel(model, reasoningEffort)
+  }
+
   applySessionSettings(sessionId, settings) {
     const session = this.sessions.get(sessionId)
     if (!session) {
@@ -162,11 +189,11 @@ class SessionManager {
   /**
    * 停止会话的运行时进程（不删除 session）
    */
-  stopSessionRuntime(sessionId) {
+  stopSessionRuntime(sessionId, options = {}) {
     const session = this.sessions.get(sessionId)
     if (session) {
       logger.info(`[SessionManager] Stopping runtime for session ${sessionId}`)
-      session.stop()
+      session.stop(options.reason, options)
     }
   }
 

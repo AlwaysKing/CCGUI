@@ -44,6 +44,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Get session state
   getSessionState: (options) => ipcRenderer.invoke('get-session-state', options),
+  listSessionSubmodels: (options) => ipcRenderer.invoke('list-session-submodels', options),
+  setSessionModel: (options) => ipcRenderer.invoke('set-session-model', options),
+  setSessionSubmodel: (options) => ipcRenderer.invoke('set-session-submodel', options),
+  listSessionEffortOptions: (options) => ipcRenderer.invoke('list-session-effort-options', options),
+  setSessionEffort: (options) => ipcRenderer.invoke('set-session-effort', options),
 
   // Update session UI state (sync input state, etc.)
   updateSessionUIState: (options) => ipcRenderer.invoke('update-session-ui-state', options),
@@ -199,6 +204,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   getClaudeSettings: () => ipcRenderer.invoke('get-claude-settings'),
   updateClaudeSettings: (options) => ipcRenderer.invoke('update-claude-settings', options),
+  listClaudeModels: (options) => ipcRenderer.invoke('list-claude-models', options),
 
   // ============================================
   // Codex Settings API (from ~/.codex/config.toml)
@@ -209,6 +215,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadCodexAuthTokens: () => ipcRenderer.invoke('load-codex-auth-tokens'),
   applyCodexAccount: (options) => ipcRenderer.invoke('apply-codex-account', options),
   getCodexUsageStatus: (options) => ipcRenderer.invoke('get-codex-usage-status', options),
+  listCodexModels: (options) => ipcRenderer.invoke('list-codex-models', options),
+  setCodexDefaultModel: (options) => ipcRenderer.invoke('set-codex-default-model', options),
   refreshCodexAuthToken: () => ipcRenderer.invoke('refresh-codex-auth-token'),
 
   // ============================================

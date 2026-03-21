@@ -5,6 +5,7 @@ const os = require('os')
 const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
 const { findProviderModel } = require('../shared/model-config')
+const { buildDeveloperInstructions } = require('../shared/developer-instructions')
 
 // Helper to calculate project ID from path (same as SessionInstance)
 function calculateProjectId(projectPath) {
@@ -36,6 +37,7 @@ class ClaudeClient {
     this.permissionMode = permissionMode // 权限模式
     this.projectSettings = projectSettings // 已解析的最终配置 { modelId, modelCardId, promptIds, documentIds }
     this.debugEnabled = options.debug === true
+    this.initializeResponse = null
   }
 
   /**
@@ -73,7 +75,7 @@ class ClaudeClient {
   resolveSessionMode() {
     const sessionFile = this.getSessionFilePath()
     if (!sessionFile || !fs.existsSync(sessionFile)) {
-      return this.isNewSession ? 'new' : 'resume'
+      return 'new'
     }
 
     const stat = fs.statSync(sessionFile)
@@ -133,60 +135,14 @@ class ClaudeClient {
       return null
     }
 
-    const parts = []
-
     try {
-      const appConfig = appConfigManager.loadConfig()
-      const os = require('os')
-      const path = require('path')
-
-      // 1. 添加提示词（直接添加内容）
-      const promptIds = Array.isArray(this.projectSettings.promptIds) ? this.projectSettings.promptIds : []
-      logger.info(`[ClaudeClient] Checking promptIds:`, promptIds)
-      if (promptIds && Array.isArray(promptIds) && promptIds.length > 0) {
-        const prompts = appConfig.settings?.prompts || []
-        logger.info(`[ClaudeClient] Found ${prompts.length} prompts in app config`)
-        for (const promptId of promptIds) {
-          const prompt = prompts.find(p => p.id === promptId)
-          if (prompt && prompt.content) {
-            parts.push(prompt.content)
-            logger.info(`[ClaudeClient] Added prompt: ${prompt.name || promptId}`)
-          } else {
-            logger.warn(`[ClaudeClient] Prompt not found or no content: ${promptId}`)
-          }
-        }
-      }
-
-      // 2. 添加规范文档路径引用
-      const documentIds = Array.isArray(this.projectSettings.documentIds) ? this.projectSettings.documentIds : []
-      logger.info(`[ClaudeClient] Checking documentIds:`, documentIds)
-      if (documentIds && Array.isArray(documentIds) && documentIds.length > 0) {
-        const docsDir = path.join(os.homedir(), '.ccgui', 'docs')
-        const docPaths = []
-
-        for (const docId of documentIds) {
-          const filePath = path.join(docsDir, `${docId}.md`)
-          // 检查文件是否存在
-          if (require('fs').existsSync(filePath)) {
-            docPaths.push(filePath)
-            logger.info(`[ClaudeClient] Found document file: ${filePath}`)
-          } else {
-            logger.warn(`[ClaudeClient] Document file not found: ${filePath}`)
-          }
-        }
-
-        if (docPaths.length > 0) {
-          parts.push(`请始终遵循如下文档的规范要求: ${docPaths.join(', ')}`)
-          logger.info(`[ClaudeClient] Added document requirements: ${docPaths.join(', ')}`)
-        }
-      }
+      const prompt = buildDeveloperInstructions(this.projectSettings)
+      logger.info(`[ClaudeClient] buildSystemPrompt result: ${prompt ? 1 : 0} parts, total ${prompt?.length || 0} chars`)
+      return prompt
     } catch (error) {
       logger.error('[ClaudeClient] Failed to build system prompt:', error)
+      return null
     }
-
-    logger.info(`[ClaudeClient] buildSystemPrompt result: ${parts.length} parts, total ${parts.join('\n\n').length} chars`)
-    if (parts.length === 0) return null
-    return parts.join('\n\n')
   }
 
   /**
@@ -280,6 +236,11 @@ class ClaudeClient {
     if (this.permissionMode && this.permissionMode !== 'default') {
       args.push('--permission-mode', this.permissionMode)
       logger.info(`[ClaudeClient] Setting permission mode: ${this.permissionMode}`)
+    }
+
+    if (this.projectSettings?.effort) {
+      args.push('--effort', this.projectSettings.effort)
+      logger.info(`[ClaudeClient] Setting effort: ${this.projectSettings.effort}`)
     }
 
     const sessionMode = this.resolveSessionMode()
@@ -406,6 +367,7 @@ class ClaudeClient {
 
           // Check if initialization was successful
           if (message.response?.subtype === 'success') {
+            this.initializeResponse = message.response?.response || null
             logger.info('[ClaudeClient] Claude initialized successfully, file history should be enabled')
             resolve(message)
           } else {
@@ -842,6 +804,12 @@ class ClaudeClient {
    */
   getPid() {
     return this.process?.pid || null
+  }
+
+  getSupportedModels() {
+    return Array.isArray(this.initializeResponse?.models)
+      ? this.initializeResponse.models
+      : []
   }
 }
 

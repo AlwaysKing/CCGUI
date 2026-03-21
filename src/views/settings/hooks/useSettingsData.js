@@ -358,7 +358,7 @@ export function useSettingsData(emit) {
       })
 
       if (!result?.success) {
-        alert('应用 Codex 模型配置失败: ' + (result?.error || '未知错误'))
+        alert('应用 Codex 模型供应商配置失败: ' + (result?.error || '未知错误'))
         return
       }
 
@@ -367,10 +367,10 @@ export function useSettingsData(emit) {
       codexConfig.value.model = model.modelCards?.[0]?.modelName || ''
 
       await saveAppConfig()
-      alert('Codex 模型配置已应用')
+      alert('Codex 模型供应商配置已应用')
     } catch (error) {
       console.error('应用 Codex 模型失败:', error)
-      alert('应用 Codex 模型配置失败: ' + error.message)
+      alert('应用 Codex 模型供应商配置失败: ' + error.message)
     }
   }
 
@@ -406,7 +406,7 @@ export function useSettingsData(emit) {
       const result = await window.electronAPI.updateClaudeSettings({ updates, clearMappings })
 
       if (!result?.success) {
-        alert('应用 Claude 模型配置失败: ' + (result?.error || '未知错误'))
+        alert('应用 Claude 模型供应商配置失败: ' + (result?.error || '未知错误'))
         return
       }
 
@@ -422,10 +422,10 @@ export function useSettingsData(emit) {
       }
 
       await saveAppConfig()
-      alert('Claude 模型配置已应用')
+      alert('Claude 模型供应商配置已应用')
     } catch (error) {
       console.error('应用 Claude 模型失败:', error)
-      alert('应用 Claude 模型配置失败: ' + error.message)
+      alert('应用 Claude 模型供应商配置失败: ' + error.message)
     }
   }
 

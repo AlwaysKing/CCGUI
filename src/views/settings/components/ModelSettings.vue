@@ -1,7 +1,7 @@
 <script setup>
 /**
  * ModelSettings - 模型配置区域
- * 包含 Claude 和 Codex 独立的配置和模型列表
+ * 包含 Claude 和 Codex 独立的配置和模型供应商列表
  */
 import { ref, computed, watch } from 'vue'
 import SettingsSection from './common/SettingsSection.vue'
@@ -360,7 +360,7 @@ function toggleSectionCollapse(section) {
       </div>
       </div>
 
-      <SubsectionHeader title="Claude 模型列表" show-add-button add-button-title="添加 Claude 模型" @add="emit('add-claude-model')">
+      <SubsectionHeader title="Claude 模型供应商列表" show-add-button add-button-title="添加 Claude 模型供应商" @add="emit('add-claude-model')">
         <template #actions>
           <IconButton
             class="no-border"
@@ -378,7 +378,7 @@ function toggleSectionCollapse(section) {
               </template>
             </svg>
           </IconButton>
-          <IconButton class="no-border" @click="emit('add-claude-model')" title="添加 Claude 模型">
+          <IconButton class="no-border" @click="emit('add-claude-model')" title="添加 Claude 模型供应商">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19"/>
               <line x1="5" y1="12" x2="19" y2="12"/>
@@ -393,7 +393,7 @@ function toggleSectionCollapse(section) {
           <circle cx="12" cy="12" r="3"/>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
-        <p class="empty-title">还未配置 Claude 模型</p>
+        <p class="empty-title">还未配置 Claude 模型供应商</p>
         <p class="empty-description">点击右侧的"+"按钮开始配置</p>
         </div>
 
@@ -866,7 +866,7 @@ function toggleSectionCollapse(section) {
         </div>
       </div>
 
-      <SubsectionHeader title="Codex 模型列表" show-add-button add-button-title="添加 Codex 模型" @add="emit('add-codex-model')">
+      <SubsectionHeader title="Codex 模型供应商列表" show-add-button add-button-title="添加 Codex 模型供应商" @add="emit('add-codex-model')">
         <template #actions>
           <IconButton
             class="no-border"
@@ -884,7 +884,7 @@ function toggleSectionCollapse(section) {
               </template>
             </svg>
           </IconButton>
-          <IconButton class="no-border" @click="emit('add-codex-model')" title="添加 Codex 模型">
+          <IconButton class="no-border" @click="emit('add-codex-model')" title="添加 Codex 模型供应商">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19"/>
               <line x1="5" y1="12" x2="19" y2="12"/>
@@ -899,7 +899,7 @@ function toggleSectionCollapse(section) {
           <circle cx="12" cy="12" r="3"/>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
-        <p class="empty-title">还未配置 Codex 模型</p>
+        <p class="empty-title">还未配置 Codex 模型供应商</p>
         <p class="empty-description">点击右侧的"+"按钮开始配置</p>
         </div>
 

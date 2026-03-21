@@ -618,6 +618,7 @@ function getSessionStatus(sessionId) {
   const status = props.sessionStatuses[sessionId]
   if (!status || !status.ready) return 'inactive'
   if (status.processing || status.streaming) return 'streaming'
+  if (status.unseenCompleted) return 'completed-unseen'
   return 'ready'
 }
 
@@ -677,6 +678,17 @@ function hasSessionSecondaryInfo(session) {
 function getSessionTool(session) {
   const tool = session?.settings?.tool || session?.settings?.provider || 'claude'
   return tool === 'codex' ? 'codex' : 'claude'
+}
+
+function getSessionBindingLabel(session) {
+  return typeof session?.bindingLabel === 'string' ? session.bindingLabel.trim() : ''
+}
+
+function getSessionBindingClass(session) {
+  const state = typeof session?.bindingState === 'string' ? session.bindingState : 'none'
+  if (state === 'missing') return 'missing'
+  if (state === 'pending') return 'pending'
+  return ''
 }
 
 function isSessionDebugEnabled(sessionId) {
@@ -1001,6 +1013,13 @@ defineExpose({
               </div>
               <div class="session-row4">
                 <span>{{ session.messageCount || 0 }} 条消息, {{ formatTime(session.updatedAt) }}</span>
+                <span
+                  v-if="getSessionBindingLabel(session)"
+                  class="session-binding-badge"
+                  :class="getSessionBindingClass(session)"
+                >
+                  {{ getSessionBindingLabel(session) }}
+                </span>
                 <span
                   class="session-tool-badge"
                   :class="getSessionTool(session) === 'codex' ? 'codex' : 'claude'"
@@ -1523,6 +1542,11 @@ defineExpose({
   animation: pulse 1s infinite;
 }
 
+.session-status.completed-unseen {
+  background: #F59E0B;  /* 橙色 - completed but unseen */
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
+}
+
 .session-debug-badge {
   display: inline-flex;
   align-items: center;
@@ -1588,6 +1612,34 @@ defineExpose({
   color: #71717A;
   flex-wrap: wrap;
   width: 100%;
+}
+
+.session-binding-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(63, 63, 70, 0.5);
+  color: #D4D4D8;
+  flex-shrink: 0;
+}
+
+.session-binding-badge.pending {
+  color: #FCD34D;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.34);
+}
+
+.session-binding-badge.missing {
+  color: #FCA5A5;
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.34);
 }
 
 .session-tool-badge {

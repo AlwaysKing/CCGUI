@@ -8,6 +8,11 @@ const {
   findProviderModel
 } = require('../adapters/shared/model-config')
 const {
+  listClaudeModels: loadClaudeModels
+} = require('../adapters/claude/provider-api')
+const {
+  listCodexModels: loadCodexModels,
+  setCodexDefaultModel: applyCodexDefaultModel,
   getCodexUsageStatus: loadCodexUsageStatus,
   refreshCodexAuthToken: runCodexAuthRefresh
 } = require('../adapters/codex/provider-api')
@@ -220,20 +225,32 @@ function writeCodexConfigFile(updates = {}) {
   syncCodexModelProviders()
 
   const current = readCodexConfigFile()
+  const authState = readCodexAuthFile()
   const rawContent = current.rawContent || ''
   const lines = rawContent ? rawContent.split(/\r?\n/) : []
+  const nextAuthMode = updates.authMode === 'chatgpt' || updates.authMode === 'provider'
+    ? updates.authMode
+    : (
+        updates.modelProvider !== undefined || updates.authToken !== undefined || updates.apiUrl !== undefined
+          ? 'provider'
+          : authState.authMode
+      )
   const nextModel = updates.model !== undefined ? updates.model : current.model
   const explicitProvider = updates.modelProvider !== undefined ? updates.modelProvider : null
-  const nextProvider = explicitProvider || current.modelProvider || 'ccgui'
+  const nextProvider = nextAuthMode === 'chatgpt' ? '' : (explicitProvider || current.modelProvider || 'ccgui')
   const nextEffort = updates.modelReasoningEffort !== undefined ? updates.modelReasoningEffort : current.modelReasoningEffort
   const nextApiUrl = updates.apiUrl !== undefined ? updates.apiUrl : current.apiUrl
-  const shouldWriteLegacyCcguiProvider = explicitProvider === 'ccgui' || (explicitProvider === null && updates.apiUrl !== undefined)
+  const shouldWriteLegacyCcguiProvider = nextAuthMode !== 'chatgpt' && (
+    explicitProvider === 'ccgui' || (explicitProvider === null && updates.apiUrl !== undefined)
+  )
 
   const pendingTopLevel = new Map([
     ['model', stringifyTomlString(nextModel || '')],
-    ['model_provider', stringifyTomlString(nextProvider || 'ccgui')],
     ['model_reasoning_effort', stringifyTomlString(nextEffort || 'medium')]
   ])
+  if (nextAuthMode !== 'chatgpt') {
+    pendingTopLevel.set('model_provider', stringifyTomlString(nextProvider || 'ccgui'))
+  }
 
   const legacyCcguiEntries = [
     `name = ${stringifyTomlString('ccgui')}`,
@@ -287,6 +304,9 @@ function writeCodexConfigFile(updates = {}) {
       const entryMatch = line.match(/^(\s*)([A-Za-z0-9_-]+)(\s*=\s*)(.+?)(\s*)$/)
       if (entryMatch) {
         const [, indent, key, separator, , trailingSpace] = entryMatch
+        if (nextAuthMode === 'chatgpt' && key === 'model_provider') {
+          continue
+        }
         if (pendingTopLevel.has(key)) {
           output.push(`${indent}${key}${separator}${pendingTopLevel.get(key)}${trailingSpace}`)
           pendingTopLevel.delete(key)
@@ -334,6 +354,7 @@ function readCodexAuthFile() {
   const codexAuthPath = getCodexAuthPath()
   if (!fs.existsSync(codexAuthPath)) {
     return {
+      authMode: 'provider',
       authToken: '',
       tokens: {
         idToken: '',
@@ -347,7 +368,14 @@ function readCodexAuthFile() {
   }
 
   const raw = JSON.parse(fs.readFileSync(codexAuthPath, 'utf-8'))
+  const hasChatGptTokens = !!(
+    raw?.tokens?.id_token ||
+    raw?.tokens?.access_token ||
+    raw?.tokens?.refresh_token ||
+    raw?.tokens?.account_id
+  )
   return {
+    authMode: raw?.auth_mode === 'chatgpt' || hasChatGptTokens ? 'chatgpt' : 'provider',
     authToken: raw.OPENAI_API_KEY || '',
     tokens: {
       idToken: raw.tokens?.id_token || '',
@@ -360,7 +388,7 @@ function readCodexAuthFile() {
   }
 }
 
-function writeCodexAccountTokens(account = {}) {
+function writeCodexAuthFile(updates = {}) {
   const codexAuthPath = getCodexAuthPath()
   const codexDir = path.dirname(codexAuthPath)
   if (!fs.existsSync(codexDir)) {
@@ -368,31 +396,54 @@ function writeCodexAccountTokens(account = {}) {
   }
 
   const current = readCodexAuthFile()
-  const nextRaw = {
-    ...(current.raw || {})
-  }
+  const nextMode = updates.authMode === 'chatgpt' || updates.authMode === 'provider'
+    ? updates.authMode
+    : (
+        updates.modelProvider !== undefined || updates.authToken !== undefined || updates.apiUrl !== undefined
+          ? 'provider'
+          : current.authMode
+      )
 
-  nextRaw.tokens = {
-    ...(nextRaw.tokens || {}),
-    id_token: account.idToken || '',
-    access_token: account.accessToken || '',
-    refresh_token: account.refreshToken || '',
-    account_id: account.accountId || ''
-  }
-  nextRaw.last_refresh = account.lastRefresh || ''
-
-  if (!nextRaw.auth_mode) {
-    nextRaw.auth_mode = 'api_key'
+  let nextRaw
+  if (nextMode === 'chatgpt') {
+    nextRaw = {
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: updates.idToken ?? current.tokens?.idToken ?? '',
+        access_token: updates.accessToken ?? current.tokens?.accessToken ?? '',
+        refresh_token: updates.refreshToken ?? current.tokens?.refreshToken ?? '',
+        account_id: updates.accountId ?? current.tokens?.accountId ?? ''
+      },
+      last_refresh: updates.lastRefresh ?? current.tokens?.lastRefresh ?? ''
+    }
+  } else {
+    nextRaw = {
+      OPENAI_API_KEY: updates.authToken !== undefined
+        ? (updates.authToken || '')
+        : (current.authMode === 'provider' ? (current.authToken || '') : '')
+    }
   }
 
   fs.writeFileSync(codexAuthPath, JSON.stringify(nextRaw, null, 2), 'utf-8')
+  return readCodexAuthFile()
+}
 
+function writeCodexAccountTokens(account = {}) {
+  const nextAuth = writeCodexAuthFile({
+    authMode: 'chatgpt',
+    idToken: account.idToken || '',
+    accessToken: account.accessToken || '',
+    refreshToken: account.refreshToken || '',
+    accountId: account.accountId || '',
+    lastRefresh: account.lastRefresh || ''
+  })
   return {
-    idToken: nextRaw.tokens.id_token || '',
-    accessToken: nextRaw.tokens.access_token || '',
-    refreshToken: nextRaw.tokens.refresh_token || '',
-    accountId: nextRaw.tokens.account_id || '',
-    lastRefresh: nextRaw.last_refresh || ''
+    idToken: nextAuth.tokens.idToken || '',
+    accessToken: nextAuth.tokens.accessToken || '',
+    refreshToken: nextAuth.tokens.refreshToken || '',
+    accountId: nextAuth.tokens.accountId || '',
+    lastRefresh: nextAuth.tokens.lastRefresh || ''
   }
 }
 
@@ -519,6 +570,7 @@ function syncCodexAccountsWithAuthConfig() {
 
 function applyCodexAccount(account = {}) {
   const appliedTokens = writeCodexAccountTokens(account)
+  writeCodexConfigFile({ authMode: 'chatgpt' })
   const config = getAppConfig()
   const accounts = Array.isArray(config.settings?.codexAccounts) ? [...config.settings.codexAccounts] : []
   const index = accounts.findIndex(item => item.id === account?.id)
@@ -550,6 +602,27 @@ function applyCodexAccount(account = {}) {
 async function getCodexUsageStatus() {
   const usage = await loadCodexUsageStatus()
   return mapCodexUsageSnapshot(usage)
+}
+
+async function listClaudeModels(options = {}) {
+  return loadClaudeModels(options)
+}
+
+async function listCodexModels(options = {}) {
+  return loadCodexModels(options)
+}
+
+async function setCodexDefaultModel(options = {}) {
+  const result = await applyCodexDefaultModel(options)
+  const settings = writeCodexConfigFile({
+    model: result.model,
+    modelReasoningEffort: result.reasoningEffort
+  })
+
+  return {
+    ...result,
+    settings
+  }
 }
 
 async function refreshCodexAuthToken() {
@@ -639,9 +712,13 @@ module.exports = {
   applyCodexAccount,
   buildCodexModelProviderId,
   getAppConfig,
+  listClaudeModels,
+  listCodexModels,
+  setCodexDefaultModel,
   getCodexConfigPath,
   getCodexUsageStatus,
   loadCodexAuthTokens,
+  readCodexAuthFile,
   readCodexConfigFile,
   refreshAllCodexAccountUsage,
   refreshCodexAccountUsage,
@@ -652,5 +729,6 @@ module.exports = {
   syncCodexModelProviders,
   syncCodexAccountsWithAuthConfig,
   updateAppConfig,
+  writeCodexAuthFile,
   writeCodexConfigFile
 }

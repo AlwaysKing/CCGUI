@@ -95,6 +95,46 @@ class ClaudeAdapter extends ClaudeClient {
     })
   }
 
+  sendControlRequest(request) {
+    if (request?.subtype === 'set_session_submodel' && request.model) {
+      super.sendControlRequest({
+        subtype: 'set_model',
+        model: String(request.model)
+      })
+
+      this.envInfo = {
+        ...this.envInfo,
+        model: String(request.model),
+        provider: 'claude',
+        providerPid: this.getPid() || null
+      }
+      this.emit('env-info', this.envInfo)
+      this.emit('system-notification', {
+        type: 'session-model-changed',
+        provider: 'claude',
+        model: String(request.model)
+      })
+      return
+    }
+
+    super.sendControlRequest(request)
+
+    if (request?.subtype === 'set_model' && request.model) {
+      this.envInfo = {
+        ...this.envInfo,
+        model: String(request.model),
+        provider: 'claude',
+        providerPid: this.getPid() || null
+      }
+      this.emit('env-info', this.envInfo)
+      this.emit('system-notification', {
+        type: 'session-model-changed',
+        provider: 'claude',
+        model: String(request.model)
+      })
+    }
+  }
+
   getSessionIdentifier() {
     return this.sessionId || null
   }

@@ -45,7 +45,7 @@ const { formatMcpServers, formatSkills } = useMessage()
 // 是否显示详情
 const showEnvDetail = ref(false)
 const showSilentPanel = ref(false)
-const showUsageTooltip = ref(false)
+const activeUsageTooltip = ref('')
 
 // 检查工作目录是否与项目路径一致
 const isDifferentFromProject = computed(() => {
@@ -331,6 +331,16 @@ const codexUsageTitle = computed(() => {
     .join('\n')
 })
 
+function showUsageTooltip(type) {
+  activeUsageTooltip.value = type
+}
+
+function hideUsageTooltip(type) {
+  if (activeUsageTooltip.value === type) {
+    activeUsageTooltip.value = ''
+  }
+}
+
 function toggleSilentPanel() {
   showSilentPanel.value = !showSilentPanel.value
 }
@@ -415,8 +425,8 @@ function toggleSilentPanel() {
           <span
             v-if="sessionUsageSummary"
             class="env-item env-item-usage"
-            @mouseenter="showUsageTooltip = true"
-            @mouseleave="showUsageTooltip = false"
+            @mouseenter="showUsageTooltip('session')"
+            @mouseleave="hideUsageTooltip('session')"
           >
             <span class="env-progress-ring" aria-hidden="true">
               <svg viewBox="0 0 20 20">
@@ -431,7 +441,7 @@ function toggleSilentPanel() {
                 ></circle>
               </svg>
             </span>
-            <span v-if="showUsageTooltip" class="env-usage-tooltip">
+            <span v-if="activeUsageTooltip === 'session'" class="env-usage-tooltip">
               <span class="env-usage-tooltip-title">上下文用量</span>
               <span v-if="sessionUsageSummary.usedText || sessionUsageSummary.limitText" class="env-usage-tooltip-line">
                 已用 {{ sessionUsageSummary.usedText || '0' }}
@@ -453,8 +463,8 @@ function toggleSilentPanel() {
           <span
             v-if="codexUsageSummary"
             class="env-item env-item-usage env-item-codex-usage"
-            @mouseenter="showUsageTooltip = false"
-            :title="codexUsageTitle"
+            @mouseenter="showUsageTooltip('codex')"
+            @mouseleave="hideUsageTooltip('codex')"
           >
             <span class="env-progress-ring env-progress-ring-codex" aria-hidden="true">
               <svg viewBox="0 0 20 20">
@@ -468,6 +478,19 @@ function toggleSilentPanel() {
                   :stroke-dashoffset="2 * Math.PI * 7 * (1 - codexUsageSummary.dominant.used / 100)"
                 ></circle>
               </svg>
+            </span>
+            <span v-if="activeUsageTooltip === 'codex'" class="env-usage-tooltip">
+              <span class="env-usage-tooltip-title">Codex 账号用量</span>
+              <span v-if="codexUsageSummary.planType" class="env-usage-tooltip-line">
+                套餐 {{ codexUsageSummary.planType }}
+              </span>
+              <span
+                v-for="item in codexUsageSummary.items"
+                :key="item.key"
+                class="env-usage-tooltip-line"
+              >
+                {{ item.label }} 已使用 {{ Math.round(item.used) }}%
+              </span>
             </span>
           </span>
           <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">

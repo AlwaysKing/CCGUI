@@ -192,6 +192,16 @@ class CodexAdapter extends CodexClient {
         this.emit('env-info', this.envInfo)
         break
 
+      case 'deprecationNotice':
+        this.emit('system-notification', {
+          type: 'provider-deprecation',
+          provider: 'codex',
+          title: params?.summary || '配置项已弃用',
+          message: params?.details || '',
+          metadata: params || {}
+        })
+        break
+
       case 'error':
         this.emit('cli-status', {
           type: 'error',

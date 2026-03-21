@@ -24,8 +24,6 @@ function updateSettings(nextSettings, autoSave = false) {
 <template>
   <SettingsSection title="消息主题">
     <SettingItem
-      title="默认消息主题"
-      description="配置应用级聊天消息展示主题。项目和会话可以在此基础上继续覆盖。"
       vertical
     >
       <ChatMessageThemeEditor

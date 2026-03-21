@@ -176,6 +176,17 @@ const resolvedChatMessageTheme = computed(() => {
   ).theme
 })
 
+const AUTO_SCROLL_NEAR_BOTTOM_PX = 36
+const STREAMING_NEAR_BOTTOM_PX = 52
+const SYSTEM_NEAR_BOTTOM_PX = 44
+
+const showConversationWave = computed(() => {
+  if (isProcessing.value) {
+    return true
+  }
+  return messages.value.some(message => message?.isStreaming || message?.isExecuting)
+})
+
 function toPlainObject(value) {
   return value ? JSON.parse(JSON.stringify(value)) : {}
 }
@@ -396,7 +407,7 @@ watch(() => {
   if (hasStreaming && messagesContainer.value) {
     // 在 DOM 更新前检查滚动位置
     const container = messagesContainer.value
-    wasNearBottomBeforeStreaming = container.scrollHeight - container.scrollTop - container.clientHeight < 150
+    wasNearBottomBeforeStreaming = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
   }
 }, { immediate: false, flush: 'sync' })
 
@@ -427,7 +438,7 @@ watch(() => messages.value, async (newMessages) => {
   const container = messagesContainer.value
   if (!container) return
 
-  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150
+  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
 
   // 等待 DOM 更新
   await nextTick()
@@ -518,7 +529,7 @@ watch(() => {
     return
   }
 
-  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120
+  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < SYSTEM_NEAR_BOTTOM_PX
   if (!wasNearBottom && userScrolledAway) {
     return
   }
@@ -660,7 +671,7 @@ function scrollToBottom(forceScroll = false) {
 
   // 如果不强制滚动，检查当前是否接近底部
   if (!forceScroll) {
-    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < AUTO_SCROLL_NEAR_BOTTOM_PX
 
     // 如果用户已经滚动离开底部，不要自动滚动
     if (userScrolledAway && !isNearBottom) {
@@ -704,7 +715,7 @@ function scrollToBottom(forceScroll = false) {
 function handleUserScroll() {
   if (!messagesContainer.value) return
   const container = messagesContainer.value
-  const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100
+  const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < AUTO_SCROLL_NEAR_BOTTOM_PX
 
   // 如果用户滚动离开底部，设置标记
   if (!isNearBottom) {
@@ -1393,6 +1404,61 @@ async function handleQuestionAnswer(requestId, answers) {
         @rewind-and-fork="handleRewindAndFork"
         @jump-to-message="handleRewindNoticeClick"
       />
+
+    </div>
+
+    <div v-if="showConversationWave" class="conversation-wave-rail" aria-hidden="true">
+      <div class="conversation-wave">
+        <svg class="conversation-wave-svg" viewBox="0 0 1200 24" preserveAspectRatio="none">
+          <defs>
+            <pattern id="conversation-wave-pattern-back" width="220" height="24" patternUnits="userSpaceOnUse">
+              <path
+                d="M0 17 C 28 12, 82 12, 110 17 C 138 22, 192 22, 220 17"
+                class="conversation-wave-path layer-back"
+              />
+              <animateTransform
+                attributeName="patternTransform"
+                type="translate"
+                from="0 0"
+                to="-220 0"
+                dur="2.9s"
+                repeatCount="indefinite"
+              />
+            </pattern>
+            <pattern id="conversation-wave-pattern-mid" width="160" height="24" patternUnits="userSpaceOnUse">
+              <path
+                d="M0 12 C 20 7, 60 7, 80 12 C 100 17, 140 17, 160 12"
+                class="conversation-wave-path layer-mid"
+              />
+              <animateTransform
+                attributeName="patternTransform"
+                type="translate"
+                from="0 0"
+                to="160 0"
+                dur="1.7s"
+                repeatCount="indefinite"
+              />
+            </pattern>
+            <pattern id="conversation-wave-pattern-front" width="108" height="24" patternUnits="userSpaceOnUse">
+              <path
+                d="M0 15 C 14 9, 40 9, 54 15 C 68 21, 94 21, 108 15"
+                class="conversation-wave-path layer-front"
+              />
+              <animateTransform
+                attributeName="patternTransform"
+                type="translate"
+                from="0 0"
+                to="-108 0"
+                dur="0.9s"
+                repeatCount="indefinite"
+              />
+            </pattern>
+          </defs>
+          <rect x="0" y="0" width="1200" height="24" fill="url(#conversation-wave-pattern-back)" />
+          <rect x="0" y="0" width="1200" height="24" fill="url(#conversation-wave-pattern-mid)" />
+          <rect x="0" y="0" width="1200" height="24" fill="url(#conversation-wave-pattern-front)" />
+        </svg>
+      </div>
     </div>
 
     <!-- 任务浮动窗口 - 在 messages 容器外,不受滚动影响 -->
@@ -1778,6 +1844,66 @@ async function handleQuestionAnswer(requestId, answers) {
   /* Modern scrollbar styling */
   scrollbar-width: thin;
   scrollbar-color: #52525B #1E1E1E;
+}
+
+.conversation-wave-rail {
+  position: relative;
+  height: 0;
+  flex-shrink: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.conversation-wave {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -11px;
+  margin: 0;
+  transform: none;
+  left: 0;
+  width: 100%;
+  height: 22px;
+  padding: 0;
+  pointer-events: none;
+  opacity: 1;
+  mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.92) 4%, rgba(0, 0, 0, 0.92) 96%, transparent 100%);
+}
+
+.conversation-wave-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  transform: translateZ(0);
+}
+
+.conversation-wave-path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  will-change: transform;
+}
+
+.conversation-wave-path.layer-back {
+  stroke: rgba(120, 113, 108, 0.68);
+  stroke-width: 1.3;
+  opacity: 0.8;
+  filter: drop-shadow(0 0 4px rgba(120, 113, 108, 0.1));
+}
+
+.conversation-wave-path.layer-mid {
+  stroke: rgba(251, 146, 60, 0.84);
+  stroke-width: 1.58;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 5px rgba(251, 146, 60, 0.16));
+}
+
+.conversation-wave-path.layer-front {
+  stroke: rgba(249, 115, 22, 0.96);
+  stroke-width: 1.82;
+  opacity: 0.96;
+  filter: drop-shadow(0 0 6px rgba(249, 115, 22, 0.2)) drop-shadow(0 0 10px rgba(251, 146, 60, 0.12));
 }
 
 .message {

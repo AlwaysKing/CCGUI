@@ -5,6 +5,8 @@ const { CodexAdapter } = require('../adapters/codex/adapter')
 const logger = require('../logger')
 const historyManager = require('../storage/history-manager')
 const projectService = require('../services/project-service')
+const appConfigManager = require('../storage/app-config-manager')
+const { findProviderModel } = require('../adapters/shared/model-config')
 
 function pickFirstDefined(...values) {
   for (const value of values) {
@@ -64,17 +66,73 @@ function normalizeSessionControlRequest(message = {}) {
 
 function applySessionEnvInfoPatch(envInfo = {}, options = {}) {
   const provider = options.provider || envInfo.provider || 'claude'
-  const providerPid = pickFirstDefined(
-    options.providerPid,
-    envInfo.providerPid,
-    null
-  )
+  const providerPid = Object.prototype.hasOwnProperty.call(options, 'providerPid')
+    ? options.providerPid
+    : pickFirstDefined(
+        envInfo.providerPid,
+        null
+      )
 
   return {
     ...envInfo,
     provider,
     providerPid
   }
+}
+
+function extractUserInputText(message) {
+  if (!message || message.role !== 'user') {
+    return ''
+  }
+
+  if (typeof message.content === 'string') {
+    return message.content.trim()
+  }
+
+  if (Array.isArray(message.content)) {
+    return message.content
+      .map(item => {
+        if (typeof item === 'string') {
+          return item
+        }
+        if (item && typeof item.text === 'string') {
+          return item.text
+        }
+        return ''
+      })
+      .join('\n')
+      .trim()
+  }
+
+  return ''
+}
+
+function mergeInputHistory(existingHistory = [], messages = [], limit = 100) {
+  const mergedHistory = []
+
+  const appendEntry = (value) => {
+    const text = String(value || '').trim()
+    if (!text) {
+      return
+    }
+
+    if (mergedHistory.length === 0 || mergedHistory[mergedHistory.length - 1] !== text) {
+      mergedHistory.push(text)
+      if (mergedHistory.length > limit) {
+        mergedHistory.shift()
+      }
+    }
+  }
+
+  for (const item of existingHistory) {
+    appendEntry(item)
+  }
+
+  for (const message of messages) {
+    appendEntry(extractUserInputText(message))
+  }
+
+  return mergedHistory
 }
 
 /**
@@ -114,6 +172,9 @@ class SessionInstance {
     this.runtimeManager = null
     this.provider = 'claude'
     this.sessionSettings = {}
+    this.pendingLifecycleReason = null
+    this.pendingPostStartNotification = null
+    this.pendingLifecycleOperation = null
 
     // 标记是否为手动停止（用于区分正常退出和异常退出）
     this.isManualStop = false
@@ -181,6 +242,7 @@ class SessionInstance {
 
       if (ccguiMessages.length > 0) {
         this.messages = ccguiMessages
+        this.inputHistory = mergeInputHistory(this.inputHistory, ccguiMessages)
         logger.info(`[SessionInstance] Loaded ${ccguiMessages.length} messages from CCGUI storage for session ${this.id}`)
 
         for (const msg of ccguiMessages) {
@@ -331,6 +393,18 @@ class SessionInstance {
     this.setupRuntimeHandlers()
 
     try {
+      const lifecycleReason = this.pendingLifecycleReason || 'auto-start'
+      if (lifecycleReason === 'restart-for-config') {
+        this.emitLifecycleStartNotification('session-runtime-restarting', {
+          reason: lifecycleReason,
+          changeType: this.pendingLifecycleOperation?.changeType || null
+        })
+      } else {
+        this.emitLifecycleStartNotification('session-runtime-starting', {
+          reason: lifecycleReason
+        })
+      }
+
       await this.runtimeManager.start()
       logger.info(`[SessionInstance] ${this.provider} started for session ${this.id}`)
 
@@ -370,18 +444,39 @@ class SessionInstance {
         this.emit('env-info', this.envInfo)
       }
 
-      const sessionSettingsPatch = this.runtimeManager.getSessionSettingsPatch?.()
-      if (sessionSettingsPatch && Object.keys(sessionSettingsPatch).length > 0) {
-        this.sessionSettings = {
-          ...this.sessionSettings,
-          ...sessionSettingsPatch
-        }
-        projectService.updateSessionSettings(this.projectId, this.id, this.sessionSettings)
+      this.persistRuntimeSessionSettingsPatch()
+
+      const readyInfo = this.pendingPostStartNotification
+        ? {
+            operationId: this.pendingLifecycleOperation?.id || null,
+            durationMs: this.pendingLifecycleOperation?.startedAt
+              ? Math.max(0, Date.now() - this.pendingLifecycleOperation.startedAt)
+              : null,
+            descriptor: this.resolveRuntimeDescriptor()
+          }
+        : this.emitLifecycleReadyNotification()
+
+      if (this.pendingPostStartNotification) {
+        this.emit('system-notification', {
+          ...this.pendingPostStartNotification,
+          operationId: readyInfo.operationId,
+          durationMs: readyInfo.durationMs,
+          provider: readyInfo.descriptor.provider,
+          model: readyInfo.descriptor.model,
+          modelId: readyInfo.descriptor.modelId,
+          subModel: readyInfo.descriptor.subModel,
+          effort: readyInfo.descriptor.effort
+        })
+        this.pendingPostStartNotification = null
       }
+
+      this.pendingLifecycleReason = null
+      this.pendingLifecycleOperation = null
 
       return true
     } catch (e) {
       logger.error(`[SessionInstance] Failed to start provider: ${e.message}`)
+      this.pendingLifecycleOperation = null
       this.runtimeManager = null
       throw e
     }
@@ -389,6 +484,224 @@ class SessionInstance {
 
   getProviderDisplayName() {
     return this.provider === 'codex' ? 'Codex' : 'Claude'
+  }
+
+  resolveNotificationScope(notificationType, data = {}) {
+    const type = notificationType || data?.type || ''
+    if (
+      type === 'runtime-exit' ||
+      type === 'runtime-stopped' ||
+      type === 'session-runtime-starting' ||
+      type === 'session-runtime-restarting' ||
+      type === 'session-runtime-ready' ||
+      type === 'session-config-applied' ||
+      type === 'session-effort-changed'
+    ) {
+      return 'session'
+    }
+
+    return 'turn'
+  }
+
+  appendSystemNotificationMessage(notificationType, data = {}) {
+    const message = {
+      id: `system-notification-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role: 'system_notification',
+      notificationType,
+      scope: this.resolveNotificationScope(notificationType, data),
+      data,
+      timestamp: new Date()
+    }
+
+    this.messages.push(message)
+    this.saveMessageToHistory(message)
+    return message
+  }
+
+  syncSystemNotificationMessage(notificationType, data = {}) {
+    const operationId = typeof data?.operationId === 'string' ? data.operationId : ''
+    if (
+      operationId && (
+        notificationType === 'session-runtime-ready' ||
+        notificationType === 'session-config-applied' ||
+        notificationType === 'session-effort-changed'
+      )
+    ) {
+      const pendingMessage = [...this.messages].reverse().find(message =>
+        message.role === 'system_notification' &&
+        (message.notificationType === 'session-runtime-starting' || message.notificationType === 'session-runtime-restarting') &&
+        message.data?.operationId === operationId
+      )
+
+      if (pendingMessage) {
+        pendingMessage.notificationType = notificationType
+        pendingMessage.scope = this.resolveNotificationScope(notificationType, data)
+        pendingMessage.data = {
+          ...pendingMessage.data,
+          ...data,
+          completedAt: Date.now(),
+          durationMs: data.durationMs ?? pendingMessage.data?.durationMs ?? null
+        }
+        pendingMessage.timestamp = new Date()
+        historyManager.updateMessage(this.projectId, this.id, pendingMessage.id, {
+          notificationType: pendingMessage.notificationType,
+          scope: pendingMessage.scope,
+          data: pendingMessage.data,
+          timestamp: pendingMessage.timestamp
+        })
+        return pendingMessage
+      }
+    }
+
+    return this.appendSystemNotificationMessage(notificationType, data)
+  }
+
+  createLifecycleOperation(type, metadata = {}) {
+    const now = Date.now()
+    const operation = {
+      id: `lifecycle-${this.id}-${now}-${Math.random().toString(36).slice(2, 8)}`,
+      type,
+      startedAt: now,
+      ...metadata
+    }
+    this.pendingLifecycleOperation = operation
+    return operation
+  }
+
+  resolveRuntimeDescriptor() {
+    const appConfig = appConfigManager.loadConfig()
+    const { settings } = projectService.resolveRuntimeConfig(this.projectId, this.id)
+    const provider = this.provider || this.envInfo?.provider || 'claude'
+    const selectedSystemModelId = provider === 'codex'
+      ? (appConfig?.settings?.selectedCodexModelId || null)
+      : (appConfig?.settings?.selectedClaudeModelId || null)
+    const effectiveModelId = settings?.modelId || selectedSystemModelId || null
+    const configuredModel = effectiveModelId
+      ? findProviderModel(appConfig, provider, effectiveModelId)
+      : null
+
+    let configuredSubModel = ''
+    if (configuredModel) {
+      const cards = Array.isArray(configuredModel.modelCards) ? configuredModel.modelCards : []
+      const targetCard = settings?.modelCardId
+        ? cards.find(card => card.id === settings.modelCardId)
+        : (cards.find(card => card.id === configuredModel.defaultCardId) || cards[0] || null)
+      configuredSubModel = targetCard?.modelName || ''
+    }
+
+    return {
+      provider,
+      model: configuredModel?.friendlyName || effectiveModelId || '系统',
+      modelId: effectiveModelId,
+      subModel: (typeof this.envInfo?.model === 'string' && this.envInfo.model.trim()) || configuredSubModel || '',
+      effort: (typeof this.envInfo?.model_reasoning_effort === 'string' && this.envInfo.model_reasoning_effort.trim())
+        || (typeof settings?.effort === 'string' ? settings.effort.trim() : '')
+        || 'medium'
+    }
+  }
+
+  persistRuntimeSessionSettingsPatch() {
+    const sessionSettingsPatch = this.runtimeManager.getSessionSettingsPatch?.()
+    if (!sessionSettingsPatch || Object.keys(sessionSettingsPatch).length === 0) {
+      return
+    }
+
+    const normalizedPatch = { ...sessionSettingsPatch }
+    const currentThreadId = typeof this.sessionSettings?.codexThreadId === 'string'
+      ? this.sessionSettings.codexThreadId.trim()
+      : ''
+    const nextThreadId = typeof normalizedPatch.codexThreadId === 'string'
+      ? normalizedPatch.codexThreadId.trim()
+      : ''
+
+    if (currentThreadId && nextThreadId && currentThreadId !== nextThreadId) {
+      const aliasValues = Array.isArray(this.sessionSettings?.codexThreadAliases)
+        ? this.sessionSettings.codexThreadAliases
+        : []
+      const aliasSet = new Set(
+        aliasValues
+          .filter(value => typeof value === 'string')
+          .map(value => value.trim())
+          .filter(Boolean)
+      )
+      aliasSet.add(currentThreadId)
+      aliasSet.delete(nextThreadId)
+      normalizedPatch.codexThreadAliases = Array.from(aliasSet)
+    }
+
+    const hasChanges = Object.keys(normalizedPatch).some(key => this.sessionSettings?.[key] !== normalizedPatch[key])
+    if (!hasChanges) {
+      return
+    }
+
+    this.sessionSettings = {
+      ...this.sessionSettings,
+      ...normalizedPatch
+    }
+    projectService.updateSessionSettings(this.projectId, this.id, this.sessionSettings)
+  }
+
+  emitLifecycleStartNotification(type, metadata = {}) {
+    const operation = this.createLifecycleOperation(type, metadata)
+    const payload = {
+      type,
+      provider: this.provider,
+      operationId: operation.id,
+      startedAt: operation.startedAt,
+      reason: metadata.reason || this.pendingLifecycleReason || 'auto-start',
+      changeType: metadata.changeType || null
+    }
+    this.syncSystemNotificationMessage(type, payload)
+    this.emit('system-notification', payload)
+    return operation
+  }
+
+  emitLifecycleReadyNotification() {
+    const descriptor = this.resolveRuntimeDescriptor()
+    const operation = this.pendingLifecycleOperation
+    const durationMs = operation?.startedAt ? Math.max(0, Date.now() - operation.startedAt) : null
+
+    const payload = {
+      type: 'session-runtime-ready',
+      provider: descriptor.provider,
+      operationId: operation?.id || null,
+      reason: operation?.reason || this.pendingLifecycleReason || 'auto-start',
+      durationMs,
+      model: descriptor.model,
+      modelId: descriptor.modelId,
+      subModel: descriptor.subModel,
+      effort: descriptor.effort
+    }
+    this.syncSystemNotificationMessage('session-runtime-ready', payload)
+    this.emit('system-notification', payload)
+
+    return {
+      operationId: operation?.id || null,
+      durationMs,
+      descriptor
+    }
+  }
+
+  emitConfigAppliedNotification(changeType, applyMode = 'saved', extra = {}) {
+    const descriptor = this.resolveRuntimeDescriptor()
+    const operation = this.pendingLifecycleOperation
+    const durationMs = operation?.startedAt ? Math.max(0, Date.now() - operation.startedAt) : null
+
+    const payload = {
+      type: 'session-config-applied',
+      provider: descriptor.provider,
+      operationId: operation?.id || null,
+      changeType,
+      applyMode,
+      durationMs,
+      model: descriptor.model,
+      modelId: descriptor.modelId,
+      subModel: descriptor.subModel,
+      effort: descriptor.effort,
+      ...extra
+    }
+    this.syncSystemNotificationMessage('session-config-applied', payload)
+    this.emit('system-notification', payload)
   }
 
   resolveUnifiedResult(message) {
@@ -491,20 +804,29 @@ class SessionInstance {
       this.emit('env-info', this.envInfo)
     }
 
-    if (this.isManualStop) {
+    if (this.isManualStop && this.pendingLifecycleReason === 'restart-for-config') {
+      // Controlled restart: lifecycle is represented by restarting/ready notifications.
+    } else if (this.isManualStop) {
       this.emit('normal-exit', {
         code,
         signal,
-        message: `${this.getProviderDisplayName()} 进程已停止`
+        provider: this.provider,
+        reason: this.pendingLifecycleReason || 'user-stop',
+        message: `${this.getProviderDisplayName()} 已停止运行`
       })
     } else if (isAbnormalExit) {
       this.emit('abnormal-exit', {
         code,
         signal,
+        provider: this.provider,
+        reason: 'crash',
         message: `${this.getProviderDisplayName()} 进程异常退出 (code: ${code})`
       })
     }
 
+    if (!isAbnormalExit) {
+      this.pendingLifecycleReason = null
+    }
     this.isManualStop = false
   }
 
@@ -593,6 +915,7 @@ class SessionInstance {
         provider: this.provider,
         providerPid: manager.getPid?.() || null
       })
+      this.persistRuntimeSessionSettingsPatch()
       historyManager.updateSessionEnvInfo(this.projectId, this.id, this.envInfo)
       this.emit('env-info', this.envInfo)
     })
@@ -608,6 +931,25 @@ class SessionInstance {
     })
 
     manager.on('system-notification', (message) => {
+      if (message?.type === 'session-model-changed') {
+        this.emitConfigAppliedNotification('submodel', 'live', {
+          provider: message.provider || this.provider,
+          subModel: message.model || null
+        })
+        return
+      }
+
+      if (message?.type === 'session-effort-changed') {
+        this.emitConfigAppliedNotification('effort', 'live', {
+          provider: message.provider || this.provider,
+          effort: message.reasoningEffort || message.effort || null
+        })
+        return
+      }
+
+      if (message?.type) {
+        this.syncSystemNotificationMessage(message.type, message)
+      }
       this.emit('system-notification', message)
     })
 
@@ -693,44 +1035,39 @@ class SessionInstance {
     }
     this.historyIndex = -1
 
-    // 添加到本地消息列表（使用真实 UUID）
-    const displayMessage = {
-      id: userMessage.uuid,  // 使用消息对象中的真实 UUID
-      role: 'user',
-      content: textContent,
-      timestamp: new Date(),
-      startTime: Date.now(), // 用于实时计时
-      rawMessage: userMessage
-    }
-    this.messages.push(displayMessage)
-    this.rawMessages.push(userMessage)
-
-    // 保存用户消息到历史存储
-    const msgToSave = { ...displayMessage }
-    delete msgToSave.startTime
-    historyManager.appendMessage(this.projectId, this.id, msgToSave)
-    this.savedMessageIds.add(displayMessage.id)
-
-    // 立即发送到前端，让用户看到自己的消息
-    this.emit('message', displayMessage)
-
-    // 更新状态
-    this.isProcessing = true
-    this.inputMessage = ''
-    this.emit('state-update', { isProcessing: true, inputMessage: '' })
-
-    // 懒加载：第一次发送时启动运行时
-    // 注意：放在消息发送之后，这样用户能立即看到自己发送的内容
+    // 懒加载：第一次发送时先启动运行时，启动完成后再显示用户消息
     if (!this.runtimeManager || !this.runtimeManager.isReady()) {
       try {
         this.loadResolvedRuntimeConfig()
       } catch (e) {
         logger.warn(`[SessionInstance] Failed to resolve provider before startup status:`, e.message)
       }
-      // 发送启动状态提示
-      this.emit('cli-status', { message: `正在启动 ${this.getProviderDisplayName()}...` })
       await this.startRuntime()
     }
+
+    // 添加到本地消息列表（使用真实 UUID）
+    const displayMessage = {
+      id: userMessage.uuid,
+      role: 'user',
+      content: textContent,
+      timestamp: new Date(),
+      startTime: Date.now(),
+      rawMessage: userMessage
+    }
+    this.messages.push(displayMessage)
+    this.rawMessages.push(userMessage)
+
+    const msgToSave = { ...displayMessage }
+    delete msgToSave.startTime
+    historyManager.appendMessage(this.projectId, this.id, msgToSave)
+    this.savedMessageIds.add(displayMessage.id)
+
+    this.emit('message', displayMessage)
+
+    // 更新状态
+    this.isProcessing = true
+    this.inputMessage = ''
+    this.emit('state-update', { isProcessing: true, inputMessage: '' })
 
     // 发送到运行时 provider
     await this.runtimeManager.sendMessage(userMessage)
@@ -899,6 +1236,12 @@ class SessionInstance {
     }
   }
 
+  syncRuntimeResolvedSettings(resolvedSettings = null) {
+    if (this.runtimeManager && typeof this.runtimeManager.setResolvedSettings === 'function') {
+      this.runtimeManager.setResolvedSettings(resolvedSettings)
+    }
+  }
+
   /**
    * 设置权限模式
    */
@@ -919,6 +1262,227 @@ class SessionInstance {
       logger.info(`[SessionInstance] Provider has no live permission mode handler, will apply on next turn: ${mode}`)
     } else {
       logger.info(`[SessionInstance] Provider not ready, will apply permission mode on start: ${mode}`)
+    }
+  }
+
+  async setSessionEffort(effort, options = {}) {
+    const normalizedEffort = typeof effort === 'string' ? effort.trim() : ''
+    if (!normalizedEffort) {
+      throw new Error('Missing effort')
+    }
+
+    const sessionConfig = projectService.getSessionConfig(this.projectId, this.id)
+    const nextSettings = {
+      ...((sessionConfig?.settings && typeof sessionConfig.settings === 'object') ? sessionConfig.settings : {}),
+      effort: normalizedEffort
+    }
+
+    const updatedConfig = await projectService.updateSessionConfig(this.projectId, this.id, {
+      name: sessionConfig?.name || '新会话',
+      settings: nextSettings
+    })
+
+    if (updatedConfig?.settings) {
+      this.applySessionSettings(updatedConfig.settings)
+    }
+
+    const resolvedConfig = this.loadResolvedRuntimeConfig()
+    const provider = this.provider || resolvedConfig?.settings?.tool || 'claude'
+    const runtimeStarted = Boolean(this.runtimeManager?.isReady?.())
+
+    if (!runtimeStarted) {
+      this.emitConfigAppliedNotification('effort', 'saved', {
+        provider,
+        effort: normalizedEffort
+      })
+
+      return {
+        success: true,
+        config: updatedConfig || null,
+        effort: normalizedEffort,
+        provider,
+        appliedLive: false,
+        restarted: false
+      }
+    }
+
+    if (provider === 'codex') {
+      this.syncRuntimeResolvedSettings(resolvedConfig?.settings || null)
+      if (typeof this.runtimeManager?.setSessionEffort !== 'function') {
+        throw new Error('Codex runtime does not support live effort switching')
+      }
+      const applied = await this.runtimeManager.setSessionEffort(normalizedEffort)
+      this.emitConfigAppliedNotification('effort', 'live', {
+        provider,
+        effort: applied?.reasoningEffort || normalizedEffort,
+        subModel: applied?.model || null
+      })
+
+      return {
+        success: true,
+        config: updatedConfig || null,
+        effort: normalizedEffort,
+        provider,
+        appliedLive: true,
+        restarted: false
+      }
+    }
+
+    this.stop('restart-for-config')
+    await this.start({
+      reason: 'restart-for-config',
+      postStartNotification: {
+        type: 'session-effort-changed',
+        provider,
+        effort: normalizedEffort,
+        applyMode: 'restart'
+      }
+    })
+
+    return {
+      success: true,
+      config: updatedConfig || null,
+      effort: normalizedEffort,
+      provider,
+      appliedLive: false,
+      restarted: true
+    }
+  }
+
+  async setSessionModel(selection = {}) {
+    const nextMode = selection?.mode || 'project'
+    const nextModelId = nextMode === 'custom' ? (selection.modelId || null) : null
+    const nextModelCardId = nextMode === 'custom' ? (selection.modelCardId || null) : null
+
+    const sessionConfig = projectService.getSessionConfig(this.projectId, this.id)
+    const currentSettings = (sessionConfig?.settings && typeof sessionConfig.settings === 'object')
+      ? sessionConfig.settings
+      : {}
+    const nextSettings = {
+      ...currentSettings,
+      modelMode: nextMode,
+      modelId: nextModelId,
+      modelCardId: nextModelCardId
+    }
+
+    const updatedConfig = await projectService.updateSessionConfig(this.projectId, this.id, {
+      name: sessionConfig?.name || '新会话',
+      settings: nextSettings
+    })
+
+    if (updatedConfig?.settings) {
+      this.applySessionSettings(updatedConfig.settings)
+    }
+
+    const resolvedConfig = this.loadResolvedRuntimeConfig()
+
+    const runtimeStarted = Boolean(this.runtimeManager?.isReady?.())
+    if (!runtimeStarted) {
+      this.emitConfigAppliedNotification('model', 'saved')
+      return {
+        success: true,
+        config: updatedConfig || null,
+        restarted: false
+      }
+    }
+
+    if (this.provider === 'codex') {
+      this.syncRuntimeResolvedSettings(resolvedConfig?.settings || null)
+      if (typeof this.runtimeManager?.setSessionModel !== 'function') {
+        throw new Error('Codex runtime does not support live model switching')
+      }
+      const applied = await this.runtimeManager.setSessionModel()
+      this.emitConfigAppliedNotification('model', 'live', {
+        provider: this.provider,
+        model: applied?.model || null,
+        effort: applied?.reasoningEffort || null
+      })
+      return {
+        success: true,
+        config: updatedConfig || null,
+        restarted: false,
+        appliedLive: true,
+        provider: this.provider
+      }
+    }
+
+    if (this.envInfo) {
+      this.envInfo.model = null
+      historyManager.updateSessionEnvInfo(this.projectId, this.id, this.envInfo)
+      this.emit('env-info', this.envInfo)
+    }
+
+    this.pendingLifecycleOperation = {
+      changeType: 'model'
+    }
+    this.stop('restart-for-config')
+    await this.start({
+      reason: 'restart-for-config',
+      lifecycleContext: {
+        changeType: 'model'
+      },
+      postStartNotification: {
+        type: 'session-config-applied',
+        changeType: 'model',
+        applyMode: 'restart'
+      }
+    })
+
+    return {
+      success: true,
+      config: updatedConfig || null,
+      restarted: true
+    }
+  }
+
+  async setSessionSubmodel(model, reasoningEffort = 'medium') {
+    const normalizedModel = typeof model === 'string' ? model.trim() : ''
+    const normalizedEffort = typeof reasoningEffort === 'string' ? reasoningEffort.trim() : ''
+    if (!normalizedModel) {
+      throw new Error('Missing model')
+    }
+
+    if (!this.runtimeManager || !this.runtimeManager.isReady()) {
+      await this.startRuntime()
+    }
+
+    if (this.provider === 'codex' && typeof this.runtimeManager?.setSessionSubmodel === 'function') {
+      const applied = await this.runtimeManager.setSessionSubmodel(
+        normalizedModel,
+        normalizedEffort || 'medium'
+      )
+      this.emitConfigAppliedNotification('submodel', 'live', {
+        provider: this.provider,
+        subModel: applied?.model || normalizedModel,
+        effort: applied?.reasoningEffort || normalizedEffort || 'medium'
+      })
+      return {
+        success: true,
+        model: applied?.model || normalizedModel,
+        reasoningEffort: applied?.reasoningEffort || normalizedEffort || 'medium',
+        provider: this.provider,
+        appliedLive: true
+      }
+    }
+
+    if (this.provider === 'codex') {
+      throw new Error('Codex runtime does not support live submodel switching')
+    }
+
+    if (this.runtimeManager?.sendControlRequest) {
+      await this.runtimeManager.sendControlRequest({
+        subtype: 'set_session_submodel',
+        model: normalizedModel,
+        reasoningEffort: normalizedEffort || 'medium'
+      })
+    }
+
+    return {
+      success: true,
+      model: normalizedModel,
+      reasoningEffort: normalizedEffort || 'medium',
+      provider: this.provider,
+      appliedLive: true
     }
   }
 
@@ -993,10 +1557,32 @@ class SessionInstance {
   /**
    * 停止运行时实例
    */
-  stop() {
+  stop(reason = 'user-stop', options = {}) {
     if (this.runtimeManager) {
       logger.info(`[SessionInstance] Stopping provider for session ${this.id}`)
       this.isManualStop = true // 标记为手动停止
+      this.pendingLifecycleReason = reason || 'user-stop'
+      this.pendingPostStartNotification = options.postStartNotification || null
+      if (options.lifecycleContext && typeof options.lifecycleContext === 'object') {
+        this.pendingLifecycleOperation = {
+          ...(this.pendingLifecycleOperation || {}),
+          ...options.lifecycleContext
+        }
+      }
+      this.currentStreamingAssistantId = null
+      this.isProcessing = false
+      this.emit('state-update', { isProcessing: false })
+
+      this.envInfo = applySessionEnvInfoPatch({
+        ...this.envInfo,
+        provider: this.provider
+      }, {
+        provider: this.provider,
+        providerPid: null
+      })
+      historyManager.updateSessionEnvInfo(this.projectId, this.id, this.envInfo)
+      this.emit('env-info', this.envInfo)
+
       this.runtimeManager.stop()
       this.runtimeManager = null
     }
@@ -1005,7 +1591,19 @@ class SessionInstance {
   /**
    * 启动运行时实例
    */
-  async start() {
+  async start(options = {}) {
+    if (options.postStartNotification) {
+      this.pendingPostStartNotification = options.postStartNotification
+    }
+    if (options.reason) {
+      this.pendingLifecycleReason = options.reason
+    }
+    if (options.lifecycleContext && typeof options.lifecycleContext === 'object') {
+      this.pendingLifecycleOperation = {
+        ...(this.pendingLifecycleOperation || {}),
+        ...options.lifecycleContext
+      }
+    }
     logger.info(`[SessionInstance] Starting runtime via public start() method for session ${this.id}`)
     return this.startRuntime()
   }

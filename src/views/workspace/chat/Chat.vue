@@ -4,7 +4,7 @@ import { useSessionStore } from '../../../stores/useSessionStore'
 import { useAppStore } from '../../../stores/useAppStore'
 import { logger } from '../../../utils/logger'
 import { barkProvider } from '../../../utils/notifier'
-import { findProviderModel, getProviderModels } from '../../../utils/provider-models'
+import { useSessionModelControls } from './composables/useSessionModelControls'
 
 // 引入对话框组件
 import PermissionDialog from './components/dialogs/PermissionDialog.vue'
@@ -88,7 +88,7 @@ const isResizing = ref(false) // 是否正在调整大小
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
 let previousWindowHeight = null // 上一次窗口高度
-const inputHistory = [] // 输入历史记录
+const inputHistory = computed(() => sessionStore.currentSession?.inputHistory || [])
 // Note: isLoadingHistory removed - history is now loaded by SessionStore/SessionInstance
 
 // 权限模式
@@ -101,128 +101,57 @@ const permissionModes = [
   { value: 'bypassPermissions', label: '全部允许', icon: '✅' }
 ]
 
-// 思考力度
-const effort = ref('medium') // 当前思考力度
-const effortOptions = [
-  { value: 'default', label: '默认', icon: '🧠', description: '自动调整思考深度' },
-  { value: 'low', label: '低', icon: '⚡', description: '快速响应，较少思考' },
-  { value: 'medium', label: '中', icon: '🎯', description: '平衡思考与速度' },
-  { value: 'high', label: '高', icon: '🔬', description: '深度思考，详细分析' }
-]
-
-const appConfig = ref(null)
-const projectConfig = ref(null)
-const sessionConfig = ref(null)
-
-const currentSessionStatus = computed(() => {
-  const sessionId = appStore.currentSession?.id
-  if (!sessionId) return null
-  return appStore.sessionStatuses?.[sessionId] || null
-})
-
 const currentSessionMeta = computed(() => {
   const sessionId = appStore.currentSession?.id
   if (!sessionId) return null
   return appStore.currentProjectSessions.find(session => session.id === sessionId) || appStore.currentSession || null
 })
 
-const canQuickSwitchModel = computed(() => {
-  return !!appStore.currentSession?.id
+const isSessionRuntimeStarted = computed(() => {
+  return Boolean(
+    sessionStore.currentSession?.runtimeReady ||
+    envInfo.value?.providerPid
+  )
 })
 
 const canConfigureNotifications = computed(() => {
   return !!appStore.currentSession?.id
 })
-
-const currentModelProvider = computed(() => {
-  return sessionConfig.value?.settings?.tool || sessionConfig.value?.settings?.provider || envInfo.value?.provider || currentSessionMeta.value?.tool || 'claude'
-})
-
-const availableModelOptions = computed(() => {
-  const models = getProviderModels(appConfig.value, currentModelProvider.value).filter(model => model.isActive !== false)
-  const customOptions = models.flatMap(model => {
-    const cards = model.modelCards?.length ? model.modelCards : [{ id: '', modelName: '' }]
-    return cards.map(card => ({
-      key: `${model.id}:${card.id || 'default'}`,
-      mode: 'custom',
-      modelId: model.id,
-      modelCardId: card.id || null,
-      label: card.modelName
-        ? `${model.friendlyName || model.id}(${card.modelName})`
-        : (model.friendlyName || model.id)
-    }))
-  })
-
-  return [
-    { key: 'system', mode: 'system', modelId: null, modelCardId: null, label: '系统' },
-    { key: 'project', mode: 'project', modelId: null, modelCardId: null, label: '项目' },
-    ...customOptions
-  ]
-})
-
-function normalizeProjectModelSettings(settings = {}) {
-  const modelMode = settings.modelMode || (settings.modelId ? 'custom' : 'system')
-  return {
-    modelMode,
-    modelId: modelMode === 'custom' ? settings.modelId || null : null,
-    modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null
-  }
-}
-
-function normalizeSessionModelSettings(settings = {}) {
-  const modelMode = settings.modelMode || (settings.modelId === '' ? 'system' : (settings.modelId ? 'custom' : 'project'))
-  return {
-    modelMode,
-    modelId: modelMode === 'custom' ? settings.modelId || null : null,
-    modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null
-  }
-}
-
-function formatModelLabel(modelId, modelCardId, fallback = '系统') {
-  if (!modelId) return fallback
-  const model = findProviderModel(appConfig.value, currentModelProvider.value, modelId)
-  if (!model) return modelId
-  const cards = model.modelCards || []
-  const card = modelCardId
-    ? cards.find(item => item.id === modelCardId)
-    : (cards.find(item => item.id === model.defaultCardId) || cards[0] || null)
-  const modelName = model.friendlyName || model.id
-  const cardName = card?.modelName || card?.id || null
-  return cardName ? `${modelName}(${cardName})` : modelName
-}
-
-function toPlainObject(value) {
-  return value ? JSON.parse(JSON.stringify(value)) : {}
-}
-
-const currentModelLabel = computed(() => {
-  const normalizedSession = normalizeSessionModelSettings(sessionConfig.value?.settings || {})
-
-  if (!sessionConfig.value?.settings || Object.keys(sessionConfig.value.settings).length === 0) {
-    return '项目'
-  }
-
-  if (normalizedSession.modelMode === 'custom') {
-    return formatModelLabel(normalizedSession.modelId, normalizedSession.modelCardId)
-  }
-  if (normalizedSession.modelMode === 'system') {
-    return '系统'
-  }
-  return '项目'
-})
-
-const currentModelSelectionKey = computed(() => {
-  const normalizedSession = normalizeSessionModelSettings(sessionConfig.value?.settings || {})
-
-  if (!sessionConfig.value?.settings || Object.keys(sessionConfig.value.settings).length === 0) {
-    return 'project'
-  }
-
-  if (normalizedSession.modelMode === 'custom') {
-    return `${normalizedSession.modelId}:${normalizedSession.modelCardId || 'default'}`
-  }
-
-  return normalizedSession.modelMode
+const {
+  appConfig,
+  projectConfig,
+  sessionConfig,
+  canQuickSwitchModel,
+  canQuickSwitchSubModel,
+  currentModelProvider,
+  availableModelOptions,
+  currentModelLabel,
+  currentModelSelectionKey,
+  providerSubModelOptions,
+  providerSubModelLoading,
+  currentSubModelLabel,
+  currentSubModelKey,
+  availableEffortOptions,
+  providerEffortLoading,
+  canQuickSwitchEffort,
+  currentEffortValue,
+  currentEffortKey,
+  loadModelConfigContext,
+  loadProviderSubModels,
+  loadSessionEffortCapabilities,
+  handleQuickModelChange,
+  handleQuickSubModelChange,
+  handleQuickEffortChange,
+  resetModelState,
+  resetSubModelState,
+  resetEffortState
+} = useSessionModelControls({
+  sessionStore,
+  appStore,
+  envInfo,
+  currentSessionMeta,
+  workingDirectory,
+  isSessionRuntimeStarted
 })
 
 const notificationOptions = computed(() => [
@@ -237,6 +166,10 @@ const notificationOptions = computed(() => [
   }
 ])
 
+function toPlainObject(value) {
+  return value ? JSON.parse(JSON.stringify(value)) : {}
+}
+
 const currentNotificationChannels = computed(() => {
   const settings = sessionConfig.value?.settings || {}
   if (!Array.isArray(settings.notificationChannels)) {
@@ -244,79 +177,6 @@ const currentNotificationChannels = computed(() => {
   }
   return settings.notificationChannels.filter(channel => channel === 'sound' || channel === 'bark')
 })
-
-async function loadModelConfigContext() {
-  if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
-
-  try {
-    const [appResult, projectResult, sessionResult] = await Promise.all([
-      window.electronAPI.getAppConfig(),
-      window.electronAPI.getProjectConfig({ projectId: appStore.currentProject.id }),
-      window.electronAPI.getSessionConfig({
-        projectId: appStore.currentProject.id,
-        sessionId: appStore.currentSession.id
-      })
-    ])
-
-    if (appResult?.success) {
-      appConfig.value = appResult.config
-    }
-    projectConfig.value = projectResult?.config || null
-    sessionConfig.value = sessionResult?.config || null
-  } catch (error) {
-    logger.error('[Chat] Failed to load model config context', { error: error.message })
-  }
-}
-
-async function handleQuickModelChange(option) {
-  if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
-
-  const plainOption = toPlainObject(option)
-  const existingSettings = toPlainObject(sessionConfig.value?.settings)
-  const normalizedSession = normalizeSessionModelSettings(existingSettings)
-  if (
-    normalizedSession.modelMode === plainOption.mode &&
-    (plainOption.mode !== 'custom' || (
-      normalizedSession.modelId === plainOption.modelId &&
-      (normalizedSession.modelCardId || null) === (plainOption.modelCardId || null)
-    ))
-  ) {
-    return
-  }
-
-  try {
-    const nextSettings = {
-      ...existingSettings,
-      modelMode: plainOption.mode,
-      modelId: plainOption.mode === 'custom' ? plainOption.modelId : null,
-      modelCardId: plainOption.mode === 'custom' ? (plainOption.modelCardId || null) : null
-    }
-
-    await window.electronAPI.updateSessionConfig({
-      projectId: appStore.currentProject.id,
-      sessionId: appStore.currentSession.id,
-      updates: {
-        name: currentSessionMeta.value?.name || appStore.currentSession.name || sessionStore.currentSession?.id?.slice(0, 8) || '新会话',
-        settings: nextSettings
-      }
-    })
-
-    if (currentSessionStatus.value?.ready) {
-      await window.electronAPI.stopSessionRuntime({ sessionId: appStore.currentSession.id })
-      await window.electronAPI.startSession({
-        sessionId: appStore.currentSession.id,
-        projectPath: appStore.currentProject.path
-      })
-    }
-
-    await loadModelConfigContext()
-    await appStore.fetchSessions(appStore.currentProject.id)
-    await appStore.fetchRunningSessions()
-  } catch (error) {
-    logger.error('[Chat] Failed to quick switch model', { error: error.message })
-    alert('切换模型失败: ' + error.message)
-  }
-}
 
 async function handleNotificationToggle(option) {
   if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
@@ -436,6 +296,8 @@ onMounted(async () => {
   }
 
   await loadModelConfigContext()
+  await loadProviderSubModels()
+  await loadSessionEffortCapabilities()
 
   // 注意：所有事件现在通过 SessionStore 的 session-event 通道处理
 
@@ -472,12 +334,36 @@ watch(
   async ([projectId, sessionId]) => {
     if (projectId && sessionId) {
       await loadModelConfigContext()
+      await loadProviderSubModels()
+      await loadSessionEffortCapabilities()
     } else {
-      projectConfig.value = null
-      sessionConfig.value = null
+      resetModelState()
     }
   },
   { immediate: false }
+)
+
+watch(
+  () => currentModelProvider.value,
+  async (provider, previousProvider) => {
+    if (provider && provider !== previousProvider) {
+      await loadModelConfigContext()
+      resetSubModelState()
+      resetEffortState()
+      await loadProviderSubModels()
+      await loadSessionEffortCapabilities()
+    }
+  }
+)
+
+watch(
+  () => currentSubModelKey.value,
+  async (subModel, previousSubModel) => {
+    if (subModel && subModel !== previousSubModel) {
+      resetEffortState()
+      await loadSessionEffortCapabilities()
+    }
+  }
 )
 
 // 点击外部关闭权限菜单
@@ -546,7 +432,7 @@ watch(() => messages.value, async (newMessages) => {
 watch(() => messages.value, async (newMessages) => {
   const newLength = newMessages?.length || 0
 
-  if (newLength > previousMessageCount && newLength > 1) {
+  if (newLength > previousMessageCount) {
     // 检查用户是否在底部（在折叠前检查）
     const container = messagesContainer.value
     const wasNearBottom = container
@@ -593,6 +479,43 @@ watch(() => messages.value, async (newMessages) => {
   }
   previousMessageCount = newLength
 }, { deep: true })
+
+watch(() => {
+  const list = messages.value || []
+  const lastMessage = list[list.length - 1]
+  if (!lastMessage) return ''
+
+  return JSON.stringify({
+    id: lastMessage.id || '',
+    role: lastMessage.role || '',
+    notificationType: lastMessage.notificationType || '',
+    timestamp: lastMessage.timestamp || '',
+    duration: lastMessage.duration ?? null,
+    content: typeof lastMessage.content === 'string' ? lastMessage.content : '',
+    scope: lastMessage.scope || '',
+    data: lastMessage.role === 'system_notification' ? (lastMessage.data || null) : null
+  })
+}, async (newSignature, oldSignature) => {
+  if (!newSignature || newSignature === oldSignature) return
+
+  const container = messagesContainer.value
+  if (!container) return
+
+  const lastMessage = messages.value?.[messages.value.length - 1]
+  if (!lastMessage) return
+
+  if (lastMessage.role !== 'system_notification' && lastMessage.role !== 'status') {
+    return
+  }
+
+  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120
+  if (!wasNearBottom && userScrolledAway) {
+    return
+  }
+
+  await nextTick()
+  scrollToBottom(true)
+}, { deep: false })
 
 // 监听 session 切换，自动滚动到底部
 watch(() => sessionStore.currentSessionId, async (newSessionId, oldSessionId) => {
@@ -693,17 +616,6 @@ async function handleSendMessage(userText) {
       content: `Error: ${error.message}`,
       timestamp: new Date()
     })
-  }
-}
-
-// 添加到历史记录（从 ChatInput 组件调用）
-function addToHistory(text) {
-  if (text && (inputHistory.length === 0 || inputHistory[inputHistory.length - 1] !== text)) {
-    inputHistory.push(text)
-    // 限制历史记录数量
-    if (inputHistory.length > 100) {
-      inputHistory.shift()
-    }
   }
 }
 
@@ -1368,12 +1280,6 @@ function selectPermissionMode(mode) {
   handlePermissionModeChange(mode)
 }
 
-// 选择思考力度
-function selectEffort(newEffort) {
-  effort.value = newEffort
-  // TODO: 实际修改 effort 需要重启 CLI，暂只保存状态
-}
-
 async function handleQuestionAnswer(requestId, answers) {
   const question = pendingQuestion.value
   sessionStore.clearPendingQuestion()
@@ -1503,19 +1409,27 @@ async function handleQuestionAnswer(requestId, answers) {
       :current-model-key="currentModelSelectionKey"
       :model-options="availableModelOptions"
       :can-switch-model="canQuickSwitchModel"
+      :current-sub-model-label="currentSubModelLabel"
+      :current-sub-model-key="currentSubModelKey"
+      :sub-model-options="providerSubModelOptions"
+      :can-switch-sub-model="canQuickSwitchSubModel"
+      :sub-model-loading="providerSubModelLoading"
       :current-notification-channels="currentNotificationChannels"
       :notification-options="notificationOptions"
       :can-configure-notifications="canConfigureNotifications"
-      :effort="effort"
-      :effort-options="effortOptions"
+      :effort="currentEffortValue"
+      :effort-key="currentEffortKey"
+      :effort-options="availableEffortOptions"
+      :effort-loading="providerEffortLoading"
+      :can-switch-effort="canQuickSwitchEffort"
       :input-history="inputHistory"
       @send="handleSendMessage"
       @interrupt="handleInterrupt"
       @model-change="handleQuickModelChange"
+      @sub-model-change="handleQuickSubModelChange"
       @notification-toggle="handleNotificationToggle"
       @permission-mode-change="selectPermissionMode"
-      @effort-change="selectEffort"
-      @add-to-history="addToHistory"
+      @effort-change="handleQuickEffortChange"
     />
 
     <!-- Ask User Question Dialog - 在聊天窗口内部 -->

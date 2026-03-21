@@ -10,6 +10,9 @@ const STORAGE_KEYS = {
   LAST_SESSION: 'ccgui_last_session'
 }
 
+let hasBoundSessionCompletionListener = false
+let hasBoundSessionStatusListener = false
+
 // Helper to load from localStorage
 function loadFromStorage(key, defaultValue) {
   try {
@@ -35,7 +38,7 @@ export const useAppStore = defineStore('app', () => {
   const sessions = ref([])
   const currentProject = ref(null)
   const currentSession = ref(null) // 会话元信息（从文件系统扫描）
-  const sessionStatuses = ref({}) // session 状态对象：{ ready, processing, streaming }
+  const sessionStatuses = ref({}) // session 状态对象：{ ready, processing, streaming, unseenCompleted }
   const sidebarCollapsed = ref(loadFromStorage(STORAGE_KEYS.SIDEBAR_STATE, {
     project: false,
     session: false
@@ -47,6 +50,12 @@ export const useAppStore = defineStore('app', () => {
   watch(sidebarCollapsed, (newValue) => {
     saveToStorage(STORAGE_KEYS.SIDEBAR_STATE, newValue)
   }, { deep: true })
+
+  watch(() => currentSession.value?.id, (sessionId) => {
+    if (sessionId) {
+      clearSessionUnseenCompleted(sessionId)
+    }
+  })
 
   // Computed
   const currentProjectSessions = computed(() => {
@@ -76,6 +85,146 @@ export const useAppStore = defineStore('app', () => {
   const hasProcessingSessions = computed(() => {
     return Object.values(sessionStatuses.value).some(s => s.processing || s.streaming)
   })
+
+  function ensureSessionStatus(sessionId) {
+    if (!sessionId) {
+      return null
+    }
+
+    const currentStatus = sessionStatuses.value[sessionId]
+    if (currentStatus) {
+      return currentStatus
+    }
+
+    return {
+      ready: false,
+      processing: false,
+      streaming: false,
+      unseenCompleted: false,
+      messageCount: 0,
+      updatedAt: new Date().toISOString()
+    }
+  }
+
+  function patchSessionStatus(sessionId, updates = {}) {
+    if (!sessionId) {
+      return
+    }
+
+    const currentStatus = ensureSessionStatus(sessionId)
+    sessionStatuses.value = {
+      ...sessionStatuses.value,
+      [sessionId]: {
+        ...currentStatus,
+        ...updates
+      }
+    }
+  }
+
+  function bumpSessionActivity(sessionId, options = {}) {
+    const currentStatus = ensureSessionStatus(sessionId)
+    if (!currentStatus) {
+      return
+    }
+
+    const nextMessageCount = options.incrementMessageCount
+      ? Math.max(0, Number(currentStatus.messageCount || 0) + 1)
+      : currentStatus.messageCount
+
+    patchSessionStatus(sessionId, {
+      messageCount: nextMessageCount,
+      updatedAt: options.updatedAt || new Date().toISOString(),
+      ...(options.updates || {})
+    })
+  }
+
+  function handleSessionStatusEvent(event) {
+    const sessionId = event?.sessionId
+    const eventType = event?.eventType
+    const data = event?.data || {}
+
+    if (!sessionId || !eventType) {
+      return
+    }
+
+    switch (eventType) {
+      case 'state-update':
+        patchSessionStatus(sessionId, {
+          processing: Boolean(data?.isProcessing),
+          updatedAt: new Date().toISOString()
+        })
+        break
+
+      case 'message':
+        bumpSessionActivity(sessionId, {
+          incrementMessageCount: true,
+          updatedAt: data?.timestamp || new Date().toISOString()
+        })
+        break
+
+      case 'message-start':
+        bumpSessionActivity(sessionId, {
+          incrementMessageCount: true,
+          updatedAt: data?.timestamp || new Date().toISOString(),
+          updates: {
+            processing: true,
+            streaming: true
+          }
+        })
+        break
+
+      case 'message-complete':
+      case 'result':
+      case 'interrupt':
+        patchSessionStatus(sessionId, {
+          streaming: false,
+          processing: eventType === 'interrupt' ? false : ensureSessionStatus(sessionId)?.processing || false,
+          updatedAt: new Date().toISOString()
+        })
+        break
+
+      case 'env-info':
+        patchSessionStatus(sessionId, {
+          ready: Boolean(data?.providerPid),
+          updatedAt: new Date().toISOString()
+        })
+        break
+
+      case 'system-notification':
+        if (data?.type === 'session-runtime-starting' || data?.type === 'session-runtime-restarting') {
+          patchSessionStatus(sessionId, {
+            ready: false,
+            streaming: false,
+            updatedAt: new Date().toISOString()
+          })
+          break
+        }
+
+        if (data?.type === 'session-runtime-ready') {
+          patchSessionStatus(sessionId, {
+            ready: true,
+            streaming: false,
+            updatedAt: new Date().toISOString()
+          })
+          break
+        }
+
+        break
+
+      case 'normal-exit':
+      case 'abnormal-exit':
+        patchSessionStatus(sessionId, {
+          ready: false,
+          processing: false,
+          streaming: false,
+          updatedAt: new Date().toISOString()
+        })
+        break
+
+      default:
+        break
+    }
+  }
 
   // Actions - Projects
   async function fetchProjects() {
@@ -154,11 +303,97 @@ export const useAppStore = defineStore('app', () => {
   async function fetchRunningSessions() {
     try {
       const statuses = await window.electronAPI.getRunningSessions()
-      sessionStatuses.value = statuses
+      const previousStatuses = sessionStatuses.value
+      const nextStatuses = {}
+
+      Object.entries(statuses || {}).forEach(([sessionId, status]) => {
+        const previousStatus = previousStatuses[sessionId]
+        nextStatuses[sessionId] = {
+          ...status,
+          unseenCompleted: Boolean(
+            previousStatus?.unseenCompleted &&
+            status?.ready &&
+            !status?.processing &&
+            !status?.streaming
+          )
+        }
+      })
+
+      sessionStatuses.value = nextStatuses
     } catch (e) {
       logger.error('Failed to fetch running sessions', { error: e.message })
     }
   }
+
+  function markSessionCompletedUnseen(sessionId) {
+    if (!sessionId) {
+      return
+    }
+
+    if (currentSession.value?.id === sessionId) {
+      clearSessionUnseenCompleted(sessionId)
+      return
+    }
+
+    const currentStatus = sessionStatuses.value[sessionId]
+    if (!currentStatus?.ready) {
+      return
+    }
+
+    sessionStatuses.value = {
+      ...sessionStatuses.value,
+      [sessionId]: {
+        ...currentStatus,
+        unseenCompleted: true
+      }
+    }
+  }
+
+  function clearSessionUnseenCompleted(sessionId) {
+    if (!sessionId || !sessionStatuses.value[sessionId]?.unseenCompleted) {
+      return
+    }
+
+    sessionStatuses.value = {
+      ...sessionStatuses.value,
+      [sessionId]: {
+        ...sessionStatuses.value[sessionId],
+        unseenCompleted: false
+      }
+    }
+  }
+
+  function bindSessionCompletionListener() {
+    if (hasBoundSessionCompletionListener || typeof window === 'undefined') {
+      return
+    }
+
+    window.addEventListener('ccgui-session-complete', (event) => {
+      const sessionId = event.detail?.sessionId
+      if (!sessionId) {
+        return
+      }
+      markSessionCompletedUnseen(sessionId)
+    })
+
+    hasBoundSessionCompletionListener = true
+  }
+
+  bindSessionCompletionListener()
+
+  function bindSessionStatusListener() {
+    if (hasBoundSessionStatusListener || typeof window === 'undefined') {
+      return
+    }
+
+    window.electronAPI.onSessionEvent((event) => {
+      handleSessionStatusEvent(event)
+    })
+
+    hasBoundSessionStatusListener = true
+  }
+
+  bindSessionStatusListener()
 
   async function createSession(projectId, name, options = {}) {
     try {
@@ -213,6 +448,8 @@ export const useAppStore = defineStore('app', () => {
     try {
       isLoading.value = true
       error.value = null
+
+      clearSessionUnseenCompleted(session.id)
 
       // 更新当前会话元信息
       currentSession.value = session
@@ -314,6 +551,8 @@ export const useAppStore = defineStore('app', () => {
     selectProject,
     fetchSessions,
     fetchRunningSessions,
+    markSessionCompletedUnseen,
+    clearSessionUnseenCompleted,
     createSession,
     deleteSession,
     renameSession,

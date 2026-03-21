@@ -64,6 +64,23 @@ class SessionData {
  * 管理所有会话的状态
  */
 export const useSessionStore = defineStore('session', () => {
+  function resolveNotificationScope(notificationType, data = {}) {
+    const type = notificationType || data?.type || ''
+    if (
+      type === 'runtime-exit' ||
+      type === 'runtime-stopped' ||
+      type === 'session-runtime-starting' ||
+      type === 'session-runtime-restarting' ||
+      type === 'session-runtime-ready' ||
+      type === 'session-config-applied' ||
+      type === 'session-effort-changed'
+    ) {
+      return 'session'
+    }
+
+    return 'turn'
+  }
+
   // 所有会话的数据
   const sessions = ref(new Map())
 
@@ -226,12 +243,17 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] Cleared active tasks for new message')
 
     try {
-      await window.electronAPI.sendMessage({
+      const result = await window.electronAPI.sendMessage({
         sessionId,
         content
       })
+
+      if (!result?.success) {
+        throw new Error(result?.error || '发送消息失败')
+      }
     } catch (error) {
       session.isProcessing = false
+      session.inputMessage = content
       session.messages.push({
         id: `error-${Date.now()}`,
         role: 'system',
@@ -326,6 +348,66 @@ export const useSessionStore = defineStore('session', () => {
     return responsePromise
   }
 
+  async function listSessionSubmodels(options = {}) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    return window.electronAPI.listSessionSubmodels({
+      sessionId: session.id,
+      ...options
+    })
+  }
+
+  async function setSessionSubmodel(options = {}) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    return window.electronAPI.setSessionSubmodel({
+      sessionId: session.id,
+      ...options
+    })
+  }
+
+  async function setSessionModel(options = {}) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    return window.electronAPI.setSessionModel({
+      sessionId: session.id,
+      ...options
+    })
+  }
+
+  async function listSessionEffortOptions(options = {}) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    return window.electronAPI.listSessionEffortOptions({
+      sessionId: session.id,
+      ...options
+    })
+  }
+
+  async function setSessionEffort(options = {}) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    return window.electronAPI.setSessionEffort({
+      sessionId: session.id,
+      ...options
+    })
+  }
+
   /**
    * 设置权限模式
    */
@@ -400,6 +482,7 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'env-info':
         session.envInfo = data
+        session.runtimeReady = Boolean(data?.providerPid)
         break
 
       case 'silent-message':
@@ -1123,13 +1206,17 @@ export const useSessionStore = defineStore('session', () => {
 
     // 停止处理状态
     session.isProcessing = false
+    session.runtimeReady = false
 
     // 添加异常退出提示消息（使用 system_notification 类型，显示为居中通知样式）
     const exitMsg = {
       id: `abnormal-exit-${Date.now()}`,
       role: 'system_notification',
       notificationType: 'runtime-exit',
+      scope: 'session',
       data: {
+        provider: data.provider || session.envInfo?.provider || 'claude',
+        reason: data.reason || 'crash',
         code: data.code,
         message: data.message
       },
@@ -1165,14 +1252,18 @@ export const useSessionStore = defineStore('session', () => {
 
     // 停止处理状态
     session.isProcessing = false
+    session.runtimeReady = false
 
     // 添加正常停止提示消息（使用 system_notification 类型，显示为居中通知样式）
     const exitMsg = {
       id: `normal-exit-${Date.now()}`,
       role: 'system_notification',
       notificationType: 'runtime-stopped',
+      scope: 'session',
       data: {
-        message: data.message || '已手动停止'
+        provider: data.provider || session.envInfo?.provider || 'claude',
+        reason: data.reason || 'user-stop',
+        message: data.message || '运行时已停止'
       },
       timestamp: new Date()
     }
@@ -1186,11 +1277,57 @@ export const useSessionStore = defineStore('session', () => {
   function handleSystemNotification(session, data) {
     log('[SessionStore] handleSystemNotification:', data)
 
+    if (data?.type === 'session-runtime-starting' || data?.type === 'session-runtime-restarting') {
+      session.runtimeReady = false
+    } else if (data?.type === 'session-runtime-ready') {
+      session.runtimeReady = true
+    }
+
+    const operationId = typeof data?.operationId === 'string' ? data.operationId : ''
+    if (
+      operationId && (
+        data.type === 'session-runtime-ready' ||
+        data.type === 'session-config-applied' ||
+        data.type === 'session-effort-changed'
+      )
+    ) {
+      const pendingMessage = [...session.messages].reverse().find(message =>
+        message.role === 'system_notification' &&
+        (message.notificationType === 'session-runtime-starting' || message.notificationType === 'session-runtime-restarting') &&
+        message.data?.operationId === operationId
+      )
+
+      if (pendingMessage) {
+        const applyUpdate = () => {
+          pendingMessage.notificationType = data.type
+          pendingMessage.scope = resolveNotificationScope(data.type, data)
+          pendingMessage.data = {
+            ...pendingMessage.data,
+            ...data,
+            completedAt: Date.now(),
+            durationMs: data.durationMs ?? pendingMessage.data?.durationMs ?? null
+          }
+          pendingMessage.timestamp = new Date()
+        }
+
+        const startedAt = pendingMessage.data?.startedAt || pendingMessage.timestamp?.getTime?.() || Date.now()
+        const elapsed = Math.max(0, Date.now() - startedAt)
+        const minDisplayMs = 700
+        if (elapsed < minDisplayMs) {
+          setTimeout(applyUpdate, minDisplayMs - elapsed)
+        } else {
+          applyUpdate()
+        }
+        return
+      }
+    }
+
     // 创建系统通知消息
     const notificationMsg = {
-      id: `system-notification-${Date.now()}`,
+      id: `system-notification-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'system_notification',
       notificationType: data.type,
+      scope: resolveNotificationScope(data.type, data),
       data: data,
       timestamp: new Date()
     }
@@ -1470,6 +1607,11 @@ export const useSessionStore = defineStore('session', () => {
     sendRuntimeToolResult,
     sendInterrupt,
     sendControlRequest,
+    setSessionModel,
+    listSessionSubmodels,
+    setSessionSubmodel,
+    listSessionEffortOptions,
+    setSessionEffort,
     setPermissionMode,
     startEventListener,
     stopEventListener,

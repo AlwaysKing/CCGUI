@@ -297,14 +297,6 @@ onMounted(async () => {
   window.addEventListener('mousemove', handleTerminalResize)
   window.addEventListener('mouseup', stopTerminalResize)
 
-  // Periodically update running sessions status (every 2 seconds)
-  // This also fetches messageCount and updatedAt from memory
-  const updateRunningInterval = setInterval(() => {
-    store.fetchRunningSessions()
-  }, 2000)
-
-  // Store interval ID for cleanup
-  window.runningSessionsInterval = updateRunningInterval
 })
 
 onUnmounted(() => {
@@ -314,11 +306,6 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', stopPreviewResize)
   window.removeEventListener('mousemove', handleTerminalResize)
   window.removeEventListener('mouseup', stopTerminalResize)
-
-  // Clear interval
-  if (window.runningSessionsInterval) {
-    clearInterval(window.runningSessionsInterval)
-  }
 })
 </script>
 

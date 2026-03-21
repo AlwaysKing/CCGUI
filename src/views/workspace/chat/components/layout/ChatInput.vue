@@ -37,16 +37,27 @@ const props = defineProps({
   },
   effort: {
     type: String,
-    default: 'default'
+    default: 'medium'
+  },
+  effortKey: {
+    type: String,
+    default: 'medium'
   },
   effortOptions: {
     type: Array,
     default: () => [
-      { value: 'default', label: '默认', icon: '🧠', description: '自动调整思考深度' },
-      { value: 'low', label: '低', icon: '⚡', description: '快速响应，较少思考' },
-      { value: 'medium', label: '中', icon: '🎯', description: '平衡思考与速度' },
+      { value: 'low', label: '低', icon: '⚡', description: '更快返回结果，思考更少' },
+      { value: 'medium', label: '中', icon: '🧠', description: '平衡思考力度与响应速度' },
       { value: 'high', label: '高', icon: '🔬', description: '深度思考，详细分析' }
     ]
+  },
+  canSwitchEffort: {
+    type: Boolean,
+    default: false
+  },
+  effortLoading: {
+    type: Boolean,
+    default: false
   },
   currentModelLabel: {
     type: String,
@@ -64,6 +75,26 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  currentSubModelLabel: {
+    type: String,
+    default: '默认'
+  },
+  currentSubModelKey: {
+    type: String,
+    default: 'default'
+  },
+  subModelOptions: {
+    type: Array,
+    default: () => []
+  },
+  canSwitchSubModel: {
+    type: Boolean,
+    default: false
+  },
+  subModelLoading: {
+    type: Boolean,
+    default: false
+  },
   currentNotificationChannels: {
     type: Array,
     default: () => []
@@ -78,11 +109,12 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'addToHistory', 'modelChange', 'notificationToggle'])
+const emit = defineEmits(['update:modelValue', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle'])
 
 // 输入区域 ref
 const inputArea = ref(null)
 const modelMenuWrapper = ref(null)
+const subModelMenuWrapper = ref(null)
 const permissionMenuWrapper = ref(null)
 const effortMenuWrapper = ref(null)
 const notificationMenuWrapper = ref(null)
@@ -101,17 +133,8 @@ const showEffortMenu = ref(false)
 
 // 显示模型菜单
 const showModelMenu = ref(false)
+const showSubModelMenu = ref(false)
 const showNotificationMenu = ref(false)
-
-// 思考力度选项
-const effortOptions = [
-  { value: 'low', label: '低', icon: '⚡', description: '快速响应，较少思考' },
-  { value: 'medium', label: '中', icon: '🧠', description: '平衡思考深度' },
-  { value: 'high', label: '高', icon: '🔬', description: '深度思考，详细分析' }
-]
-
-// 当前思考力度 (从 props 获取或默认)
-const currentEffort = ref('medium')
 
 // Enter 键模式锁定 (true = Enter 发送, false = Enter 换行)
 const enterModeLocked = ref(true)
@@ -176,9 +199,6 @@ const modeThemeClass = computed(() => {
 // 发送消息
 function sendMessage() {
   if (!localValue.value.trim() || props.isProcessing) return
-
-  // 添加到历史记录
-  emit('addToHistory', localValue.value)
 
   emit('send', localValue.value)
   historyIndex = -1 // 重置历史索引
@@ -304,7 +324,7 @@ const currentEffortLabel = computed(() => {
 // 当前思考力度的描述
 const currentEffortDescription = computed(() => {
   const effort = props.effortOptions.find(e => e.value === props.effort)
-  return effort?.description || '平衡思考与速度'
+  return effort?.description || '平衡思考力度与响应速度'
 })
 
 // 选择思考力度
@@ -316,6 +336,11 @@ function selectEffort(effort) {
 function selectModel(option) {
   showModelMenu.value = false
   emit('modelChange', option)
+}
+
+function selectSubModel(option) {
+  showSubModelMenu.value = false
+  emit('subModelChange', option)
 }
 
 const hasEnabledNotifications = computed(() => props.currentNotificationChannels.length > 0)
@@ -344,6 +369,7 @@ function toggleNotification(option) {
 
 function closeAllMenus() {
   showModelMenu.value = false
+  showSubModelMenu.value = false
   showPermissionMenu.value = false
   showEffortMenu.value = false
   showNotificationMenu.value = false
@@ -353,6 +379,12 @@ function toggleModelMenu() {
   const nextState = !showModelMenu.value
   closeAllMenus()
   showModelMenu.value = nextState
+}
+
+function toggleSubModelMenu() {
+  const nextState = !showSubModelMenu.value
+  closeAllMenus()
+  showSubModelMenu.value = nextState
 }
 
 function togglePermissionMenu() {
@@ -371,6 +403,7 @@ function handleGlobalClick(event) {
   const target = event.target
   if (
     modelMenuWrapper.value?.contains(target) ||
+    subModelMenuWrapper.value?.contains(target) ||
     permissionMenuWrapper.value?.contains(target) ||
     effortMenuWrapper.value?.contains(target) ||
     notificationMenuWrapper.value?.contains(target)
@@ -465,7 +498,7 @@ defineExpose({
             <button
               @click="toggleModelMenu"
               class="model-mode-btn"
-              title="快速切换模型"
+              title="快速切换模型供应商"
               :disabled="!canSwitchModel"
             >
               <span class="model-mode-icon" aria-hidden="true">✨</span>
@@ -482,6 +515,60 @@ defineExpose({
               >
                 <span class="model-menu-label">{{ option.label }}</span>
                 <span v-if="currentModelKey === option.key" class="model-menu-check">✓</span>
+              </button>
+            </div>
+          </div>
+
+          <div ref="subModelMenuWrapper" class="submodel-mode-wrapper">
+            <button
+              @click="toggleSubModelMenu"
+              class="submodel-mode-btn"
+              title="切换模型"
+              :disabled="!canSwitchSubModel || subModelLoading"
+            >
+              <span class="submodel-mode-icon" aria-hidden="true">◌</span>
+              <span class="submodel-mode-text">{{ subModelLoading ? '加载中' : currentSubModelLabel }}</span>
+            </button>
+
+            <div v-if="showSubModelMenu && canSwitchSubModel" class="submodel-menu">
+              <button
+                v-for="option in subModelOptions"
+                :key="option.key"
+                class="submodel-menu-item"
+                :class="{ active: currentSubModelKey === option.key }"
+                :title="option.description || option.label"
+                @click="selectSubModel(option)"
+              >
+                <span class="submodel-menu-label">{{ option.label }}</span>
+                <span v-if="currentSubModelKey === option.key" class="submodel-menu-check">✓</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 思考力度切换按钮 -->
+          <div ref="effortMenuWrapper" class="effort-mode-wrapper">
+            <button
+              @click="toggleEffortMenu"
+              class="effort-mode-btn"
+              :title="`思考力度: ${currentEffortDescription}`"
+              :disabled="isProcessing || !canSwitchEffort || effortLoading"
+            >
+              {{ effortLoading ? '🧠 加载中' : currentEffortLabel }}
+            </button>
+
+            <!-- 思考力度菜单 -->
+            <div v-if="showEffortMenu && canSwitchEffort" class="effort-menu">
+              <button
+                v-for="option in effortOptions"
+                :key="option.value"
+                class="effort-menu-item"
+                :class="{ active: effortKey === option.value }"
+                @click="selectEffort(option.value)"
+              >
+                <span class="effort-menu-icon">{{ option.icon }}</span>
+                <span class="effort-menu-label">{{ option.label }}</span>
+                <span class="effort-menu-desc">{{ option.description }}</span>
+                <span v-if="effortKey === option.value" class="effort-menu-check">✓</span>
               </button>
             </div>
           </div>
@@ -511,34 +598,6 @@ defineExpose({
               </button>
             </div>
           </div>
-
-          <!-- 思考力度切换按钮 -->
-          <div ref="effortMenuWrapper" class="effort-mode-wrapper">
-            <button
-              @click="toggleEffortMenu"
-              class="effort-mode-btn"
-              :title="`思考力度: ${currentEffortDescription}`"
-              :disabled="isProcessing"
-            >
-              {{ currentEffortLabel }}
-            </button>
-
-            <!-- 思考力度菜单 -->
-            <div v-if="showEffortMenu" class="effort-menu">
-              <button
-                v-for="option in effortOptions"
-                :key="option.value"
-                class="effort-menu-item"
-                :class="{ active: effort === option.value }"
-                @click="selectEffort(option.value)"
-              >
-                <span class="effort-menu-icon">{{ option.icon }}</span>
-                <span class="effort-menu-label">{{ option.label }}</span>
-                <span class="effort-menu-desc">{{ option.description }}</span>
-                <span v-if="effort === option.value" class="effort-menu-check">✓</span>
-              </button>
-            </div>
-          </div>
         </div>
 
         <!-- 右侧按钮组 -->
@@ -553,9 +612,6 @@ defineExpose({
             >
               {{ hasEnabledNotifications ? '🔔' : '🔕' }}
             </button>
-            <span v-if="currentNotificationChannels.length > 0" class="notification-count">
-              {{ currentNotificationChannels.length }}
-            </span>
 
             <div v-if="showNotificationMenu && canConfigureNotifications" class="notification-menu">
               <button
@@ -725,6 +781,11 @@ defineExpose({
   display: inline-block;
 }
 
+.submodel-mode-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
 .model-mode-btn {
   max-width: 220px;
   padding: 2px 8px;
@@ -817,6 +878,103 @@ defineExpose({
 }
 
 .model-mode-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.submodel-mode-btn {
+  max-width: 220px;
+  padding: 2px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: #A1A1AA;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.submodel-mode-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.submodel-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.submodel-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 220px;
+  max-width: 320px;
+  max-height: 260px;
+  overflow-y: auto;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+
+.submodel-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+}
+
+.submodel-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.submodel-menu-item.active {
+  color: #38BDF8;
+}
+
+.submodel-menu-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.submodel-menu-check {
+  color: #38BDF8;
+}
+
+.submodel-mode-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.submodel-mode-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1074,23 +1232,6 @@ defineExpose({
   flex-direction: column;
   gap: 2px;
   padding: 4px;
-}
-
-.notification-count {
-  position: absolute;
-  top: -3px;
-  right: -5px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 4px;
-  background: #F97316;
-  border-radius: 999px;
-  color: white;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 14px;
-  text-align: center;
-  pointer-events: none;
 }
 
 .notification-menu-item {

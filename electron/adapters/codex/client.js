@@ -136,6 +136,11 @@ function buildCodexEnvRateLimits(usage = null, accountName = '') {
   }
 }
 
+function isMissingCodexThreadError(error) {
+  const message = typeof error?.message === 'string' ? error.message.toLowerCase() : ''
+  return message.includes('thread not found') || message.includes('conversation not found')
+}
+
 function resolveActiveCodexAccountUsage() {
   try {
     const appConfig = appConfigManager.loadConfig()
@@ -275,11 +280,12 @@ function normalizeControlRequest(message = {}) {
 
 function applyCodexEnvInfoPatch(envInfo = {}, options = {}) {
   const provider = options.provider || envInfo.provider || 'codex'
-  const providerPid = pickFirstDefined(
-    options.providerPid,
-    envInfo.providerPid,
-    null
-  )
+  const providerPid = Object.prototype.hasOwnProperty.call(options, 'providerPid')
+    ? options.providerPid
+    : pickFirstDefined(
+        envInfo.providerPid,
+        null
+      )
 
   return {
     ...envInfo,
@@ -391,9 +397,11 @@ class CodexClient {
     this.requestCounter = 0
     this.pendingRequests = new Map()
     this.pendingServerRequests = new Map()
-    this.currentThreadId = this.resumeThreadId
+    this.currentThreadId = null
     this.currentTurnId = null
     this.currentAssistantMessageId = null
+    this.currentCollaborationMode = null
+    this.currentThreadConfigOverride = null
     this.turnMessageMap = new Map()
     this.turnAssistantState = new Map()
     this.turnStats = new Map()
@@ -446,6 +454,12 @@ class CodexClient {
     this.debugEnabled = enabled === true
   }
 
+  setResolvedSettings(settings = null) {
+    this.projectSettings = settings && typeof settings === 'object'
+      ? { ...settings }
+      : settings
+  }
+
   detectCodexPath() {
     const possiblePaths = [
       '/Applications/Codex.app/Contents/Resources/codex',
@@ -495,6 +509,203 @@ class CodexClient {
       logger.warn('[CodexClient] Failed to resolve model runtime', { error: error.message })
       return null
     }
+  }
+
+  getCurrentModelSelection() {
+    if (this.currentThreadConfigOverride?.model) {
+      return {
+        model: this.currentThreadConfigOverride.model,
+        modelProvider: this.currentThreadConfigOverride.modelProvider || null,
+        reasoningEffort: this.currentThreadConfigOverride.reasoningEffort || 'medium',
+        source: 'thread'
+      }
+    }
+
+    const modelRuntime = this.resolveModelRuntime()
+    if (modelRuntime?.modelName) {
+      return {
+        model: modelRuntime.modelName,
+        modelProvider: modelRuntime.modelProvider || null,
+        reasoningEffort: this.projectSettings?.effort || 'medium',
+        source: 'project'
+      }
+    }
+
+    return null
+  }
+
+  async buildThreadResumeParams(overrides = {}) {
+    const developerInstructions = await this.buildDeveloperInstructions()
+    const currentSelection = this.getCurrentModelSelection()
+    const threadId = this.currentThreadId || this.resumeThreadId
+
+    if (!threadId) {
+      throw new Error('Codex thread not initialized')
+    }
+
+    return {
+      threadId,
+      cwd: this.workingDirectory,
+      approvalPolicy: this.mapPermissionModeToApprovalPolicy(),
+      sandbox: 'workspace-write',
+      model: Object.prototype.hasOwnProperty.call(overrides, 'model')
+        ? overrides.model
+        : (currentSelection?.model || null),
+      modelProvider: Object.prototype.hasOwnProperty.call(overrides, 'modelProvider')
+        ? overrides.modelProvider
+        : (currentSelection?.modelProvider || readCodexDefaultModelProvider() || 'openai'),
+      persistExtendedHistory: true,
+      developerInstructions: developerInstructions || null
+    }
+  }
+
+  updateThreadSelectionFromResponse(response, fallbackSelection = null, options = {}) {
+    const preferFallback = options.preferFallback === true
+    const resolvedThreadId = response?.thread?.id || this.currentThreadId || this.resumeThreadId || null
+    const resolvedModel =
+      preferFallback
+        ? (
+            fallbackSelection?.model ||
+            response?.model ||
+            this.getCurrentModelSelection()?.model ||
+            null
+          )
+        : (
+            response?.model ||
+            fallbackSelection?.model ||
+            this.getCurrentModelSelection()?.model ||
+            null
+          )
+    const resolvedModelProvider =
+      preferFallback
+        ? (
+            fallbackSelection?.modelProvider ||
+            response?.modelProvider ||
+            this.getCurrentModelSelection()?.modelProvider ||
+            readCodexDefaultModelProvider() ||
+            'openai'
+          )
+        : (
+            response?.modelProvider ||
+            fallbackSelection?.modelProvider ||
+            this.getCurrentModelSelection()?.modelProvider ||
+            readCodexDefaultModelProvider() ||
+            'openai'
+          )
+    const resolvedReasoningEffort =
+      preferFallback
+        ? (
+            fallbackSelection?.reasoningEffort ||
+            response?.reasoningEffort ||
+            this.getCurrentModelSelection()?.reasoningEffort ||
+            null
+          )
+        : (
+            response?.reasoningEffort ||
+            fallbackSelection?.reasoningEffort ||
+            this.getCurrentModelSelection()?.reasoningEffort ||
+            null
+          )
+
+    this.currentThreadId = resolvedThreadId
+    this.currentThreadConfigOverride = {
+      model: resolvedModel,
+      modelProvider: resolvedModelProvider,
+      reasoningEffort: resolvedReasoningEffort
+    }
+
+    const activeCodexAccountUsage =
+      resolvedModelProvider === 'openai' ? resolveActiveCodexAccountUsage() : null
+
+    this.envInfo = applyCodexEnvInfoPatch({
+      ...this.envInfo,
+      session_id: resolvedThreadId,
+      model: resolvedModel,
+      model_reasoning_effort: resolvedReasoningEffort,
+      providerPid: this.getPid(),
+      rate_limits: activeCodexAccountUsage?.rateLimits || null
+    }, {
+      provider: 'codex',
+      providerPid: this.getPid()
+    })
+    this.emit('env-info', this.envInfo)
+
+    if (resolvedModelProvider === 'openai') {
+      this.startAccountUsageRefresh()
+    } else {
+      this.stopAccountUsageRefresh()
+    }
+
+    return {
+      threadId: resolvedThreadId,
+      model: resolvedModel,
+      modelProvider: resolvedModelProvider,
+      reasoningEffort: resolvedReasoningEffort
+    }
+  }
+
+  async applyThreadModelSelection(overrides = {}) {
+    await this.ensureInitialized()
+
+    const selection = {
+      model: Object.prototype.hasOwnProperty.call(overrides, 'model') ? overrides.model : null,
+      modelProvider: Object.prototype.hasOwnProperty.call(overrides, 'modelProvider')
+        ? overrides.modelProvider
+        : null,
+      reasoningEffort: Object.prototype.hasOwnProperty.call(overrides, 'reasoningEffort')
+        ? overrides.reasoningEffort
+        : null
+    }
+    const response = await this.request('thread/resume', await this.buildThreadResumeParams(selection))
+    const applied = this.updateThreadSelectionFromResponse(response, selection, {
+      preferFallback: true
+    })
+
+    return {
+      ...applied,
+      response
+    }
+  }
+
+  async setSessionSubmodel(model, reasoningEffort = 'medium') {
+    const normalizedModel = typeof model === 'string' ? model.trim() : ''
+    if (!normalizedModel) {
+      throw new Error('Missing Codex model')
+    }
+
+    const currentSelection = this.getCurrentModelSelection()
+    return this.applyThreadModelSelection({
+      model: normalizedModel,
+      modelProvider: currentSelection?.modelProvider || readCodexDefaultModelProvider() || 'openai',
+      reasoningEffort: reasoningEffort || currentSelection?.reasoningEffort || 'medium'
+    })
+  }
+
+  async setSessionEffort(reasoningEffort = 'medium') {
+    const normalizedEffort = typeof reasoningEffort === 'string' ? reasoningEffort.trim() : ''
+    if (!normalizedEffort) {
+      throw new Error('Missing reasoning effort')
+    }
+
+    const currentSelection = this.getCurrentModelSelection()
+    if (!currentSelection?.model) {
+      throw new Error('Missing current Codex model')
+    }
+
+    return this.applyThreadModelSelection({
+      model: currentSelection.model,
+      modelProvider: currentSelection.modelProvider || readCodexDefaultModelProvider() || 'openai',
+      reasoningEffort: normalizedEffort
+    })
+  }
+
+  async setSessionModel() {
+    const modelRuntime = this.resolveModelRuntime()
+    return this.applyThreadModelSelection({
+      model: modelRuntime?.modelName || null,
+      modelProvider: modelRuntime?.modelProvider || null,
+      reasoningEffort: this.projectSettings?.effort || this.getCurrentModelSelection()?.reasoningEffort || 'medium'
+    })
   }
 
   async buildDeveloperInstructions() {
@@ -597,8 +808,10 @@ class CodexClient {
       threadParams.developerInstructions = developerInstructions
     }
 
-    const response = this.resumeThreadId
-      ? await this.request('thread/resume', {
+    let response = null
+    if (this.resumeThreadId) {
+      try {
+        response = await this.request('thread/resume', {
           threadId: this.resumeThreadId,
           cwd: threadParams.cwd,
           approvalPolicy: threadParams.approvalPolicy,
@@ -608,30 +821,31 @@ class CodexClient {
           persistExtendedHistory: threadParams.persistExtendedHistory,
           developerInstructions: threadParams.developerInstructions || null
         })
-      : await this.request('thread/start', threadParams)
+      } catch (error) {
+        if (!isMissingCodexThreadError(error)) {
+          throw error
+        }
+
+        logger.warn('[CodexClient] Resume thread missing, falling back to a new thread', {
+          sessionId: this.sessionId,
+          resumeThreadId: this.resumeThreadId,
+          error: error.message
+        })
+        this.resumeThreadId = null
+        this.currentThreadId = null
+      }
+    }
+
+    if (!response) {
+      response = await this.request('thread/start', threadParams)
+    }
 
     if (response?.thread?.id) {
-      const activeCodexAccountUsage =
-        threadParams.modelProvider === 'openai' ? resolveActiveCodexAccountUsage() : null
-
-      this.currentThreadId = response.thread.id
-      this.envInfo = applyCodexEnvInfoPatch({
-        ...this.envInfo,
-        session_id: response.thread.id,
+      this.updateThreadSelectionFromResponse(response, {
         model: response.model || modelRuntime?.modelName || null,
-        providerPid: this.getPid(),
-        rate_limits: activeCodexAccountUsage?.rateLimits || null
-      }, {
-        provider: 'codex',
-        providerPid: this.getPid()
+        modelProvider: response.modelProvider || threadParams.modelProvider || null,
+        reasoningEffort: response.reasoningEffort || this.projectSettings?.effort || null
       })
-      this.emit('env-info', this.envInfo)
-
-      if (threadParams.modelProvider === 'openai') {
-        this.startAccountUsageRefresh()
-      } else {
-        this.stopAccountUsageRefresh()
-      }
     }
   }
 
@@ -829,7 +1043,7 @@ class CodexClient {
     }
 
     const text = getTextFromUserMessage(message)
-    const result = await this.request('turn/start', {
+    const turnParams = {
       threadId: this.currentThreadId,
       input: [
         {
@@ -839,7 +1053,19 @@ class CodexClient {
         }
       ],
       approvalPolicy: this.mapPermissionModeToApprovalPolicy()
-    })
+    }
+
+    if (this.currentCollaborationMode) {
+      turnParams.collaborationMode = this.currentCollaborationMode
+    }
+
+    const modelSelection = this.getCurrentModelSelection()
+    if (modelSelection?.model) {
+      turnParams.model = modelSelection.model
+      turnParams.effort = modelSelection.reasoningEffort || 'medium'
+    }
+
+    const result = await this.request('turn/start', turnParams)
 
     this.currentTurnId = result?.turn?.id || this.currentTurnId
     return result
@@ -868,6 +1094,30 @@ class CodexClient {
     if (request?.subtype === 'set_permission_mode' && request.mode) {
       this.permissionMode = request.mode
       return
+    }
+
+    if ((request?.subtype === 'set_session_submodel' || request?.subtype === 'set_session_model') && request.model) {
+      await this.setSessionSubmodel(
+        String(request.model),
+        request.reasoningEffort || 'medium'
+      )
+      this.emit('system-notification', {
+        type: 'session-model-changed',
+        provider: 'codex',
+        model: String(request.model),
+        reasoningEffort: request.reasoningEffort || 'medium'
+      })
+      return
+    }
+
+    if (request?.subtype === 'set_session_effort' && request.reasoningEffort) {
+      const applied = await this.setSessionEffort(request.reasoningEffort || 'medium')
+      this.emit('system-notification', {
+        type: 'session-effort-changed',
+        provider: 'codex',
+        model: String(applied?.model || ''),
+        reasoningEffort: applied?.reasoningEffort || request.reasoningEffort || 'medium'
+      })
     }
   }
 
@@ -991,6 +1241,37 @@ class CodexClient {
     return response.json || null
   }
 
+  async listModels(options = {}) {
+    await this.ensureInitialized()
+
+    return this.request('model/list', {
+      includeHidden: options.includeHidden === true,
+      cursor: options.cursor ?? null,
+      limit: Number.isFinite(options.limit) ? Number(options.limit) : 100
+    })
+  }
+
+  async setDefaultModelConfig(model, reasoningEffort = 'medium') {
+    await this.ensureInitialized()
+
+    return this.request('config/batchWrite', {
+      edits: [
+        {
+          keyPath: 'model',
+          value: model || '',
+          mergeStrategy: 'upsert'
+        },
+        {
+          keyPath: 'model_reasoning_effort',
+          value: reasoningEffort || 'medium',
+          mergeStrategy: 'upsert'
+        }
+      ],
+      filePath: null,
+      expectedVersion: null
+    })
+  }
+
   request(method, params) {
     const id = `${Date.now()}_${++this.requestCounter}`
     const payload = { id, method, params }
@@ -1038,11 +1319,17 @@ class CodexClient {
 
   stop() {
     this.stopAccountUsageRefresh()
+    if (this.currentThreadId) {
+      this.resumeThreadId = this.currentThreadId
+    }
     if (this.process) {
       this.process.kill('SIGTERM')
       this.process = null
     }
     this.initialized = false
+    this.currentThreadId = null
+    this.currentTurnId = null
+    this.currentAssistantMessageId = null
     this.clearAuthTokenCache()
   }
 

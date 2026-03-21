@@ -71,37 +71,8 @@ export function useWorkspaceDialogs({
     showRenameDialog.value = false
   }
 
-  async function performCloseSession(session, sessionState) {
+  async function performCloseSession(session) {
     try {
-      if (sessionState?.isProcessing) {
-        for (let index = sessionState.messages.length - 1; index >= 0; index -= 1) {
-          const message = sessionState.messages[index]
-
-          if (message.isStreaming) {
-            message.isStreaming = false
-            if (message.startTime && !message.duration) {
-              message.duration = Date.now() - message.startTime
-            }
-          }
-
-          if (message.isExecuting) {
-            message.isExecuting = false
-            if (message.startTime && !message.duration) {
-              message.duration = Date.now() - message.startTime
-            }
-          }
-        }
-
-        sessionState.messages.push({
-          id: `interrupt-${Date.now()}`,
-          role: 'system',
-          content: '已中断',
-          timestamp: new Date()
-        })
-
-        sessionState.isProcessing = false
-      }
-
       await window.electronAPI.stopSessionRuntime({ sessionId: session.id })
       logger.info('[Workspace] Runtime process stopped for session:', session.id)
     } catch (error) {
@@ -117,7 +88,7 @@ export function useWorkspaceDialogs({
         title: '确认关闭',
         message: '会话正在处理中，关闭将中断当前操作。确定要关闭吗？',
         onConfirm: () => {
-          performCloseSession(session, sessionState)
+          performCloseSession(session)
           showConfirmDialog.value = false
         }
       }
@@ -125,7 +96,7 @@ export function useWorkspaceDialogs({
       return
     }
 
-    await performCloseSession(session, sessionState)
+    await performCloseSession(session)
   }
 
   async function handleStartSession(session) {
@@ -135,7 +106,6 @@ export function useWorkspaceDialogs({
         projectPath: store.currentProject?.path
       })
       logger.info('[Workspace] Runtime process started for session:', session.id)
-      await store.fetchRunningSessions()
     } catch (error) {
       logger.error('[Workspace] Failed to start runtime process:', { error: error.message })
       alert('启动运行时进程失败: ' + error.message)

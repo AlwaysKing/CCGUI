@@ -1,11 +1,12 @@
 <script setup>
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useAppStore } from '../../stores/useAppStore'
 import NewProjectDialog from './components/NewProjectDialog.vue'
 import SettingsDialog from '@/views/settings/SettingsDialog.vue'
 import { logger } from '../../utils/logger'
 import { useWelcomeProjects } from './hooks/useWelcomeProjects'
 import { useProjectDrop } from './hooks/useProjectDrop'
+import { useDialogStack } from '../../composables/useDialogStack'
 
 const store = useAppStore()
 const {
@@ -36,6 +37,8 @@ const {
   handleDrop,
   resetNewProjectDialog
 } = useProjectDrop(store, logger)
+
+useDialogStack(computed(() => showDeleteConfirm.value), cancelDelete)
 
 onMounted(async () => {
   await store.fetchProjects()
@@ -324,7 +327,7 @@ async function openProjectInFinder(event, project) {
     />
 
     <!-- Delete Project Confirmation Dialog -->
-    <div v-if="showDeleteConfirm" class="confirm-dialog-overlay" @click="cancelDelete">
+    <div v-if="showDeleteConfirm" class="confirm-dialog-overlay">
       <div class="confirm-dialog" @click.stop>
         <div class="confirm-dialog-content">
           <div class="confirm-dialog-icon">

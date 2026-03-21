@@ -3,6 +3,7 @@
  * DocumentEditDialog - 规范文档编辑对话框
  */
 import { ref, watch, computed } from 'vue'
+import { useDialogStack } from '../../../../composables/useDialogStack'
 
 const props = defineProps({
   visible: {
@@ -30,8 +31,7 @@ const loading = ref(false)
 // 是否编辑模式
 const isEditing = computed(() => !!props.document)
 
-// 监听 document 变化
-watch(() => props.document, (document) => {
+function syncFormData(document) {
   if (document) {
     formData.value = {
       name: document.name || '',
@@ -45,13 +45,29 @@ watch(() => props.document, (document) => {
       content: ''
     }
   }
+}
+
+// 监听 document 变化
+watch(() => props.document, (document) => {
+  syncFormData(document)
 }, { immediate: true })
+
+// 新建场景下 props.document 可能持续为 null，因此在弹窗打开时也要主动重置一次
+watch(() => props.visible, (visible) => {
+  if (!visible) {
+    return
+  }
+
+  syncFormData(props.document)
+})
 
 // 关闭对话框
 function handleClose() {
   emit('update:visible', false)
   emit('close')
 }
+
+useDialogStack(computed(() => props.visible), handleClose)
 
 // 保存
 function handleSave() {
@@ -69,7 +85,7 @@ function handleSave() {
 </script>
 
 <template>
-  <div v-if="visible" class="dialog-overlay" @click="handleClose">
+  <div v-if="visible" class="dialog-overlay">
     <div class="document-dialog" @click.stop>
       <div class="dialog-header">
         <h2>{{ isEditing ? '编辑规范文档' : '添加规范文档' }}</h2>

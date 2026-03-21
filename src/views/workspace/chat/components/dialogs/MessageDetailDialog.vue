@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { useDialogStack } from '../../../../../composables/useDialogStack'
 
 const props = defineProps({
   message: {
@@ -40,6 +41,8 @@ function close() {
   emit('close')
 }
 
+useDialogStack(computed(() => true), close)
+
 function stopPropagation(e) {
   e.stopPropagation()
 }
@@ -56,7 +59,7 @@ async function copyToClipboard(text) {
 </script>
 
 <template>
-  <div class="dialog-overlay" @click="close">
+  <div class="dialog-overlay">
     <div class="dialog-container" @click="stopPropagation">
       <div class="dialog-header">
         <h3 class="dialog-title">{{ dialogTitle }}</h3>
@@ -113,7 +116,7 @@ async function copyToClipboard(text) {
       </div>
 
       <div class="dialog-footer">
-        <span class="hint">按 Esc 或点击外部关闭</span>
+        <span class="hint">按 Esc 关闭</span>
       </div>
     </div>
   </div>

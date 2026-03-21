@@ -4,12 +4,28 @@
  * 显示权限模式切换、快速模式切换、上下文压缩等系统通知
  * 居中显示，不同类型使用不同颜色
  */
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 const props = defineProps({
   message: {
     type: Object,
     required: true
+  }
+})
+
+const now = ref(Date.now())
+let timer = null
+
+onMounted(() => {
+  timer = setInterval(() => {
+    now.value = Date.now()
+  }, 200)
+})
+
+onUnmounted(() => {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
   }
 })
 
@@ -26,7 +42,12 @@ const notificationTypeClass = computed(() => {
   if (notificationType === 'runtime-exit' || notificationType === 'turn-error') {
     return 'notification-error'
   }
-  if (notificationType === 'runtime-stopped') {
+  if (
+    notificationType === 'runtime-stopped' ||
+    notificationType === 'session-runtime-ready' ||
+    notificationType === 'session-config-applied' ||
+    notificationType === 'session-effort-changed'
+  ) {
     return 'notification-success'
   }
   return 'notification-warning'
@@ -35,6 +56,24 @@ const notificationTypeClass = computed(() => {
 // 通知内容
 const notificationContent = computed(() => {
   const { notificationType, data } = props.message
+  const providerLabel = data?.provider === 'codex' ? 'Codex' : 'Claude'
+  const effortLabelMap = {
+    low: '低',
+    medium: '中',
+    high: '高',
+    xhigh: '超高'
+  }
+  const changeTypeLabelMap = {
+    model: '模型供应商',
+    submodel: '模型',
+    effort: '思考力度'
+  }
+  const elapsedMs = Number.isFinite(data?.durationMs)
+    ? data.durationMs
+    : (data?.startedAt ? Math.max(0, now.value - data.startedAt) : null)
+  const elapsedText = elapsedMs !== null
+    ? `${(elapsedMs / 1000).toFixed(elapsedMs >= 10000 ? 0 : 1)} 秒`
+    : ''
 
   if (notificationType === 'permission-mode-change') {
     const modeNames = {
@@ -123,10 +162,66 @@ const notificationContent = computed(() => {
   }
 
   if (notificationType === 'runtime-stopped') {
+    if (data.reason === 'restart-for-config') {
+      return {
+        icon: '🔄',
+        title: `${providerLabel} 正在重新启动`,
+        description: `${providerLabel} 正在重新启动以应用新配置`
+      }
+    }
+
     return {
       icon: '⏸',
-      title: '运行时已停止',
-      description: data.message || '会话已手动停止'
+      title: `${providerLabel} 已停止运行`,
+      description: data.message || `${providerLabel} 已停止运行`
+    }
+  }
+
+  if (notificationType === 'session-runtime-starting') {
+    return {
+      icon: '🚀',
+      title: `${providerLabel} 正在启动`,
+      description: elapsedText ? `正在启动中，已用时 ${elapsedText}` : '正在启动中'
+    }
+  }
+
+  if (notificationType === 'session-runtime-restarting') {
+    return {
+      icon: '🔄',
+      title: `${providerLabel} 正在重启`,
+      description: elapsedText ? `正在重启以应用新配置，已用时 ${elapsedText}` : '正在重启以应用新配置'
+    }
+  }
+
+  if (notificationType === 'session-runtime-ready') {
+    const modelText = data.model || '系统'
+    const subModelText = data.subModel || '默认'
+    const effortText = effortLabelMap[data.effort] || data.effort || '默认'
+    return {
+      icon: '✅',
+      title: `${providerLabel} 启动完成`,
+      description: `供应商: ${providerLabel} 模型供应商: ${modelText} 模型: ${subModelText} 思考力度: ${effortText}${elapsedText ? ` 耗时: ${elapsedText}` : ''}`
+    }
+  }
+
+  if (notificationType === 'session-config-applied' || notificationType === 'session-effort-changed') {
+    const changeType = data.changeType || 'effort'
+    const modelText = data.model || '系统'
+    const subModelText = data.subModel || '默认'
+    const effortValue = typeof data.effort === 'string' ? data.effort : ''
+    const effortText = effortLabelMap[effortValue] || effortValue || '默认'
+    const iconMap = {
+      model: '✨',
+      submodel: '🧩',
+      effort: '🧠'
+    }
+    const title = changeType === 'effort'
+      ? '思考力度已切换'
+      : `${changeTypeLabelMap[changeType] || '配置'}已应用`
+    return {
+      icon: iconMap[changeType] || '🧠',
+      title,
+      description: `供应商: ${providerLabel} 模型供应商: ${modelText} 模型: ${subModelText} 思考力度: ${effortText}${elapsedText ? ` 耗时: ${elapsedText}` : ''}`
     }
   }
 
@@ -163,14 +258,20 @@ const notificationContent = computed(() => {
 <template>
   <div class="system-notification-wrapper">
     <div class="system-notification" :class="notificationTypeClass">
-      <span class="notification-icon">{{ notificationContent.icon }}</span>
+      <span class="notification-line" aria-hidden="true"></span>
       <div class="notification-content">
         <div class="notification-header">
-          <div class="notification-title">{{ notificationContent.title }}</div>
-          <div v-if="formattedTime" class="notification-time">{{ formattedTime }}</div>
+          <div class="notification-title">
+            <span class="notification-icon">{{ notificationContent.icon }}</span>
+            <span>{{ notificationContent.title }}</span>
+          </div>
         </div>
-        <div class="notification-description">{{ notificationContent.description }}</div>
+        <div class="notification-description">
+          {{ notificationContent.description }}
+          <span v-if="formattedTime" class="notification-time"> · {{ formattedTime }}</span>
+        </div>
       </div>
+      <span class="notification-line" aria-hidden="true"></span>
     </div>
   </div>
 </template>
@@ -180,87 +281,81 @@ const notificationContent = computed(() => {
   display: flex;
   justify-content: center;
   width: 100%;
-  margin: 8px 0;
+  margin: 10px 0;
 }
 
 .system-notification {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 16px;
-  background: linear-gradient(135deg, #422006 0%, #292524 100%);
-  border: 1px solid #854D0E;
-  border-left: 3px solid #F59E0B;
-  border-radius: var(--radius-lg);
-  min-width: 280px;
-  max-width: 80%;
-  font-size: var(--font-size-sm);
+  align-items: center;
+  gap: 12px;
+  width: min(100%, 820px);
+  color: #a1a1aa;
+  font-size: 12px;
 }
 
-/* 错误类型通知（红色系） */
-.system-notification.notification-error {
-  background: linear-gradient(135deg, #450A0A 0%, #292524 100%);
-  border-color: #991B1B;
-  border-left-color: #EF4444;
-}
-
-.system-notification.notification-error .notification-title {
-  color: #FCA5A5;
-}
-
-.system-notification.notification-error .notification-time {
-  color: #991B1B;
-}
-
-/* 成功类型通知（绿色系） */
-.system-notification.notification-success {
-  background: linear-gradient(135deg, #052e16 0%, #292524 100%);
-  border-color: #166534;
-  border-left-color: #10B981;
-}
-
-.system-notification.notification-success .notification-title {
-  color: #6EE7B7;
-}
-
-.system-notification.notification-success .notification-time {
-  color: #166534;
+.notification-line {
+  flex: 1;
+  min-width: 28px;
+  border-top: 1px dashed rgba(113, 113, 122, 0.42);
 }
 
 .notification-icon {
-  font-size: 16px;
+  font-size: 12px;
   line-height: 1;
-  flex-shrink: 0;
+  opacity: 0.8;
 }
 
 .notification-content {
-  flex: 1;
+  flex-shrink: 0;
+  max-width: min(70%, 720px);
   min-width: 0;
+  text-align: center;
 }
 
 .notification-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 4px;
+  justify-content: center;
+  margin-bottom: 2px;
 }
 
 .notification-title {
-  font-weight: var(--font-weight-medium);
-  color: #FCD34D;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #d4d4d8;
+  opacity: 0.72;
 }
 
 .notification-time {
-  font-size: var(--font-size-xs);
-  color: #854D0E;
-  flex-shrink: 0;
+  color: #71717a;
+  opacity: 0.62;
 }
 
 .notification-description {
-  color: #D4D4D4;
+  color: #f4f4f5;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.4;
+  line-height: 1.5;
+  opacity: 0.76;
+}
+
+.system-notification.notification-error .notification-title {
+  color: #fca5a5;
+}
+
+.system-notification.notification-error .notification-description {
+  color: #f4f4f5;
+}
+
+.system-notification.notification-success .notification-title {
+  color: #86efac;
+}
+
+.system-notification.notification-success .notification-description {
+  color: #f4f4f5;
 }
 </style>

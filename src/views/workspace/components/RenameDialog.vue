@@ -1,5 +1,6 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useDialogStack } from '../../../composables/useDialogStack'
 
 const props = defineProps({
   title: {
@@ -35,10 +36,12 @@ function handleConfirm() {
     emit('confirm', name.value.trim())
   }
 }
+
+useDialogStack(computed(() => true), () => emit('close'))
 </script>
 
 <template>
-  <div class="dialog-overlay" @click.self="emit('close')">
+  <div class="dialog-overlay">
     <div class="dialog">
       <div class="dialog-header">
         <h3>{{ title }}</h3>

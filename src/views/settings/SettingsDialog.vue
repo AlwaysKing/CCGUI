@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import ModelSettings from './components/ModelSettings.vue'
 import PromptSettings from './components/PromptSettings.vue'
 import TerminalSettings from './components/TerminalSettings.vue'
@@ -13,6 +13,7 @@ import DocumentEditDialog from './components/dialogs/DocumentEditDialog.vue'
 import ModelMappingDialog from './components/dialogs/ModelMappingDialog.vue'
 import { useSettingsNavigation } from './hooks/useSettingsNavigation'
 import { useSettingsData } from './hooks/useSettingsData'
+import { useDialogStack } from '../../composables/useDialogStack'
 
 const emit = defineEmits(['close', 'saved'])
 const {
@@ -107,10 +108,12 @@ onUnmounted(() => {
 function handleClose() {
   emit('close')
 }
+
+useDialogStack(computed(() => true), handleClose)
 </script>
 
 <template>
-  <div class="dialog-overlay" @click="handleClose">
+  <div class="dialog-overlay">
     <div class="settings-dialog" @click.stop>
       <div class="dialog-header">
         <h2>应用设置</h2>

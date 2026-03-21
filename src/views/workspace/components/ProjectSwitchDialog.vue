@@ -1,12 +1,15 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useAppStore } from '../../../stores/useAppStore'
+import { useDialogStack } from '../../../composables/useDialogStack'
 
 const props = defineProps({
   currentProjectId: String
 })
 
 const emit = defineEmits(['close', 'select', 'goHome'])
+
+useDialogStack(computed(() => true), () => emit('close'))
 
 const store = useAppStore()
 const searchQuery = ref('')
@@ -123,7 +126,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="dialog-overlay" @click.self="emit('close')">
+  <div class="dialog-overlay">
     <div class="dialog">
       <div class="dialog-header">
         <div class="header-left">

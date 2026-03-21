@@ -4,6 +4,7 @@
  * 用于选择各模型变量对应的具体模型卡片
  */
 import { ref, watch, computed } from 'vue'
+import { useDialogStack } from '../../../../composables/useDialogStack'
 import IconButton from '@/components/base/IconButton.vue'
 
 const props = defineProps({
@@ -84,6 +85,8 @@ function handleClose() {
   emit('close')
 }
 
+useDialogStack(computed(() => props.visible), handleClose)
+
 // 确认映射
 function handleConfirm() {
   // 构建映射结果
@@ -127,7 +130,7 @@ function clearAll() {
 </script>
 
 <template>
-  <div v-if="visible" class="dialog-overlay" @click="handleClose">
+  <div v-if="visible" class="dialog-overlay">
     <div class="mapping-dialog" @click.stop>
       <div class="dialog-header">
         <h2>模型映射配置</h2>

@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useDialogStack } from '../../../../composables/useDialogStack'
 
 function generateAccountId() {
   return Date.now().toString() + Math.random().toString(36).slice(2, 9)
@@ -79,6 +80,8 @@ function handleClose() {
   emit('close')
 }
 
+useDialogStack(computed(() => props.visible), handleClose)
+
 function handleSave() {
   emit('save', { ...formData.value })
   handleClose()
@@ -114,7 +117,7 @@ async function handleAutoLoad() {
 </script>
 
 <template>
-  <div v-if="visible" class="dialog-overlay" @click="handleClose">
+  <div v-if="visible" class="dialog-overlay">
     <div class="account-dialog" @click.stop>
       <div class="dialog-header">
         <h2>{{ dialogTitle }}</h2>

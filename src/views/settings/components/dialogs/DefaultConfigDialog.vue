@@ -3,6 +3,7 @@
  * DefaultConfigDialog - 默认配置编辑对话框
  */
 import { ref, watch, computed } from 'vue'
+import { useDialogStack } from '../../../../composables/useDialogStack'
 
 const props = defineProps({
   visible: {
@@ -74,6 +75,8 @@ function handleClose() {
   emit('close')
 }
 
+useDialogStack(computed(() => props.visible), handleClose)
+
 // 保存
 function handleSave() {
   if (!formData.value.apiUrl) {
@@ -87,7 +90,7 @@ function handleSave() {
 </script>
 
 <template>
-  <div v-if="visible" class="dialog-overlay" @click="handleClose">
+  <div v-if="visible" class="dialog-overlay">
     <div class="default-config-dialog" @click.stop>
       <div class="dialog-header">
         <h2>编辑默认配置</h2>
@@ -163,7 +166,7 @@ function handleSave() {
         <div class="form-item">
           <label class="form-label">
             思考力度
-            <span class="label-hint">控制模型的思考深度</span>
+            <span class="label-hint">控制模型的思考力度</span>
           </label>
           <select v-model="formData.effort" class="form-select">
             <option v-for="option in effortOptions" :key="option.value" :value="option.value">

@@ -3,6 +3,7 @@
  * ModelEditDialog - 模型编辑对话框
  */
 import { ref, watch, computed } from 'vue'
+import { useDialogStack } from '../../../../composables/useDialogStack'
 
 const props = defineProps({
   visible: {
@@ -128,6 +129,8 @@ function handleClose() {
   emit('close')
 }
 
+useDialogStack(computed(() => props.visible), handleClose)
+
 // 保存
 function handleSave() {
   if (!formData.value.friendlyName || !formData.value.apiUrl || !formData.value.authToken) {
@@ -144,7 +147,7 @@ function handleSave() {
 </script>
 
 <template>
-  <div v-if="visible" class="dialog-overlay" @click="handleClose">
+  <div v-if="visible" class="dialog-overlay">
     <div class="model-dialog" @click.stop>
       <div class="dialog-header">
         <h2>{{ dialogTitle }}</h2>

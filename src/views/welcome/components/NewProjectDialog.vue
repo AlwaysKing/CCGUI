@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAppStore } from '../../../stores/useAppStore'
 import { getProviderModels } from '../../../utils/provider-models'
+import { useDialogStack } from '../../../composables/useDialogStack'
 
 const store = useAppStore()
 
@@ -36,6 +37,8 @@ const systemPrompts = ref([])
 const systemDocuments = ref([])
 
 const emit = defineEmits(['close', 'created'])
+
+useDialogStack(computed(() => true), () => emit('close'))
 
 // 计算属性：可用的模型列表（已激活的）
 const availableModels = computed(() => {
@@ -227,7 +230,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="dialog-overlay" @click.self="emit('close')">
+  <div class="dialog-overlay">
     <div class="dialog">
       <div class="dialog-header">
         <h3>新建项目</h3>
@@ -274,7 +277,7 @@ onMounted(() => {
             <div v-if="modelMode === 'custom'" class="model-select-wrapper">
               <div class="select-row">
                 <select v-model="selectedModelId" class="select-input" @change="onModelChange">
-                  <option value="" disabled>-- 选择模型配置 --</option>
+                  <option value="" disabled>-- 选择模型供应商配置 --</option>
                   <option v-for="model in availableModels" :key="model.id" :value="model.id">
                     {{ model.friendlyName || model.id }}
                   </option>
@@ -283,7 +286,7 @@ onMounted(() => {
               <!-- 子模型选择 -->
               <div v-if="selectedModelId && availableModelCards.length > 0" class="model-cards-wrapper">
                 <div class="cards-header">
-                  <span class="cards-label">具体模型</span>
+                  <span class="cards-label">模型</span>
                   <div class="segment-control">
                     <button
                       type="button"
@@ -320,7 +323,7 @@ onMounted(() => {
                 </div>
               </div>
               <p v-if="availableModels.length === 0" class="empty-hint">
-                暂无可用模型，请先在设置中添加并激活模型
+                暂无可用模型供应商，请先在设置中添加并激活模型供应商
               </p>
             </div>
           </div>

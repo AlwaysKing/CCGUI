@@ -1,14 +1,19 @@
 <script setup>
+import { computed } from 'vue'
+import { useDialogStack } from '../../../composables/useDialogStack'
+
 defineProps({
   projectName: String,
   hasRunningSessions: Boolean
 })
 
 const emit = defineEmits(['close', 'replace', 'newWindow'])
+
+useDialogStack(computed(() => true), () => emit('close'))
 </script>
 
 <template>
-  <div class="dialog-overlay" @click.self="emit('close')">
+  <div class="dialog-overlay">
     <div class="dialog">
       <div class="dialog-header">
         <h3>切换项目</h3>

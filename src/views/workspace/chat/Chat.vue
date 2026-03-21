@@ -5,6 +5,7 @@ import { useAppStore } from '../../../stores/useAppStore'
 import { logger } from '../../../utils/logger'
 import { barkProvider } from '../../../utils/notifier'
 import { useSessionModelControls } from './composables/useSessionModelControls'
+import { useDialogStack } from '../../../composables/useDialogStack'
 
 // 引入对话框组件
 import PermissionDialog from './components/dialogs/PermissionDialog.vue'
@@ -1138,6 +1139,8 @@ function cancelRewind() {
   rewindTargetMessageIndex.value = null
 }
 
+useDialogStack(computed(() => showRewindDialog.value), cancelRewind)
+
 // 处理创建分支 - 接收 MessageList 发出的事件对象
 async function handleFork({ messageId, messageIndex }) {
 
@@ -1469,7 +1472,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
   <!-- Rewind Confirmation Dialog -->
   <Teleport to="body">
-    <div v-if="showRewindDialog" class="rewind-dialog-overlay" @click.self="cancelRewind">
+    <div v-if="showRewindDialog" class="rewind-dialog-overlay">
       <div class="rewind-dialog">
         <div class="rewind-dialog-header">
           <div class="rewind-dialog-icon">↩️</div>

@@ -101,6 +101,17 @@ const showRewindBtn = computed(() => {
 
 // 是否因为前面的用户消息回答被折叠而应该隐藏
 const shouldHide = computed(() => {
+  if (
+    props.message.role === 'status' ||
+    props.message.role === 'task_complete'
+  ) {
+    return false
+  }
+  if (props.message.role === 'system_notification') {
+    return props.message.scope !== 'session'
+      ? getResponseCollapseState(props.allMessages, props.messageIndex).collapsed
+      : false
+  }
   if (props.message.role === 'user') return false
   const { collapsed } = getResponseCollapseState(props.allMessages, props.messageIndex)
   return collapsed
@@ -189,6 +200,12 @@ const isStreaming = computed(() => {
 // 是否显示思考过程
 const showThinking = computed(() => {
   return props.message.hasThinking && props.message.thinking
+})
+
+const isPlainSystemMessage = computed(() => {
+  return props.message.role === 'system' &&
+    props.message.subtype !== 'rewind-notice' &&
+    props.message.subtype !== 'interrupt'
 })
 
 // 思考过程是否折叠
@@ -432,6 +449,17 @@ onUnmounted(() => {
             :copied-message-index="copiedMessageIndex"
             @copyContent="copyMessageContent"
           />
+        </div>
+      </template>
+
+      <!-- Plain system 消息 -->
+      <template v-else-if="isPlainSystemMessage">
+        <div class="system-inline-message">
+          <span class="system-inline-line" aria-hidden="true"></span>
+          <div class="system-inline-text">
+            {{ message.content }}
+          </div>
+          <span class="system-inline-line" aria-hidden="true"></span>
         </div>
       </template>
 
@@ -809,6 +837,32 @@ onUnmounted(() => {
 .message-content.status-content {
   grid-column: 1 / -1;
   text-align: center;
+}
+
+.system-inline-message {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 4px 0 2px;
+  color: #71717A;
+}
+
+.system-inline-line {
+  flex: 1;
+  min-width: 24px;
+  border-top: 1px dashed rgba(113, 113, 122, 0.45);
+}
+
+.system-inline-text {
+  flex-shrink: 0;
+  max-width: min(70%, 720px);
+  font-size: 12px;
+  line-height: 1.55;
+  color: #A1A1AA;
+  text-align: center;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .message-text {

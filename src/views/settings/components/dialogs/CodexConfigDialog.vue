@@ -1,5 +1,7 @@
 <script setup>
 import { ref, watch } from 'vue'
+import { computed } from 'vue'
+import { useDialogStack } from '../../../../composables/useDialogStack'
 
 const props = defineProps({
   visible: {
@@ -56,6 +58,8 @@ function handleClose() {
   emit('close')
 }
 
+useDialogStack(computed(() => props.visible), handleClose)
+
 function handleSave() {
   emit('save', { ...formData.value })
   handleClose()
@@ -63,7 +67,7 @@ function handleSave() {
 </script>
 
 <template>
-  <div v-if="visible" class="dialog-overlay" @click="handleClose">
+  <div v-if="visible" class="dialog-overlay">
     <div class="codex-config-dialog" @click.stop>
       <div class="dialog-header">
         <h2>编辑 Codex 配置</h2>

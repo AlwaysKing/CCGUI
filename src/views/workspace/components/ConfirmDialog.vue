@@ -1,4 +1,7 @@
 <script setup>
+import { computed } from 'vue'
+import { useDialogStack } from '../../../composables/useDialogStack'
+
 defineProps({
   title: {
     type: String,
@@ -23,10 +26,12 @@ defineProps({
 })
 
 const emit = defineEmits(['confirm', 'cancel'])
+
+useDialogStack(computed(() => true), () => emit('cancel'))
 </script>
 
 <template>
-  <div class="dialog-overlay" @click.self="emit('cancel')">
+  <div class="dialog-overlay">
     <div class="dialog">
       <div class="dialog-header">
         <h3>{{ title }}</h3>

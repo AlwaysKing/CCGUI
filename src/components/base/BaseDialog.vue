@@ -2,7 +2,8 @@
 /**
  * BaseDialog - 统一对话框基础组件
  */
-import { watch, onMounted, onUnmounted } from 'vue'
+import { computed } from 'vue'
+import { useDialogStack } from '../../composables/useDialogStack'
 
 const props = defineProps({
   modelValue: {
@@ -23,7 +24,7 @@ const props = defineProps({
   },
   closeOnClickOverlay: {
     type: Boolean,
-    default: true
+    default: false
   }
 })
 
@@ -34,31 +35,15 @@ function close() {
   emit('close')
 }
 
-function handleOverlayClick() {
-  if (props.closeOnClickOverlay) {
-    close()
-  }
-}
-
-function handleEscape(event) {
-  if (event.key === 'Escape' && props.modelValue && props.closable) {
-    close()
-  }
-}
-
-onMounted(() => {
-  document.addEventListener('keydown', handleEscape)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('keydown', handleEscape)
+useDialogStack(computed(() => props.modelValue), close, {
+  closable: computed(() => props.closable)
 })
 </script>
 
 <template>
   <Teleport to="body">
     <Transition name="dialog">
-      <div v-if="modelValue" class="dialog-overlay" @click.self="handleOverlayClick">
+      <div v-if="modelValue" class="dialog-overlay">
         <div class="dialog-container" :style="{ maxWidth: width }">
           <!-- 头部 -->
           <div v-if="title || $slots.header || closable" class="dialog-header">

@@ -264,11 +264,11 @@ const notificationContent = computed(() => {
           <div class="notification-title">
             <span class="notification-icon">{{ notificationContent.icon }}</span>
             <span>{{ notificationContent.title }}</span>
+            <span v-if="formattedTime" class="notification-time">· {{ formattedTime }}</span>
           </div>
         </div>
         <div class="notification-description">
           {{ notificationContent.description }}
-          <span v-if="formattedTime" class="notification-time"> · {{ formattedTime }}</span>
         </div>
       </div>
       <span class="notification-line" aria-hidden="true"></span>

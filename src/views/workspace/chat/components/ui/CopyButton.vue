@@ -45,7 +45,8 @@ const emit = defineEmits(['copy'])
   border: none;
   color: #71717A;
   cursor: pointer;
-  padding: 4px;
+  padding: 0;
+  margin: 0;
   border-radius: 4px;
   transition: all 0.15s;
   display: flex;

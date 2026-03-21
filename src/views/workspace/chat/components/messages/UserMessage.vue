@@ -19,6 +19,10 @@ const props = defineProps({
   copiedMessageIndex: {
     type: Number,
     default: -1
+  },
+  chatTheme: {
+    type: Object,
+    default: () => ({})
   }
 })
 
@@ -33,9 +37,9 @@ function copyContent() {
 </script>
 
 <template>
-  <div class="message-user-container">
+  <div class="message-user-container" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]">
     <div class="message-content user-content">
-      <div class="message-text">
+      <div class="message-text" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]">
         <CopyButton
           :is-copied="isCopied"
           @copy="copyContent"
@@ -69,6 +73,13 @@ function copyContent() {
   white-space: pre-wrap;
   background: #3F3F46;
   color: #E4E4E7;
+}
+
+.message-text.surface-ghost {
+  padding: 0;
+  background: transparent;
+  color: #E4E4E7;
+  border-radius: 0;
 }
 
 /* 复制按钮定位到右上角 */

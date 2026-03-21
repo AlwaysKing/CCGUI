@@ -1,8 +1,10 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import CollapseToggle from '../ui/CollapseToggle.vue'
+import { useFileBrowserStore } from '../../../../../stores/useFileBrowserStore'
 
 const emit = defineEmits(['toggle-collapse'])
+const fileBrowserStore = useFileBrowserStore()
 
 // 检测是否为空的 old_string（文件末尾添加内容）
 const isAddOperation = computed(() => {
@@ -163,10 +165,16 @@ const props = defineProps({
   rawMessages: {
     type: Array,
     default: () => []
+  },
+  chatTheme: {
+    type: Object,
+    default: () => ({})
   }
 })
 
 const isExpanded = computed(() => !props.collapsed)
+const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
+const isFloatingStatus = computed(() => props.chatTheme?.statusStyle === 'floating')
 
 // 合并部分消息中的 tool_input
 const mergedToolInput = computed(() => {
@@ -371,6 +379,49 @@ const formatFilePath = (filePath) => {
   return filePath
 }
 
+const toFiniteNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const formatReadRange = (input = {}) => {
+  const startLine = toFiniteNumber(
+    input.start_line ??
+    input.startLine ??
+    input.line_start ??
+    input.lineStart ??
+    input.from_line ??
+    input.fromLine
+  )
+  const endLine = toFiniteNumber(
+    input.end_line ??
+    input.endLine ??
+    input.line_end ??
+    input.lineEnd ??
+    input.to_line ??
+    input.toLine
+  )
+
+  if (startLine !== null && endLine !== null) {
+    return `(${startLine}-${endLine})`
+  }
+
+  const offset = toFiniteNumber(input.offset ?? input.line_offset ?? input.lineOffset)
+  const limit = toFiniteNumber(input.limit ?? input.line_limit ?? input.lineLimit)
+  if (offset !== null && limit !== null && limit > 0) {
+    const normalizedStart = offset <= 0 ? 1 : offset
+    return `(${normalizedStart}-${normalizedStart + limit - 1})`
+  }
+
+  const singleLine = toFiniteNumber(input.line ?? input.lineNumber)
+  if (singleLine !== null) {
+    return `(${singleLine})`
+  }
+
+  return ''
+}
+
 // 折叠时显示的精简摘要
 const collapsedSummary = computed(() => {
   const input = mergedToolInput.value
@@ -385,7 +436,10 @@ const collapsedSummary = computed(() => {
     case 'Read':
       // 显示文件路径和描述（如果有）
       const readFilePath = formatFilePath(input.file_path)
-      const readSummary = input.description ? `${readFilePath}    ${input.description}` : readFilePath
+      const readRange = formatReadRange(input)
+      const readSummary = input.description
+        ? `${readFilePath}${readRange ? ` ${readRange}` : ''}    ${input.description}`
+        : `${readFilePath}${readRange ? ` ${readRange}` : ''}`
       return readSummary
     case 'Write':
       // 显示文件路径和统计信息
@@ -473,6 +527,95 @@ const collapsedSummary = computed(() => {
   }
 })
 
+const displayCollapsedSummary = computed(() => {
+  if (!collapsedSummary.value) return ''
+  if (!isTextStyle.value) return collapsedSummary.value
+  const label = primaryContent.value?.label || props.toolName
+  return `${label}: ${collapsedSummary.value}`
+})
+
+const textStyleLabel = computed(() => {
+  return primaryContent.value?.label || props.toolName
+})
+
+const textStyleSummary = computed(() => {
+  const input = mergedToolInput.value || {}
+
+  switch (props.toolName) {
+    case 'Edit':
+    case 'Write':
+    case 'Read':
+      return previewFileName.value || formatFilePath(input.file_path || input.path || '')
+    case 'ApplyPatch':
+      return Array.isArray(input.changes) && input.changes.length ? `${input.changes.length} 处变更` : ''
+    case 'Bash':
+      return input.command || ''
+    case 'Grep':
+      return input.pattern || (input.path ? formatFilePath(input.path) : '')
+    case 'Glob':
+      return input.pattern || ''
+    default:
+      return typeof collapsedSummary.value === 'string'
+        ? collapsedSummary.value.replace(/<br\s*\/?>/gi, ' ').trim()
+        : ''
+  }
+})
+
+const textStyleMeta = computed(() => {
+  const input = mergedToolInput.value || {}
+
+  switch (props.toolName) {
+    case 'Read':
+      return formatReadRange(input)
+    case 'Write':
+      return input.content ? `(+${input.content.split('\n').length})` : ''
+    case 'Edit':
+      if (isAddOperation.value) {
+        return `(+${(input.new_string || '').split('\n').length})`
+      }
+      if (isDeleteOperation.value) {
+        return `(-${(input.old_string || '').split('\n').length})`
+      }
+      if (input.old_string || input.new_string) {
+        return `(+${(input.new_string || '').split('\n').length} -${(input.old_string || '').split('\n').length})`
+      }
+      return ''
+    default:
+      return ''
+  }
+})
+
+const previewFilePath = computed(() => {
+  const input = mergedToolInput.value || {}
+
+  switch (props.toolName) {
+    case 'Edit':
+    case 'Read':
+    case 'Write':
+      return input.file_path || input.path || ''
+    default:
+      return ''
+  }
+})
+
+const previewFileName = computed(() => {
+  const filePath = previewFilePath.value
+  if (!filePath) return ''
+  const normalized = String(filePath).replace(/\\/g, '/')
+  return normalized.split('/').pop() || normalized
+})
+
+const showTextStyleSummary = computed(() => {
+  return !isExpanded.value && !!textStyleSummary.value
+})
+
+const textStyleStatus = computed(() => {
+  if (props.isExecuting) return 'executing'
+  if (props.isError) return 'error'
+  if (props.result) return 'success'
+  return ''
+})
+
 // 格式化结果显示
 const formattedResult = computed(() => {
   if (!props.result) return null
@@ -484,8 +627,6 @@ function toggleExpand() {
 }
 
 // 复制功能
-import { ref } from 'vue'
-
 const copiedType = ref('') // 'header' | 'description' | 'content' | 'result'
 const copiedToolName = ref('')
 
@@ -537,22 +678,60 @@ async function copyResult() {
     await copyToClipboard(formattedResult.value, 'result')
   }
 }
+
+async function handlePreviewFile(event) {
+  if (!previewFilePath.value) return
+  event?.stopPropagation()
+  try {
+    await fileBrowserStore.previewFile(previewFilePath.value)
+  } catch (error) {
+    console.error('预览文件失败:', error)
+  }
+}
 </script>
 
 <template>
   <div class="tool-use-message-wrapper">
-    <div class="tool-use-card" :class="{ error: isError, executing: isExecuting, collapsed: !isExpanded }">
+    <div class="tool-use-card" :class="{ error: isError, executing: isExecuting, collapsed: !isExpanded, 'text-style': isTextStyle }">
     <div class="tool-header" @click="toggleExpand">
       <div class="tool-info">
-        <span class="tool-icon">{{ toolIcon }}</span>
-        <span class="tool-name">{{ toolName }}</span>
+        <template v-if="isTextStyle">
+          <span class="tool-name text-style-label">{{ textStyleLabel }}</span>
+          <CollapseToggle :collapsed="!isExpanded" @toggle="toggleExpand" />
+          <button
+            v-if="showTextStyleSummary && previewFileName"
+            class="text-style-summary text-style-file"
+            type="button"
+            @click.stop="handlePreviewFile"
+          >
+            {{ textStyleSummary }}
+          </button>
+          <span v-else-if="showTextStyleSummary && textStyleSummary" class="text-style-summary">{{ textStyleSummary }}</span>
+          <span v-if="showTextStyleSummary && textStyleMeta" class="text-style-meta">{{ textStyleMeta }}</span>
+          <span v-if="textStyleStatus" class="text-style-status" :class="`is-${textStyleStatus}`" aria-hidden="true">
+            <svg v-if="textStyleStatus === 'success'" viewBox="0 0 12 12" fill="none">
+              <path d="M2.2 6.2L4.7 8.7L9.8 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <svg v-else-if="textStyleStatus === 'error'" viewBox="0 0 12 12" fill="none">
+              <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+            </svg>
+            <span v-else class="status-spinner"></span>
+          </span>
+        </template>
+        <template v-else>
+          <span class="tool-icon">{{ toolIcon }}</span>
+          <span class="tool-name">{{ toolName }}</span>
+        </template>
         <!-- 部分消息状态指示器 - 只在工具正在执行且没有输入数据时显示 -->
         <span v-if="isPartial && isExecuting" class="partial-status">
           <span>⏳ 等待数据...</span>
         </span>
-        <span v-if="isExecuting" class="status-badge executing">执行中...</span>
-        <span v-else-if="isError" class="status-badge error">失败</span>
-        <span v-else-if="result" class="status-badge success">完成</span>
+        <span v-if="!isTextStyle && isExecuting && !isFloatingStatus" class="status-badge executing">执行中...</span>
+        <span v-else-if="!isTextStyle && isExecuting && isFloatingStatus" class="status-badge inline-spinner" aria-hidden="true">
+          <span class="status-spinner"></span>
+        </span>
+        <span v-else-if="!isTextStyle && isError" class="status-badge error">失败</span>
+        <span v-else-if="!isTextStyle && result" class="status-badge success">完成</span>
       </div>
       <div class="header-actions">
         <!-- 复制按钮 -->
@@ -565,11 +744,11 @@ async function copyResult() {
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
         </button>
-        <CollapseToggle :collapsed="!isExpanded" @toggle="toggleExpand" />
+        <CollapseToggle v-if="!isTextStyle" :collapsed="!isExpanded" @toggle="toggleExpand" />
       </div>
     </div>
     <!-- 折叠时显示精简摘要 -->
-    <div v-if="!isExpanded && collapsedSummary" class="collapsed-summary-line" :class="{ 'todo-collapsed': props.toolName === 'TodoWrite' }" @click="toggleExpand" v-html="collapsedSummary">
+    <div v-if="!isTextStyle && !isExpanded && displayCollapsedSummary" class="collapsed-summary-line" :class="{ 'todo-collapsed': props.toolName === 'TodoWrite' }" @click="toggleExpand" v-html="displayCollapsedSummary">
     </div>
 
     <div v-if="isExpanded" class="tool-body">
@@ -834,14 +1013,25 @@ async function copyResult() {
   max-width: 70%;
 }
 
+.tool-use-message-wrapper:has(.tool-use-card.text-style) {
+  margin: 0;
+}
+
 .tool-use-card {
   background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
   border: 1px solid #3B82F6;
   border-left: 3px solid #3B82F6;
   border-radius: 8px;
   overflow: hidden;
-  margin: 8px 0;
+  margin: 0;
   max-width: 100%;
+}
+
+.tool-use-card.text-style {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  margin: 0;
 }
 
 .tool-use-card.error {
@@ -873,8 +1063,17 @@ async function copyResult() {
   min-width: 0;
 }
 
+.tool-use-card.text-style .tool-header {
+  padding: 0;
+  background: transparent;
+}
+
 .tool-header:hover {
   background: #2D2D30;
+}
+
+.tool-use-card.text-style .tool-header:hover {
+  background: transparent;
 }
 
 .tool-info {
@@ -895,6 +1094,92 @@ async function copyResult() {
   font-weight: 600;
   color: #E4E4E7;
   flex-shrink: 0;
+}
+
+.tool-use-card.text-style .tool-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: #C4C7CF;
+}
+
+.text-style-label {
+  flex-shrink: 0;
+}
+
+.text-style-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8B93A7;
+  font-size: 12px;
+}
+
+.text-style-meta {
+  flex-shrink: 0;
+  color: #6B7280;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}
+
+.text-style-file {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: #60A5FA;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: none;
+}
+
+.text-style-file:hover {
+  color: #93C5FD;
+  text-decoration: underline;
+}
+
+.text-style-status {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.text-style-status svg {
+  width: 12px;
+  height: 12px;
+}
+
+.text-style-status.is-success {
+  color: #8B93A7;
+}
+
+.text-style-status.is-error {
+  color: #F87171;
+}
+
+.text-style-status.is-executing {
+  color: #94A3B8;
+}
+
+.status-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.35px solid rgba(148, 163, 184, 0.28);
+  border-top-color: currentColor;
+  animation: tool-status-spin 0.9s linear infinite;
+}
+
+@keyframes tool-status-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 部分消息状态指示器样式 */
@@ -927,8 +1212,21 @@ async function copyResult() {
   background: rgba(59, 130, 246, 0.03);
 }
 
+.tool-use-card.text-style .collapsed-summary-line {
+  padding: 0 0 8px 24px;
+  border-top: none;
+  background: transparent;
+  color: #8B93A7;
+  font-family: inherit;
+}
+
 .collapsed-summary-line:hover {
   background: rgba(59, 130, 246, 0.06);
+}
+
+.tool-use-card.text-style .collapsed-summary-line:hover {
+  background: transparent;
+  color: #B4BCD0;
 }
 
 /* TodoWrite 折叠时允许多行显示 */
@@ -960,6 +1258,21 @@ async function copyResult() {
 .status-badge.success {
   background: #065F46;
   color: #6EE7B7;
+}
+
+.status-badge.inline-spinner {
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  background: transparent;
+  border: none;
+}
+
+.tool-use-card.text-style .status-badge {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  font-size: 11px;
 }
 
 .header-stats {
@@ -996,6 +1309,10 @@ async function copyResult() {
   gap: 8px;
 }
 
+.tool-use-card.text-style .header-actions {
+  gap: 4px;
+}
+
 .copy-btn {
   font-size: 12px;
   color: #71717A;
@@ -1029,6 +1346,11 @@ async function copyResult() {
 .tool-body {
   padding: 12px 14px;
   border-top: 1px solid #333;
+}
+
+.tool-use-card.text-style .tool-body {
+  padding: 0 0 10px 24px;
+  border-top: none;
 }
 
 .tool-section {
@@ -1115,6 +1437,13 @@ async function copyResult() {
   border-radius: 6px;
   font-size: 11px;
   line-height: 1.6;
+}
+
+.tool-use-card.text-style .section-content.description {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  color: #9CA3AF;
 }
 
 .section-content.code {

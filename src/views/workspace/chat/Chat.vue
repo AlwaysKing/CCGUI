@@ -6,6 +6,7 @@ import { logger } from '../../../utils/logger'
 import { barkProvider } from '../../../utils/notifier'
 import { useSessionModelControls } from './composables/useSessionModelControls'
 import { useDialogStack } from '../../../composables/useDialogStack'
+import { resolveSessionChatMessageTheme } from '../../../utils/chatMessageTheme'
 
 // 引入对话框组件
 import PermissionDialog from './components/dialogs/PermissionDialog.vue'
@@ -166,6 +167,14 @@ const notificationOptions = computed(() => [
     disabled: !appConfig.value?.settings?.barkUrl
   }
 ])
+
+const resolvedChatMessageTheme = computed(() => {
+  return resolveSessionChatMessageTheme(
+    appConfig.value?.settings || {},
+    projectConfig.value?.settings || {},
+    sessionConfig.value?.settings || {}
+  ).theme
+})
 
 function toPlainObject(value) {
   return value ? JSON.parse(JSON.stringify(value)) : {}
@@ -1377,6 +1386,7 @@ async function handleQuestionAnswer(requestId, answers) {
         :messages="messages"
         :working-directory="workingDirectory"
         :current-time="currentTime"
+        :chat-theme="resolvedChatMessageTheme"
         @message-click="handleMessageClick"
         @rewind="handleRewind"
         @fork="handleFork"

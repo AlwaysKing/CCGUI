@@ -2,6 +2,8 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { getProviderModels } from '../../../utils/provider-models'
 import { useDialogStack } from '../../../composables/useDialogStack'
+import ChatMessageThemeEditor from '@/components/chat/ChatMessageThemeEditor.vue'
+import { buildChatMessageThemeFromPreset, normalizeChatMessageTheme } from '@/utils/chatMessageTheme'
 
 const props = defineProps({
   visible: {
@@ -23,6 +25,9 @@ const modelMode = ref('system')
 const modelCardMode = ref('default')
 const promptsMode = ref('system')
 const documentsMode = ref('system')
+const chatMessageThemeMode = ref('app')
+const chatMessageThemePreset = ref('classic')
+const chatMessageTheme = ref(buildChatMessageThemeFromPreset('classic'))
 
 // 选择的配置
 const selectedModelId = ref(null)
@@ -132,6 +137,11 @@ async function loadProjectConfig() {
         documentsMode.value = savedDocumentMode
         selectedDocumentIds.value = []
       }
+
+      const savedChatThemeMode = settings.chatMessageThemeMode || 'app'
+      chatMessageThemeMode.value = savedChatThemeMode === 'preset' ? 'custom' : savedChatThemeMode
+      chatMessageThemePreset.value = settings.chatMessageThemePreset || 'classic'
+      chatMessageTheme.value = normalizeChatMessageTheme(settings.chatMessageTheme || {}, chatMessageThemePreset.value)
     }
   } catch (e) {
     console.error('Failed to load project config:', e)
@@ -194,7 +204,10 @@ async function handleSave() {
       promptMode: promptsMode.value,
       promptIds: promptsMode.value === 'custom' ? [...selectedPromptIds.value] : [],
       documentMode: documentsMode.value,
-      documentIds: documentsMode.value === 'custom' ? [...selectedDocumentIds.value] : []
+      documentIds: documentsMode.value === 'custom' ? [...selectedDocumentIds.value] : [],
+      chatMessageThemeMode: chatMessageThemeMode.value,
+      chatMessageThemePreset: chatMessageThemeMode.value === 'custom' ? chatMessageThemePreset.value : null,
+      chatMessageTheme: chatMessageThemeMode.value === 'custom' ? { ...chatMessageTheme.value } : {}
     }
 
     await window.electronAPI.updateProjectConfig({
@@ -418,6 +431,29 @@ onMounted(() => {
               <p v-else class="empty-hint">暂无规范文档</p>
             </div>
           </div>
+
+          <div class="config-section">
+            <label class="config-label">消息主题</label>
+            <div class="radio-group">
+              <label class="radio-item">
+                <input type="radio" v-model="chatMessageThemeMode" value="app" />
+                <span>系统</span>
+              </label>
+              <label class="radio-item">
+                <input type="radio" v-model="chatMessageThemeMode" value="custom" />
+                <span>自定义</span>
+              </label>
+            </div>
+            <div v-if="chatMessageThemeMode === 'custom'" class="config-content">
+              <ChatMessageThemeEditor
+                :show-preview="false"
+                :preset-key="chatMessageThemePreset"
+                :theme-config="chatMessageTheme"
+                @update:preset-key="chatMessageThemePreset = $event; chatMessageTheme = buildChatMessageThemeFromPreset($event)"
+                @update:theme-config="chatMessageTheme = $event"
+              />
+            </div>
+          </div>
         </template>
       </div>
 
@@ -547,6 +583,18 @@ onMounted(() => {
   background: #1E1E1E;
   border-radius: 6px;
   border: 1px solid #3F3F46;
+}
+
+.field-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #6B7280;
+}
+
+.config-divider {
+  height: 1px;
+  margin: 24px 0 20px;
+  background: #3F3F46;
 }
 
 .model-select-wrapper {

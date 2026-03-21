@@ -6,6 +6,7 @@
 import CopyButton from '../ui/CopyButton.vue'
 import StatusBadge from '../ui/StatusBadge.vue'
 import CollapseToggle from '../ui/CollapseToggle.vue'
+import { computed } from 'vue'
 
 const props = defineProps({
   message: {
@@ -27,10 +28,21 @@ const props = defineProps({
   copiedMessageIndex: {
     type: Number,
     default: -1
+  },
+  chatTheme: {
+    type: Object,
+    default: () => ({})
   }
 })
 
 const emit = defineEmits(['toggleCollapse', 'copyContent', 'switchTab'])
+const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
+const collapsedSummaryText = computed(() => {
+  const firstQuestion = props.message.questions?.[0]
+  if (!firstQuestion) return '等待回答'
+  const answer = firstQuestion.selectedAnswer || '未选择'
+  return `${firstQuestion.header}: ${answer}`
+})
 
 // 检查选项是否被选中
 function isOptionSelected(question, optionLabel) {
@@ -65,16 +77,23 @@ function switchTab(tabIndex) {
   <div class="question-message-wrapper">
     <div
       class="question-message"
-      :class="{ 'answer-mismatch': message.resultReceived && !message.answersConsistent }"
+      :class="{ 'answer-mismatch': message.resultReceived && !message.answersConsistent, 'text-style': isTextStyle }"
     >
       <!-- Header with collapse button -->
       <div class="question-message-header" @click="toggleCollapse">
         <div class="question-title">
-          <span class="question-icon">❓</span>
-          <span class="question-count" v-if="message.questions && message.questions.length > 1">{{ message.questions.length }} 个问题</span>
-          <span class="question-count" v-else>问答</span>
-          <StatusBadge v-if="message.resultReceived && message.answersConsistent" type="success">答案已确认</StatusBadge>
-          <StatusBadge v-else-if="message.resultReceived && !message.answersConsistent" type="warning">答案不一致</StatusBadge>
+          <template v-if="isTextStyle">
+            <span class="question-count text-style-label">问答</span>
+            <CollapseToggle :collapsed="isCollapsed" @toggle="toggleCollapse" />
+            <span class="text-style-summary">{{ collapsedSummaryText }}</span>
+          </template>
+          <template v-else>
+            <span class="question-icon">❓</span>
+            <span class="question-count" v-if="message.questions && message.questions.length > 1">{{ message.questions.length }} 个问题</span>
+            <span class="question-count" v-else>问答</span>
+            <StatusBadge v-if="message.resultReceived && message.answersConsistent" type="success">答案已确认</StatusBadge>
+            <StatusBadge v-else-if="message.resultReceived && !message.answersConsistent" type="warning">答案不一致</StatusBadge>
+          </template>
         </div>
         <div class="header-actions">
           <CopyButton
@@ -83,12 +102,12 @@ function switchTab(tabIndex) {
             title="复制问答内容"
             @copy="copyContent"
           />
-          <CollapseToggle :collapsed="isCollapsed" @toggle="toggleCollapse" />
+          <CollapseToggle v-if="!isTextStyle" :collapsed="isCollapsed" @toggle="toggleCollapse" />
         </div>
       </div>
 
       <!-- Collapsed view: show only answers -->
-      <div v-if="isCollapsed" class="collapsed-answers">
+      <div v-if="isCollapsed && !isTextStyle" class="collapsed-answers">
         <div
           v-for="(q, qIdx) in message.questions"
           :key="qIdx"
@@ -100,7 +119,7 @@ function switchTab(tabIndex) {
       </div>
 
       <!-- Expanded view: show full content -->
-      <template v-else>
+      <template v-if="!isCollapsed">
         <!-- Tab Headers (only show if multiple questions) -->
         <div v-if="message.questions && message.questions.length > 1" class="question-tab-headers">
           <button
@@ -203,6 +222,12 @@ function switchTab(tabIndex) {
   border-left-color: #EF4444;
 }
 
+.question-message.text-style {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
 /* Question message header */
 .question-message-header {
   display: flex;
@@ -215,6 +240,15 @@ function switchTab(tabIndex) {
 
 .question-message-header:hover {
   background: rgba(16, 185, 129, 0.05);
+}
+
+.question-message.text-style .question-message-header {
+  padding: 0;
+  border-bottom: none;
+}
+
+.question-message.text-style .question-message-header:hover {
+  background: transparent;
 }
 
 .question-title {
@@ -233,10 +267,38 @@ function switchTab(tabIndex) {
   color: #6EE7B7;
 }
 
+.question-message.text-style .question-count {
+  font-size: 12px;
+  font-weight: 500;
+  color: #C4C7CF;
+}
+
+.text-style-label {
+  flex-shrink: 0;
+}
+
+.text-style-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8B93A7;
+  font-size: 12px;
+}
+
 .header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.question-message.text-style .header-actions :deep(.copy-btn) {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.question-message.text-style .question-message-header:hover .header-actions :deep(.copy-btn) {
+  opacity: 1;
 }
 
 /* Collapsed answers - 横向排列 */

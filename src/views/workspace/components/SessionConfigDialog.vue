@@ -2,6 +2,8 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { getProviderModels } from '../../../utils/provider-models'
 import { useDialogStack } from '../../../composables/useDialogStack'
+import ChatMessageThemeEditor from '@/components/chat/ChatMessageThemeEditor.vue'
+import { buildChatMessageThemeFromPreset, normalizeChatMessageTheme } from '@/utils/chatMessageTheme'
 
 const props = defineProps({
   visible: {
@@ -28,6 +30,9 @@ const modelCardMode = ref('default')
 const promptsMode = ref('project')
 const documentsMode = ref('project')
 const debugEnabled = ref(false)
+const chatMessageThemeMode = ref('project')
+const chatMessageThemePreset = ref('classic')
+const chatMessageTheme = ref(buildChatMessageThemeFromPreset('classic'))
 
 // 选择的配置
 const selectedModelId = ref(null)
@@ -143,6 +148,11 @@ async function loadSessionConfig() {
         documentsMode.value = savedDocumentMode
         selectedDocumentIds.value = []
       }
+
+      const savedChatThemeMode = settings.chatMessageThemeMode || 'project'
+      chatMessageThemeMode.value = savedChatThemeMode === 'preset' ? 'custom' : savedChatThemeMode
+      chatMessageThemePreset.value = settings.chatMessageThemePreset || 'classic'
+      chatMessageTheme.value = normalizeChatMessageTheme(settings.chatMessageTheme || {}, chatMessageThemePreset.value)
     } else {
       // 没有会话配置，默认跟随项目
       sessionTool.value = 'claude'
@@ -150,6 +160,9 @@ async function loadSessionConfig() {
       promptsMode.value = 'project'
       documentsMode.value = 'project'
       debugEnabled.value = false
+      chatMessageThemeMode.value = 'project'
+      chatMessageThemePreset.value = 'classic'
+      chatMessageTheme.value = buildChatMessageThemeFromPreset('classic')
     }
   } catch (e) {
     console.error('Failed to load session config:', e)
@@ -214,7 +227,10 @@ async function handleSave() {
       promptMode: promptsMode.value,
       promptIds: promptsMode.value === 'custom' ? [...selectedPromptIds.value] : [],
       documentMode: documentsMode.value,
-      documentIds: documentsMode.value === 'custom' ? [...selectedDocumentIds.value] : []
+      documentIds: documentsMode.value === 'custom' ? [...selectedDocumentIds.value] : [],
+      chatMessageThemeMode: chatMessageThemeMode.value,
+      chatMessageThemePreset: chatMessageThemeMode.value === 'custom' ? chatMessageThemePreset.value : null,
+      chatMessageTheme: chatMessageThemeMode.value === 'custom' ? { ...chatMessageTheme.value } : {}
     }
 
     await window.electronAPI.updateSessionConfig({
@@ -466,6 +482,33 @@ onMounted(() => {
                 </label>
               </div>
               <p v-else class="empty-hint">暂无规范文档</p>
+            </div>
+          </div>
+
+          <div class="config-section">
+            <label class="config-label">消息主题</label>
+            <div class="radio-group">
+              <label class="radio-item">
+                <input type="radio" v-model="chatMessageThemeMode" value="app" />
+                <span>系统</span>
+              </label>
+              <label class="radio-item">
+                <input type="radio" v-model="chatMessageThemeMode" value="project" />
+                <span>项目</span>
+              </label>
+              <label class="radio-item">
+                <input type="radio" v-model="chatMessageThemeMode" value="custom" />
+                <span>自定义</span>
+              </label>
+            </div>
+            <div v-if="chatMessageThemeMode === 'custom'" class="config-content">
+              <ChatMessageThemeEditor
+                :show-preview="false"
+                :preset-key="chatMessageThemePreset"
+                :theme-config="chatMessageTheme"
+                @update:preset-key="chatMessageThemePreset = $event; chatMessageTheme = buildChatMessageThemeFromPreset($event)"
+                @update:theme-config="chatMessageTheme = $event"
+              />
             </div>
           </div>
 

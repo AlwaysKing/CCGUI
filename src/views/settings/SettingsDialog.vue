@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import ModelSettings from './components/ModelSettings.vue'
 import PromptSettings from './components/PromptSettings.vue'
+import ChatThemeSettings from './components/ChatThemeSettings.vue'
 import TerminalSettings from './components/TerminalSettings.vue'
 import SoftwareSettings from './components/SoftwareSettings.vue'
 import ModelEditDialog from './components/dialogs/ModelEditDialog.vue'
@@ -21,6 +22,7 @@ const {
   contentRef,
   modelSectionRef,
   promptSectionRef,
+  chatThemeSectionRef,
   terminalSectionRef,
   softwareSectionRef,
   navItems,
@@ -147,6 +149,13 @@ useDialogStack(computed(() => true), handleClose)
               <line x1="8" y1="21" x2="16" y2="21"/>
               <line x1="12" y1="17" x2="12" y2="21"/>
             </svg>
+            <svg v-else-if="item.icon === 'chat-theme'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+              <path d="M8 7h8"/>
+              <path d="M8 11h8"/>
+              <path d="M8 15h5"/>
+            </svg>
             <svg v-else-if="item.icon === 'terminal'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="4 17 10 11 4 5"/>
               <line x1="12" y1="19" x2="20" y2="19"/>
@@ -202,6 +211,14 @@ useDialogStack(computed(() => true), handleClose)
               @edit-document="handleEditDocument"
               @delete-document="handleDeleteDocument"
               @toggle-document-active="handleToggleDocumentActive"
+            />
+          </div>
+
+          <div ref="chatThemeSectionRef">
+            <ChatThemeSettings
+              :settings="settings"
+              @update:settings="settings = $event"
+              @save-settings="saveSoftwareSettings"
             />
           </div>
 

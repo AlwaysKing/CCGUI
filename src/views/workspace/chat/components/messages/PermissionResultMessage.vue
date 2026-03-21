@@ -10,6 +10,10 @@ const props = defineProps({
   message: {
     type: Object,
     required: true
+  },
+  chatTheme: {
+    type: Object,
+    default: () => ({})
   }
 })
 
@@ -119,19 +123,38 @@ const parsedContent = computed(() => {
     statusText: isDenied ? '已拒绝' : (isApprovedAll ? '已允许 (所有)' : '已允许')
   }
 })
+
+const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
+const avatarMode = computed(() => props.chatTheme?.avatarMode || 'large')
+const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.value === 'none')
 </script>
 
 <template>
   <div class="permission-result-wrapper">
-    <div class="tool-use-card" :class="{ denied: parsedContent.isDenied }">
+    <div class="tool-use-card" :class="{ denied: parsedContent.isDenied, 'text-style': isTextStyle }">
       <!-- 标题栏 - 与 ToolUseMessage 的 tool-header 完全一致 -->
       <div class="tool-header" @click="toggleCollapse">
         <div class="tool-info">
-          <span class="tool-icon">{{ parsedContent.isApproved ? '✓' : '✗' }}</span>
-          <span class="tool-name">{{ parsedContent.toolName }}</span>
-          <span class="status-badge" :class="parsedContent.isDenied ? 'error' : 'success'">
-            {{ parsedContent.statusText }}
-          </span>
+          <template v-if="isTextStyle">
+            <span class="tool-name text-style-label">权限确认</span>
+            <CollapseToggle :collapsed="isCollapsed" @toggle="toggleCollapse" />
+            <span class="text-style-summary">{{ parsedContent.summary }}</span>
+            <span v-if="showInlineStatusIcon" class="text-style-status" :class="parsedContent.isDenied ? 'is-error' : 'is-success'" aria-hidden="true">
+              <svg v-if="parsedContent.isDenied" viewBox="0 0 12 12" fill="none">
+                <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+              </svg>
+              <svg v-else viewBox="0 0 12 12" fill="none">
+                <path d="M2.2 6.2L4.7 8.7L9.8 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </span>
+          </template>
+          <template v-else>
+            <span class="tool-icon">{{ parsedContent.isApproved ? '✓' : '✗' }}</span>
+            <span class="tool-name">{{ parsedContent.toolName }}</span>
+            <span class="status-badge" :class="parsedContent.isDenied ? 'error' : 'success'">
+              {{ parsedContent.statusText }}
+            </span>
+          </template>
         </div>
         <div class="header-actions">
           <button class="copy-btn" @click.stop="copyAll" :title="copiedType === 'header' ? '已复制' : '复制'">
@@ -143,12 +166,12 @@ const parsedContent = computed(() => {
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
             </svg>
           </button>
-          <CollapseToggle :collapsed="isCollapsed" @toggle="toggleCollapse" />
+          <CollapseToggle v-if="!isTextStyle" :collapsed="isCollapsed" @toggle="toggleCollapse" />
         </div>
       </div>
 
       <!-- 折叠时显示摘要 - 与 ToolUseMessage 完全一致 -->
-      <div v-if="isCollapsed" class="collapsed-summary-line" @click="toggleCollapse">
+      <div v-if="isCollapsed && !isTextStyle" class="collapsed-summary-line" @click="toggleCollapse">
         {{ parsedContent.summary }}
       </div>
 
@@ -236,13 +259,21 @@ const parsedContent = computed(() => {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  margin: 8px 0;
+  margin: 0;
   max-width: 100%;
 }
 
 .tool-use-card.denied {
   border-color: #EF4444;
   border-left-color: #EF4444;
+}
+
+.tool-use-card.text-style {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
 }
 
 /* 标题栏 - 与 ToolUseMessage 完全一致 */
@@ -259,6 +290,15 @@ const parsedContent = computed(() => {
 
 .tool-header:hover {
   background: #2D2D30;
+}
+
+.tool-use-card.text-style .tool-header {
+  padding: 0;
+  background: transparent;
+}
+
+.tool-use-card.text-style .tool-header:hover {
+  background: transparent;
 }
 
 .tool-info {
@@ -296,6 +336,47 @@ const parsedContent = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tool-use-card.text-style .tool-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: #C4C7CF;
+}
+
+.text-style-label {
+  flex-shrink: 0;
+}
+
+.text-style-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8B93A7;
+  font-size: 12px;
+}
+
+.text-style-status {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.text-style-status svg {
+  width: 12px;
+  height: 12px;
+}
+
+.text-style-status.is-success {
+  color: #8B93A7;
+}
+
+.text-style-status.is-error {
+  color: #F87171;
 }
 
 .status-badge {

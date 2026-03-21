@@ -37,6 +37,10 @@ const props = defineProps({
   showTokens: {
     type: Boolean,
     default: true
+  },
+  variant: {
+    type: String,
+    default: 'full'
   }
 })
 
@@ -97,19 +101,22 @@ const formattedTokens = computed(() => {
 </script>
 
 <template>
-  <span v-if="formattedTime" class="header-time">
+  <span v-if="isStreaming" class="header-streaming" :class="variant" aria-hidden="true">
+    <span class="header-spinner"></span>
+  </span>
+  <span v-if="formattedTime" class="header-time" :class="variant">
     <span class="header-icon">🕐</span>
     {{ formattedTime }}
   </span>
-  <span v-if="computedDuration" class="header-duration" :class="{ streaming: isDurationStreaming }">
+  <span v-if="computedDuration" class="header-duration" :class="[variant, { streaming: isDurationStreaming }]">
     <span class="header-icon">⏳</span>
     {{ computedDuration }}
   </span>
-  <span v-if="numTurns" class="header-turns">
+  <span v-if="numTurns" class="header-turns" :class="variant">
     <span class="header-icon">🔄</span>
     {{ numTurns }} turns
   </span>
-  <span v-if="showTokens && formattedTokens" class="header-tokens">
+  <span v-if="showTokens && formattedTokens" class="header-tokens" :class="variant">
     <span class="header-icon">⚡</span>
     {{ formattedTokens }}
   </span>
@@ -119,7 +126,8 @@ const formattedTokens = computed(() => {
 .header-time,
 .header-duration,
 .header-turns,
-.header-tokens {
+.header-tokens,
+.header-streaming {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -130,12 +138,83 @@ const formattedTokens = computed(() => {
   border-radius: 4px;
 }
 
+.header-time.compact,
+.header-duration.compact,
+.header-turns.compact,
+.header-tokens.compact,
+.header-streaming.compact {
+  background: transparent;
+  padding: 0;
+  color: #6B7280;
+}
+
+.header-time.floating,
+.header-duration.floating,
+.header-turns.floating,
+.header-tokens.floating,
+.header-streaming.floating {
+  background: rgba(24, 24, 27, 0.94);
+  border: 1px solid rgba(63, 63, 70, 0.78);
+  color: #A1A1AA;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+}
+
 .header-icon {
   font-size: 12px;
+}
+
+.header-time.compact .header-icon,
+.header-duration.compact .header-icon,
+.header-turns.compact .header-icon,
+.header-tokens.compact .header-icon {
+  font-size: 10px;
+}
+
+.header-time.floating .header-icon,
+.header-duration.floating .header-icon,
+.header-turns.floating .header-icon,
+.header-tokens.floating .header-icon {
+  font-size: 10px;
+  opacity: 0.78;
+}
+
+.header-streaming {
+  color: #94A3B8;
+}
+
+.header-streaming.compact {
+  color: #7C8AA0;
+}
+
+.header-streaming.floating {
+  color: #CBD5E1;
+}
+
+.header-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.35px solid rgba(148, 163, 184, 0.28);
+  border-top-color: currentColor;
+  animation: message-stats-spin 0.9s linear infinite;
+}
+
+@keyframes message-stats-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .header-duration.streaming {
   color: #A78BFA;
   background: #1E1B4B;
+}
+
+.header-duration.streaming.compact {
+  background: transparent;
 }
 </style>

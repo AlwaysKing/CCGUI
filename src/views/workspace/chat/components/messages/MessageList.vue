@@ -17,6 +17,10 @@ const props = defineProps({
   currentTime: {
     type: Number,
     default: null
+  },
+  chatTheme: {
+    type: Object,
+    default: () => ({})
   }
 })
 
@@ -70,6 +74,7 @@ function handleCopyQuestionContent({ index, content }) {
     :total-messages="messages.length"
     :working-directory="workingDirectory"
     :current-time="currentTime"
+    :chat-theme="chatTheme"
     :all-messages="messages"
     @message-click="handleMessageClick"
     @rewind="handleRewind"

@@ -31,6 +31,15 @@ function getDefaultConfig() {
       terminalFontFamily: 'Menlo, Monaco, "Courier New", monospace',
       customTerminalThemeText: '',
       notificationSound: 'Glass',
+      chatMessageThemePreset: 'classic',
+      chatMessageTheme: {
+        avatarMode: 'large',
+        statusPosition: 'top',
+        statusStyle: 'full',
+        messageSurface: 'bubble',
+        toolStyle: 'bubble',
+        messageSpacing: 'large'
+      },
       autoStart: false,
       showNotifications: true,
 

@@ -5,12 +5,14 @@ export function useSettingsNavigation() {
   const contentRef = ref(null)
   const modelSectionRef = ref(null)
   const promptSectionRef = ref(null)
+  const chatThemeSectionRef = ref(null)
   const terminalSectionRef = ref(null)
   const softwareSectionRef = ref(null)
 
   const navItems = [
     { id: 'model', label: '模型配置', icon: 'model' },
     { id: 'prompt', label: '提示词配置', icon: 'prompt' },
+    { id: 'chat-theme', label: '消息主题', icon: 'chat-theme' },
     { id: 'terminal', label: '终端配置', icon: 'terminal' },
     { id: 'software', label: '软件配置', icon: 'software' }
   ]
@@ -20,6 +22,7 @@ export function useSettingsNavigation() {
     const sectionMap = {
       model: modelSectionRef.value,
       prompt: promptSectionRef.value,
+      'chat-theme': chatThemeSectionRef.value,
       terminal: terminalSectionRef.value,
       software: softwareSectionRef.value
     }
@@ -40,6 +43,7 @@ export function useSettingsNavigation() {
     const sections = [
       { id: 'model', ref: modelSectionRef.value },
       { id: 'prompt', ref: promptSectionRef.value },
+      { id: 'chat-theme', ref: chatThemeSectionRef.value },
       { id: 'terminal', ref: terminalSectionRef.value },
       { id: 'software', ref: softwareSectionRef.value }
     ]
@@ -70,6 +74,7 @@ export function useSettingsNavigation() {
     contentRef,
     modelSectionRef,
     promptSectionRef,
+    chatThemeSectionRef,
     terminalSectionRef,
     softwareSectionRef,
     navItems,

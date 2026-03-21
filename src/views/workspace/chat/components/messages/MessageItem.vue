@@ -44,6 +44,10 @@ const props = defineProps({
   allMessages: {
     type: Array,
     default: () => []
+  },
+  chatTheme: {
+    type: Object,
+    default: () => ({})
   }
 })
 
@@ -157,6 +161,9 @@ const avatarChar = computed(() => {
 
 // 是否显示头像（统一由 MessageItem 处理）
 const showAvatar = computed(() => {
+  if (avatarMode.value === 'none') {
+    return false
+  }
   // rewind-notice 需要显示头像
   if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
     return true
@@ -202,6 +209,10 @@ const showThinking = computed(() => {
   return props.message.hasThinking && props.message.thinking
 })
 
+const showAssistantMessage = computed(() => {
+  return Boolean(props.message.content || props.message.showTurnSeparator || props.message.isStreaming)
+})
+
 const isPlainSystemMessage = computed(() => {
   return props.message.role === 'system' &&
     props.message.subtype !== 'rewind-notice' &&
@@ -211,6 +222,23 @@ const isPlainSystemMessage = computed(() => {
 // 思考过程是否折叠
 const isThinkingCollapsed = computed(() => {
   return props.message.thinkingCollapsed !== false // 默认折叠
+})
+
+const avatarMode = computed(() => props.chatTheme?.avatarMode || 'large')
+const statusStyle = computed(() => props.chatTheme?.statusStyle || 'full')
+const messageSpacing = computed(() => props.chatTheme?.messageSpacing || 'large')
+const isFloatingStatus = computed(() => statusStyle.value === 'floating')
+
+const showMessageStats = computed(() => {
+  return props.message.role !== 'system_notification' && statusStyle.value !== 'hidden'
+})
+
+const showTopStats = computed(() => showMessageStats.value && !isFloatingStatus.value)
+const showTailStats = computed(() => false)
+const showBottomStats = computed(() => false)
+const showFloatingStats = computed(() => showMessageStats.value && isFloatingStatus.value)
+const showUserRightColumn = computed(() => {
+  return props.message.role === 'user' && (showAvatar.value || showCollapseBtn.value || showRewindBtn.value)
 })
 
 // ============ 事件处理 ============
@@ -317,7 +345,20 @@ onUnmounted(() => {
   <div
     v-if="!shouldHide"
     class="message"
-    :class="[message.role, message.subtype, { 'new-turn': isNewTurn, 'denied': isPermissionDenied }]"
+    :class="[
+      message.role,
+      message.subtype,
+      `spacing-${messageSpacing}`,
+      `avatar-${avatarMode}`,
+      `surface-${chatTheme.messageSurface || 'bubble'}`,
+      {
+        'new-turn': isNewTurn,
+        'denied': isPermissionDenied,
+        'no-avatar': !showAvatar,
+        'thinking-first': message.role === 'assistant' && showThinking,
+        'tool-text-first': message.role === 'tool_use' && (chatTheme.messageSurface || 'bubble') === 'ghost'
+      }
+    ]"
     :data-index="messageIndex"
     :data-message-id="message.id"
     @click="handleMessageClick"
@@ -330,7 +371,7 @@ onUnmounted(() => {
     <!-- 消息内容区域 -->
     <div class="message-body">
       <!-- 统一的统计信息（在气泡外部） - system_notification 不显示 -->
-      <div v-if="message.role !== 'system_notification'" class="message-stats-header">
+      <div v-if="showTopStats" class="message-stats-header">
         <MessageStats
           :timestamp="message.timestamp"
           :duration="message.duration"
@@ -339,6 +380,7 @@ onUnmounted(() => {
           :is-streaming="isStreaming"
           :num-turns="message.numTurns"
           :usage="message.usage"
+          :variant="statusStyle"
         />
       </div>
 
@@ -354,6 +396,7 @@ onUnmounted(() => {
           :working-directory="workingDirectory"
           :is-partial="message.isExecuting && Object.keys(message.toolInput || {}).length === 0"
           :raw-messages="message.rawMessages || []"
+          :chat-theme="chatTheme"
           @toggle-collapse="() => onToolToggleCollapse(message)"
         />
       </template>
@@ -378,7 +421,7 @@ onUnmounted(() => {
 
       <!-- Permission result 消息 -->
       <template v-else-if="message.role === 'permission_result'">
-        <PermissionResultMessage :message="message" />
+        <PermissionResultMessage :message="message" :chat-theme="chatTheme" />
       </template>
 
       <!-- System notification 消息 -->
@@ -404,6 +447,7 @@ onUnmounted(() => {
           :is-collapsed="isQuestionCollapsed(message)"
           :active-tab="getQuestionActiveTab(messageIndex)"
           :copied-message-index="copiedMessageIndex"
+          :chat-theme="chatTheme"
           @toggle-collapse="onToggleQuestionCollapse"
           @copy-content="copyQuestionContent"
           @switch-tab="onQuestionSwitchTab"
@@ -426,6 +470,7 @@ onUnmounted(() => {
           :message="message"
           :message-index="messageIndex"
           :copied-message-index="copiedMessageIndex"
+          :chat-theme="chatTheme"
           @copyContent="copyMessageContent"
         />
       </template>
@@ -440,13 +485,16 @@ onUnmounted(() => {
             :is-collapsed="isThinkingCollapsed"
             :message-index="messageIndex"
             :copied-message-index="copiedMessageIndex"
+            :chat-theme="chatTheme"
             @toggle-collapse="() => onToggleThinkingCollapse(messageIndex)"
             @copy-content="copyThinkingContent"
           />
           <AssistantMessage
+            v-if="showAssistantMessage"
             :message="message"
             :message-index="messageIndex"
             :copied-message-index="copiedMessageIndex"
+            :chat-theme="chatTheme"
             @copyContent="copyMessageContent"
           />
         </div>
@@ -478,11 +526,41 @@ onUnmounted(() => {
           </div>
         </div>
       </template>
+
+      <div v-if="showTailStats || showBottomStats" class="message-stats-header" :class="{ tail: showTailStats, bottom: showBottomStats }">
+        <MessageStats
+          :timestamp="message.timestamp"
+          :duration="message.duration"
+          :start-time="(message.role === 'user' && isLastUserMsg && !message.duration) ? message.startTime : message.startTime"
+          :current-time="currentTime"
+          :is-streaming="isStreaming"
+          :num-turns="message.numTurns"
+          :usage="message.usage"
+          :variant="statusStyle"
+        />
+      </div>
+
+      <div
+        v-if="showFloatingStats"
+        class="message-stats-floating top"
+        :class="{ 'user-floating': message.role === 'user' }"
+      >
+        <MessageStats
+          :timestamp="message.timestamp"
+          :duration="message.duration"
+          :start-time="(message.role === 'user' && isLastUserMsg && !message.duration) ? message.startTime : message.startTime"
+          :current-time="currentTime"
+          :is-streaming="isStreaming"
+          :num-turns="message.numTurns"
+          :usage="message.usage"
+          variant="floating"
+        />
+      </div>
     </div>
 
     <!-- 用户消息右侧：头像 + 操作按钮 -->
-    <div v-if="showAvatar && message.role === 'user'" class="user-right-column">
-      <div class="message-avatar">
+    <div v-if="showUserRightColumn" class="user-right-column" :class="{ 'avatar-hidden': !showAvatar }">
+      <div v-if="showAvatar" class="message-avatar">
         {{ avatarChar }}
       </div>
       <div class="user-action-buttons">
@@ -576,9 +654,21 @@ onUnmounted(() => {
   transition: opacity 0.15s;
 }
 
+.message.spacing-small {
+  margin-bottom: 16px;
+}
+
+.message.spacing-medium {
+  margin-bottom: 24px;
+}
+
 .message.user {
   justify-content: flex-end;
   padding-left: 48px;  /* 留出左侧空间，与回答消息的头像区域对齐 */
+}
+
+.message.user.no-avatar {
+  padding-left: 0;
 }
 
 /* 每轮新问答之间增加间距 */
@@ -586,11 +676,23 @@ onUnmounted(() => {
   margin-top: 60px;
 }
 
+.message.spacing-small.new-turn {
+  margin-top: 28px;
+}
+
+.message.spacing-medium.new-turn {
+  margin-top: 42px;
+}
+
 .message.user .message-body {
   align-items: flex-end;
   flex: 1;
   max-width: calc(100% - 48px);  /* 减去右侧列宽度(36px) + 间距(12px) */
-  overflow: hidden;
+  overflow: visible;
+}
+
+.message.user.no-avatar .message-body {
+  max-width: calc(100% - 28px);
 }
 
 /* 用户消息右侧列：头像 + 操作按钮 */
@@ -601,6 +703,10 @@ onUnmounted(() => {
   gap: 8px;
   flex-shrink: 0;
   width: 36px;  /* 固定宽度，与头像宽度一致 */
+}
+
+.user-right-column.avatar-hidden {
+  width: 28px;
 }
 
 .user-action-buttons {
@@ -723,6 +829,25 @@ onUnmounted(() => {
   justify-content: center;
   font-weight: bold;
   flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.message.avatar-small .message-avatar {
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  min-height: 10px;
+  font-size: 0;
+  margin-top: 8px;
+}
+
+.message.avatar-small.thinking-first .message-avatar {
+  margin-top: 4px;
+}
+
+.message.avatar-small.tool-text-first .message-avatar {
+  margin-top: 5px;
 }
 
 .message.user .message-avatar {
@@ -757,6 +882,15 @@ onUnmounted(() => {
   color: white;
   font-size: 14px;
   font-weight: bold;
+}
+
+.message.avatar-small.permission_result .message-avatar {
+  font-size: 0;
+  margin-top: 5px;
+}
+
+.message.avatar-small.question .message-avatar {
+  margin-top: 5px;
 }
 
 .message.permission_result.denied .message-avatar {
@@ -808,6 +942,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  position: relative;
 }
 
 /* Assistant 内容包装器：thinking 和 message 共享宽度 */
@@ -819,6 +954,10 @@ onUnmounted(() => {
   gap: 8px;
 }
 
+.message.no-avatar .assistant-content-wrapper {
+  max-width: 100%;
+}
+
 .assistant-content-wrapper > * {
   width: 100%;
 }
@@ -828,6 +967,56 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.message-stats-header.tail {
+  justify-content: flex-end;
+}
+
+.message-stats-header.bottom {
+  padding-top: 2px;
+}
+
+.message-stats-floating {
+  position: absolute;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.message-stats-floating.top {
+  top: 0;
+  left: 0;
+  transform: translateY(calc(-100% - 6px));
+}
+
+.message-stats-floating.top.user-floating {
+  left: auto;
+  right: 0;
+  justify-content: flex-end;
+}
+
+.message-stats-floating.tail {
+  top: 0;
+  right: 0;
+  justify-content: flex-end;
+  transform: translateY(calc(-100% - 6px));
+}
+
+.message-stats-floating.bottom {
+  left: 0;
+  bottom: 0;
+  transform: translateY(calc(100% + 6px));
+}
+
+.message:hover .message-stats-floating {
+  opacity: 1;
 }
 
 .message-content {

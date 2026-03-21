@@ -126,6 +126,15 @@ class StorageManager {
             terminalTheme: 'ccgui-dark',
             terminalFontFamily: 'Menlo, Monaco, "Courier New", monospace',
             customTerminalThemeText: '',
+            chatMessageThemePreset: 'classic',
+            chatMessageTheme: {
+              avatarMode: 'large',
+              statusPosition: 'top',
+              statusStyle: 'full',
+              messageSurface: 'bubble',
+              toolStyle: 'bubble',
+              messageSpacing: 'large'
+            },
             autoStart: false,
             showNotifications: true,
             systemPrompt: '',

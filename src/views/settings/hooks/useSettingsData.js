@@ -1,5 +1,6 @@
 import { ref, toRaw } from 'vue'
 import { barkProvider } from '@/utils/notifier'
+import { buildChatMessageThemeFromPreset } from '@/utils/chatMessageTheme'
 
 function generateEntityId() {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9)
@@ -44,7 +45,9 @@ export function useSettingsData(emit) {
     terminalFontFamily: 'Menlo, Monaco, "Courier New", monospace',
     customTerminalThemeText: '',
     notificationSound: 'Glass',
-    barkUrl: ''
+    barkUrl: '',
+    chatMessageThemePreset: 'classic',
+    chatMessageTheme: buildChatMessageThemeFromPreset('classic')
   })
 
   const defaultConfig = ref({

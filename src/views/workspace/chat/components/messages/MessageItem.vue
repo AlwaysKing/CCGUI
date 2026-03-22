@@ -16,8 +16,8 @@ import PermissionResultMessage from './PermissionResultMessage.vue'
 import UnknownMessage from './UnknownMessage.vue'
 import SystemNotificationMessage from './SystemNotificationMessage.vue'
 import TaskCompleteMessage from './TaskCompleteMessage.vue'
-import { useMessageList } from '../composables/useMessageList'
-import { useMessage } from '../composables/useMessage'
+import { useMessageList } from '../../composables/useMessageList'
+import { useMessage } from '../../composables/useMessage'
 import { useSessionStore } from '../../../../../stores/useSessionStore'
 
 const props = defineProps({

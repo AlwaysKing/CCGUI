@@ -17,6 +17,7 @@ import SessionConfigDialog from './components/SessionConfigDialog.vue'
 import SettingsDialog from '@/views/settings/SettingsDialog.vue'
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout'
 import { useWorkspaceDialogs } from './hooks/useWorkspaceDialogs'
+import { useProjectWorkspacePersistence } from './hooks/useProjectWorkspacePersistence'
 
 const store = useAppStore()
 const sessionStore = useSessionStore()
@@ -30,15 +31,6 @@ const terminalPanelVisible = ref(false)
 const terminalPanelHeight = ref(220)
 const isTerminalResizing = ref(false)
 const terminalRunningState = ref({ hasRunning: false, count: 0 })
-const sidebarPanelLayout = ref({
-  showConfigPanel: false,
-  fileSectionHeight: 48
-})
-const latestProjectSettings = ref({})
-const isRestoringProjectWorkspace = ref(false)
-const hasLoadedProjectWorkspace = ref(false)
-let persistProjectWorkspaceTimer = null
-let projectWorkspaceRestoreToken = 0
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
 const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
@@ -106,157 +98,31 @@ async function handleProjectConfigSaved() {
   await refreshProjectSettingsCache()
 }
 
-function clamp(value, min, max, fallback) {
-  const nextValue = Number(value)
-  if (!Number.isFinite(nextValue)) {
-    return fallback
-  }
-  return Math.max(min, Math.min(max, nextValue))
-}
-
-function normalizeSidebarPanelLayout(layout = {}) {
-  return {
-    showConfigPanel: Boolean(layout?.showConfigPanel),
-    fileSectionHeight: clamp(layout?.fileSectionHeight, 20, 75, 48)
-  }
-}
-
-function normalizeWorkspaceLayout(layout = {}) {
-  return {
-    sidebarWidth: clamp(layout?.sidebarWidth, 180, 500, 260),
-    sidebarCollapsed: Boolean(layout?.sidebarCollapsed),
-    previewWidth: clamp(layout?.previewWidth, 24, 65, 42),
-    isChatCollapsed: Boolean(layout?.isChatCollapsed),
-    lastExpandedPreviewWidth: clamp(layout?.lastExpandedPreviewWidth, 24, 65, 42),
-    terminalPanelVisible: Boolean(layout?.terminalPanelVisible),
-    terminalPanelHeight: clamp(layout?.terminalPanelHeight, TERMINAL_MIN_HEIGHT, TERMINAL_MAX_HEIGHT, 220),
-    sidebarPanelLayout: normalizeSidebarPanelLayout(layout?.sidebarPanelLayout)
-  }
-}
-
-function buildWorkspaceLayoutSnapshot() {
-  return {
-    sidebarWidth: clamp(sidebarWidth.value, 180, 500, 260),
-    sidebarCollapsed: Boolean(sidebarCollapsed.value),
-    previewWidth: clamp(previewWidth.value, 24, 65, 42),
-    isChatCollapsed: Boolean(isChatCollapsed.value),
-    lastExpandedPreviewWidth: clamp(lastExpandedPreviewWidth.value, 24, 65, 42),
-    terminalPanelVisible: Boolean(terminalPanelVisible.value),
-    terminalPanelHeight: clamp(terminalPanelHeight.value, TERMINAL_MIN_HEIGHT, TERMINAL_MAX_HEIGHT, 220),
-    sidebarPanelLayout: normalizeSidebarPanelLayout(sidebarPanelLayout.value)
-  }
-}
-
-async function refreshProjectSettingsCache(projectId = store.currentProject?.id) {
-  if (!projectId) {
-    latestProjectSettings.value = {}
-    return {}
-  }
-
-  const result = await window.electronAPI.getProjectConfig({ projectId })
-  const settings = result?.config?.settings || {}
-  latestProjectSettings.value = settings
-  return settings
-}
-
-async function restoreProjectWorkspaceState(project) {
-  const projectId = project?.id
-  projectWorkspaceRestoreToken += 1
-  const restoreToken = projectWorkspaceRestoreToken
-
-  if (persistProjectWorkspaceTimer) {
-    clearTimeout(persistProjectWorkspaceTimer)
-    persistProjectWorkspaceTimer = null
-  }
-
-  hasLoadedProjectWorkspace.value = false
-  latestProjectSettings.value = {}
-
-  if (!projectId) {
-    return
-  }
-
-  const settings = await refreshProjectSettingsCache(projectId)
-  if (restoreToken !== projectWorkspaceRestoreToken) {
-    return
-  }
-
-  const layout = normalizeWorkspaceLayout(settings.workspaceLayout || {})
-  const filePreviewState = settings.filePreviewState || {}
-
-  isRestoringProjectWorkspace.value = true
-  try {
-    sidebarWidth.value = layout.sidebarWidth
-    sidebarCollapsed.value = layout.sidebarCollapsed
-    previewWidth.value = layout.previewWidth
-    isChatCollapsed.value = layout.isChatCollapsed
-    lastExpandedPreviewWidth.value = layout.lastExpandedPreviewWidth
-    terminalPanelVisible.value = layout.terminalPanelVisible
-    terminalPanelHeight.value = layout.terminalPanelHeight
-    sidebarPanelLayout.value = layout.sidebarPanelLayout
-
-    await nextTick()
-    sessionSidebarRef.value?.applyLayoutState?.(layout.sidebarPanelLayout)
-    await fileBrowserStore.restoreWorkspaceState?.(filePreviewState)
-  } finally {
-    if (restoreToken === projectWorkspaceRestoreToken) {
-      isRestoringProjectWorkspace.value = false
-    }
-  }
-
-  if (restoreToken !== projectWorkspaceRestoreToken) {
-    return
-  }
-
-  hasLoadedProjectWorkspace.value = true
-}
-
-async function persistProjectWorkspaceState() {
-  if (!store.currentProject?.id || !hasLoadedProjectWorkspace.value || isRestoringProjectWorkspace.value) {
-    return
-  }
-
-  const nextSettings = {
-    ...latestProjectSettings.value,
-    workspaceLayout: buildWorkspaceLayoutSnapshot(),
-    filePreviewState: fileBrowserStore.exportWorkspaceState()
-  }
-
-  latestProjectSettings.value = nextSettings
-  await window.electronAPI.updateProjectConfig({
-    projectId: store.currentProject.id,
-    updates: {
-      settings: nextSettings
-    }
-  })
-}
-
-function schedulePersistProjectWorkspaceState() {
-  if (!store.currentProject?.id || !hasLoadedProjectWorkspace.value || isRestoringProjectWorkspace.value) {
-    return
-  }
-
-  if (persistProjectWorkspaceTimer) {
-    clearTimeout(persistProjectWorkspaceTimer)
-  }
-
-  persistProjectWorkspaceTimer = setTimeout(() => {
-    persistProjectWorkspaceTimer = null
-    persistProjectWorkspaceState()
-  }, 220)
-}
-
 async function handlePreviewFile(node) {
   await fileBrowserStore.previewFile(node.path)
-}
-
-function handleSidebarLayoutChange(nextLayout) {
-  sidebarPanelLayout.value = normalizeSidebarPanelLayout(nextLayout)
 }
 
 async function handlePinFile(node) {
   await fileBrowserStore.pinFile(node.path)
 }
+
+const {
+  refreshProjectSettingsCache,
+  handleSidebarLayoutChange
+} = useProjectWorkspacePersistence({
+  store,
+  fileBrowserStore,
+  sessionSidebarRef,
+  sidebarWidth,
+  sidebarCollapsed,
+  previewWidth,
+  isChatCollapsed,
+  lastExpandedPreviewWidth,
+  terminalPanelVisible,
+  terminalPanelHeight,
+  terminalMinHeight: TERMINAL_MIN_HEIGHT,
+  terminalMaxHeight: TERMINAL_MAX_HEIGHT
+})
 
 async function handleCreateFileNode(payload) {
   await fileBrowserStore.createEntry(payload?.parentPath || '', payload?.type || 'file')
@@ -430,10 +296,6 @@ watch(() => fileBrowserStore.shouldShowPreviewPanel, (visible) => {
   }
 })
 
-watch(() => store.currentProject?.id, async () => {
-  await restoreProjectWorkspaceState(store.currentProject)
-}, { immediate: true })
-
 watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
   if (!nextSessionId || nextSessionId === previousSessionId) {
     return
@@ -442,24 +304,6 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
   if (fileBrowserStore.shouldShowPreviewPanel && isChatCollapsed.value) {
     expandChatPanel(true)
   }
-})
-
-watch([
-  sidebarWidth,
-  sidebarCollapsed,
-  previewWidth,
-  isChatCollapsed,
-  lastExpandedPreviewWidth,
-  terminalPanelVisible,
-  terminalPanelHeight,
-  () => sidebarPanelLayout.value.showConfigPanel,
-  () => sidebarPanelLayout.value.fileSectionHeight
-], () => {
-  schedulePersistProjectWorkspaceState()
-})
-
-watch(() => JSON.stringify(fileBrowserStore.exportWorkspaceState()), () => {
-  schedulePersistProjectWorkspaceState()
 })
 
 // Initialize
@@ -481,10 +325,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (persistProjectWorkspaceTimer) {
-    clearTimeout(persistProjectWorkspaceTimer)
-    persistProjectWorkspaceTimer = null
-  }
   window.removeEventListener('mousemove', handleResize)
   window.removeEventListener('mouseup', stopResize)
   window.removeEventListener('mousemove', handlePreviewResize)

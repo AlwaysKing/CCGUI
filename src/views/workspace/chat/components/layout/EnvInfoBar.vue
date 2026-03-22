@@ -4,7 +4,7 @@
  * 从 ChatWindow.vue 提取的环境信息显示组件
  */
 import { ref, computed } from 'vue'
-import { useMessage } from '../composables/useMessage'
+import { useMessage } from '../../composables/useMessage'
 
 const props = defineProps({
   envInfo: {

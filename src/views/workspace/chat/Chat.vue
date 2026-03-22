@@ -23,8 +23,8 @@ import TaskFloatingWindow from './components/TaskFloatingWindow.vue'
 // 引入 composables
 // useMessageList composable 的功能已移至 MessageList 组件
 // useScroll 和 useHistory composables 已创建，可在未来需要时使用
-// import { useScroll } from '../chat/composables/useScroll'
-// import { useHistory } from '../chat/composables/useHistory'
+// import { useScroll } from './composables/useScroll'
+// import { useHistory } from './composables/useHistory'
 
 const sessionStore = useSessionStore()
 const appStore = useAppStore()

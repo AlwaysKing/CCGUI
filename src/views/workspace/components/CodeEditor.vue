@@ -39,6 +39,7 @@ let diffEditor = null
 let model = null
 let originalModel = null
 let isApplyingExternalValue = false
+let transparentThemeRegistered = false
 
 if (!globalThis.MonacoEnvironment) {
   globalThis.MonacoEnvironment = {
@@ -76,14 +77,32 @@ function normalizeLanguage(language) {
   return map[language] || 'plaintext'
 }
 
+function ensureTransparentEditorTheme() {
+  if (transparentThemeRegistered) return
+
+  monaco.editor.defineTheme('ccgui-transparent-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [],
+    colors: {
+      'editor.background': '#00000000',
+      'editorGutter.background': '#00000000',
+      'minimap.background': '#00000000'
+    }
+  })
+
+  transparentThemeRegistered = true
+}
+
 function initEditor() {
   if (!containerRef.value) return
 
   disposeEditor()
+  ensureTransparentEditorTheme()
   model = monaco.editor.createModel(props.modelValue || '', normalizeLanguage(props.language))
 
   const baseOptions = {
-    theme: 'vs-dark',
+    theme: 'ccgui-transparent-dark',
     automaticLayout: true,
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
@@ -240,13 +259,13 @@ watch(() => props.diffMode, () => {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #1E1E1E;
+  background: transparent;
 }
 
 .code-editor :deep(.monaco-editor),
 .code-editor :deep(.monaco-editor-background),
 .code-editor :deep(.margin) {
-  background: #1E1E1E !important;
+  background: transparent !important;
 }
 
 .code-editor :deep(.monaco-editor .scroll-decoration) {
@@ -264,7 +283,7 @@ watch(() => props.diffMode, () => {
 .code-editor :deep(.monaco-editor .scrollbar .slider) {
   border-radius: 3px !important;
   background: #52525B !important;
-  border: 1px solid #1E1E1E !important;
+  border: 1px solid transparent !important;
 }
 
 .code-editor :deep(.monaco-editor .scrollbar .slider:hover) {

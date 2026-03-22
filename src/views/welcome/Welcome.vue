@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
+import { IconButton } from '@/components/base'
 import { useAppStore } from '../../stores/useAppStore'
 import NewProjectDialog from './components/NewProjectDialog.vue'
 import SettingsDialog from '@/views/settings/SettingsDialog.vue'
@@ -17,6 +18,7 @@ const {
   showDeleteConfirm,
   projectToDelete,
   deleteProjectFolder,
+  isClearingMissing,
   categorizedProjects,
   categoryCounts,
   selectProject,
@@ -24,6 +26,7 @@ const {
   cancelDelete,
   confirmDeleteProject,
   checkProjectsExistence,
+  clearMissingProjects,
   formatLastActive
 } = useWelcomeProjects(store)
 
@@ -43,6 +46,11 @@ useDialogStack(computed(() => showDeleteConfirm.value), cancelDelete)
 onMounted(async () => {
   await store.fetchProjects()
   await checkProjectsExistence()
+  window.addEventListener('ccgui-shortcut', handleShortcutEvent)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('ccgui-shortcut', handleShortcutEvent)
 })
 
 async function refreshProjects() {
@@ -63,6 +71,19 @@ async function openProjectInFinder(event, project) {
     mode: 'open'
   })
 }
+
+function handleShortcutEvent(event) {
+  const action = event?.detail?.action
+
+  if (action === 'open-settings') {
+    showSettingsDialog.value = true
+    return
+  }
+
+  if (action === 'create-primary') {
+    showNewProjectDialog.value = true
+  }
+}
 </script>
 
 <template>
@@ -75,12 +96,12 @@ async function openProjectInFinder(event, project) {
     @drop="handleDrop"
   >
     <!-- Settings Button - 右上角齿轮图标 -->
-    <button class="settings-btn" @click="showSettingsDialog = true" title="应用设置">
+    <IconButton class="settings-btn" size="lg" @click="showSettingsDialog = true" title="应用设置">
       <svg class="settings-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="12" cy="12" r="3"/>
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
-    </button>
+    </IconButton>
 
     <div class="welcome-header">
       <div class="logo">
@@ -113,14 +134,14 @@ async function openProjectInFinder(event, project) {
         <div class="section-header">
           <h4 class="section-title">近期项目</h4>
           <span class="section-count">{{ categoryCounts.recent }}</span>
-          <button class="section-refresh-btn" @click="refreshProjects" title="刷新项目列表">
+          <IconButton class="section-refresh-btn" size="sm" @click="refreshProjects" title="刷新项目列表">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 2v6h-6"/>
               <path d="M3 12a9 9 0 0 1 15.55-6.36L21 8"/>
               <path d="M3 22v-6h6"/>
               <path d="M21 12a9 9 0 0 1-15.55 6.36L3 16"/>
             </svg>
-          </button>
+          </IconButton>
         </div>
         <div class="projects-grid">
           <!-- New Project Card -->
@@ -142,17 +163,17 @@ async function openProjectInFinder(event, project) {
             @click="selectProject(project)"
           >
             <div class="project-actions">
-              <button class="action-btn" @click="openProjectInFinder($event, project)" title="在 Finder 中打开">
+              <IconButton class="project-action-btn" size="sm" @click="openProjectInFinder($event, project)" title="在 Finder 中打开">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2z"/>
                 </svg>
-              </button>
-              <button class="action-btn delete-btn" @click="handleDeleteClick($event, project)" title="删除项目">
+              </IconButton>
+              <IconButton class="project-action-btn" size="sm" danger @click="handleDeleteClick($event, project)" title="删除项目">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="3 6 5 6 21 6"/>
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
-              </button>
+              </IconButton>
             </div>
             <div class="project-icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -205,17 +226,17 @@ async function openProjectInFinder(event, project) {
             @click="selectProject(project)"
           >
             <div class="project-actions">
-              <button class="action-btn" @click="openProjectInFinder($event, project)" title="在 Finder 中打开">
+              <IconButton class="project-action-btn" size="sm" @click="openProjectInFinder($event, project)" title="在 Finder 中打开">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2z"/>
                 </svg>
-              </button>
-              <button class="action-btn delete-btn" @click="handleDeleteClick($event, project)" title="删除项目">
+              </IconButton>
+              <IconButton class="project-action-btn" size="sm" danger @click="handleDeleteClick($event, project)" title="删除项目">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="3 6 5 6 21 6"/>
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
-              </button>
+              </IconButton>
             </div>
             <div class="project-icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -260,6 +281,15 @@ async function openProjectInFinder(event, project) {
           <span class="section-count">{{ categoryCounts.missing }}</span>
           <span class="section-hint">（文件夹已删除）</span>
         </button>
+        <div v-if="showMissingProjects" class="missing-actions-row">
+          <button
+            class="missing-clean-btn"
+            :disabled="isClearingMissing"
+            @click="clearMissingProjects"
+          >
+            {{ isClearingMissing ? '清理中...' : '清理所有不存在项目' }}
+          </button>
+        </div>
         <div v-if="showMissingProjects" class="projects-grid">
           <div
             v-for="project in categorizedProjects.missing"
@@ -268,17 +298,17 @@ async function openProjectInFinder(event, project) {
             @click="selectProject(project)"
           >
             <div class="project-actions">
-              <button class="action-btn" @click="openProjectInFinder($event, project)" title="在 Finder 中打开">
+              <IconButton class="project-action-btn" size="sm" @click="openProjectInFinder($event, project)" title="在 Finder 中打开">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2z"/>
                 </svg>
-              </button>
-              <button class="action-btn delete-btn" @click="handleDeleteClick($event, project)" title="删除项目">
+              </IconButton>
+              <IconButton class="project-action-btn" size="sm" danger @click="handleDeleteClick($event, project)" title="删除项目">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="3 6 5 6 21 6"/>
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
-              </button>
+              </IconButton>
             </div>
             <div class="project-icon missing-icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -399,27 +429,12 @@ async function openProjectInFinder(event, project) {
   position: absolute;
   top: 12px;
   right: 16px;
-  padding: 8px;
-  background: transparent;
-  border: none;
-  color: #71717A;
-  cursor: pointer;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
   z-index: 1000;
   -webkit-app-region: no-drag;
 }
 
 .settings-icon {
   transition: transform 0.2s ease-in-out;
-}
-
-.settings-btn:hover {
-  background: #374151;
-  color: #D1D5DB;
 }
 
 .settings-btn:hover .settings-icon {
@@ -569,30 +584,44 @@ async function openProjectInFinder(event, project) {
 }
 
 .section-refresh-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 26px;
   height: 26px;
   margin-left: 2px;
-  padding: 0;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: #71717A;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.section-refresh-btn:hover {
-  background: #27272A;
-  color: #D4D4D8;
 }
 
 .section-hint {
   font-size: 11px;
   color: #52525B;
   margin-left: auto;
+}
+
+.missing-actions-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: -4px 0 12px;
+}
+
+.missing-clean-btn {
+  padding: 5px 10px;
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.26);
+  border-radius: 7px;
+  color: #F87171;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, color 0.18s;
+}
+
+.missing-clean-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.34);
+  color: #FCA5A5;
+}
+
+.missing-clean-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .projects-grid {
@@ -624,26 +653,11 @@ async function openProjectInFinder(event, project) {
   gap: 6px;
 }
 
-.action-btn {
-  padding: 6px;
-  background: transparent;
-  border: none;
-  color: #6B7280;
-  cursor: pointer;
-  border-radius: 4px;
+.project-action-btn {
   opacity: 0;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
-.action-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #D4D4D8;
-}
-
-.project-card:hover .action-btn {
+.project-card:hover .project-action-btn {
   opacity: 1;
 }
 
@@ -684,15 +698,6 @@ async function openProjectInFinder(event, project) {
   background: #2D2D30;
   border-color: #52525B;
   transform: translateY(-2px);
-}
-
-.delete-btn {
-  color: #71717A;
-}
-
-.delete-btn:hover {
-  background: rgba(239, 68, 68, 0.1);
-  color: #EF4444;
 }
 
 .project-card.new-project {
@@ -1022,5 +1027,13 @@ async function openProjectInFinder(event, project) {
   font-size: 24px;
   font-weight: 600;
   margin: 0;
+}
+
+/* App shell gradient trial */
+.welcome-page {
+  background:
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.08), transparent 24%),
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.03), transparent 18%),
+    linear-gradient(180deg, #121316 0%, #17191D 100%);
 }
 </style>

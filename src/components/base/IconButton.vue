@@ -46,8 +46,8 @@ defineEmits(['click'])
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background-color: transparent;
-  color: var(--text-secondary);
+  background: transparent;
+  color: #6B7280;
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
   cursor: pointer;
@@ -55,12 +55,12 @@ defineEmits(['click'])
 }
 
 .icon-button:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+  color: #D4D4D8;
 }
 
 .icon-button:active:not(:disabled) {
-  background-color: var(--bg-active);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .icon-button:disabled {
@@ -86,8 +86,8 @@ defineEmits(['click'])
 
 /* 危险按钮 */
 .btn-danger:hover:not(:disabled) {
-  background-color: var(--color-error-bg);
-  color: var(--color-error);
+  background: rgba(239, 68, 68, 0.1);
+  color: #EF4444;
 }
 
 /* 无边框 */

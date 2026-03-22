@@ -42,6 +42,16 @@ function getDefaultConfig() {
       },
       autoStart: false,
       showNotifications: true,
+      shortcutBindings: {
+        'toggle-sidebar': 'Mod+B',
+        'toggle-project-board': 'Mod+Shift+E',
+        'toggle-preview': 'Mod+\\',
+        'toggle-file-panel': 'Mod+Shift+F',
+        'toggle-terminal': 'Ctrl+`',
+        'toggle-chat-panel': 'Mod+Alt+M',
+        'open-settings': 'Mod+,',
+        'create-primary': 'Mod+N'
+      },
 
       // 模型配置
       claudeModels: [],

@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { IconButton } from '@/components/base'
 import { useAppStore } from '../../../stores/useAppStore'
 import { findProviderModel } from '../../../utils/provider-models'
 import FileTreePanel from './FileTreePanel.vue'
@@ -71,7 +72,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -556,6 +557,23 @@ function toggleConfigPanel() {
   showConfigPanel.value = !showConfigPanel.value
 }
 
+function getLayoutState() {
+  return {
+    showConfigPanel: Boolean(showConfigPanel.value),
+    fileSectionHeight: Number(fileSectionHeight.value || 48)
+  }
+}
+
+function applyLayoutState(layout = {}) {
+  if (typeof layout?.showConfigPanel === 'boolean') {
+    showConfigPanel.value = layout.showConfigPanel
+  }
+
+  if (typeof layout?.fileSectionHeight === 'number' && Number.isFinite(layout.fileSectionHeight)) {
+    fileSectionHeight.value = Math.max(20, Math.min(75, layout.fileSectionHeight))
+  }
+}
+
 function handleSelect(session) {
   emit('select', session.id)
 }
@@ -748,8 +766,15 @@ async function refreshConfig() {
 
 // 暴露刷新配置的方法
 defineExpose({
-  refreshConfig
+  refreshConfig,
+  toggleConfigPanel,
+  getLayoutState,
+  applyLayoutState
 })
+
+watch([showConfigPanel, fileSectionHeight], () => {
+  emit('layoutChange', getLayoutState())
+}, { immediate: true })
 </script>
 
 <template>
@@ -760,26 +785,26 @@ defineExpose({
       <div class="header-actions">
         <span class="app-logo">CCGUI</span>
       </div>
-      <button class="toggle-btn" @click="emit('toggle')" title="折叠">
+      <IconButton class="toggle-btn" size="sm" @click="emit('toggle')" title="折叠">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M14 6l-6 6 6 6"/>
           <path d="M20 5v14"/>
         </svg>
-      </button>
+      </IconButton>
     </div>
     <!-- 第二行：项目名称 -->
     <div class="sidebar-header-row2">
-      <button class="home-btn" @click="emit('home')" title="返回首页">
+      <IconButton class="home-btn" size="sm" @click="emit('home')" title="返回首页">
         <svg class="home-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M3 10.5L12 3l9 7.5"/>
           <path d="M5 9.5V21h14V9.5"/>
           <path d="M9 21v-6h6v6"/>
         </svg>
-      </button>
+      </IconButton>
       <div class="sidebar-title" :title="projectPath" @click="emit('switchProject')">
         <span class="project-name">{{ getProjectName(projectPath) }}</span>
       </div>
-      <button class="file-toggle-btn" @click.stop="emit('openProjectConfig')" title="项目配置">
+      <IconButton class="file-toggle-btn" size="sm" @click.stop="emit('openProjectConfig')" title="项目配置">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="4" y1="21" x2="4" y2="14"/>
           <line x1="4" y1="10" x2="4" y2="3"/>
@@ -791,18 +816,19 @@ defineExpose({
           <line x1="10" y1="8" x2="14" y2="8"/>
           <line x1="18" y1="16" x2="22" y2="16"/>
         </svg>
-      </button>
-      <button class="app-settings-btn" @click.stop="emit('openAppSettings')" title="软件配置">
+      </IconButton>
+      <IconButton class="app-settings-btn" size="sm" @click.stop="emit('openAppSettings')" title="软件配置">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="3"/>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
-      </button>
+      </IconButton>
     </div>
 
     <div class="sidebar-toolbar-row">
-      <button
+      <IconButton
         class="file-toggle-btn"
+        size="sm"
         :class="{ active: showConfigPanel }"
         @click="toggleConfigPanel"
         :title="showConfigPanel ? '隐藏项目看板' : '显示项目看板'"
@@ -812,9 +838,10 @@ defineExpose({
           <path d="M9 4v16"/>
           <path d="M15 10v10"/>
         </svg>
-      </button>
-      <button
+      </IconButton>
+      <IconButton
         class="file-toggle-btn"
+        size="sm"
         :class="{ active: previewPanelVisible }"
         @click="emit('togglePreviewPanel')"
         :title="previewPanelVisible ? '隐藏预览区' : '显示预览区'"
@@ -827,9 +854,10 @@ defineExpose({
           <rect x="3" y="4" width="18" height="16" rx="2"/>
           <path d="M15 4v16"/>
         </svg>
-      </button>
-      <button
+      </IconButton>
+      <IconButton
         class="file-toggle-btn"
+        size="sm"
         :class="{ active: isFilePanelVisible }"
         @click="emit('toggleFilePanel')"
         :title="isFilePanelVisible ? '隐藏文件列表' : '显示文件列表'"
@@ -837,9 +865,10 @@ defineExpose({
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
         </svg>
-      </button>
-      <button
+      </IconButton>
+      <IconButton
         class="file-toggle-btn"
+        size="sm"
         :class="{ active: terminalPanelVisible }"
         @click="emit('toggleTerminalPanel')"
         :title="terminalPanelVisible ? '隐藏终端面板' : '显示终端面板'"
@@ -856,7 +885,7 @@ defineExpose({
         >
           {{ terminalRunningCount > 9 ? '9+' : terminalRunningCount }}
         </span>
-      </button>
+      </IconButton>
     </div>
 
     <!-- 第三行：项目配置摘要 -->
@@ -1175,37 +1204,12 @@ defineExpose({
 }
 
 .app-settings-btn {
-  padding: 4px;
-  background: transparent;
-  border: none;
-  color: #71717A;
   opacity: 0.72;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: opacity 0.15s, background 0.15s, color 0.15s;
-}
-
-.app-settings-btn:hover {
-  background: #3F3F46;
-  color: #E4E4E7;
-  opacity: 1;
+  transition: opacity 0.15s;
 }
 
 .toggle-btn {
-  padding: 4px;
-  background: transparent;
-  border: none;
-  color: #6B7280;
-  cursor: pointer;
-  border-radius: 4px;
-}
-
-.toggle-btn:hover {
-  background: #374151;
-  color: #D1D5DB;
+  flex-shrink: 0;
 }
 
 /* 第二行：项目名称 | 新建按钮 */
@@ -1231,21 +1235,7 @@ defineExpose({
 }
 
 .home-btn {
-  padding: 4px;
-  background: transparent;
-  border: none;
-  color: #71717A;
-  cursor: pointer;
-  border-radius: 4px;
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.home-btn:hover {
-  background: #3F3F46;
-  color: #E4E4E7;
 }
 
 .sidebar-title {
@@ -1299,26 +1289,12 @@ defineExpose({
 }
 
 .file-toggle-btn {
-  padding: 4px;
-  background: transparent;
-  border: none;
-  color: #6B7280;
-  cursor: pointer;
-  border-radius: 4px;
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   position: relative;
 }
 
-.file-toggle-btn:hover {
-  background: #27272A;
-  color: #E4E4E7;
-}
-
 .file-toggle-btn.active {
-  background: #27272A;
+  background: rgba(255, 255, 255, 0.06);
   color: #F4F4F5;
 }
 
@@ -2052,6 +2028,21 @@ defineExpose({
   color: #9CA3AF;
   font-size: 11px;
   flex: 1;
+}
+
+/* App shell gradient trial */
+.session-sidebar {
+  background:
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.06), transparent 22%),
+    linear-gradient(180deg, #17191D 0%, #14161A 100%);
+  border-right-color: rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-header-row1,
+.sidebar-header-row2,
+.sidebar-toolbar-row,
+.session-section-header {
+  border-bottom-color: rgba(255, 255, 255, 0.05);
 }
 
 </style>

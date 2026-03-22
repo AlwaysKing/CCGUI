@@ -1,11 +1,14 @@
 <script setup>
-import { computed, onMounted, onUnmounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAppStore } from './stores/useAppStore'
 import { logger } from './utils/logger'
+import { buildRuntimeShortcuts, findMatchingShortcut, getDefaultShortcutBindings, normalizeShortcutBindings } from './utils/shortcuts'
 import Welcome from './views/welcome/Welcome.vue'
 import Workspace from './views/workspace/Workspace.vue'
 
 const store = useAppStore()
+const shortcutBindings = ref(getDefaultShortcutBindings())
+const runtimeShortcuts = computed(() => buildRuntimeShortcuts(shortcutBindings.value))
 
 function isEditableTarget(target) {
   if (!(target instanceof HTMLElement)) {
@@ -43,6 +46,50 @@ function handleGlobalSelectAll(event) {
   }
 
   event.preventDefault()
+}
+
+function handleGlobalShortcut(event) {
+  const shortcut = findMatchingShortcut(event, runtimeShortcuts.value)
+  if (!shortcut) {
+    return
+  }
+
+  if (!shortcut.allowInEditable && isEditableTarget(event.target)) {
+    return
+  }
+
+  event.preventDefault()
+  window.dispatchEvent(new CustomEvent('ccgui-shortcut', {
+    detail: {
+      action: shortcut.action,
+      combo: shortcut.combo,
+      id: shortcut.id
+    }
+  }))
+}
+
+async function loadShortcutBindings() {
+  try {
+    const result = await window.electronAPI.getAppConfig()
+    if (result?.success) {
+      shortcutBindings.value = {
+        ...getDefaultShortcutBindings(),
+        ...normalizeShortcutBindings(result.config?.settings?.shortcutBindings || {})
+      }
+    }
+  } catch (error) {
+    logger.warn('Failed to load shortcut bindings', { error: error.message })
+  }
+}
+
+function handleAppConfigUpdated(event) {
+  const nextSettings = event?.detail?.settings
+  if (!nextSettings) return
+
+  shortcutBindings.value = {
+    ...getDefaultShortcutBindings(),
+    ...normalizeShortcutBindings(nextSettings.shortcutBindings || {})
+  }
 }
 
 // 当前视图: 'welcome' | 'workspace'
@@ -105,8 +152,11 @@ onMounted(async () => {
 
   // Update window title on mount
   updateWindowTitle()
+  await loadShortcutBindings()
 
   document.addEventListener('keydown', handleGlobalSelectAll, true)
+  document.addEventListener('keydown', handleGlobalShortcut, true)
+  window.addEventListener('ccgui-app-config-updated', handleAppConfigUpdated)
 
   // Get runtime info
   try {
@@ -120,6 +170,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalSelectAll, true)
+  document.removeEventListener('keydown', handleGlobalShortcut, true)
+  window.removeEventListener('ccgui-app-config-updated', handleAppConfigUpdated)
 })
 </script>
 

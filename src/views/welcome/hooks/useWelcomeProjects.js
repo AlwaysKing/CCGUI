@@ -10,6 +10,7 @@ export function useWelcomeProjects(store) {
   const showDeleteConfirm = ref(false)
   const projectToDelete = ref(null)
   const deleteProjectFolder = ref(false)
+  const isClearingMissing = ref(false)
 
   const categorizedProjects = computed(() => {
     const filteredProjects = searchQuery.value
@@ -83,6 +84,23 @@ export function useWelcomeProjects(store) {
     }
   }
 
+  async function clearMissingProjects() {
+    if (isClearingMissing.value) return
+
+    isClearingMissing.value = true
+    try {
+      const missingProjects = categorizedProjects.value.missing
+      for (const project of missingProjects) {
+        await store.removeProject(project.id, false)
+      }
+    } catch (error) {
+      console.error('Failed to clear missing projects:', error)
+      alert('清理不存在的项目失败: ' + error.message)
+    } finally {
+      isClearingMissing.value = false
+    }
+  }
+
   return {
     searchQuery,
     showSettingsDialog,
@@ -92,6 +110,7 @@ export function useWelcomeProjects(store) {
     showDeleteConfirm,
     projectToDelete,
     deleteProjectFolder,
+    isClearingMissing,
     categorizedProjects,
     categoryCounts,
     selectProject,
@@ -99,6 +118,7 @@ export function useWelcomeProjects(store) {
     cancelDelete,
     confirmDeleteProject,
     checkProjectsExistence,
+    clearMissingProjects,
     formatLastActive: formatProjectLastActive
   }
 }

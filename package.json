@@ -23,6 +23,9 @@
   "build": {
     "productName": "CCGUI",
     "appId": "com.ccgui.app",
+    "asarUnpack": [
+      "**/node_modules/node-pty/**/*"
+    ],
     "directories": {
       "output": "output"
     },

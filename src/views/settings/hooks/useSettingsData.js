@@ -173,6 +173,11 @@ export function useSettingsData(emit) {
 
       const result = await window.electronAPI.updateAppConfig({ updates })
       if (result?.success) {
+        window.dispatchEvent(new CustomEvent('ccgui-app-config-updated', {
+          detail: {
+            settings: updates.settings
+          }
+        }))
         emit('saved')
         return true
       }

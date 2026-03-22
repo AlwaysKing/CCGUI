@@ -40,10 +40,10 @@ const terminalSidebarStyle = computed(() => ({
   flex: `0 0 ${terminalSidebarWidth.value}px`
 }))
 const terminalSurfaceStyle = computed(() => {
-  const theme = getTerminalTheme(terminalThemeKey.value)
   return {
-    '--terminal-theme-background': theme.background || '#1E1E1E',
-    '--terminal-theme-sidebar-background': theme.background || '#1E1E1E'
+    '--terminal-theme-background': 'rgba(0, 0, 0, 0)',
+    '--terminal-theme-surface': 'transparent',
+    '--terminal-theme-sidebar-background': 'rgba(17, 19, 23, 0.32)'
   }
 })
 const TERMINAL_SIDEBAR_MIN_WIDTH = 72
@@ -198,7 +198,10 @@ async function loadTerminalAppearance() {
 function applyTerminalAppearance() {
   for (const instance of terminalInstances.values()) {
     instance.terminal.options.fontFamily = terminalFontFamily.value
-    instance.terminal.options.theme = getTerminalTheme(terminalThemeKey.value)
+    instance.terminal.options.theme = {
+      ...getTerminalTheme(terminalThemeKey.value),
+      background: '#00000000'
+    }
     if (instance.terminal.rows > 0) {
       instance.terminal.refresh(0, instance.terminal.rows - 1)
     }
@@ -663,8 +666,8 @@ defineExpose({
   height: 100%;
   display: flex;
   min-height: 0;
-  background: var(--terminal-theme-background, #1E1E1E);
-  border-top: 1px solid #27272A;
+  background: var(--terminal-theme-surface, transparent);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .terminal-main {
@@ -673,7 +676,7 @@ defineExpose({
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--terminal-theme-background, #1E1E1E);
+  background: transparent;
 }
 
 .terminal-stage,
@@ -688,14 +691,14 @@ defineExpose({
 .terminal-stage {
   position: relative;
   overflow: hidden;
-  background: var(--terminal-theme-background, #1E1E1E);
+  background: transparent;
 }
 
 .terminal-instance {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: var(--terminal-theme-background, #1E1E1E);
+  background: transparent;
 }
 
 .terminal-host {
@@ -705,7 +708,7 @@ defineExpose({
   padding: 8px 0 8px 8px;
   box-sizing: border-box;
   overflow: hidden;
-  background: var(--terminal-theme-background, #1E1E1E);
+  background: transparent;
 }
 
 .terminal-shell {
@@ -713,7 +716,7 @@ defineExpose({
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: var(--terminal-theme-background, #1E1E1E);
+  background: transparent;
 }
 
 .terminal-overlay {
@@ -729,7 +732,7 @@ defineExpose({
 }
 
 .terminal-sidebar {
-  border-left: 1px solid #27272A;
+  border-left: 1px solid rgba(255, 255, 255, 0.05);
   background: var(--terminal-theme-sidebar-background, #1E1E1E);
   display: flex;
   flex-direction: column;
@@ -776,7 +779,7 @@ defineExpose({
 .terminal-sidebar-list::-webkit-scrollbar-thumb {
   background: #52525B;
   border-radius: 4px;
-  border: 2px solid var(--terminal-theme-sidebar-background, #1E1E1E);
+  border: 2px solid transparent;
 }
 
 .terminal-sidebar-list::-webkit-scrollbar-thumb:hover {
@@ -803,7 +806,7 @@ defineExpose({
 
 .terminal-sidebar-btn:hover,
 .terminal-sidebar-btn.active {
-  background: #27272A;
+  background: rgba(255, 255, 255, 0.055);
   color: #F4F4F5;
 }
 
@@ -813,7 +816,7 @@ defineExpose({
   padding: 0;
   align-items: center;
   justify-content: center;
-  background: var(--terminal-theme-sidebar-background, #1E1E1E);
+  background: transparent;
 }
 
 .terminal-tab-main {
@@ -899,12 +902,20 @@ defineExpose({
   height: 100%;
   width: 100%;
   box-sizing: border-box;
-  background: var(--terminal-theme-background, #1E1E1E);
+  background: transparent !important;
 }
 
 .terminal-host :deep(.xterm-screen),
 .terminal-host :deep(.xterm-rows) {
-  background: var(--terminal-theme-background, #1E1E1E);
+  background: transparent !important;
+}
+
+.terminal-host :deep(.xterm-screen canvas),
+.terminal-host :deep(.xterm-text-layer),
+.terminal-host :deep(.xterm-selection-layer),
+.terminal-host :deep(.xterm-link-layer),
+.terminal-host :deep(.xterm-cursor-layer) {
+  background: transparent !important;
 }
 
 .terminal-host :deep(.xterm-viewport) {
@@ -915,7 +926,7 @@ defineExpose({
   scrollbar-width: thin;
   scrollbar-color: #52525B transparent;
   box-sizing: border-box;
-  background: var(--terminal-theme-background, #1E1E1E);
+  background: transparent !important;
 }
 
 .terminal-host :deep(.xterm-viewport)::-webkit-scrollbar {
@@ -930,7 +941,7 @@ defineExpose({
 .terminal-host :deep(.xterm-viewport)::-webkit-scrollbar-thumb {
   background: #52525B;
   border-radius: 4px;
-  border: 2px solid var(--terminal-theme-background, #1E1E1E);
+  border: 2px solid transparent;
 }
 
 .terminal-host :deep(.xterm-viewport)::-webkit-scrollbar-thumb:hover {

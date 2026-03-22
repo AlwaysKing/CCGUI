@@ -30,6 +30,15 @@ const terminalPanelVisible = ref(false)
 const terminalPanelHeight = ref(220)
 const isTerminalResizing = ref(false)
 const terminalRunningState = ref({ hasRunning: false, count: 0 })
+const sidebarPanelLayout = ref({
+  showConfigPanel: false,
+  fileSectionHeight: 48
+})
+const latestProjectSettings = ref({})
+const isRestoringProjectWorkspace = ref(false)
+const hasLoadedProjectWorkspace = ref(false)
+let persistProjectWorkspaceTimer = null
+let projectWorkspaceRestoreToken = 0
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
 const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
@@ -69,7 +78,7 @@ const {
   handleSwitchProject,
   handleGoHomeFromSidebar,
   handleOpenProjectConfig,
-  handleProjectConfigSaved,
+  handleProjectConfigSaved: handleProjectConfigSavedBase,
   handleSettingsSaved: handleWorkspaceSettingsSaved,
   handleOpenSessionConfig,
   handleDeleteSessionConfig,
@@ -92,8 +101,157 @@ async function handleSettingsSaved() {
   await terminalPanelRef.value?.refreshAppearance?.()
 }
 
+async function handleProjectConfigSaved() {
+  await handleProjectConfigSavedBase()
+  await refreshProjectSettingsCache()
+}
+
+function clamp(value, min, max, fallback) {
+  const nextValue = Number(value)
+  if (!Number.isFinite(nextValue)) {
+    return fallback
+  }
+  return Math.max(min, Math.min(max, nextValue))
+}
+
+function normalizeSidebarPanelLayout(layout = {}) {
+  return {
+    showConfigPanel: Boolean(layout?.showConfigPanel),
+    fileSectionHeight: clamp(layout?.fileSectionHeight, 20, 75, 48)
+  }
+}
+
+function normalizeWorkspaceLayout(layout = {}) {
+  return {
+    sidebarWidth: clamp(layout?.sidebarWidth, 180, 500, 260),
+    sidebarCollapsed: Boolean(layout?.sidebarCollapsed),
+    previewWidth: clamp(layout?.previewWidth, 24, 65, 42),
+    isChatCollapsed: Boolean(layout?.isChatCollapsed),
+    lastExpandedPreviewWidth: clamp(layout?.lastExpandedPreviewWidth, 24, 65, 42),
+    terminalPanelVisible: Boolean(layout?.terminalPanelVisible),
+    terminalPanelHeight: clamp(layout?.terminalPanelHeight, TERMINAL_MIN_HEIGHT, TERMINAL_MAX_HEIGHT, 220),
+    sidebarPanelLayout: normalizeSidebarPanelLayout(layout?.sidebarPanelLayout)
+  }
+}
+
+function buildWorkspaceLayoutSnapshot() {
+  return {
+    sidebarWidth: clamp(sidebarWidth.value, 180, 500, 260),
+    sidebarCollapsed: Boolean(sidebarCollapsed.value),
+    previewWidth: clamp(previewWidth.value, 24, 65, 42),
+    isChatCollapsed: Boolean(isChatCollapsed.value),
+    lastExpandedPreviewWidth: clamp(lastExpandedPreviewWidth.value, 24, 65, 42),
+    terminalPanelVisible: Boolean(terminalPanelVisible.value),
+    terminalPanelHeight: clamp(terminalPanelHeight.value, TERMINAL_MIN_HEIGHT, TERMINAL_MAX_HEIGHT, 220),
+    sidebarPanelLayout: normalizeSidebarPanelLayout(sidebarPanelLayout.value)
+  }
+}
+
+async function refreshProjectSettingsCache(projectId = store.currentProject?.id) {
+  if (!projectId) {
+    latestProjectSettings.value = {}
+    return {}
+  }
+
+  const result = await window.electronAPI.getProjectConfig({ projectId })
+  const settings = result?.config?.settings || {}
+  latestProjectSettings.value = settings
+  return settings
+}
+
+async function restoreProjectWorkspaceState(project) {
+  const projectId = project?.id
+  projectWorkspaceRestoreToken += 1
+  const restoreToken = projectWorkspaceRestoreToken
+
+  if (persistProjectWorkspaceTimer) {
+    clearTimeout(persistProjectWorkspaceTimer)
+    persistProjectWorkspaceTimer = null
+  }
+
+  hasLoadedProjectWorkspace.value = false
+  latestProjectSettings.value = {}
+
+  if (!projectId) {
+    return
+  }
+
+  const settings = await refreshProjectSettingsCache(projectId)
+  if (restoreToken !== projectWorkspaceRestoreToken) {
+    return
+  }
+
+  const layout = normalizeWorkspaceLayout(settings.workspaceLayout || {})
+  const filePreviewState = settings.filePreviewState || {}
+
+  isRestoringProjectWorkspace.value = true
+  try {
+    sidebarWidth.value = layout.sidebarWidth
+    sidebarCollapsed.value = layout.sidebarCollapsed
+    previewWidth.value = layout.previewWidth
+    isChatCollapsed.value = layout.isChatCollapsed
+    lastExpandedPreviewWidth.value = layout.lastExpandedPreviewWidth
+    terminalPanelVisible.value = layout.terminalPanelVisible
+    terminalPanelHeight.value = layout.terminalPanelHeight
+    sidebarPanelLayout.value = layout.sidebarPanelLayout
+
+    await nextTick()
+    sessionSidebarRef.value?.applyLayoutState?.(layout.sidebarPanelLayout)
+    await fileBrowserStore.restoreWorkspaceState?.(filePreviewState)
+  } finally {
+    if (restoreToken === projectWorkspaceRestoreToken) {
+      isRestoringProjectWorkspace.value = false
+    }
+  }
+
+  if (restoreToken !== projectWorkspaceRestoreToken) {
+    return
+  }
+
+  hasLoadedProjectWorkspace.value = true
+}
+
+async function persistProjectWorkspaceState() {
+  if (!store.currentProject?.id || !hasLoadedProjectWorkspace.value || isRestoringProjectWorkspace.value) {
+    return
+  }
+
+  const nextSettings = {
+    ...latestProjectSettings.value,
+    workspaceLayout: buildWorkspaceLayoutSnapshot(),
+    filePreviewState: fileBrowserStore.exportWorkspaceState()
+  }
+
+  latestProjectSettings.value = nextSettings
+  await window.electronAPI.updateProjectConfig({
+    projectId: store.currentProject.id,
+    updates: {
+      settings: nextSettings
+    }
+  })
+}
+
+function schedulePersistProjectWorkspaceState() {
+  if (!store.currentProject?.id || !hasLoadedProjectWorkspace.value || isRestoringProjectWorkspace.value) {
+    return
+  }
+
+  if (persistProjectWorkspaceTimer) {
+    clearTimeout(persistProjectWorkspaceTimer)
+  }
+
+  persistProjectWorkspaceTimer = setTimeout(() => {
+    persistProjectWorkspaceTimer = null
+    persistProjectWorkspaceState()
+  }, 220)
+}
+
 async function handlePreviewFile(node) {
   await fileBrowserStore.previewFile(node.path)
+}
+
+function handleSidebarLayoutChange(nextLayout) {
+  sidebarPanelLayout.value = normalizeSidebarPanelLayout(nextLayout)
 }
 
 async function handlePinFile(node) {
@@ -272,6 +430,10 @@ watch(() => fileBrowserStore.shouldShowPreviewPanel, (visible) => {
   }
 })
 
+watch(() => store.currentProject?.id, async () => {
+  await restoreProjectWorkspaceState(store.currentProject)
+}, { immediate: true })
+
 watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
   if (!nextSessionId || nextSessionId === previousSessionId) {
     return
@@ -280,6 +442,24 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
   if (fileBrowserStore.shouldShowPreviewPanel && isChatCollapsed.value) {
     expandChatPanel(true)
   }
+})
+
+watch([
+  sidebarWidth,
+  sidebarCollapsed,
+  previewWidth,
+  isChatCollapsed,
+  lastExpandedPreviewWidth,
+  terminalPanelVisible,
+  terminalPanelHeight,
+  () => sidebarPanelLayout.value.showConfigPanel,
+  () => sidebarPanelLayout.value.fileSectionHeight
+], () => {
+  schedulePersistProjectWorkspaceState()
+})
+
+watch(() => JSON.stringify(fileBrowserStore.exportWorkspaceState()), () => {
+  schedulePersistProjectWorkspaceState()
 })
 
 // Initialize
@@ -296,17 +476,66 @@ onMounted(async () => {
   window.addEventListener('mouseup', stopPreviewResize)
   window.addEventListener('mousemove', handleTerminalResize)
   window.addEventListener('mouseup', stopTerminalResize)
+  window.addEventListener('ccgui-shortcut', handleShortcutEvent)
 
 })
 
 onUnmounted(() => {
+  if (persistProjectWorkspaceTimer) {
+    clearTimeout(persistProjectWorkspaceTimer)
+    persistProjectWorkspaceTimer = null
+  }
   window.removeEventListener('mousemove', handleResize)
   window.removeEventListener('mouseup', stopResize)
   window.removeEventListener('mousemove', handlePreviewResize)
   window.removeEventListener('mouseup', stopPreviewResize)
   window.removeEventListener('mousemove', handleTerminalResize)
   window.removeEventListener('mouseup', stopTerminalResize)
+  window.removeEventListener('ccgui-shortcut', handleShortcutEvent)
 })
+
+function handleShortcutEvent(event) {
+  const action = event?.detail?.action
+
+  if (action === 'open-settings') {
+    showSettingsDialog.value = true
+    return
+  }
+
+  if (action === 'create-primary') {
+    handleNewSession()
+    return
+  }
+
+  if (action === 'toggle-sidebar') {
+    toggleSidebar()
+    return
+  }
+
+  if (action === 'toggle-project-board') {
+    sessionSidebarRef.value?.toggleConfigPanel?.()
+    return
+  }
+
+  if (action === 'toggle-terminal') {
+    toggleTerminalPanel()
+    return
+  }
+
+  if (action === 'toggle-preview') {
+    fileBrowserStore.togglePreviewPanel()
+    return
+  }
+
+  if (action === 'toggle-file-panel') {
+    fileBrowserStore.toggleFilePanel()
+    return
+  }
+
+  if (action === 'toggle-chat-panel') {
+    toggleChatPanelCollapse()
+  }
+}
 </script>
 
 <template>
@@ -371,6 +600,7 @@ onUnmounted(() => {
         @deleteFileNode="handleDeleteFileNode"
         @addFileToChat="handleAddFileToChat"
         @toggleTerminalPanel="toggleTerminalPanel"
+        @layoutChange="handleSidebarLayoutChange"
       />
 
       <!-- Resize Handle -->
@@ -595,6 +825,10 @@ onUnmounted(() => {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  background:
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.045) 0%, transparent 24%),
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.022) 0%, transparent 20%),
+    linear-gradient(180deg, #14161a 0%, #17191e 100%);
 }
 
 .main-content {
@@ -604,6 +838,7 @@ onUnmounted(() => {
   flex-direction: row;
   min-width: 0;
   min-height: 0;
+  background: transparent;
 }
 
 .chat-panel {
@@ -622,6 +857,7 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   overflow: hidden;
+  background: transparent;
 }
 
 .chat-panel-host.collapsed {
@@ -667,6 +903,7 @@ onUnmounted(() => {
   min-height: 0;
   overflow: hidden;
   border-top: 1px solid #27272A;
+  background: transparent;
 }
 
 .empty-state-wrapper {
@@ -678,11 +915,12 @@ onUnmounted(() => {
 
 .empty-top-bar {
   height: 41.5px;
-  background: #1E1E1E;
+  background: transparent;
   flex-shrink: 0;
   display: flex;
   align-items: stretch;
   -webkit-app-region: drag;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .empty-top-bar.with-sidebar-toggle {
@@ -692,6 +930,7 @@ onUnmounted(() => {
 .empty-top-drag-fill {
   flex: 1;
   min-width: 0;
+  background: transparent;
 }
 
 .sidebar-safe-spacer {
@@ -701,15 +940,15 @@ onUnmounted(() => {
   align-items: stretch;
   justify-content: flex-end;
   padding-left: 80px;
-  background: #1E1E1E;
+  background: transparent;
 }
 
 .sidebar-safe-btn {
   width: 44px;
   height: 41.5px;
   border: none;
-  border-left: 1px solid #27272A;
-  background: #1E1E1E;
+  border-left: 1px solid rgba(255, 255, 255, 0.05);
+  background: transparent;
   color: #E4E4E7;
   display: inline-flex;
   align-items: center;
@@ -720,7 +959,7 @@ onUnmounted(() => {
 }
 
 .sidebar-safe-btn:hover {
-  background: #27272A;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .empty-state {
@@ -759,5 +998,30 @@ onUnmounted(() => {
 
 .start-btn:hover {
   background: #EA580C;
+}
+
+/* App shell gradient trial */
+.workspace-layout {
+  background:
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.05), transparent 22%),
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.03), transparent 18%),
+    linear-gradient(180deg, #121316 0%, #17191D 100%);
+}
+
+.terminal-panel-host {
+  border-top-color: rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(18, 19, 22, 0.96), rgba(14, 15, 18, 0.98));
+}
+
+.empty-top-bar,
+.sidebar-safe-spacer,
+.sidebar-safe-btn {
+  background: #15171B;
+}
+
+.empty-state {
+  background:
+    radial-gradient(circle at top, rgba(249, 115, 22, 0.05), transparent 22%),
+    transparent;
 }
 </style>

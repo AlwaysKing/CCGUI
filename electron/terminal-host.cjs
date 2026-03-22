@@ -6,6 +6,51 @@ let nodePty = null
 let terminalSequence = 0
 const terminalSessions = new Map()
 
+function dedupePaths(paths = []) {
+  return [...new Set(paths.filter(Boolean))]
+}
+
+function isWritableRealPath(targetPath) {
+  if (!targetPath) {
+    return false
+  }
+
+  if (targetPath.includes('.asar.unpacked')) {
+    return true
+  }
+
+  if (targetPath.includes('.asar')) {
+    return false
+  }
+
+  return true
+}
+
+function getNodePtyModuleRoots() {
+  const roots = []
+
+  try {
+    const packageJsonPath = require.resolve('node-pty/package.json')
+    const packageRoot = path.dirname(packageJsonPath)
+    roots.push(packageRoot)
+
+    if (packageRoot.includes('.asar')) {
+      roots.push(packageRoot.replace('.asar', '.asar.unpacked'))
+    }
+  } catch (error) {
+    // Fall back to conventional locations when resolution fails.
+  }
+
+  roots.push(path.join(__dirname, '..', 'node_modules', 'node-pty'))
+
+  if (process.resourcesPath) {
+    roots.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'node-pty'))
+    roots.push(path.join(process.resourcesPath, 'app.asar', 'node_modules', 'node-pty'))
+  }
+
+  return dedupePaths(roots)
+}
+
 function getNodePty() {
   if (!nodePty) {
     nodePty = require('node-pty')
@@ -61,38 +106,19 @@ function ensureNodePtySpawnHelperExecutable() {
     return
   }
 
-  const helperPaths = [
-    path.join(
-      __dirname,
-      '..',
-      'node_modules',
-      'node-pty',
-      'prebuilds',
-      `${process.platform}-${process.arch}`,
-      'spawn-helper'
-    ),
-    path.join(
-      __dirname,
-      '..',
-      'node_modules',
-      'node-pty',
-      'build',
-      'Release',
-      'spawn-helper'
-    ),
-    path.join(
-      __dirname,
-      '..',
-      'node_modules',
-      'node-pty',
-      'build',
-      'Debug',
-      'spawn-helper'
-    )
-  ]
+  const helperPaths = dedupePaths(
+    getNodePtyModuleRoots().flatMap(root => ([
+      path.join(root, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper'),
+      path.join(root, 'build', 'Release', 'spawn-helper'),
+      path.join(root, 'build', 'Debug', 'spawn-helper')
+    ]))
+  )
 
   for (const helperPath of helperPaths) {
     if (!fs.existsSync(helperPath)) {
+      continue
+    }
+    if (!isWritableRealPath(helperPath)) {
       continue
     }
 

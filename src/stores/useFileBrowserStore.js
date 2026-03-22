@@ -104,6 +104,17 @@ function createTabBase(filePath, options = {}) {
   }
 }
 
+function sanitizeRestoredTabs(entries = []) {
+  return entries
+    .map(entry => ({
+      path: normalizePath(entry?.path || ''),
+      pinned: Boolean(entry?.pinned),
+      isPreview: Boolean(entry?.isPreview),
+      diffMode: Boolean(entry?.diffMode)
+    }))
+    .filter(entry => entry.path)
+}
+
 export const useFileBrowserStore = defineStore('file-browser', () => {
   const appStore = useAppStore()
 
@@ -829,6 +840,56 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     isFilePanelVisible.value = !isFilePanelVisible.value
   }
 
+  function exportWorkspaceState() {
+    return {
+      isFilePanelVisible: Boolean(isFilePanelVisible.value),
+      isPreviewPanelVisible: Boolean(isPreviewPanelVisible.value),
+      activeFilePath: normalizePath(activeFilePath.value),
+      previewTabId: normalizePath(previewTabId.value),
+      tabs: tabs.value.map(tab => ({
+        path: normalizePath(tab.path),
+        pinned: Boolean(tab.pinned),
+        isPreview: Boolean(tab.isPreview),
+        diffMode: Boolean(tab.diffMode)
+      }))
+    }
+  }
+
+  async function restoreWorkspaceState(state = {}) {
+    const normalizedTabs = sanitizeRestoredTabs(state?.tabs || [])
+    const requestedActiveFilePath = normalizePath(state?.activeFilePath || '')
+    const requestedPreviewTabId = normalizePath(state?.previewTabId || '')
+
+    tabs.value = []
+    activeFilePath.value = ''
+    previewTabId.value = ''
+
+    for (const tabState of normalizedTabs) {
+      const restoredTab = await openFile(tabState.path, {
+        pinned: tabState.pinned,
+        preview: tabState.isPreview && !tabState.pinned
+      })
+
+      if (restoredTab && tabState.diffMode) {
+        await toggleTabDiff(tabState.path)
+      }
+    }
+
+    const restoredActiveTab = tabs.value.find(tab => tab.path === requestedActiveFilePath)
+    if (restoredActiveTab) {
+      activeFilePath.value = restoredActiveTab.path
+      selectedNodePath.value = restoredActiveTab.path
+    } else if (tabs.value.length > 0) {
+      activeFilePath.value = tabs.value[0].path
+      selectedNodePath.value = tabs.value[0].path
+    }
+
+    const restoredPreviewTab = tabs.value.find(tab => tab.id === requestedPreviewTabId && !tab.pinned)
+    previewTabId.value = restoredPreviewTab?.id || previewTabId.value
+    isFilePanelVisible.value = Boolean(state?.isFilePanelVisible)
+    isPreviewPanelVisible.value = Boolean(state?.isPreviewPanelVisible)
+  }
+
   watch(projectPath, async (nextProjectPath, previousProjectPath) => {
     if (nextProjectPath === previousProjectPath) return
     resetState()
@@ -886,6 +947,8 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     closeOtherTabs,
     hidePreviewPanel,
     togglePreviewPanel,
+    exportWorkspaceState,
+    restoreWorkspaceState,
     ensureFileLoaded,
     ensureDiffBaseLoaded,
     toggleTabDiff,

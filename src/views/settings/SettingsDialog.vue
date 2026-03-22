@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted } from 'vue'
 import ModelSettings from './components/ModelSettings.vue'
 import PromptSettings from './components/PromptSettings.vue'
 import ChatThemeSettings from './components/ChatThemeSettings.vue'
+import ShortcutSettings from './components/ShortcutSettings.vue'
 import TerminalSettings from './components/TerminalSettings.vue'
 import SoftwareSettings from './components/SoftwareSettings.vue'
 import ModelEditDialog from './components/dialogs/ModelEditDialog.vue'
@@ -23,6 +24,7 @@ const {
   modelSectionRef,
   promptSectionRef,
   chatThemeSectionRef,
+  shortcutSectionRef,
   terminalSectionRef,
   softwareSectionRef,
   navItems,
@@ -160,6 +162,13 @@ useDialogStack(computed(() => true), handleClose)
               <polyline points="4 17 10 11 4 5"/>
               <line x1="12" y1="19" x2="20" y2="19"/>
             </svg>
+            <svg v-else-if="item.icon === 'shortcut'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="5" width="18" height="14" rx="2"/>
+              <path d="M7 9h.01"/>
+              <path d="M11 9h.01"/>
+              <path d="M15 9h.01"/>
+              <path d="M7 13h10"/>
+            </svg>
             <span>{{ item.label }}</span>
           </div>
         </div>
@@ -216,6 +225,14 @@ useDialogStack(computed(() => true), handleClose)
 
           <div ref="chatThemeSectionRef">
             <ChatThemeSettings
+              :settings="settings"
+              @update:settings="settings = $event"
+              @save-settings="saveSoftwareSettings"
+            />
+          </div>
+
+          <div ref="shortcutSectionRef">
+            <ShortcutSettings
               :settings="settings"
               @update:settings="settings = $event"
               @save-settings="saveSoftwareSettings"
@@ -402,5 +419,31 @@ useDialogStack(computed(() => true), handleClose)
   flex: 1;
   overflow-y: auto;
   padding: 24px;
+}
+
+/* App shell gradient trial */
+.dialog-overlay {
+  background:
+    radial-gradient(circle at top, rgba(249, 115, 22, 0.06), transparent 24%),
+    rgba(0, 0, 0, 0.72);
+}
+
+.settings-dialog {
+  background:
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.06), transparent 26%),
+    linear-gradient(180deg, #1B1E23 0%, #17191D 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 24px 64px rgba(0, 0, 0, 0.46);
+}
+
+.settings-nav {
+  background: linear-gradient(180deg, rgba(20, 22, 27, 0.98) 0%, rgba(17, 18, 22, 1) 100%);
+  border-right-color: rgba(255, 255, 255, 0.06);
+}
+
+.settings-content {
+  background: linear-gradient(180deg, rgba(26, 28, 33, 0.94), rgba(23, 25, 29, 0.98));
 }
 </style>

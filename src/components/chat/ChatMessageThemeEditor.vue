@@ -383,9 +383,14 @@ onUnmounted(() => {
 
 .theme-controls-pane,
 .theme-preview-pane {
-  border: 1px solid #3F3F46;
-  border-radius: 10px;
-  background: linear-gradient(180deg, #202024 0%, #17171A 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at top left, rgba(249, 115, 22, 0.04), transparent 28%),
+    linear-gradient(180deg, rgba(28, 30, 35, 0.94) 0%, rgba(21, 23, 28, 0.96) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 10px 24px rgba(0, 0, 0, 0.14);
   overflow: hidden;
 }
 
@@ -450,7 +455,7 @@ onUnmounted(() => {
 .row-label,
 .field-label {
   font-size: 12px;
-  color: #A1A1AA;
+  color: #A8ABB6;
 }
 
 .theme-grid {
@@ -466,23 +471,31 @@ onUnmounted(() => {
 }
 
 .theme-select {
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025) 0%, rgba(255, 255, 255, 0.01) 100%),
+    rgba(18, 20, 24, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
   padding: 8px 10px;
   color: #F4F4F5;
   font-size: 13px;
+  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .theme-select:focus {
   outline: none;
   border-color: #F97316;
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.12);
+}
+
+.theme-select:hover {
+  border-color: rgba(255, 255, 255, 0.11);
 }
 
 .theme-hint {
   margin: 0;
   font-size: 12px;
-  color: #71717A;
+  color: #8B8E98;
 }
 
 .theme-preview-pane {

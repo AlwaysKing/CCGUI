@@ -1649,8 +1649,10 @@ async function handleQuestionAnswer(requestId, answers) {
 .top-bar {
   display: flex;
   align-items: stretch;
-  background: #1E1E1E;
-  border-bottom: 1px solid #27272A;
+  background: rgba(17, 19, 23, 0.42);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   -webkit-app-region: drag;
 }
 
@@ -1672,7 +1674,7 @@ async function handleQuestionAnswer(requestId, answers) {
   justify-content: center;
   background: transparent;
   border: none;
-  border-right: 1px solid #27272A;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
   color: #71717A;
   cursor: pointer;
   transition: all 0.2s;
@@ -1770,7 +1772,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .env-detail-btn {
   margin-left: auto;
-  background: #27272A;
+  background: rgba(255, 255, 255, 0.04);
   border: none;
   color: #71717A;
   cursor: pointer;
@@ -1782,7 +1784,7 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .env-detail-btn:hover {
-  background: #3F3F46;
+  background: rgba(255, 255, 255, 0.08);
   color: #A1A1AA;
 }
 
@@ -1791,12 +1793,14 @@ async function handleQuestionAnswer(requestId, answers) {
   top: 100%;
   left: 0;
   right: 0;
-  background: #1E1E1E;
-  border-bottom: 1px solid #27272A;
+  background: rgba(18, 20, 24, 0.82);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   padding: 12px 16px;
   z-index: 100;
   -webkit-app-region: no-drag;
   cursor: default;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
 }
 
 .env-detail-row {
@@ -1841,9 +1845,10 @@ async function handleQuestionAnswer(requestId, answers) {
   overflow-y: auto;
   padding: 20px;
   position: relative;
+  background: transparent;
   /* Modern scrollbar styling */
   scrollbar-width: thin;
-  scrollbar-color: #52525B #1E1E1E;
+  scrollbar-color: #52525B transparent;
 }
 
 .conversation-wave-rail {
@@ -2262,11 +2267,12 @@ async function handleQuestionAnswer(requestId, answers) {
 .input-area {
   position: relative;
   padding: 20px;
-  border-top: 1px solid #3F3F46;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   -webkit-app-region: no-drag;
   flex: 0 0 auto;
   min-height: 165px;
+  background: transparent;
 }
 
 /* 输入框容器 */
@@ -2497,14 +2503,14 @@ async function handleQuestionAnswer(requestId, answers) {
 }
 
 .messages::-webkit-scrollbar-track {
-  background: #18181B;
+  background: transparent;
   border-radius: 4px;
 }
 
 .messages::-webkit-scrollbar-thumb {
   background: #52525B;
   border-radius: 4px;
-  border: 2px solid #18181B;
+  border: 2px solid transparent;
 }
 
 .messages::-webkit-scrollbar-thumb:hover {

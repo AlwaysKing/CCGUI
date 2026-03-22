@@ -1,8 +1,8 @@
 # Claude Code 通信协议完整文档
 
-**文档版本**: 2.0
-**最后更新**: 2026-03-13
-**适用版本**: Claude Code 2.1.71+
+**文档版本**: 2.1
+**最后更新**: 2026-03-22
+**适用版本**: Claude Code 2.1.81+
 
 ---
 
@@ -841,6 +841,154 @@ Claude 的响应内容。
   "is_error": false
 }
 ```
+
+### 5. Image Block
+
+Claude Code VS Code 插件在发送图片附件时，不会只传本地路径，而是先把图片读成 Data URL，再转成 Anthropic 图片内容块。
+
+```json
+{
+  "type": "image",
+  "source": {
+    "type": "base64",
+    "media_type": "image/png",
+    "data": "<base64>"
+  }
+}
+```
+
+### 6. Document Block
+
+普通文件和 PDF 也不会作为独立 `attachments` 字段发送，而是直接变成 `message.content[]` 中的文档块。
+
+文本文件：
+
+```json
+{
+  "type": "document",
+  "source": {
+    "type": "text",
+    "media_type": "text/plain",
+    "data": "文件全文内容"
+  },
+  "title": "README.md"
+}
+```
+
+PDF：
+
+```json
+{
+  "type": "document",
+  "source": {
+    "type": "base64",
+    "media_type": "application/pdf",
+    "data": "<base64>"
+  },
+  "title": "spec.pdf"
+}
+```
+
+### 附件处理链路（VS Code Claude Code 插件）
+
+基于本地扩展 `anthropic.claude-code-2.1.81-darwin-arm64` 的 WebView 代码，可以确认 Claude Code 插件对附件的处理链路如下：
+
+1. 用户通过 `attach-file` 或拖拽添加文件
+2. 前端先筛选支持的类型：`image/*`、`application/pdf`、文本类文件
+3. 所有支持的文件都会先经 `FileReader.readAsDataURL()` 读入内存
+4. 发送前再转成 Anthropic `message.content[]` 块
+5. 最终作为一条 `user` 消息发送：
+
+```json
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": [
+      { "type": "image", "source": { "...": "..." } },
+      { "type": "document", "source": { "...": "..." }, "title": "..." },
+      { "type": "text", "text": "用户输入文本" }
+    ]
+  }
+}
+```
+
+这意味着 Claude Code 和 Codex 的关键区别是：
+
+- Claude Code：图片和文件都直接嵌入 `message.content[]`
+- Codex：图片进 `input`，普通文件进独立 `attachments`
+
+### 大文件行为说明
+
+从当前插件代码看，前端能确认的行为是：
+
+- 图片会先转成 base64
+- PDF 会先转成 base64
+- 文本文件会直接把全文放进 `document.source.data`
+
+目前没有在前端代码里找到清晰的“附件大小上限”或“超限前置拦截”逻辑。因此更合理的判断是：
+
+- Claude Code 前端会先尝试读取整个文件
+- 大文件会直接放大请求体体积和内存占用
+- 真正的失败点更可能出现在：
+  - WebView / 浏览器内存压力
+  - 后端请求体限制
+  - 模型上下文长度限制
+  - 服务端超时或拒绝
+
+进一步补查后，可以再确认两点：
+
+- 目前没有在附件发送链路附近找到明确的前端错误文案或门槛判断，例如：
+  - `file too large`
+  - `attachment too large`
+  - `body too large`
+  - `input_too_large`
+  - `message too long`
+- 搜到的 `too large` / `maxFileSize` 绝大部分来自 Monaco 编辑器自身逻辑，不属于 Claude 附件上传链路
+
+因此，在当前可见代码范围内，更合理的结论仍然是：
+
+- Claude Code 前端不会先按大小优雅拦截附件
+- 而是先读取，再尝试发送
+- 超限失败更可能发生在后端或模型侧
+
+### 本地会话落盘中的 attachment 记录
+
+在 VS Code 扩展的会话存储层，可以看到它在读取本地 `.jsonl` 会话时，显式兼容了 `attachment` 记录类型：
+
+```js
+if (
+  O.type === "user" ||
+  O.type === "assistant" ||
+  O.type === "attachment" ||
+  O.type === "system"
+) {
+  K.set(O.uuid, O)
+}
+```
+
+这说明 Claude Code 的本地会话格式理论上允许存在：
+
+```json
+{ "type": "attachment", ... }
+```
+
+但当前进一步检查发现：
+
+- 扩展当前常规 `saveSession(...)` 逻辑里，没有看到显式写出 `attachment` 行的实现
+- 本机 `~/.claude/projects/**/*.jsonl` 中，也没有搜到真实的 `type: "attachment"` 样本
+
+因此目前最保守的判断是：
+
+- 存储层兼容 `attachment` 记录
+- 但常规发送链路不一定会把附件单独落成一条 `attachment` 记录
+- 也可能只在某些特殊同步/桥接场景下出现
+
+工程含义是：
+
+- Claude Code 的文件附件更接近“直接把文件内容发给模型”
+- 它不适合无保护地附加超大文本、超大图片、超大 PDF
+- 如果 CCGUI 后续要兼容 Claude 附件模式，建议在前端主动增加大小门槛和类型分流策略
 
 ---
 

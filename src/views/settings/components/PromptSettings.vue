@@ -167,8 +167,8 @@ const hoveredDocumentId = ref(null)
 <style scoped>
 .prompts-section,
 .documents-section {
-  background: #27272A;
-  border: 1px solid #3F3F46;
+  background: var(--app-soft-panel);
+  border: 1px solid var(--app-soft-panel-border);
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 24px;
@@ -183,8 +183,8 @@ const hoveredDocumentId = ref(null)
 
 .prompt-card-item,
 .document-card-item {
-  background: #1F1F23;
-  border: 1px solid #3F3F46;
+  background: var(--app-soft-surface);
+  border: 1px solid var(--app-soft-border);
   border-radius: 8px;
   padding: 16px;
   transition: all 0.2s;
@@ -192,8 +192,8 @@ const hoveredDocumentId = ref(null)
 
 .prompt-card-item:hover,
 .document-card-item:hover{
-  background: #2D2D30;
-  border-color: #52525B;
+  background: var(--app-soft-surface-hover);
+  border-color: var(--app-soft-border-hover);
 }
 
 .document-card-item.inactive{
@@ -242,7 +242,7 @@ const hoveredDocumentId = ref(null)
   font-size: 11px;
   color: #6B7280;
   background: transparent;
-  border: 1px solid #52525B;
+  border: 1px solid var(--app-soft-border);
   border-radius: 4px;
   padding: 1px 8px;
   cursor: pointer;
@@ -251,7 +251,7 @@ const hoveredDocumentId = ref(null)
 
 .btn-activate:hover {
   color: #9CA3AF;
-  border-color: #71717A;
+  border-color: var(--app-soft-border-hover);
 }
 
 .btn-activate.active {

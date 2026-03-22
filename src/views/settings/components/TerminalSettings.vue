@@ -99,9 +99,9 @@ function updateSettings(nextSettings, autoSave = false) {
 
 <style scoped>
 .setting-select {
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
+  background: var(--app-soft-surface);
+  border: 1px solid var(--app-soft-border);
+  border-radius: 8px;
   padding: 8px 12px;
   color: #F4F4F5;
   font-size: 13px;
@@ -112,13 +112,14 @@ function updateSettings(nextSettings, autoSave = false) {
 .setting-select:focus {
   outline: none;
   border-color: #F97316;
+  background: var(--app-soft-surface-hover);
 }
 
 .setting-input {
   width: 100%;
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
+  background: var(--app-soft-surface);
+  border: 1px solid var(--app-soft-border);
+  border-radius: 8px;
   padding: 10px 12px;
   color: #F4F4F5;
   font-size: 13px;
@@ -127,15 +128,16 @@ function updateSettings(nextSettings, autoSave = false) {
 .setting-input:focus {
   outline: none;
   border-color: #F97316;
+  background: var(--app-soft-surface-hover);
 }
 
 .setting-textarea {
   width: 100%;
   min-height: 240px;
   resize: vertical;
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
+  background: var(--app-soft-surface);
+  border: 1px solid var(--app-soft-border);
+  border-radius: 10px;
   padding: 12px;
   color: #F4F4F5;
   font-size: 12px;
@@ -146,5 +148,6 @@ function updateSettings(nextSettings, autoSave = false) {
 .setting-textarea:focus {
   outline: none;
   border-color: #F97316;
+  background: var(--app-soft-surface-hover);
 }
 </style>

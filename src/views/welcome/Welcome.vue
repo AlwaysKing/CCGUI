@@ -491,17 +491,19 @@ function handleShortcutEvent(event) {
 .search-input {
   width: 100%;
   padding: 12px 12px 12px 48px;
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 12px;
   color: #F4F4F5;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
 }
 
 .search-input:focus {
   outline: none;
   border-color: #F97316;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.1);
 }
 
 .search-input::placeholder {
@@ -632,8 +634,8 @@ function handleShortcutEvent(event) {
 }
 
 .project-card {
-  background: #27272A;
-  border: 1px solid #3F3F46;
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 12px;
   padding: 20px;
   cursor: pointer;
@@ -695,8 +697,8 @@ function handleShortcutEvent(event) {
 }
 
 .project-card:hover {
-  background: #2D2D30;
-  border-color: #52525B;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.18);
   transform: translateY(-2px);
 }
 
@@ -704,17 +706,19 @@ function handleShortcutEvent(event) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 120px;
+  min-height: 92px;
+  padding-top: 16px;
+  padding-bottom: 16px;
   border-style: dashed;
 }
 
 .project-card.new-project:hover {
-  border-color: #F97316;
+  border-color: rgba(249, 115, 22, 0.42);
 }
 
 .new-project-icon {
   color: #71717A;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .project-card.new-project:hover .new-project-icon {
@@ -736,13 +740,13 @@ function handleShortcutEvent(event) {
 
 .project-card.missing {
   opacity: 0.5;
-  border-color: #DC2626;
-  background: rgba(239, 68, 68, 0.05);
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(255, 255, 255, 0.024);
 }
 
 .project-card.missing:hover {
   opacity: 0.8;
-  background: rgba(239, 68, 68, 0.1);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .project-icon {

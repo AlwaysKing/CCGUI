@@ -402,7 +402,7 @@ useDialogStack(computed(() => true), handleClose)
 }
 
 .nav-item:hover {
-  background: #27272A;
+  background: var(--app-soft-surface);
   color: #F4F4F5;
 }
 
@@ -429,6 +429,12 @@ useDialogStack(computed(() => true), handleClose)
 }
 
 .settings-dialog {
+  --app-soft-surface: rgba(255, 255, 255, 0.024);
+  --app-soft-surface-hover: rgba(255, 255, 255, 0.05);
+  --app-soft-panel: rgba(255, 255, 255, 0.018);
+  --app-soft-border: rgba(255, 255, 255, 0.13);
+  --app-soft-border-hover: rgba(255, 255, 255, 0.18);
+  --app-soft-panel-border: rgba(255, 255, 255, 0.08);
   background:
     radial-gradient(circle at top right, rgba(249, 115, 22, 0.06), transparent 26%),
     linear-gradient(180deg, #1B1E23 0%, #17191D 100%);

@@ -1079,8 +1079,8 @@ function toggleSectionCollapse(section) {
 }
 
 .default-config-card {
-  background: #27272A;
-  border: 1px solid #3F3F46;
+  background: var(--app-soft-panel);
+  border: 1px solid var(--app-soft-panel-border);
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 24px;
@@ -1088,8 +1088,8 @@ function toggleSectionCollapse(section) {
 }
 
 .proxy-setting-panel {
-  background: #27272A;
-  border: 1px solid #3F3F46;
+  background: var(--app-soft-panel);
+  border: 1px solid var(--app-soft-panel-border);
   border-radius: 8px;
   padding: 0 16px;
   margin-bottom: 24px;
@@ -1097,9 +1097,9 @@ function toggleSectionCollapse(section) {
 
 .setting-input {
   width: 100%;
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
+  background: var(--app-soft-surface);
+  border: 1px solid var(--app-soft-border);
+  border-radius: 8px;
   padding: 10px 12px;
   color: #F4F4F5;
   font-size: 13px;
@@ -1108,6 +1108,7 @@ function toggleSectionCollapse(section) {
 .setting-input:focus {
   outline: none;
   border-color: #F97316;
+  background: var(--app-soft-surface-hover);
 }
 
 .btn-save {
@@ -1133,8 +1134,8 @@ function toggleSectionCollapse(section) {
 }
 
 .model-list-container {
-  background: #27272A;
-  border: 1px solid #3F3F46;
+  background: var(--app-soft-panel);
+  border: 1px solid var(--app-soft-panel-border);
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 24px;
@@ -1174,8 +1175,8 @@ function toggleSectionCollapse(section) {
 }
 
 .model-card {
-  background: #1F1F23;
-  border: 1px solid #3F3F46;
+  background: var(--app-soft-surface);
+  border: 1px solid var(--app-soft-border);
   border-radius: 8px;
   padding: 16px;
   cursor: pointer;
@@ -1183,12 +1184,12 @@ function toggleSectionCollapse(section) {
 }
 
 .model-card:hover {
-  background: #2D2D30;
-  border-color: #52525B;
+  background: var(--app-soft-surface-hover);
+  border-color: var(--app-soft-border-hover);
 }
 
 .model-card.selected {
-  background: #2D2D30;
+  background: var(--app-soft-surface-hover);
 }
 
 .model-card.inactive {

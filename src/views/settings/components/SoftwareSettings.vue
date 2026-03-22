@@ -177,9 +177,9 @@ async function handleTestSound() {
 
 <style scoped>
 .setting-select {
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
+  background: var(--app-soft-surface);
+  border: 1px solid var(--app-soft-border);
+  border-radius: 8px;
   padding: 8px 12px;
   color: #F4F4F5;
   font-size: 13px;
@@ -190,13 +190,14 @@ async function handleTestSound() {
 .setting-select:focus {
   outline: none;
   border-color: #F97316;
+  background: var(--app-soft-surface-hover);
 }
 
 .setting-input {
   width: 100%;
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
+  background: var(--app-soft-surface);
+  border: 1px solid var(--app-soft-border);
+  border-radius: 8px;
   padding: 10px 12px;
   color: #F4F4F5;
   font-size: 13px;
@@ -205,6 +206,7 @@ async function handleTestSound() {
 .setting-input:focus {
   outline: none;
   border-color: #F97316;
+  background: var(--app-soft-surface-hover);
 }
 
 .sound-setting-control {
@@ -224,7 +226,7 @@ async function handleTestSound() {
 
 .btn-test {
   background: transparent;
-  border: 1px solid #52525B;
+  border: 1px solid var(--app-soft-border);
   color: #9CA3AF;
 }
 
@@ -254,7 +256,7 @@ async function handleTestSound() {
   align-items: center;
   justify-content: space-between;
   padding: 16px 0;
-  border-bottom: 1px solid #3F3F46;
+  border-bottom: 1px solid var(--app-soft-panel-border);
 }
 
 .setting-item:last-child {

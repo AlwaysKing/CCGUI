@@ -181,13 +181,15 @@ function scrollToUserMessage() {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  background: #3F3F46;
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 12px;
   padding: 4px 12px;
   max-width: 70%;
   flex-direction: column;
   gap: 4px;
   transform: translateY(-6px);
+  transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 /* 折叠状态：默认显示 */
@@ -214,9 +216,12 @@ function scrollToUserMessage() {
 }
 
 .sticky-content:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.18);
   max-width: none;
   max-height: var(--max-height, 300px);
   padding: 4px 12px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
 }
 
 .sticky-content:hover .sticky-expanded {
@@ -268,7 +273,7 @@ function scrollToUserMessage() {
 }
 
 .scroll-up-btn:hover {
-  background: rgba(113, 113, 122, 0.2);
+  background: rgba(255, 255, 255, 0.06);
   color: #A1A1AA;
 }
 

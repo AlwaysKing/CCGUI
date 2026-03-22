@@ -116,8 +116,8 @@ function resetDefaults() {
 .reset-btn {
   padding: 6px 12px;
   background: transparent;
-  border: 1px solid #3f3f46;
-  border-radius: 6px;
+  border: 1px solid var(--app-soft-border);
+  border-radius: 8px;
   color: #d4d4d8;
   font-size: 12px;
   cursor: pointer;
@@ -125,17 +125,17 @@ function resetDefaults() {
 }
 
 .reset-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: #52525b;
+  background: var(--app-soft-surface-hover);
+  border-color: var(--app-soft-border-hover);
   color: #f4f4f5;
 }
 
 .shortcut-capture {
   min-width: 180px;
   padding: 8px 12px;
-  background: #27272a;
-  border: 1px solid #3f3f46;
-  border-radius: 6px;
+  background: var(--app-soft-surface);
+  border: 1px solid var(--app-soft-border);
+  border-radius: 8px;
   color: #f4f4f5;
   font-size: 13px;
   text-align: center;

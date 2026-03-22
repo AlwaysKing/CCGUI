@@ -15,6 +15,8 @@ CCGUI 采用现代深色主题设计，以深灰色为背景，橙色为强调�
 | `--bg-tertiary` | `#27272A` | 三级背景，用于卡片悬停、选中状态 |
 | `--bg-hover` | `#3F3F46` | 悬停背景，用于按钮、列表项悬停 |
 | `--bg-active` | `#52525B` | 激活背景，用于按下状态 |
+| `--surface-glass-soft` | `rgba(255, 255, 255, 0.024)` | 轻表面卡片背景，用于 Welcome 项目卡等弱透明表面 |
+| `--surface-glass-soft-hover` | `rgba(255, 255, 255, 0.05)` | 轻表面卡片悬停背景 |
 
 ### 2.2 文字色 (Text Colors)
 
@@ -42,6 +44,8 @@ CCGUI 采用现代深色主题设计，以深灰色为背景，橙色为强调�
 | `--border-light` | `#52525B` | 浅边框，用于分割线 |
 | `--border-hover` | `#71717A` | 悬停边框 |
 | `--border-focus` | `#F97316` | 聚焦边框 |
+| `--border-glass-soft` | `rgba(255, 255, 255, 0.13)` | 轻表面卡片默认边框 |
+| `--border-glass-soft-hover` | `rgba(255, 255, 255, 0.18)` | 轻表面卡片悬停边框 |
 
 ### 2.5 状态色 (Status Colors)
 
@@ -203,6 +207,29 @@ border-color: var(--border-hover);
 border-color: var(--accent-primary);
 background: var(--accent-light);
 ```
+
+#### Welcome 项目卡补充规范
+
+用于 `Welcome` 页的项目卡，不再使用纯实心灰卡，也不采用重玻璃效果，改为更轻的透明表面：
+
+```css
+background: var(--surface-glass-soft);
+border: 1px solid var(--border-glass-soft);
+border-radius: 12px;
+padding: 20px;
+
+/* 悬停状态 */
+background: var(--surface-glass-soft-hover);
+border-color: var(--border-glass-soft-hover);
+transform: translateY(-2px);
+```
+
+约束：
+
+- 透明白表面只用于少数首页卡片或弱表面卡片
+- 不应大面积替代主面板背景
+- 如果卡片视觉显暗，优先略提亮边框，而不是加重背景
+- 如果卡片视觉显厚，优先减弱边框或背景透明度，而不是强行改成更细像素线
 
 ### 8.4 对话框 (Dialog)
 

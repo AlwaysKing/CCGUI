@@ -1,7 +1,7 @@
 # Codex app-server 协议与 CCGUI 接入方案
 
 **文档版本**: 1.0  
-**最后更新**: 2026-03-18
+**最后更新**: 2026-03-22
 
 ## 1. 协议定位
 
@@ -164,6 +164,96 @@ Codex 的 GUI/扩展接入核心不是交互 TUI，而是 `app-server`。
   "text_elements": []
 }
 ```
+
+### `attachments`
+
+`turn/start` 的文件附件不走 `input`，而是走单独的 `attachments` 字段。
+
+这是当前研究 VS Code Codex 插件后能够确认的关键结论：
+
+- 文本和图片在 `input`
+- 普通文件在 `attachments`
+- 图片和普通文件不是同一条协议通道
+
+VS Code 插件 webview 发送层的原始源码可确认：
+
+- `input: [{ type: "text", ... }, ...imageAttachments.map(...)]`
+- `attachments: uniqWith([...fileAttachments, ...addedFiles], isEqual)`
+
+也就是说：
+
+- `fileAttachments`
+- `addedFiles`
+
+会在发送前直接合并、去重，然后原样作为 `attachments` 发给 Codex server。
+
+### 图片输入的最终形态
+
+图片不是 `attachments`，而是 `input` 中的专门输入项，分两种：
+
+1. 内联图片内容
+
+```json
+{
+  "type": "image",
+  "url": "data:image/png;base64,..."
+}
+```
+
+2. 本地图片引用
+
+```json
+{
+  "type": "localImage",
+  "path": "/absolute/path/to/file.png"
+}
+```
+
+因此可以得到一条非常重要的接入结论：
+
+- 图片协议类型是 `image` / `localImage`
+- 文件协议类型不是 `input` item，而是 `attachments`
+
+### 文件附件对象的已确认字段
+
+从 VS Code 插件命令层和 webview 状态层可以确认，文件附件对象至少包含：
+
+- `label`
+- `path`
+- `fsPath`
+- `startLine`（可选）
+- `endLine`（可选）
+
+典型结构：
+
+```json
+{
+  "label": "foo.ts",
+  "path": "/abs/path/foo.ts",
+  "fsPath": "/abs/path/foo.ts",
+  "startLine": 120,
+  "endLine": 180
+}
+```
+
+这说明 Codex 的“添加文件到线程”本质上更接近：
+
+- 文件引用 / 文件上下文描述
+
+而不是：
+
+- 发送时立刻把整个文件正文塞进 user text
+- 或统一转成图片那样的 `input` 项
+
+### 当前对 CCGUI 的直接启示
+
+如果要对齐 Codex 的附件语义，CCGUI 后续应按下面的规则建模：
+
+- 文本输入：`input`
+- 图片输入：`input.image` / `input.localImage`
+- 文件附件：`attachments`
+
+不要把这三类全部退化成单纯的文本路径拼接。
 
 ## 5. 服务端通知
 

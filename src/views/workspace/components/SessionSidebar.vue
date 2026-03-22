@@ -1439,15 +1439,15 @@ watch([showConfigPanel, fileSectionHeight], () => {
   gap: 10px;
   padding: 10px 12px;
   border-radius: 6px;
-  border: 1px solid transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
   position: relative;
 }
 
 .session-item:hover {
-  background: #27272A;
-  border-color: #3F3F46;
+  background: rgba(255, 255, 255, 0.024);
+  border-color: rgba(255, 255, 255, 0.13);
 }
 
 .session-item.active {
@@ -1474,7 +1474,7 @@ watch([showConfigPanel, fileSectionHeight], () => {
 }
 
 .session-menu-btn:hover {
-  background: #3F3F46;
+  background: rgba(255, 255, 255, 0.06);
   color: #E4E4E7;
 }
 

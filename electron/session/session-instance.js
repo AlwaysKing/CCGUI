@@ -1,5 +1,8 @@
 const path = require('path')
+const fs = require('fs')
+const os = require('os')
 const crypto = require('crypto')
+const { execFileSync } = require('child_process')
 const { ClaudeAdapter } = require('../adapters/claude/adapter')
 const { CodexAdapter } = require('../adapters/codex/adapter')
 const logger = require('../logger')
@@ -147,6 +150,183 @@ function mergeInputHistory(existingHistory = [], messages = [], limit = 100) {
   return mergedHistory
 }
 
+function parseUnifiedDiffPaths(diffText = '') {
+  if (typeof diffText !== 'string' || !diffText.trim()) {
+    return []
+  }
+
+  const files = new Set()
+  const patterns = [
+    /^\*\*\* (?:Add|Update|Delete) File:\s+(.+)$/gm,
+    /^\+\+\+\s+b\/(.+)$/gm,
+    /^diff --git a\/(.+?) b\/(.+)$/gm
+  ]
+
+  for (const pattern of patterns) {
+    let match
+    while ((match = pattern.exec(diffText)) !== null) {
+      const value = match[2] || match[1]
+      if (value) {
+        files.add(String(value).trim())
+      }
+    }
+  }
+
+  return Array.from(files)
+}
+
+function collectChangedFilePaths(value, bucket) {
+  if (!value) {
+    return
+  }
+
+  if (typeof value === 'string') {
+    for (const filePath of parseUnifiedDiffPaths(value)) {
+      bucket.add(filePath)
+    }
+    return
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectChangedFilePaths(item, bucket)
+    }
+    return
+  }
+
+  if (typeof value !== 'object') {
+    return
+  }
+
+  const directPath = pickFirstDefined(
+    value.file_path,
+    value.filePath,
+    value.path,
+    value.fsPath,
+    value.target_file,
+    value.targetFile,
+    value.move_path,
+    value.movePath
+  )
+
+  if (typeof directPath === 'string' && directPath.trim()) {
+    bucket.add(directPath.trim())
+  }
+
+  const nestedKeys = [
+    'changes',
+    'edits',
+    'files',
+    'fileChanges',
+    'structuredPatch',
+    'patch',
+    'diff',
+    'content'
+  ]
+  for (const key of nestedKeys) {
+    if (value[key] !== undefined) {
+      collectChangedFilePaths(value[key], bucket)
+    }
+  }
+}
+
+function extractChangedFilesFromToolMessage(message = {}) {
+  if (message?.role !== 'tool_use' && message?.role !== 'diff') {
+    return []
+  }
+
+  const normalizedToolName = String(message.toolName || '').toLowerCase()
+  const candidateToolInput = message.toolInput || {}
+  const files = new Set()
+
+  const supportsFileTracking =
+    normalizedToolName === 'write' ||
+    normalizedToolName === 'edit' ||
+    normalizedToolName === 'multiedit' ||
+    normalizedToolName === 'applypatch' ||
+    normalizedToolName === 'apply_patch' ||
+    normalizedToolName === 'diff'
+
+  if (!supportsFileTracking) {
+    return []
+  }
+
+  collectChangedFilePaths(candidateToolInput, files)
+
+  if (files.size === 0 && typeof message.result === 'string') {
+    collectChangedFilePaths(message.result, files)
+  }
+
+  if (files.size === 0 && Array.isArray(message.rawMessages)) {
+    for (const rawMessage of message.rawMessages) {
+      collectChangedFilePaths(rawMessage, files)
+    }
+  }
+
+  return Array.from(files)
+}
+
+function extractChangedFilesFromControlResponse(message = {}) {
+  const response = message?.response?.response || message?.response || {}
+  const files = response?.changed_files || response?.filesChanged || response?.restored_files || []
+  if (!Array.isArray(files)) {
+    return []
+  }
+
+  return Array.from(new Set(
+    files
+      .map(file => (typeof file === 'string' ? file.trim() : null))
+      .filter(Boolean)
+  ))
+}
+
+function extractDiffTextFromMessage(message = {}) {
+  if (!message || message.role !== 'diff') {
+    return ''
+  }
+
+  if (typeof message.toolInput?.diff === 'string' && message.toolInput.diff.trim()) {
+    return message.toolInput.diff
+  }
+
+  if (Array.isArray(message.rawMessages)) {
+    for (let index = message.rawMessages.length - 1; index >= 0; index -= 1) {
+      const rawMessage = message.rawMessages[index]
+      const diffText = rawMessage?.params?.diff
+      if (typeof diffText === 'string' && diffText.trim()) {
+        return diffText
+      }
+    }
+  }
+
+  return ''
+}
+
+function collectUnifiedDiffStats(diffText = '') {
+  if (typeof diffText !== 'string' || !diffText.trim()) {
+    return { insertions: 0, deletions: 0 }
+  }
+
+  let insertions = 0
+  let deletions = 0
+  for (const line of diffText.split('\n')) {
+    if (!line) continue
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('diff --git')) {
+      continue
+    }
+    if (line === '\\ No newline at end of file') {
+      continue
+    }
+    if (line.startsWith('+')) {
+      insertions += 1
+    } else if (line.startsWith('-')) {
+      deletions += 1
+    }
+  }
+
+  return { insertions, deletions }
+}
+
 /**
  * SessionInstance
  * 每个会话的独立实例，包含该会话的所有数据和状态
@@ -208,6 +388,8 @@ class SessionInstance {
     this.contentBlockIndexToId = new Map()
     this.currentTurnNumber = 0
     this.hasSeenToolUseInCurrentTurn = false
+    this.activeResponseUserMessageId = null
+    this.currentTurnChangedFiles = new Set()
   }
 
   /**
@@ -773,13 +955,17 @@ class SessionInstance {
       latestAssistantMessage.isStreaming = false
       latestAssistantMessage.duration = latestAssistantMessage.duration || enrichedResult.duration_ms
       latestAssistantMessage.usage = enrichedResult.usage || latestAssistantMessage.usage || null
+      this.appendChangedFilesSummaryMessage(latestAssistantMessage)
+      this.refreshChangedFilesSummary(latestUserMessage, latestAssistantMessage)
     }
 
     this.currentStreamingAssistantId = null
+    this.activeResponseUserMessageId = null
     this.pendingControlRequest = null
     this.pendingControlRequests.clear()
     this.pendingPermission = null
     this.pendingControlRequestResult = null
+    this.currentTurnChangedFiles = new Set()
 
     for (const item of this.messages) {
       if (item.isStreaming) {
@@ -850,6 +1036,7 @@ class SessionInstance {
 
     manager.on('message-start', (message) => {
       this.messages.push(message)
+      this.registerChangedFilesFromToolMessage(message)
       this.emit('message-start', message)
     })
 
@@ -873,6 +1060,7 @@ class SessionInstance {
       const msg = this.messages.find(item => item.id === messageId)
       if (msg) {
         Object.assign(msg, updates)
+        this.registerChangedFilesFromToolMessage(msg)
         if ((updates.isStreaming === false || updates.isExecuting === false) && !msg.duration && msg.startTime) {
           msg.duration = Date.now() - msg.startTime
         }
@@ -888,6 +1076,7 @@ class SessionInstance {
       const msg = this.messages.find(item => item.id === messageId)
       if (msg) {
         Object.assign(msg, updates)
+        this.registerChangedFilesFromToolMessage(msg)
         if (!msg.duration && msg.startTime) {
           msg.duration = Date.now() - msg.startTime
         }
@@ -1115,6 +1304,8 @@ class SessionInstance {
     }
     this.messages.push(displayMessage)
     this.rawMessages.push(userMessage)
+    this.activeResponseUserMessageId = displayMessage.id
+    this.currentTurnChangedFiles = new Set()
 
     const msgToSave = { ...displayMessage }
     delete msgToSave.startTime
@@ -1194,6 +1385,286 @@ class SessionInstance {
   getAssistantMessageById(messageId) {
     if (!messageId) return null
     return this.messages.find(item => item.id === messageId) || null
+  }
+
+  resolveCodexRollbackTurnCount(userMessageId) {
+    const targetIndex = this.messages.findIndex(item => item.role === 'user' && item.id === userMessageId)
+    if (targetIndex === -1) {
+      throw new Error('Target user message not found')
+    }
+
+    let numTurns = 0
+    for (let index = targetIndex; index < this.messages.length; index += 1) {
+      if (this.messages[index]?.role === 'user') {
+        numTurns += 1
+      }
+    }
+
+    if (numTurns <= 0) {
+      throw new Error('No turns available to rollback')
+    }
+
+    return numTurns
+  }
+
+  buildSyntheticControlResponse(subtype, response = {}) {
+    return {
+      type: 'control_response',
+      response: {
+        subtype,
+        request_id: `ccgui-${subtype}-${Date.now()}`,
+        response
+      }
+    }
+  }
+
+  collectCodexRewindPayload(userMessageId) {
+    const targetIndex = this.messages.findIndex(item => item.role === 'user' && item.id === userMessageId)
+    if (targetIndex === -1) {
+      throw new Error('Target user message not found')
+    }
+
+    const patches = []
+    const changedFiles = new Set()
+    let insertions = 0
+    let deletions = 0
+
+    for (let index = targetIndex + 1; index < this.messages.length; index += 1) {
+      const message = this.messages[index]
+      const diffText = extractDiffTextFromMessage(message)
+      if (!diffText) {
+        continue
+      }
+
+      patches.push({
+        messageId: message.id || `diff-${index}`,
+        diff: diffText
+      })
+
+      for (const filePath of parseUnifiedDiffPaths(diffText)) {
+        changedFiles.add(filePath)
+      }
+
+      const stats = collectUnifiedDiffStats(diffText)
+      insertions += stats.insertions
+      deletions += stats.deletions
+    }
+
+    return {
+      targetIndex,
+      files: Array.from(changedFiles),
+      insertions,
+      deletions,
+      patches
+    }
+  }
+
+  runReversePatchCheck(patches = [], { dryRun = false } = {}) {
+    if (!Array.isArray(patches) || patches.length === 0) {
+      return
+    }
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgui-rewind-'))
+
+    try {
+      const patchPath = path.join(tempDir, 'rewind.patch')
+      const combinedPatch = patches
+        .slice()
+        .reverse()
+        .map(patch => patch.diff)
+        .join('\n')
+      fs.writeFileSync(patchPath, combinedPatch, 'utf8')
+
+      const args = ['-R', '-p1', '-i', patchPath, '-s']
+      if (dryRun) {
+        args.unshift('--dry-run')
+      }
+
+      execFileSync('patch', args, {
+        cwd: this.projectPath,
+        stdio: 'pipe'
+      })
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    }
+  }
+
+  applyRewindLocally(userMessageId, rewindData = {}) {
+    const targetIndex = this.messages.findIndex(item => item.role === 'user' && item.id === userMessageId)
+    if (targetIndex === -1) {
+      throw new Error('Target user message not found')
+    }
+
+    const targetMessage = this.messages[targetIndex] || null
+    const changedFiles = Array.from(new Set(
+      (rewindData?.changed_files || rewindData?.filesChanged || rewindData?.restored_files || [])
+        .filter(file => typeof file === 'string' && file.trim())
+        .map(file => file.trim())
+    ))
+    const insertions = rewindData?.insertions || rewindData?.lines_added || 0
+    const deletions = rewindData?.deletions || rewindData?.lines_removed || 0
+    const previewText = typeof targetMessage?.content === 'string' && targetMessage.content.trim()
+      ? targetMessage.content.trim()
+      : '未知消息'
+
+    const rewindNotice = {
+      id: `rewind-${Date.now()}`,
+      role: 'system',
+      subtype: 'rewind-notice',
+      content: `已还原到「${previewText.substring(0, 30)}${previewText.length > 30 ? '...' : ''}」前的文件状态`,
+      rewindToMessageId: userMessageId,
+      originalMessageContent: previewText,
+      restoredFilesCount: changedFiles.length,
+      restoredFiles: changedFiles,
+      insertions,
+      deletions,
+      timestamp: new Date()
+    }
+
+    this.messages.push(rewindNotice)
+
+    this.activeResponseUserMessageId = null
+    this.currentTurnChangedFiles = new Set()
+    this.pendingControlRequest = null
+    this.pendingControlRequests.clear()
+
+    this.saveMessageToHistory(rewindNotice)
+    this.emit('message', rewindNotice)
+
+    return this.messages
+  }
+
+  normalizeControlRequestForProvider(request = {}) {
+    const normalizedRequest = { ...request }
+
+    if (normalizedRequest?.subtype === 'changed_files') {
+      if (this.provider === 'claude') {
+        normalizedRequest.subtype = 'rewind_files'
+      }
+      normalizedRequest.dry_run = true
+    } else if (normalizedRequest?.subtype === 'rewind') {
+      if (this.provider === 'claude') {
+        normalizedRequest.subtype = 'rewind_files'
+      }
+      normalizedRequest.dry_run = false
+    }
+
+    if (
+      this.provider === 'codex' &&
+      (
+        normalizedRequest?.subtype === 'changed_files' ||
+        normalizedRequest?.subtype === 'rewind' ||
+        normalizedRequest?.subtype === 'rewind_files' ||
+        normalizedRequest?.subtype === 'rewind_and_fork'
+      )
+    ) {
+      normalizedRequest.numTurns = this.resolveCodexRollbackTurnCount(normalizedRequest.user_message_id)
+    }
+
+    return normalizedRequest
+  }
+
+  registerChangedFilesFromToolMessage(message) {
+    if (!this.activeResponseUserMessageId || !this.isProcessing) {
+      return
+    }
+
+    for (const filePath of extractChangedFilesFromToolMessage(message)) {
+      this.currentTurnChangedFiles.add(filePath)
+    }
+  }
+
+  appendChangedFilesSummaryMessage(assistantMessage) {
+    if (!assistantMessage || this.currentTurnChangedFiles.size === 0) {
+      return
+    }
+
+    const files = Array.from(this.currentTurnChangedFiles)
+    assistantMessage.changedFilesSummary = {
+      count: files.length,
+      files
+    }
+
+    historyManager.updateMessage(this.projectId, this.id, assistantMessage.id, {
+      changedFilesSummary: assistantMessage.changedFilesSummary
+    })
+  }
+
+  applyChangedFilesSummaryMessage(assistantMessage, files = []) {
+    if (!assistantMessage) {
+      return
+    }
+
+    const normalizedFiles = Array.from(new Set(
+      (Array.isArray(files) ? files : [])
+        .map(file => (typeof file === 'string' ? file.trim() : null))
+        .filter(Boolean)
+    ))
+
+    if (normalizedFiles.length === 0) {
+      delete assistantMessage.changedFilesSummary
+      historyManager.updateMessage(this.projectId, this.id, assistantMessage.id, {
+        changedFilesSummary: null
+      })
+      this.emit('message-update', {
+        messageId: assistantMessage.id,
+        updates: {
+          changedFilesSummary: null
+        }
+      })
+      return
+    }
+
+    assistantMessage.changedFilesSummary = {
+      count: normalizedFiles.length,
+      files: normalizedFiles
+    }
+
+    historyManager.updateMessage(this.projectId, this.id, assistantMessage.id, {
+      changedFilesSummary: assistantMessage.changedFilesSummary
+    })
+    this.emit('message-update', {
+      messageId: assistantMessage.id,
+      updates: {
+        changedFilesSummary: assistantMessage.changedFilesSummary
+      }
+    })
+  }
+
+  async requestChangedFilesForQuestion(userMessageId) {
+    if (!userMessageId) {
+      return []
+    }
+
+    const response = await this.sendControlRequest({
+      subtype: 'changed_files',
+      user_message_id: userMessageId
+    })
+
+    return extractChangedFilesFromControlResponse(response)
+  }
+
+  refreshChangedFilesSummary(userMessage, assistantMessage) {
+    if (!userMessage?.id || !assistantMessage?.id) {
+      return
+    }
+
+    this.requestChangedFilesForQuestion(userMessage.id)
+      .then((files) => {
+        const targetAssistantMessage = this.getAssistantMessageById(assistantMessage.id)
+        if (!targetAssistantMessage) {
+          return
+        }
+        this.applyChangedFilesSummaryMessage(targetAssistantMessage, files)
+      })
+      .catch((error) => {
+        logger.warn('[SessionInstance] Failed to refresh changed_files summary', {
+          sessionId: this.id,
+          userMessageId: userMessage.id,
+          assistantMessageId: assistantMessage.id,
+          error: error?.message || String(error)
+        })
+      })
   }
 
   trackPendingControlRequest(controlRequest) {
@@ -1291,9 +1762,68 @@ class SessionInstance {
       await this.startRuntime()
     }
 
-    if (this.runtimeManager.sendControlRequest) {
-      this.runtimeManager.sendControlRequest(request)
+    const normalizedRequest = this.normalizeControlRequestForProvider(request)
+
+    if (this.provider === 'codex' && normalizedRequest?.subtype === 'changed_files') {
+      const payload = this.collectCodexRewindPayload(normalizedRequest.user_message_id)
+      const response = this.buildSyntheticControlResponse('success', {
+        changed_files: payload.files,
+        filesChanged: payload.files,
+        restored_files: payload.files,
+        insertions: payload.insertions,
+        deletions: payload.deletions,
+        dry_run: true
+      })
+      this.emit('control-response', response)
+      return response
     }
+
+    if (this.provider === 'codex' && normalizedRequest?.subtype === 'rewind') {
+      const payload = this.collectCodexRewindPayload(normalizedRequest.user_message_id)
+      this.runReversePatchCheck(payload.patches, { dryRun: true })
+
+      const response = this.runtimeManager.sendControlRequest
+        ? await this.runtimeManager.sendControlRequest(normalizedRequest)
+        : null
+
+      if (response?.response?.error) {
+        this.emit('control-response', response)
+        return response
+      }
+
+      this.runReversePatchCheck(payload.patches, { dryRun: false })
+      this.applyRewindLocally(normalizedRequest.user_message_id, {
+        changed_files: payload.files,
+        restored_files: payload.files,
+        insertions: payload.insertions,
+        deletions: payload.deletions
+      })
+
+      if (response) {
+        this.emit('control-response', response)
+        return response
+      }
+
+      const syntheticResponse = this.buildSyntheticControlResponse('success', {
+        changed_files: payload.files,
+        restored_files: payload.files,
+        insertions: payload.insertions,
+        deletions: payload.deletions,
+        dry_run: false
+      })
+      this.emit('control-response', syntheticResponse)
+      return syntheticResponse
+    }
+
+    if (this.runtimeManager.sendControlRequest) {
+      const response = await this.runtimeManager.sendControlRequest(normalizedRequest)
+      if (response) {
+        this.emit('control-response', response)
+        return response
+      }
+    }
+
+    return null
   }
 
   syncRuntimeResolvedSettings(resolvedSettings = null) {

@@ -32,6 +32,15 @@ class ClaudeAdapter extends ClaudeClient {
     }
   }
 
+  isDiffToolName(toolName) {
+    const normalized = String(toolName || '').trim().toLowerCase()
+    return normalized === 'edit' ||
+      normalized === 'write' ||
+      normalized === 'multiedit' ||
+      normalized === 'applypatch' ||
+      normalized === 'apply_patch'
+  }
+
   async buildUserContentWithAttachments(message) {
     const attachments = Array.isArray(message?.attachments) ? message.attachments : []
     const rawText = Array.isArray(message?.message?.content)
@@ -436,7 +445,7 @@ class ClaudeAdapter extends ClaudeClient {
 
         this.emit('message-start', {
           id: toolUseId,
-          role: 'tool_use',
+          role: this.isDiffToolName(contentBlock.name) ? 'diff' : 'tool_use',
           toolName: contentBlock.name,
           toolInput: contentBlock.input ? { ...contentBlock.input } : {},
           result: '',
@@ -679,7 +688,7 @@ class ClaudeAdapter extends ClaudeClient {
       const toolUseId = toolUse.id || `tool-${Date.now()}`
       this.emit('message-start', {
         id: toolUseId,
-        role: 'tool_use',
+        role: this.isDiffToolName(toolUse.name) ? 'diff' : 'tool_use',
         toolName: toolUse.name,
         toolInput: toolUse.input ? { ...toolUse.input } : {},
         result: '',

@@ -1,8 +1,10 @@
 <script setup>
-import { computed, ref, onMounted, watch, nextTick } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
+import { useAppStore } from '../../stores/useAppStore'
+import { useFileBrowserStore } from '../../stores/useFileBrowserStore'
 
 // Configure marked with highlight.js
 marked.setOptions({
@@ -29,6 +31,8 @@ const props = defineProps({
 
 const containerRef = ref(null)
 const copiedIndex = ref(-1)
+const appStore = useAppStore()
+const fileBrowserStore = useFileBrowserStore()
 
 const renderedHtml = computed(() => {
   if (!props.content) return ''
@@ -105,16 +109,73 @@ function addCopyButtons() {
   })
 }
 
+function isExternalHttpUrl(href = '') {
+  return /^https?:\/\//i.test(String(href || '').trim())
+}
+
+function normalizePath(value = '') {
+  return String(value || '').replace(/\\/g, '/')
+}
+
+function isAbsolutePath(value = '') {
+  const normalized = normalizePath(value)
+  return normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)
+}
+
+function isLocalPreviewHref(href = '') {
+  const normalized = normalizePath(href).trim()
+  if (!normalized) return false
+  if (normalized.startsWith('#')) return false
+  if (/^(https?:|mailto:|tel:)/i.test(normalized)) return false
+  return true
+}
+
+async function handleLinkClick(event) {
+  const link = event.target instanceof Element ? event.target.closest('a') : null
+  if (!link) return
+
+  const href = decodeURIComponent(link.getAttribute('href') || '')
+  if (!href) return
+
+  event.preventDefault()
+  event.stopPropagation()
+
+  if (isExternalHttpUrl(href)) {
+    await window.electronAPI?.openExternalUrl?.({ url: href })
+    return
+  }
+
+  if (!isLocalPreviewHref(href)) {
+    return
+  }
+
+  const currentProjectPath = normalizePath(appStore.currentProject?.path || '')
+  const normalizedHref = normalizePath(href)
+  const projectPrefix = currentProjectPath ? `${currentProjectPath}/` : ''
+
+  if (!isAbsolutePath(normalizedHref) || normalizedHref === currentProjectPath || normalizedHref.startsWith(projectPrefix)) {
+    await fileBrowserStore.previewFile(normalizedHref)
+    return
+  }
+
+  await fileBrowserStore.previewAttachmentFile(normalizedHref)
+}
+
 onMounted(() => {
   nextTick(() => {
     addCopyButtons()
   })
+  containerRef.value?.addEventListener('click', handleLinkClick)
 })
 
 watch(() => props.content, () => {
   nextTick(() => {
     addCopyButtons()
   })
+})
+
+onBeforeUnmount(() => {
+  containerRef.value?.removeEventListener('click', handleLinkClick)
 })
 </script>
 

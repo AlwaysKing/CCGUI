@@ -50,6 +50,14 @@ export const SHORTCUT_ACTIONS = [
     allowInEditable: false
   },
   {
+    id: 'toggle-all-message-collapse',
+    action: 'toggle-all-message-collapse',
+    label: '折叠或展开全部问答',
+    description: '切换当前会话中所有可折叠问答的展开状态',
+    defaultCombo: 'Mod+Alt+[',
+    allowInEditable: false
+  },
+  {
     id: 'open-settings',
     action: 'open-settings',
     label: '打开设置',
@@ -76,6 +84,7 @@ const LEGACY_SHORTCUT_KEY_MAP = {
   toggleFilePanel: 'toggle-file-panel',
   toggleTerminal: 'toggle-terminal',
   toggleChatPanel: 'toggle-chat-panel',
+  toggleAllMessageCollapse: 'toggle-all-message-collapse',
   openSettings: 'open-settings',
   createPrimary: 'create-primary'
 }

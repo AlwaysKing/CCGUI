@@ -18,6 +18,10 @@ const props = defineProps({
   copiedMessageIndex: {
     type: Number,
     default: -1
+  },
+  chatTheme: {
+    type: Object,
+    default: () => ({})
   }
 })
 
@@ -25,6 +29,7 @@ const emit = defineEmits(['copyContent'])
 
 const isCopied = computed(() => props.copiedMessageIndex === props.messageIndex)
 const isCollapsed = ref(false)
+const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
 
 // 格式化持续时间
 const formattedDuration = computed(() => {
@@ -76,7 +81,7 @@ function copyContent() {
 
 <template>
   <div class="task-complete-wrapper">
-    <div class="task-complete" :class="{ collapsed: isCollapsed }">
+    <div class="task-complete" :class="{ collapsed: isCollapsed, 'surface-ghost': isTextStyle }">
       <div class="task-header" @click="toggleCollapse">
         <span class="task-icon">{{ taskIcon }}</span>
         <div class="task-info">
@@ -149,6 +154,13 @@ function copyContent() {
   overflow: hidden;
 }
 
+.task-complete.surface-ghost {
+  background: transparent;
+  border: none;
+  border-left: 2px solid rgba(59, 130, 246, 0.28);
+  border-radius: 0;
+}
+
 .task-header {
   display: flex;
   align-items: center;
@@ -160,6 +172,10 @@ function copyContent() {
 
 .task-header:hover {
   background: rgba(59, 130, 246, 0.1);
+}
+
+.task-complete.surface-ghost .task-header:hover {
+  background: rgba(59, 130, 246, 0.05);
 }
 
 .task-icon {
@@ -213,6 +229,10 @@ function copyContent() {
   border-top: 1px solid rgba(59, 130, 246, 0.2);
 }
 
+.task-complete.surface-ghost .task-details {
+  border-top: 1px solid rgba(59, 130, 246, 0.12);
+}
+
 .detail-section {
   margin-top: 10px;
 }
@@ -241,6 +261,11 @@ function copyContent() {
   font-family: var(--font-family-mono);
   max-height: 150px;
   overflow: auto;
+}
+
+.task-complete.surface-ghost .prompt-content,
+.task-complete.surface-ghost .usage-item {
+  background: rgba(59, 130, 246, 0.04);
 }
 
 .summary-content {

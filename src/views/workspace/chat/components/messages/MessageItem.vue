@@ -7,6 +7,7 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import MessageStats from './MessageStats.vue'
 import ToolUseMessage from './ToolUseMessage.vue'
+import DiffMessage from './DiffMessage.vue'
 import UserMessage from './UserMessage.vue'
 import AssistantMessage from './AssistantMessage.vue'
 import ThinkingSection from './ThinkingSection.vue'
@@ -154,6 +155,7 @@ const avatarChar = computed(() => {
     case 'user': return 'U'
     case 'assistant': return 'C'
     case 'tool_use': return 'T'
+    case 'diff': return 'Δ'
     case 'question': return '?'
     default: return 'S'
   }
@@ -198,7 +200,7 @@ const isLastUserMsg = computed(() => {
 const isStreaming = computed(() => {
   const msg = props.message
   if (msg.role === 'assistant') return !!msg.isStreaming
-  if (msg.role === 'tool_use') return !!msg.isExecuting
+  if (msg.role === 'tool_use' || msg.role === 'diff') return !!msg.isExecuting
   // 用户消息：最后一条且没有 duration 时显示实时耗时
   if (msg.role === 'user') return isLastUserMsg.value && !msg.duration && !!msg.startTime
   return false
@@ -300,7 +302,36 @@ function onToggleQuestionCollapse(messageIndex) {
   toggleQuestionCollapse(props.allMessages, messageIndex)
 }
 
-function onToggleResponseCollapse(messageIndex) {
+function setAllResponseCollapsed(nextCollapsed, { excludeIndex = null } = {}) {
+  props.allMessages.forEach((message, index) => {
+    if (message?.role !== 'user') return
+    const nextMessage = props.allMessages[index + 1]
+    if (nextMessage?.role !== 'assistant') return
+    if (excludeIndex !== null && index === excludeIndex) return
+    message.responseCollapsed = nextCollapsed
+  })
+}
+
+function onToggleResponseCollapse(messageIndex, event = null) {
+  const message = props.allMessages[messageIndex]
+  if (!message || message.role !== 'user') {
+    return
+  }
+
+  const nextCollapsed = !Boolean(message.responseCollapsed)
+  const useGlobalMode = Boolean(event?.metaKey)
+  const useOthersMode = useGlobalMode && Boolean(event?.altKey)
+
+  if (useOthersMode) {
+    setAllResponseCollapsed(nextCollapsed, { excludeIndex: messageIndex })
+    return
+  }
+
+  if (useGlobalMode) {
+    setAllResponseCollapsed(nextCollapsed)
+    return
+  }
+
   toggleResponseCollapse(props.allMessages, messageIndex)
 }
 
@@ -356,7 +387,7 @@ onUnmounted(() => {
         'denied': isPermissionDenied,
         'no-avatar': !showAvatar,
         'thinking-first': message.role === 'assistant' && showThinking,
-        'tool-text-first': message.role === 'tool_use' && (chatTheme.messageSurface || 'bubble') === 'ghost'
+        'tool-text-first': (message.role === 'tool_use' || message.role === 'diff') && (chatTheme.messageSurface || 'bubble') === 'ghost'
       }
     ]"
     :data-index="messageIndex"
@@ -401,11 +432,28 @@ onUnmounted(() => {
         />
       </template>
 
+      <template v-else-if="message.role === 'diff'">
+        <DiffMessage
+          :tool-name="message.toolName"
+          :tool-input="message.toolInput"
+          :result="message.result"
+          :is-error="message.isError"
+          :is-executing="message.isExecuting"
+          :collapsed="message.collapsed"
+          :working-directory="workingDirectory"
+          :is-partial="message.isExecuting && Object.keys(message.toolInput || {}).length === 0"
+          :raw-messages="message.rawMessages || []"
+          :chat-theme="chatTheme"
+          @toggle-collapse="() => onToolToggleCollapse(message)"
+        />
+      </template>
+
       <!-- Rewind notice 消息 -->
       <template v-else-if="message.role === 'system' && message.subtype === 'rewind-notice'">
         <RewindNoticeMessage
           :message="message"
           :is-collapsed="isRewindCollapsed(message.id)"
+          :chat-theme="chatTheme"
           @toggle-collapse="onToggleRewindCollapse"
           @jump-to-message="handleRewindNoticeClick"
         />
@@ -435,6 +483,7 @@ onUnmounted(() => {
           :message="message"
           :message-index="messageIndex"
           :copied-message-index="copiedMessageIndex"
+          :chat-theme="chatTheme"
           @copy-content="copyMessageContent"
         />
       </template>
@@ -460,6 +509,7 @@ onUnmounted(() => {
           :message="message"
           :message-index="messageIndex"
           :copied-message-index="copiedMessageIndex"
+          :chat-theme="chatTheme"
           @copy-content="copyMessageContent"
         />
       </template>
@@ -568,7 +618,7 @@ onUnmounted(() => {
         <button
           v-if="showCollapseBtn"
           class="icon-action-btn"
-          @click.stop="onToggleResponseCollapse(messageIndex)"
+          @click.stop="onToggleResponseCollapse(messageIndex, $event)"
           :title="message.responseCollapsed ? '展开回答' : '折叠回答'"
         >
           <svg v-if="message.responseCollapsed" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -639,7 +689,7 @@ onUnmounted(() => {
   <div
     v-if="showCollapsedPlaceholder"
     class="collapsed-response-placeholder"
-    @click="onToggleResponseCollapse(messageIndex)"
+    @click="onToggleResponseCollapse(messageIndex, $event)"
   >
     <span class="collapsed-icon">▶</span>
     <span class="collapsed-text">回答已折叠，点击展开</span>
@@ -867,6 +917,10 @@ onUnmounted(() => {
   color: white;
 }
 
+.message.avatar-small.rewind-notice .message-avatar {
+  margin-top: 5px;
+}
+
 .message.interrupt .message-avatar {
   background: #EF4444;
   color: white;
@@ -929,11 +983,21 @@ onUnmounted(() => {
   background: #3B82F6;
 }
 
+.message.diff .message-avatar {
+  background: #3B82F6;
+  color: white;
+}
+
 .message.unknown .message-avatar {
   background: #EF4444;
   color: white;
   font-size: 16px;
   font-weight: bold;
+}
+
+.message.avatar-small.unknown .message-avatar {
+  font-size: 0;
+  margin-top: 5px;
 }
 
 .message-body {

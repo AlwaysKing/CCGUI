@@ -245,6 +245,8 @@ function switchTab(tabIndex) {
 .question-message.text-style .question-message-header {
   padding: 0;
   border-bottom: none;
+  justify-content: flex-start;
+  gap: 6px;
 }
 
 .question-message.text-style .question-message-header:hover {
@@ -255,6 +257,11 @@ function switchTab(tabIndex) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.question-message.text-style .question-title {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .question-icon {
@@ -290,6 +297,10 @@ function switchTab(tabIndex) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.question-message.text-style .header-actions {
+  justify-content: flex-start;
 }
 
 .question-message.text-style .header-actions :deep(.copy-btn) {

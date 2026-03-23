@@ -191,8 +191,79 @@ const showConversationWave = computed(() => {
   return messages.value.some(message => message?.isStreaming || message?.isExecuting)
 })
 
+function formatCenterTimer(ms) {
+  const safeMs = Number(ms)
+  if (!Number.isFinite(safeMs) || safeMs <= 0) return ''
+  if (safeMs < 1000) return `${Math.round(safeMs)}ms`
+  if (safeMs < 60000) return `${(safeMs / 1000).toFixed(safeMs >= 10000 ? 0 : 1)}s`
+  return `${Math.floor(safeMs / 60000)}m ${Math.floor((safeMs % 60000) / 1000)}s`
+}
+
+const centerResizeTimerLabel = computed(() => {
+  if (!isProcessing.value) {
+    return ''
+  }
+
+  const activeUserMessage = [...messages.value].reverse().find(message =>
+    message?.role === 'user' && message?.startTime && !message?.duration
+  )
+
+  if (!activeUserMessage?.startTime) {
+    return ''
+  }
+
+  return formatCenterTimer(currentTime.value - activeUserMessage.startTime)
+})
+
+const collapsibleStats = computed(() => {
+  let total = 0
+  let collapsed = 0
+
+  for (let index = 0; index < messages.value.length; index += 1) {
+    const message = messages.value[index]
+    if (!message) continue
+
+    if (message.role === 'user') {
+      const nextMessage = messages.value[index + 1]
+      if (nextMessage?.role === 'assistant') {
+        total += 1
+        if (message.responseCollapsed) collapsed += 1
+      }
+      continue
+    }
+  }
+
+  return {
+    total,
+    collapsed,
+    allCollapsed: total > 0 && collapsed === total
+  }
+})
+
 function toPlainObject(value) {
   return value ? JSON.parse(JSON.stringify(value)) : {}
+}
+
+function toggleAllMessageCollapse() {
+  const shouldCollapse = !collapsibleStats.value.allCollapsed
+
+  for (let index = 0; index < messages.value.length; index += 1) {
+    const message = messages.value[index]
+    if (!message) continue
+
+    if (message.role === 'user') {
+      const nextMessage = messages.value[index + 1]
+      if (nextMessage?.role === 'assistant') {
+        message.responseCollapsed = shouldCollapse
+      }
+    }
+  }
+}
+
+function handleChatShortcut(event) {
+  if (event?.detail?.action === 'toggle-all-message-collapse') {
+    toggleAllMessageCollapse()
+  }
 }
 
 const currentNotificationChannels = computed(() => {
@@ -329,6 +400,7 @@ onMounted(async () => {
   // 点击外部关闭权限菜单
   document.addEventListener('click', handleClickOutsidePermissionMenu)
   window.addEventListener('ccgui-session-complete', handleSessionComplete)
+  window.addEventListener('ccgui-shortcut', handleChatShortcut)
 })
 
 // Note: Session history is now loaded by SessionStore/SessionInstance
@@ -347,6 +419,7 @@ onUnmounted(() => {
   // 清理窗口大小变化监听器
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('ccgui-session-complete', handleSessionComplete)
+  window.removeEventListener('ccgui-shortcut', handleChatShortcut)
 })
 
 defineExpose({
@@ -483,8 +556,8 @@ watch(() => messages.value, async (newMessages) => {
         return
       }
 
-      // 折叠已完成的 tool_use 消息
-      if (message.role === 'tool_use' && message.result && !message.isError && !message.isExecuting) {
+      // 折叠已完成的 tool_use / diff 消息
+      if ((message.role === 'tool_use' || message.role === 'diff') && message.result && !message.isError && !message.isExecuting) {
         message.collapsed = true
         collapsedCount++
       }
@@ -798,7 +871,7 @@ const stickyMessage = computed(() => {
 const isStickyMessageProcessing = computed(() => {
   if (!stickyMessage.value) return false
   if (stickyMessage.value.role === 'assistant') return !!stickyMessage.value.isStreaming
-  if (stickyMessage.value.role === 'tool_use') return !!stickyMessage.value.isExecuting
+  if (stickyMessage.value.role === 'tool_use' || stickyMessage.value.role === 'diff') return !!stickyMessage.value.isExecuting
   if (stickyMessage.value.role === 'user') return !!isProcessing.value && !stickyMessage.value.duration
   return false
 })
@@ -927,7 +1000,7 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
     // 找到对应的 tool_use 消息并更新状态
     // 对于 control_request，消息使用 tool_use_id 作为 request_id
     const searchId = controlRequest?.tool_use_id || requestId
-    const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === searchId)
+    const toolUseMsg = messages.value.find(m => (m.role === 'tool_use' || m.role === 'diff') && m.request_id === searchId)
     if (toolUseMsg) {
       toolUseMsg.isError = true
       toolUseMsg.result = `发送权限响应失败: ${error.message}`
@@ -944,7 +1017,7 @@ async function handlePermissionDeny(requestId) {
   // 找到对应的 tool_use 消息并更新状态
   // 对于 control_request，消息使用 tool_use_id 作为 request_id
   const searchId = controlRequest?.tool_use_id || requestId
-  const toolUseMsg = messages.value.find(m => m.role === 'tool_use' && m.request_id === searchId)
+  const toolUseMsg = messages.value.find(m => (m.role === 'tool_use' || m.role === 'diff') && m.request_id === searchId)
   if (toolUseMsg) {
     toolUseMsg.isExecuting = false
     toolUseMsg.isError = true
@@ -1061,9 +1134,8 @@ async function handleRewind({ messageId, messageIndex }) {
   try {
     // 调用 dry_run: true 获取预览
     const previewResponse = await sessionStore.sendControlRequest({
-      subtype: 'rewind_files',
-      user_message_id: messageId,
-      dry_run: true
+      subtype: 'changed_files',
+      user_message_id: messageId
     })
     // 更新预览数据
     let data = null
@@ -1071,7 +1143,7 @@ async function handleRewind({ messageId, messageIndex }) {
       data = previewResponse.response.response || previewResponse.response
 
       rewindPreviewData.value = {
-        files: data?.filesChanged || data?.restored_files || [],
+        files: data?.changed_files || data?.filesChanged || data?.restored_files || [],
         insertions: data?.insertions || data?.lines_added || 0,
         deletions: data?.deletions || data?.lines_removed || 0
       }
@@ -1099,48 +1171,11 @@ async function confirmRewind() {
   try {
     // 执行实际还原
     const response = await sessionStore.sendControlRequest({
-      subtype: 'rewind_files',
-      user_message_id: rewindTargetMessageId.value,
-      dry_run: false
+      subtype: 'rewind',
+      user_message_id: rewindTargetMessageId.value
     })
 
-    // 显示还原结果
     if (response && response.response) {
-      const result = response.response
-      const data = result.response || {}
-
-      const originalMessage = messages.value.find(m => m.id === rewindTargetMessageId.value)
-      const originalContent = originalMessage?.content || '未知消息'
-
-      // 使用预览数据（如果可用），否则使用实际响应数据
-      const changedFiles = rewindPreviewData.value?.files || data.filesChanged || data.restored_files || []
-      const insertions = rewindPreviewData.value?.insertions || data.insertions || 0
-      const deletions = rewindPreviewData.value?.deletions || data.deletions || 0
-
-      const hasRestoredFiles = changedFiles.length > 0
-      const canRewind = data.canRewind === true
-
-      let noticeContent = `已还原到「${originalContent.substring(0, 30)}${originalContent.length > 30 ? '...' : ''}」前的文件状态`
-
-      if (hasRestoredFiles) {
-        const restoredCount = changedFiles.length
-        noticeContent += `\n共还原了 ${restoredCount} 个文件`
-      }
-
-      messages.value.push({
-        id: `rewind-${Date.now()}`,
-        role: 'system',
-        subtype: 'rewind-notice',
-        content: noticeContent,
-        rewindToMessageId: rewindTargetMessageId.value,
-        originalMessageContent: originalContent,
-        restoredFilesCount: hasRestoredFiles ? changedFiles.length : (canRewind ? null : 0),
-        restoredFiles: changedFiles, // 保存完整的文件列表
-        insertions: insertions,
-        deletions: deletions,
-        timestamp: new Date()
-      })
-
       scrollToBottom()
     }
   } catch (error) {
@@ -1236,7 +1271,7 @@ async function handleRewindAndFork({ messageId, messageIndex }) {
         messages.value.splice(messageIndex + 1, deleteCount)
       }
 
-      const restoredCount = result.restored_files?.length || 0
+      const restoredCount = (result.changed_files || result.restored_files || []).length || 0
       const newSessionId = result.new_session_id || '已生成'
 
       messages.value.push({
@@ -1477,7 +1512,15 @@ async function handleQuestionAnswer(requestId, answers) {
       class="resize-handle"
       :class="{ resizing: isResizing }"
       @mousedown="startResize"
-    ></div>
+    >
+      <div
+        v-if="centerResizeTimerLabel"
+        class="resize-handle-timer"
+        aria-hidden="true"
+      >
+        {{ centerResizeTimerLabel }}
+      </div>
+    </div>
 
     <!-- Input Area -->
     <ChatInput
@@ -1855,6 +1898,7 @@ async function handleQuestionAnswer(requestId, answers) {
   scrollbar-width: thin;
   scrollbar-color: #52525B transparent;
 }
+
 
 .conversation-wave-rail {
   position: relative;
@@ -2267,6 +2311,26 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .resize-handle.resizing {
   background: #EA580C;
+}
+
+.resize-handle-timer {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #18181B;
+  border: 1px solid rgba(249, 115, 22, 0.28);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+  color: #F97316;
+  font-size: 10px;
+  line-height: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .input-area {

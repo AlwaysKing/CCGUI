@@ -160,6 +160,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   renameProjectEntry: (options) => ipcRenderer.invoke('rename-project-entry', options),
   deleteProjectEntry: (options) => ipcRenderer.invoke('delete-project-entry', options),
   openProjectEntryInFinder: (options) => ipcRenderer.invoke('open-project-entry-in-finder', options),
+  openExternalUrl: (options) => ipcRenderer.invoke('open-external-url', options),
   createTerminal: (options) => ipcRenderer.invoke('create-terminal', options),
   writeTerminal: (options) => ipcRenderer.invoke('write-terminal', options),
   resizeTerminal: (options) => ipcRenderer.invoke('resize-terminal', options),

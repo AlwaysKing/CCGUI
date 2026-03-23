@@ -32,6 +32,13 @@ const emit = defineEmits(['copyContent'])
 const isCopied = computed(() => props.copiedMessageIndex === props.messageIndex)
 const isFloatingStatus = computed(() => props.chatTheme?.statusStyle === 'floating')
 const showStreamingPlaceholder = computed(() => isFloatingStatus.value && props.message.isStreaming && !props.message.content)
+const changedFilesSummary = computed(() => {
+  const summary = props.message?.changedFilesSummary
+  if (!summary || !Array.isArray(summary.files) || summary.files.length === 0) {
+    return null
+  }
+  return summary
+})
 
 function copyContent() {
   emit('copyContent', props.messageIndex)
@@ -54,6 +61,22 @@ function copyContent() {
         @copy="copyContent"
       />
       <MarkdownRenderer :content="message.content" />
+      <div v-if="changedFilesSummary" class="changed-files-summary">
+        <div class="changed-files-summary-header">
+          修改文件
+          <span class="changed-files-summary-count">{{ changedFilesSummary.count || changedFilesSummary.files.length }}</span>
+        </div>
+        <div class="changed-files-summary-table">
+          <div
+            v-for="(file, index) in changedFilesSummary.files"
+            :key="`${file}-${index}`"
+            class="changed-files-summary-row"
+          >
+            <span class="changed-files-summary-index">{{ index + 1 }}</span>
+            <span class="changed-files-summary-path">{{ file }}</span>
+          </div>
+        </div>
+      </div>
     </div>
     <div v-else-if="showStreamingPlaceholder" class="message-streaming-placeholder" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]">
       <span class="placeholder-spinner"></span>
@@ -193,5 +216,60 @@ function copyContent() {
 /* hover 时显示复制按钮 */
 .message-text:hover :deep(.copy-btn) {
   opacity: 1;
+}
+
+.changed-files-summary {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(113, 113, 122, 0.35);
+}
+
+.changed-files-summary-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #D4D4D8;
+}
+
+.changed-files-summary-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(63, 63, 70, 0.9);
+  color: #A1A1AA;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.changed-files-summary-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.changed-files-summary-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.changed-files-summary-index {
+  color: #71717A;
+  text-align: right;
+}
+
+.changed-files-summary-path {
+  color: #E4E4E7;
+  word-break: break-all;
 }
 </style>

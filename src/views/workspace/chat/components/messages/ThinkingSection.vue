@@ -64,7 +64,6 @@ function copyContent() {
           @toggle="toggleCollapse"
         />
         <template v-if="isCollapsed">
-          <span class="thinking-dash">-</span>
           <span class="thinking-preview ghost-preview">{{ previewText }}</span>
         </template>
       </div>
@@ -249,10 +248,6 @@ function copyContent() {
 
 .ghost-content {
   color: #71717A;
-}
-
-.thinking-dash {
-  color: #52525B;
 }
 
 .thinking-content-ghost :deep(.copy-btn) {

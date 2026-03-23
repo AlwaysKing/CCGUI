@@ -999,8 +999,8 @@ ipcMain.handle('send-control-request', async (event, { sessionId, request }) => 
   logger.info('[IPC] send-control-request:', { sessionId, request })
 
   try {
-    await sessionManager.sendControlRequest(sessionId, request)
-    return { success: true }
+    const response = await sessionManager.sendControlRequest(sessionId, request)
+    return { success: true, response: response || null }
   } catch (error) {
     logger.error('[IPC] send-control-request error:', error)
     return { success: false, error: error.message }
@@ -2020,6 +2020,20 @@ ipcMain.handle('open-project-entry-in-finder', async (event, { projectPath, targ
   } catch (error) {
     logger.error('[Files] Failed to open project entry in finder', { projectPath, targetPath, mode, error: error.message })
     return { success: false, error: error.message || '打开失败' }
+  }
+})
+
+ipcMain.handle('open-external-url', async (event, { url }) => {
+  try {
+    if (!url || typeof url !== 'string') {
+      throw new Error('缺少链接地址')
+    }
+
+    await shell.openExternal(url)
+    return { success: true }
+  } catch (error) {
+    logger.error('[Shell] Failed to open external url', { url, error: error.message })
+    return { success: false, error: error.message || '打开链接失败' }
   }
 })
 

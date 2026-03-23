@@ -181,14 +181,16 @@ function scrollToUserMessage() {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  background: rgba(255, 255, 255, 0.024);
-  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: rgba(24, 24, 27, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
   padding: 4px 12px;
   max-width: 70%;
   flex-direction: column;
   gap: 4px;
   transform: translateY(-6px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(12px);
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
@@ -216,12 +218,12 @@ function scrollToUserMessage() {
 }
 
 .sticky-content:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(30, 30, 30, 0.98);
   border-color: rgba(255, 255, 255, 0.18);
   max-width: none;
   max-height: var(--max-height, 300px);
   padding: 4px 12px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
 }
 
 .sticky-content:hover .sticky-expanded {
@@ -248,7 +250,7 @@ function scrollToUserMessage() {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: #71717A;
+  color: #A1A1AA;
 }
 
 .sticky-duration.streaming {
@@ -273,8 +275,8 @@ function scrollToUserMessage() {
 }
 
 .scroll-up-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #A1A1AA;
+  background: rgba(255, 255, 255, 0.08);
+  color: #E4E4E7;
 }
 
 /* 折叠时的文本：单行截断 */

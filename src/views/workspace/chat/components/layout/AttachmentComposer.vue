@@ -47,6 +47,7 @@ const editorRef = ref(null)
 const fileInputRef = ref(null)
 const imagePreviewUrl = ref('')
 const imagePreviewTitle = ref('')
+const isComposing = ref(false)
 let isApplyingExternalState = false
 
 const attachmentMap = computed(() => new Map((props.attachments || []).map(item => [item.id, item])))
@@ -306,6 +307,11 @@ async function removeAttachment(attachment) {
 function handleKeydown(event) {
   if (props.disabled) return
 
+  // 某些输入法确认候选时不会稳定设置 isComposing，需要额外用 229 和本地组合态兜底。
+  if (event.isComposing || isComposing.value || event.keyCode === 229 || event.which === 229) {
+    return
+  }
+
   if ((event.metaKey || event.ctrlKey) && event.key === 'ArrowUp') {
     emit('history-picker', event)
     return
@@ -333,6 +339,14 @@ function handleKeydown(event) {
 
   event.preventDefault()
   emit('submit')
+}
+
+function handleCompositionStart() {
+  isComposing.value = true
+}
+
+function handleCompositionEnd() {
+  isComposing.value = false
 }
 
 function openFilePicker() {
@@ -435,6 +449,8 @@ onMounted(() => {
         :data-placeholder="placeholder"
         @input="syncModelFromDom"
         @keydown="handleKeydown"
+        @compositionstart="handleCompositionStart"
+        @compositionend="handleCompositionEnd"
         @paste="handlePaste"
         @drop.prevent="handleDroppedFiles($event.dataTransfer?.files)"
         @dragover.prevent

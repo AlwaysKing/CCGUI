@@ -16,6 +16,56 @@ const {
  * CCGUI 统一语义事件。
  */
 class CodexAdapter extends CodexClient {
+  constructor(...args) {
+    super(...args)
+    this.turnDiffMessageMap = new Map()
+  }
+
+  buildControlResponse(requestId, response = {}, options = {}) {
+    return {
+      type: 'control_response',
+      response: {
+        subtype: options.subtype || 'success',
+        request_id: requestId,
+        response
+      }
+    }
+  }
+
+  normalizeRollbackResponse(result = {}, options = {}) {
+    const turnDiff = result?.turnDiff || result?.turn_diff || null
+    const rawChanges = Array.isArray(result?.changes)
+      ? result.changes
+      : Array.isArray(turnDiff?.changes)
+        ? turnDiff.changes
+        : []
+
+    const files = Array.from(new Set(
+      rawChanges
+        .map(change => (
+          change?.path ||
+          change?.file ||
+          change?.filePath ||
+          change?.fsPath ||
+          change?.move_path ||
+          null
+        ))
+        .filter(Boolean)
+    ))
+
+    const changedFiles = result?.changed_files || result?.filesChanged || result?.restored_files || files
+
+    return {
+      ...result,
+      changed_files: changedFiles,
+      filesChanged: changedFiles,
+      restored_files: result?.restored_files || changedFiles,
+      insertions: result?.insertions || result?.linesAdded || result?.lines_added || turnDiff?.insertions || 0,
+      deletions: result?.deletions || result?.linesRemoved || result?.lines_removed || turnDiff?.deletions || 0,
+      dry_run: options.dryRun === true
+    }
+  }
+
   handleNotification(message) {
     const { method, params } = message
 
@@ -47,6 +97,16 @@ class CodexAdapter extends CodexClient {
       case 'turn/completed': {
         this.currentTurnId = params.turn.id
         const turnStats = this.turnStats.get(params.turn.id) || null
+        const diffMessageId = this.turnDiffMessageMap.get(params.turn.id)
+        if (diffMessageId) {
+          this.emit('message-update', {
+            messageId: diffMessageId,
+            updates: {
+              isExecuting: false
+            }
+          })
+          this.turnDiffMessageMap.delete(params.turn.id)
+        }
         this.emit('result', {
           duration_ms: null,
           num_turns: turnStats?.numTurns || this.getTurnSegmentCount(params.turn.id),
@@ -101,6 +161,10 @@ class CodexAdapter extends CodexClient {
         this.handleToolOutputDelta(params)
         break
 
+      case 'turn/diff/updated':
+        this.handleTurnDiffUpdated(params)
+        break
+
       case 'thread/status/changed':
         this.emit('env-info', applyCodexEnvInfoPatch({
           ...this.envInfo,
@@ -152,6 +216,22 @@ class CodexAdapter extends CodexClient {
           turnId: params.turnId,
           summary: params.summary || params.compactSummary || '',
           metadata: params
+        })
+        break
+
+      case 'thread/rolled_back':
+        this.emit('system-notification', {
+          type: 'thread-rolled-back',
+          provider: 'codex',
+          metadata: params || {}
+        })
+        break
+
+      case 'undo/completed':
+        this.emit('system-notification', {
+          type: 'undo-completed',
+          provider: 'codex',
+          metadata: params || {}
         })
         break
 
@@ -215,6 +295,45 @@ class CodexAdapter extends CodexClient {
     }
   }
 
+  handleTurnDiffUpdated(params = {}) {
+    const turnId = params.turnId || params.turn?.id || this.currentTurnId
+    const diffText = typeof params.diff === 'string' ? params.diff : ''
+    if (!turnId || !diffText.trim()) {
+      return
+    }
+
+    const messageId = this.turnDiffMessageMap.get(turnId)
+    const rawMessage = { method: 'turn/diff/updated', params }
+
+    if (messageId) {
+      this.emit('message-update', {
+        messageId,
+        updates: {
+          toolInput: { diff: diffText },
+          rawMessages: [rawMessage]
+        }
+      })
+      return
+    }
+
+    const nextMessageId = `codex-diff-${turnId}`
+    this.turnDiffMessageMap.set(turnId, nextMessageId)
+    this.emit('message-start', {
+      id: nextMessageId,
+      role: 'diff',
+      toolName: 'Diff',
+      toolInput: { diff: diffText },
+      result: '',
+      isError: false,
+      isExecuting: true,
+      request_id: nextMessageId,
+      collapsed: false,
+      timestamp: new Date(),
+      startTime: Date.now(),
+      rawMessages: [rawMessage]
+    })
+  }
+
   handleItemStarted(params) {
     const item = params.item
     if (!item) {
@@ -222,6 +341,10 @@ class CodexAdapter extends CodexClient {
     }
 
     this.itemState.set(item.id, item)
+
+    if (item.type === 'fileChange') {
+      return
+    }
 
     if (item.type === 'agentMessage' || item.type === 'reasoning' || item.type === 'plan') {
       if (item.type === 'agentMessage' && item.text) {
@@ -264,7 +387,6 @@ class CodexAdapter extends CodexClient {
 
     if (
       item.type === 'commandExecution' ||
-      item.type === 'fileChange' ||
       item.type === 'mcpToolCall' ||
       item.type === 'dynamicToolCall' ||
       item.type === 'collabAgentToolCall' ||
@@ -292,6 +414,20 @@ class CodexAdapter extends CodexClient {
     }
 
     this.itemState.set(item.id, item)
+
+    if (item.type === 'fileChange') {
+      this.emit('silent-message', {
+        messageType: 'item/fileChange',
+        params: {
+          itemId: item.id,
+          turnId: params.turnId || this.currentTurnId,
+          changes: Array.isArray(item.changes) ? item.changes : [],
+          path: item.path || null,
+          timestamp: new Date().toISOString()
+        }
+      })
+      return
+    }
 
     if (item.type === 'agentMessage' || item.type === 'reasoning' || item.type === 'plan') {
       const assistantState = this.turnAssistantState.get(params.turnId)
@@ -420,7 +556,7 @@ class CodexAdapter extends CodexClient {
     if (item.type === 'fileChange') {
       return {
         id: item.id,
-        role: 'tool_use',
+        role: 'diff',
         toolName: normalizeToolName('apply_patch'),
         toolInput: {
           changes: item.changes || []
@@ -623,6 +759,11 @@ class CodexAdapter extends CodexClient {
   }
 
   handleToolOutputDelta(params) {
+    const itemState = this.itemState.get(params.itemId)
+    if (itemState?.type === 'fileChange') {
+      return
+    }
+
     const messageId = this.itemToMessageMap.get(params.itemId)
     if (!messageId) {
       return
@@ -802,6 +943,67 @@ class CodexAdapter extends CodexClient {
       permissionMode: mode,
       source: 'manual'
     })
+  }
+
+  async sendControlRequest(request) {
+    if (request?.subtype === 'changed_files' || request?.subtype === 'rewind_files') {
+      await this.ensureInitialized()
+
+      const result = await this.request('thread/rollback', {
+        threadId: this.currentThreadId,
+        numTurns: request.numTurns,
+        dryRun: true
+      })
+
+      return this.buildControlResponse(
+        `codex-rewind-${Date.now()}`,
+        this.normalizeRollbackResponse(result, { dryRun: true })
+      )
+    }
+
+    if (request?.subtype === 'rewind') {
+      await this.ensureInitialized()
+
+      const result = await this.request('thread/rollback', {
+        threadId: this.currentThreadId,
+        numTurns: request.numTurns,
+        dryRun: false
+      })
+
+      return this.buildControlResponse(
+        `codex-rewind-${Date.now()}`,
+        this.normalizeRollbackResponse(result, { dryRun: false })
+      )
+    }
+
+    if (request?.subtype === 'rewind_and_fork') {
+      await this.ensureInitialized()
+
+      const forkResult = await this.request('thread/fork', {
+        threadId: this.currentThreadId
+      })
+
+      const rollbackResult = await this.request('thread/rollback', {
+        threadId: this.currentThreadId,
+        numTurns: request.numTurns,
+        dryRun: false
+      })
+
+      return this.buildControlResponse(
+        `codex-rewind-fork-${Date.now()}`,
+        {
+          ...this.normalizeRollbackResponse(rollbackResult, { dryRun: false }),
+          new_session_id: (
+            forkResult?.thread?.id ||
+            forkResult?.newThreadId ||
+            forkResult?.threadId ||
+            null
+          )
+        }
+      )
+    }
+
+    return super.sendControlRequest(request)
   }
 
   getSessionIdentifier() {

@@ -7,6 +7,11 @@ function normalizePath(value = '') {
   return String(value || '').replace(/\\/g, '/')
 }
 
+function isAbsolutePath(targetPath = '') {
+  const normalizedPath = normalizePath(targetPath)
+  return normalizedPath.startsWith('/') || /^[A-Za-z]:\//.test(normalizedPath)
+}
+
 function createNode(entry) {
   return {
     name: entry.name,
@@ -83,6 +88,10 @@ function getProjectRelativePath(projectPath = '', targetPath = '') {
 
   if (!normalizedProjectPath || !normalizedTargetPath) {
     return null
+  }
+
+  if (!isAbsolutePath(normalizedTargetPath)) {
+    return normalizedTargetPath
   }
 
   const projectPrefix = `${normalizedProjectPath}/`

@@ -10,6 +10,10 @@ const props = defineProps({
     type: Object,
     required: true
   },
+  chatTheme: {
+    type: Object,
+    default: () => ({})
+  },
   isCollapsed: {
     type: Boolean,
     default: true
@@ -17,6 +21,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['toggleCollapse', 'jumpToMessage'])
+const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
 
 // 预览文本
 const previewText = computed(() => {
@@ -44,10 +49,43 @@ function jumpToMessage(event) {
     <!-- 气泡 -->
     <div
       class="rewind-notice"
-      :class="{ 'rewind-collapsed': isCollapsed }"
+      :class="{ 'rewind-collapsed': isCollapsed, 'surface-ghost': isTextStyle }"
     >
+      <template v-if="isTextStyle">
+        <div class="rewind-ghost-shell">
+          <div class="rewind-ghost-header" @click="toggleCollapse">
+            <span class="rewind-title ghost">还原文件 ({{ message.restoredFilesCount ?? message.restoredFiles?.length ?? 0 }})</span>
+            <span class="rewind-collapse-btn ghost">{{ isCollapsed ? '▶' : '▼' }}</span>
+            <span class="rewind-preview-text ghost">{{ previewText }}</span>
+            <span
+              class="rewind-hint ghost"
+              @click="jumpToMessage"
+              title="跳转到原消息"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+              </svg>
+            </span>
+          </div>
+
+          <div v-if="!isCollapsed" class="rewind-ghost-body">
+            <div class="rewind-ghost-divider"></div>
+            <div v-if="message.restoredFiles && message.restoredFiles.length > 0" class="rewind-ghost-files">
+              <div
+                v-for="(file, fileIndex) in message.restoredFiles"
+                :key="`ghost-${fileIndex}`"
+                class="rewind-ghost-file"
+              >
+                {{ file }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
       <!-- 折叠时的布局 -->
-      <template v-if="isCollapsed">
+      <template v-else-if="isCollapsed">
         <div class="rewind-header-collapsed" @click="toggleCollapse">
           <div class="rewind-header-row-1">
             <span class="rewind-icon">↩️</span>
@@ -150,6 +188,10 @@ function jumpToMessage(event) {
   max-width: 70%;
 }
 
+.rewind-message-wrapper:has(.rewind-notice.surface-ghost) {
+  margin: 0;
+}
+
 /* Rewind notice 气泡 - 和参考项目保持一致 */
 .rewind-notice {
   background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
@@ -160,8 +202,85 @@ function jumpToMessage(event) {
   transition: all 0.3s ease;
 }
 
+.rewind-notice.surface-ghost {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
 .rewind-notice:hover {
   box-shadow: 0 2px 8px rgba(245, 158, 11, 0.2);
+}
+
+.rewind-notice.surface-ghost:hover {
+  box-shadow: none;
+}
+
+.rewind-ghost-shell {
+  padding: 0;
+  margin: 0;
+}
+
+.rewind-ghost-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  cursor: pointer;
+  line-height: 1.2;
+  margin: 0;
+  padding: 0;
+}
+
+.rewind-ghost-body {
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.rewind-ghost-divider {
+  height: 1px;
+  background: rgba(245, 158, 11, 0.16);
+  margin: 2px 0 4px 0;
+}
+
+.rewind-ghost-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rewind-ghost-file {
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  color: #d4d4d8;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.rewind-title.ghost {
+  font-size: 12px;
+  font-weight: 500;
+  color: #f59e0b;
+  flex-shrink: 0;
+}
+
+.rewind-preview-text.ghost {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rewind-hint.ghost {
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.rewind-collapse-btn.ghost {
+  font-size: 10px;
+  color: #888;
+  flex-shrink: 0;
 }
 
 .rewind-notice.rewind-collapsed {
@@ -187,6 +306,10 @@ function jumpToMessage(event) {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.rewind-notice.surface-ghost .rewind-header-collapsed:hover {
+  background: rgba(245, 158, 11, 0.05);
+}
+
 .rewind-header-row-1 {
   display: flex;
   align-items: center;
@@ -210,8 +333,16 @@ function jumpToMessage(event) {
   transition: background 0.2s ease;
 }
 
+.rewind-notice.surface-ghost .rewind-header {
+  background: transparent;
+}
+
 .rewind-header:hover {
   background: #2D2D30;
+}
+
+.rewind-notice.surface-ghost .rewind-header:hover {
+  background: rgba(245, 158, 11, 0.05);
 }
 
 .rewind-icon {
@@ -304,6 +435,10 @@ function jumpToMessage(event) {
   border-top: 1px solid rgba(245, 158, 11, 0.2);
 }
 
+.rewind-notice.surface-ghost .rewind-body {
+  border-top: 1px solid rgba(245, 158, 11, 0.12);
+}
+
 .rewind-tool-section {
   margin-top: 10px;
 }
@@ -333,6 +468,10 @@ function jumpToMessage(event) {
   word-break: break-all;
 }
 
+.rewind-notice.surface-ghost .rewind-message-box {
+  background: rgba(245, 158, 11, 0.04);
+}
+
 .rewind-inline-stats {
   display: inline-flex;
   align-items: center;
@@ -349,6 +488,10 @@ function jumpToMessage(event) {
   padding: 8px;
   background: rgba(0, 0, 0, 0.2);
   border-radius: 6px;
+}
+
+.rewind-notice.surface-ghost .rewind-files-list {
+  background: rgba(245, 158, 11, 0.04);
 }
 
 .rewind-file-item {

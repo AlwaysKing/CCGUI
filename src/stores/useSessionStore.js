@@ -395,10 +395,21 @@ export const useSessionStore = defineStore('session', () => {
     })
 
     // 发送请求
-    await window.electronAPI.sendControlRequest({
+    const invokeResult = await window.electronAPI.sendControlRequest({
       sessionId: session.id,
       request
     })
+
+    if (invokeResult?.success === false) {
+      session.pendingControlRequestResult = null
+      throw new Error(invokeResult.error || 'Control request failed')
+    }
+
+    if (invokeResult?.response) {
+      session.pendingControlRequestResult?.resolve(invokeResult.response)
+      session.pendingControlRequestResult = null
+      return invokeResult.response
+    }
 
     // 返回 Promise，让调用者可以 await 响应
     return responsePromise
@@ -514,6 +525,10 @@ export const useSessionStore = defineStore('session', () => {
       case 'message-update':
         // 后端发送的字段更新事件
         handleMessageUpdate(session, data)
+        break
+
+      case 'messages-reset':
+        handleMessagesReset(session, data)
         break
 
       case 'tool-result':
@@ -658,7 +673,7 @@ export const useSessionStore = defineStore('session', () => {
         // 查找对应的 tool_use 消息并更新结果
         for (let i = session.messages.length - 1; i >= 0; i--) {
           const msg = session.messages[i]
-          if (msg.role === 'tool_use' && (msg.id === toolUseId || msg.request_id === toolUseId)) {
+          if ((msg.role === 'tool_use' || msg.role === 'diff') && (msg.id === toolUseId || msg.request_id === toolUseId)) {
             msg.isExecuting = false
             msg.isError = toolResultContent.is_error
             msg.result = toolResultContent.content || '(无输出)'
@@ -672,6 +687,15 @@ export const useSessionStore = defineStore('session', () => {
 
     // 使用 reactive 包装消息对象以确保响应式
     session.messages.push(reactive(message))
+  }
+
+  function handleMessagesReset(session, data) {
+    const nextMessages = Array.isArray(data?.messages) ? data.messages.map(message => reactive(message)) : []
+    session.messages = nextMessages
+    session.currentAssistantMessageIndex = -1
+    session.currentStreamingAssistantId = null
+    session.currentContentBlockType = null
+    session.hasSeenToolUseInCurrentTurn = false
   }
 
   /**
@@ -864,7 +888,7 @@ export const useSessionStore = defineStore('session', () => {
         turnNumber: message.turnNumber,
         usage: message.usage
       })
-    } else if (message.role === 'tool_use') {
+    } else if (message.role === 'tool_use' || message.role === 'diff') {
       // 记录 tool_use 的索引
       if (typeof message.request_id === 'number') {
         session.contentBlockIndexToId.set(message.request_id, message.id)
@@ -918,6 +942,15 @@ export const useSessionStore = defineStore('session', () => {
       msg.duration = Date.now() - msg.startTime
     }
 
+    if (
+      msg.role === 'diff' &&
+      !msg.isError &&
+      !msg.isExecuting &&
+      !msg.manuallyExpanded
+    ) {
+      msg.collapsed = true
+    }
+
     // 清除流式标记
     if (msg.role === 'assistant') {
       session.currentAssistantMessageIndex = -1
@@ -945,6 +978,15 @@ export const useSessionStore = defineStore('session', () => {
     Object.assign(msg, updates)
     if ((updates.isStreaming === false || updates.isExecuting === false) && !msg.duration && msg.startTime) {
       msg.duration = Date.now() - msg.startTime
+    }
+
+    if (
+      msg.role === 'diff' &&
+      updates.isExecuting === false &&
+      !msg.isError &&
+      !msg.manuallyExpanded
+    ) {
+      msg.collapsed = true
     }
 
     if (msg.role === 'assistant') {
@@ -982,7 +1024,7 @@ export const useSessionStore = defineStore('session', () => {
 
     for (let i = session.messages.length - 1; i >= 0; i--) {
       const msg = session.messages[i]
-      if (msg.role === 'tool_use' && (msg.id === toolUseId || msg.request_id === toolUseId)) {
+      if ((msg.role === 'tool_use' || msg.role === 'diff') && (msg.id === toolUseId || msg.request_id === toolUseId)) {
         msg.isExecuting = false
         msg.isError = !!data.isError
         msg.result = data.content || '(无输出)'

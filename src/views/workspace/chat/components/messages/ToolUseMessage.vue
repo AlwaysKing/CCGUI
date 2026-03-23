@@ -6,6 +6,25 @@ import { useFileBrowserStore } from '../../../../../stores/useFileBrowserStore'
 const emit = defineEmits(['toggle-collapse'])
 const fileBrowserStore = useFileBrowserStore()
 
+function parseUnifiedDiffMetadata(diffText = '') {
+  if (typeof diffText !== 'string' || !diffText.trim()) {
+    return { files: [], insertions: 0, deletions: 0 }
+  }
+
+  const fileMatches = Array.from(diffText.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm))
+  const files = Array.from(new Set(
+    fileMatches
+      .map(match => match[2] || match[1] || '')
+      .filter(Boolean)
+  ))
+
+  return {
+    files,
+    insertions: (diffText.match(/^\+(?!\+\+).*/gm) || []).length,
+    deletions: (diffText.match(/^-(?!--).*/gm) || []).length
+  }
+}
+
 // 检测是否为空的 old_string（文件末尾添加内容）
 const isAddOperation = computed(() => {
   if (props.toolName !== 'Edit') return false
@@ -56,6 +75,21 @@ const writeContentData = computed(() => {
     lines,
     lineCount: lines.length,
     charCount: content.length
+  }
+})
+
+const unifiedDiffData = computed(() => {
+  if (props.toolName !== 'Diff') return null
+  const input = mergedToolInput.value
+  const diff = input?.diff || input?.patch || props.result || ''
+  if (!diff) return null
+
+  const metadata = parseUnifiedDiffMetadata(diff)
+  return {
+    diff,
+    files: metadata.files,
+    insertions: metadata.insertions,
+    deletions: metadata.deletions
   }
 })
 
@@ -199,6 +233,7 @@ const toolIcon = computed(() => {
     Read: '📖',
     Edit: '✏️',
     ApplyPatch: '🩹',
+    Diff: '🩹',
     Write: '📝',
     Glob: '🔍',
     Grep: '🔎',
@@ -274,6 +309,12 @@ const primaryContent = computed(() => {
         value: input.file_path,
         description: `${writePath}    ${lineCount} 行 · ${content.length} 字符`,
         hasContent: !!content
+      }
+    case 'Diff':
+      return {
+        label: '文件变更',
+        value: unifiedDiffData.value?.files?.length ? unifiedDiffData.value.files.join(', ') : '补丁更新',
+        description: unifiedDiffData.value?.files?.length ? `${unifiedDiffData.value.files.length} 个文件` : '统一 diff 更新'
       }
     case 'Glob':
       return {
@@ -464,6 +505,15 @@ const collapsedSummary = computed(() => {
     case 'ApplyPatch':
       const patchChanges = Array.isArray(input.changes) ? input.changes : []
       return `${patchChanges.length} 处补丁变更`
+    case 'Diff':
+      if (!unifiedDiffData.value) return ''
+      if (unifiedDiffData.value.files.length === 1) {
+        return `${formatFilePath(unifiedDiffData.value.files[0])}    (+${unifiedDiffData.value.insertions} -${unifiedDiffData.value.deletions})`
+      }
+      if (unifiedDiffData.value.files.length > 1) {
+        return `${unifiedDiffData.value.files.length} 个文件    (+${unifiedDiffData.value.insertions} -${unifiedDiffData.value.deletions})`
+      }
+      return `(+${unifiedDiffData.value.insertions} -${unifiedDiffData.value.deletions})`
     case 'Glob':
       return input.pattern || ''
     case 'Grep':
@@ -548,6 +598,11 @@ const textStyleSummary = computed(() => {
       return previewFileName.value || formatFilePath(input.file_path || input.path || '')
     case 'ApplyPatch':
       return Array.isArray(input.changes) && input.changes.length ? `${input.changes.length} 处变更` : ''
+    case 'Diff':
+      if (unifiedDiffData.value?.files?.length === 1) {
+        return formatFilePath(unifiedDiffData.value.files[0])
+      }
+      return unifiedDiffData.value?.files?.length ? `${unifiedDiffData.value.files.length} 个文件` : '补丁更新'
     case 'Bash':
       return input.command || ''
     case 'Grep':
@@ -580,6 +635,8 @@ const textStyleMeta = computed(() => {
         return `(+${(input.new_string || '').split('\n').length} -${(input.old_string || '').split('\n').length})`
       }
       return ''
+    case 'Diff':
+      return unifiedDiffData.value ? `(+${unifiedDiffData.value.insertions} -${unifiedDiffData.value.deletions})` : ''
     default:
       return ''
   }
@@ -593,6 +650,8 @@ const previewFilePath = computed(() => {
     case 'Read':
     case 'Write':
       return input.file_path || input.path || ''
+    case 'Diff':
+      return unifiedDiffData.value?.files?.[0] || ''
     default:
       return ''
   }
@@ -612,6 +671,7 @@ const showTextStyleSummary = computed(() => {
 const textStyleStatus = computed(() => {
   if (props.isExecuting) return 'executing'
   if (props.isError) return 'error'
+  if (props.toolName === 'Diff' && unifiedDiffData.value?.diff) return 'success'
   if (props.result) return 'success'
   return ''
 })
@@ -654,6 +714,9 @@ async function copyToolCall() {
   if (formattedResult.value) {
     content += `\n结果:\n${formattedResult.value}\n`
   }
+  if (props.toolName === 'Diff' && unifiedDiffData.value?.diff) {
+    content += `\nDiff:\n${unifiedDiffData.value.diff}\n`
+  }
   await copyToClipboard(content, 'header')
 }
 
@@ -666,6 +729,10 @@ async function copyDescription() {
 
 // 复制主要内容
 async function copyContent() {
+  if (props.toolName === 'Diff' && unifiedDiffData.value?.diff) {
+    await copyToClipboard(unifiedDiffData.value.diff, 'content')
+    return
+  }
   if (primaryContent.value?.value) {
     const content = typeof primaryContent.value.value === 'string' ? primaryContent.value.value : JSON.stringify(primaryContent.value.value, null, 2)
     await copyToClipboard(content, 'content')
@@ -731,7 +798,7 @@ async function handlePreviewFile(event) {
           <span class="status-spinner"></span>
         </span>
         <span v-else-if="!isTextStyle && isError" class="status-badge error">失败</span>
-        <span v-else-if="!isTextStyle && result" class="status-badge success">完成</span>
+        <span v-else-if="!isTextStyle && (result || (props.toolName === 'Diff' && unifiedDiffData?.diff))" class="status-badge success">完成</span>
       </div>
       <div class="header-actions">
         <!-- 复制按钮 -->
@@ -863,6 +930,20 @@ async function handlePreviewFile(event) {
                 </div>
               </div>
             </div>
+          </div>
+        </template>
+        <template v-else-if="props.toolName === 'Diff' && unifiedDiffData">
+          <div class="section-content-wrapper">
+            <button class="section-copy-btn" @click.stop="copyContent" :title="copiedType === 'content' ? '已复制' : '复制'">
+              <svg v-if="copiedType === 'content'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+              <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+            <pre class="section-content result">{{ unifiedDiffData.diff }}</pre>
           </div>
         </template>
         <!-- Bash 专用命令显示 -->
@@ -1066,6 +1147,8 @@ async function handlePreviewFile(event) {
 .tool-use-card.text-style .tool-header {
   padding: 0;
   background: transparent;
+  justify-content: flex-start;
+  gap: 6px;
 }
 
 .tool-header:hover {
@@ -1082,6 +1165,10 @@ async function handlePreviewFile(event) {
   gap: 10px;
   flex: 1;
   min-width: 0;
+}
+
+.tool-use-card.text-style .tool-info {
+  flex: 0 1 auto;
 }
 
 .tool-icon {
@@ -1311,6 +1398,7 @@ async function handlePreviewFile(event) {
 
 .tool-use-card.text-style .header-actions {
   gap: 4px;
+  justify-content: flex-start;
 }
 
 .copy-btn {

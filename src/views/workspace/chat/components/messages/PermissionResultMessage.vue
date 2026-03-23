@@ -295,6 +295,8 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
 .tool-use-card.text-style .tool-header {
   padding: 0;
   background: transparent;
+  justify-content: flex-start;
+  gap: 6px;
 }
 
 .tool-use-card.text-style .tool-header:hover {
@@ -307,6 +309,10 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
   gap: 10px;
   flex: 1;
   min-width: 0;
+}
+
+.tool-use-card.text-style .tool-info {
+  flex: 0 1 auto;
 }
 
 .tool-icon {
@@ -403,6 +409,11 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
   gap: 8px;
   flex-shrink: 0;
   margin-left: 8px;
+}
+
+.tool-use-card.text-style .header-actions {
+  margin-left: 0;
+  justify-content: flex-start;
 }
 
 .copy-btn {

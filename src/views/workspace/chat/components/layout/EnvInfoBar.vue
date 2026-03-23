@@ -558,6 +558,8 @@ function toggleSilentPanel() {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--bg-tertiary);
   -webkit-app-region: drag;
+  position: relative;
+  z-index: 120;
 }
 
 .sidebar-safe-spacer {
@@ -619,6 +621,7 @@ function toggleSilentPanel() {
   padding: 9.25px 16px;
   font-size: var(--font-size-sm);
   cursor: move;
+  z-index: 121;
 }
 
 .env-bar.with-collapse-btn {
@@ -831,7 +834,7 @@ function toggleSilentPanel() {
   border: 1px solid #3F3F46;
   border-radius: 12px;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
-  z-index: 31;
+  z-index: 140;
   -webkit-app-region: no-drag;
 }
 
@@ -982,7 +985,7 @@ function toggleSilentPanel() {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--bg-tertiary);
   padding: var(--spacing-md) var(--spacing-lg);
-  z-index: var(--z-dropdown);
+  z-index: 140;
   -webkit-app-region: no-drag;
   cursor: default;
 }

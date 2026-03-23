@@ -2302,7 +2302,7 @@ async function handleQuestionAnswer(requestId, answers) {
   -webkit-app-region: no-drag;
   flex-shrink: 0;
   position: relative;
-  z-index: 2;
+  z-index: 6;
 }
 
 .resize-handle:hover {
@@ -2331,6 +2331,7 @@ async function handleQuestionAnswer(requestId, answers) {
   letter-spacing: 0.02em;
   white-space: nowrap;
   pointer-events: none;
+  z-index: 7;
 }
 
 .input-area {

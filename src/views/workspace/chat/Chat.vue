@@ -74,6 +74,10 @@ const inputMessage = computed({
   get: () => sessionStore.inputMessage,
   set: (val) => { sessionStore.inputMessage = val }
 })
+const inputAttachments = computed({
+  get: () => sessionStore.inputAttachments,
+  set: (val) => { sessionStore.inputAttachments = val }
+})
 
 const isProcessing = computed(() => sessionStore.isProcessing)
 const messagesContainer = ref(null)
@@ -1480,6 +1484,7 @@ async function handleQuestionAnswer(requestId, answers) {
       ref="chatInputRef"
       :class="{ 'resizable-expanded': !!messagesHeight }"
       v-model="inputMessage"
+      v-model:attachments="inputAttachments"
       :is-processing="isProcessing"
       :has-permission="pendingPermission !== null || pendingControlRequest !== null"
       :permission-mode="permissionMode"

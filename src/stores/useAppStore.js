@@ -280,7 +280,6 @@ export const useAppStore = defineStore('app', () => {
   function selectProject(project) {
     currentProject.value = project
     currentSession.value = null
-    fetchSessions(project.id)
   }
 
   // Actions - Sessions

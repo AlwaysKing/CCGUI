@@ -39,6 +39,7 @@ export function useProjectWorkspacePersistence({
 
   let persistProjectWorkspaceTimer = null
   let projectWorkspaceRestoreToken = 0
+  let restoreProjectWorkspaceTimer = null
 
   function normalizeWorkspaceLayout(layout = {}) {
     return {
@@ -169,8 +170,17 @@ export function useProjectWorkspacePersistence({
     sidebarPanelLayout.value = normalizeSidebarPanelLayout(nextLayout)
   }
 
-  watch(() => store.currentProject?.id, async () => {
-    await restoreProjectWorkspaceState(store.currentProject)
+  watch(() => store.currentProject?.id, () => {
+    if (restoreProjectWorkspaceTimer) {
+      clearTimeout(restoreProjectWorkspaceTimer)
+      restoreProjectWorkspaceTimer = null
+    }
+
+    const project = store.currentProject
+    restoreProjectWorkspaceTimer = setTimeout(() => {
+      restoreProjectWorkspaceTimer = null
+      void restoreProjectWorkspaceState(project)
+    }, 0)
   }, { immediate: true })
 
   watch([
@@ -192,6 +202,10 @@ export function useProjectWorkspacePersistence({
   })
 
   onUnmounted(() => {
+    if (restoreProjectWorkspaceTimer) {
+      clearTimeout(restoreProjectWorkspaceTimer)
+      restoreProjectWorkspaceTimer = null
+    }
     if (persistProjectWorkspaceTimer) {
       clearTimeout(persistProjectWorkspaceTimer)
       persistProjectWorkspaceTimer = null

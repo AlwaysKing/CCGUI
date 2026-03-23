@@ -14,6 +14,10 @@ const {
   createEmptyTurnUsage,
   mergeTurnUsage
 } = require('../shared/usage')
+const {
+  replaceAttachmentTokens,
+  buildCodexAttachmentReference
+} = require('../shared/ccgui-attachments')
 
 let HttpsProxyAgent = null
 try {
@@ -307,6 +311,14 @@ function getTextFromUserMessage(message) {
 
   const textPart = parts.find(part => part?.type === 'text')
   return textPart?.text || ''
+}
+
+function getAttachmentsFromUserMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return []
+  }
+
+  return Array.isArray(message.attachments) ? message.attachments : []
 }
 
 function decodeJwtPayload(token) {
@@ -999,7 +1011,38 @@ class CodexClient {
       throw new Error('Codex thread not initialized')
     }
 
-    const text = getTextFromUserMessage(message)
+    const rawText = getTextFromUserMessage(message)
+    const attachments = getAttachmentsFromUserMessage(message)
+    const imageInputs = []
+    const codexAttachments = []
+
+    for (const attachment of attachments) {
+      if (!attachment?.path) {
+        continue
+      }
+
+      if (attachment.kind === 'image') {
+        imageInputs.push({
+          type: 'localImage',
+          path: attachment.path
+        })
+        continue
+      }
+
+      codexAttachments.push({
+        label: attachment.name,
+        path: attachment.path,
+        fsPath: attachment.path,
+        ...(attachment.kind === 'file-range' && Number.isFinite(attachment.startLine)
+          ? { startLine: attachment.startLine }
+          : {}),
+        ...(attachment.kind === 'file-range' && Number.isFinite(attachment.endLine)
+          ? { endLine: attachment.endLine }
+          : {})
+      })
+    }
+
+    const text = replaceAttachmentTokens(rawText, attachments, buildCodexAttachmentReference)
     const turnParams = {
       threadId: this.currentThreadId,
       input: [
@@ -1007,9 +1050,14 @@ class CodexClient {
           type: 'text',
           text,
           text_elements: []
-        }
+        },
+        ...imageInputs
       ],
       approvalPolicy: this.mapPermissionModeToApprovalPolicy()
+    }
+
+    if (codexAttachments.length > 0) {
+      turnParams.attachments = codexAttachments
     }
 
     if (this.currentCollaborationMode) {

@@ -1,13 +1,14 @@
 <script setup>
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted } from 'vue'
 import { IconButton } from '@/components/base'
 import { useAppStore } from '../../stores/useAppStore'
 import NewProjectDialog from './components/NewProjectDialog.vue'
-import SettingsDialog from '@/views/settings/SettingsDialog.vue'
 import { logger } from '../../utils/logger'
 import { useWelcomeProjects } from './hooks/useWelcomeProjects'
 import { useProjectDrop } from './hooks/useProjectDrop'
 import { useDialogStack } from '../../composables/useDialogStack'
+
+const SettingsDialog = defineAsyncComponent(() => import('@/views/settings/SettingsDialog.vue'))
 
 const store = useAppStore()
 const {
@@ -44,9 +45,26 @@ const {
 useDialogStack(computed(() => showDeleteConfirm.value), cancelDelete)
 
 onMounted(async () => {
+  const mountedAt = performance.now()
+  logger.info('[Welcome] mount start', { sinceMountedMs: 0 })
+
+  const fetchProjectsStartedAt = performance.now()
   await store.fetchProjects()
+  logger.info('[Welcome] fetchProjects complete', {
+    elapsedMs: Math.round(performance.now() - fetchProjectsStartedAt)
+  })
+
+  const existenceCheckStartedAt = performance.now()
   await checkProjectsExistence()
+  logger.info('[Welcome] checkProjectsExistence complete', {
+    elapsedMs: Math.round(performance.now() - existenceCheckStartedAt)
+  })
+
   window.addEventListener('ccgui-shortcut', handleShortcutEvent)
+
+  logger.info('[Welcome] mount complete', {
+    sinceMountedMs: Math.round(performance.now() - mountedAt)
+  })
 })
 
 onUnmounted(() => {

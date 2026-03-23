@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Send message (will start Claude instance if not running)
   sendMessage: (options) => ipcRenderer.invoke('send-message', options),
+  saveTempAttachment: (options) => ipcRenderer.invoke('save-temp-attachment', options),
+  deleteTempAttachment: (options) => ipcRenderer.invoke('delete-temp-attachment', options),
 
   // Send control response (for permission prompts)
   sendControlResponse: (options) => ipcRenderer.invoke('send-control-response', options),
@@ -152,6 +154,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   statProjectEntry: (options) => ipcRenderer.invoke('stat-project-entry', options),
   getProjectFileGitBase: (options) => ipcRenderer.invoke('get-project-file-git-base', options),
   readProjectFile: (options) => ipcRenderer.invoke('read-project-file', options),
+  readAttachmentFile: (options) => ipcRenderer.invoke('read-attachment-file', options),
   writeProjectFile: (options) => ipcRenderer.invoke('write-project-file', options),
   createProjectEntry: (options) => ipcRenderer.invoke('create-project-entry', options),
   renameProjectEntry: (options) => ipcRenderer.invoke('rename-project-entry', options),

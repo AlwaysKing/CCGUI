@@ -77,6 +77,26 @@ function getBaseName(targetPath = '') {
   return normalizedPath.split('/').pop() || normalizedPath
 }
 
+function getProjectRelativePath(projectPath = '', targetPath = '') {
+  const normalizedProjectPath = normalizePath(projectPath)
+  const normalizedTargetPath = normalizePath(targetPath)
+
+  if (!normalizedProjectPath || !normalizedTargetPath) {
+    return null
+  }
+
+  const projectPrefix = `${normalizedProjectPath}/`
+  if (normalizedTargetPath === normalizedProjectPath) {
+    return ''
+  }
+
+  if (!normalizedTargetPath.startsWith(projectPrefix)) {
+    return null
+  }
+
+  return normalizedTargetPath.slice(projectPrefix.length)
+}
+
 function createTabBase(filePath, options = {}) {
   const normalizedPath = normalizePath(filePath)
   const name = normalizedPath.split('/').pop() || normalizedPath
@@ -100,7 +120,8 @@ function createTabBase(filePath, options = {}) {
     diffBaseContent: options.diffBaseContent || '',
     diffBaseLoaded: !!options.diffBaseLoaded,
     diffBaseLoading: !!options.diffBaseLoading,
-    diffBaseError: options.diffBaseError || null
+    diffBaseError: options.diffBaseError || null,
+    readOnly: !!options.readOnly
   }
 }
 
@@ -132,6 +153,8 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
   const treeError = ref('')
   const gitStatusMap = ref({})
   let removeProjectFilesChangedListener = null
+  let projectInitializationTimer = null
+  let projectInitializationToken = 0
 
   const projectPath = computed(() => appStore.currentProject?.path || '')
 
@@ -445,10 +468,15 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     currentTab.error = null
 
     try {
-      const result = await window.electronAPI.readProjectFile({
-        projectPath: projectPath.value,
-        filePath: normalizedPath
-      })
+      const relativePath = getProjectRelativePath(projectPath.value, normalizedPath)
+      const result = relativePath !== null
+        ? await window.electronAPI.readProjectFile({
+          projectPath: projectPath.value,
+          filePath: relativePath
+        })
+        : await window.electronAPI.readAttachmentFile({
+          filePath: normalizedPath
+        })
 
       if (!result?.success) {
         throw new Error(result?.error || '读取文件失败')
@@ -460,6 +488,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       currentTab.updatedAt = result.file.updatedAt || null
       currentTab.size = result.file.size || 0
       currentTab.isDirty = false
+      currentTab.readOnly = relativePath === null
       currentTab.loaded = true
       return currentTab
     } catch (error) {
@@ -565,6 +594,10 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
   }
 
   async function previewFile(filePath) {
+    return openFile(filePath, { preview: true, pinned: false })
+  }
+
+  async function previewAttachmentFile(filePath) {
     return openFile(filePath, { preview: true, pinned: false })
   }
 
@@ -778,6 +811,10 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     const normalizedPath = normalizePath(filePath)
     const tab = tabs.value.find(item => item.path === normalizedPath)
     if (!tab) return { success: false, error: '文件未打开' }
+    if (tab.readOnly) {
+      tab.error = '附件预览为只读，暂不支持保存'
+      return { success: false, error: tab.error }
+    }
 
     try {
       const result = await window.electronAPI.writeProjectFile({
@@ -890,14 +927,35 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     isPreviewPanelVisible.value = Boolean(state?.isPreviewPanelVisible)
   }
 
-  watch(projectPath, async (nextProjectPath, previousProjectPath) => {
+  watch(projectPath, (nextProjectPath, previousProjectPath) => {
     if (nextProjectPath === previousProjectPath) return
-    resetState()
-    await window.electronAPI.unwatchProjectFiles?.()
-    if (nextProjectPath) {
-      await refreshTree()
-      await window.electronAPI.watchProjectFiles?.({ projectPath: nextProjectPath })
+
+    projectInitializationToken += 1
+    const currentToken = projectInitializationToken
+
+    if (projectInitializationTimer) {
+      clearTimeout(projectInitializationTimer)
+      projectInitializationTimer = null
     }
+
+    resetState()
+    projectInitializationTimer = setTimeout(() => {
+      projectInitializationTimer = null
+
+      void (async () => {
+        await window.electronAPI.unwatchProjectFiles?.()
+        if (!nextProjectPath || currentToken !== projectInitializationToken) {
+          return
+        }
+
+        await refreshTree()
+        if (currentToken !== projectInitializationToken) {
+          return
+        }
+
+        await window.electronAPI.watchProjectFiles?.({ projectPath: nextProjectPath })
+      })()
+    }, 0)
   }, { immediate: true })
 
   if (!removeProjectFilesChangedListener && window.electronEvents?.onProjectFilesChanged) {
@@ -936,6 +994,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     startRenaming,
     stopRenaming,
     previewFile,
+    previewAttachmentFile,
     pinFile,
     createEntry,
     renameEntry,

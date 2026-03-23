@@ -7,6 +7,8 @@ const historyManager = require('../storage/history-manager')
 const projectService = require('../services/project-service')
 const appConfigManager = require('../storage/app-config-manager')
 const { findProviderModel } = require('../adapters/shared/model-config')
+const attachmentService = require('../services/attachment-service')
+const { stripAttachmentTokens } = require('../adapters/shared/ccgui-attachments')
 
 function pickFirstDefined(...values) {
   for (const value of values) {
@@ -62,6 +64,16 @@ function normalizeSessionControlRequest(message = {}) {
     toolInput,
     input: toolInput
   }
+}
+
+function isComposedAttachmentMessage(content) {
+  return Boolean(
+    content &&
+    typeof content === 'object' &&
+    !Array.isArray(content) &&
+    typeof content.text === 'string' &&
+    Array.isArray(content.attachments)
+  )
 }
 
 function applySessionEnvInfoPatch(envInfo = {}, options = {}) {
@@ -157,6 +169,7 @@ class SessionInstance {
 
     // UI 状态
     this.inputMessage = ''    // 输入框内容
+    this.inputAttachments = []
     this.isProcessing = false // 是否正在处理
     this.inputHistory = []    // 输入历史
     this.historyIndex = -1    // 历史浏览索引
@@ -279,6 +292,7 @@ class SessionInstance {
       projectPath: this.projectPath,
       messages: this.messages,
       inputMessage: this.inputMessage,
+      inputAttachments: this.inputAttachments,
       isProcessing: this.isProcessing,
       inputHistory: this.inputHistory,
       historyIndex: this.historyIndex,
@@ -309,6 +323,7 @@ class SessionInstance {
    */
   updateUIState(state) {
     if (state.inputMessage !== undefined) this.inputMessage = state.inputMessage
+    if (state.inputAttachments !== undefined) this.inputAttachments = Array.isArray(state.inputAttachments) ? state.inputAttachments : []
     if (state.historyIndex !== undefined) this.historyIndex = state.historyIndex
     // inputHistory 通常只增不减，这里可以选择是否同步
   }
@@ -992,6 +1007,8 @@ class SessionInstance {
     // 支持两种格式：字符串或消息对象
     let userMessage
     let textContent
+    let structuredAttachments = []
+    let serializedText = ''
 
     // 生成真实的 UUID（用于 Claude 创建文件快照）
     const messageUuid = crypto.randomUUID()
@@ -999,12 +1016,35 @@ class SessionInstance {
     if (typeof content === 'string') {
       // 字符串格式：包装成消息对象
       textContent = content
+      serializedText = content
       userMessage = {
         type: 'user',
         uuid: messageUuid,  // 添加 UUID
         message: {
           role: 'user',
           content: [{ type: 'text', text: content }]
+        }
+      }
+    } else if (isComposedAttachmentMessage(content)) {
+      logger.info('[SessionInstance] Sending composed attachment message', {
+        sessionId: this.id,
+        attachmentCount: content.attachments.length,
+        textLength: content.text.length
+      })
+      structuredAttachments = attachmentService.finalizeAttachmentsForHistory(
+        this.projectId,
+        this.id,
+        content.attachments
+      )
+      serializedText = content.text
+      textContent = stripAttachmentTokens(serializedText, structuredAttachments)
+      userMessage = {
+        type: 'user',
+        uuid: messageUuid,
+        attachments: structuredAttachments,
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: serializedText }]
         }
       }
     } else if (content && content.type === 'user' && content.message) {
@@ -1019,11 +1059,28 @@ class SessionInstance {
       if (Array.isArray(msgContent)) {
         const textPart = msgContent.find(c => c.type === 'text')
         textContent = textPart?.text || ''
+        serializedText = textContent
       } else {
         textContent = typeof msgContent === 'string' ? msgContent : ''
+        serializedText = textContent
       }
+      structuredAttachments = Array.isArray(content.attachments) ? content.attachments : []
     } else {
       throw new Error('Invalid message format')
+    }
+
+    if (structuredAttachments.length > 0) {
+      logger.info('[SessionInstance] Prepared attachments', {
+        sessionId: this.id,
+        attachments: structuredAttachments.map(item => ({
+          id: item.id,
+          kind: item.kind,
+          name: item.name,
+          path: item.path,
+          size: item.size,
+          mimeType: item.mimeType
+        }))
+      })
     }
 
     // 保存输入历史
@@ -1050,6 +1107,8 @@ class SessionInstance {
       id: userMessage.uuid,
       role: 'user',
       content: textContent,
+      serializedContent: serializedText || textContent,
+      attachments: structuredAttachments,
       timestamp: new Date(),
       startTime: Date.now(),
       rawMessage: userMessage
@@ -1067,7 +1126,8 @@ class SessionInstance {
     // 更新状态
     this.isProcessing = true
     this.inputMessage = ''
-    this.emit('state-update', { isProcessing: true, inputMessage: '' })
+    this.inputAttachments = []
+    this.emit('state-update', { isProcessing: true, inputMessage: '', inputAttachments: [] })
 
     // 发送到运行时 provider
     await this.runtimeManager.sendMessage(userMessage)

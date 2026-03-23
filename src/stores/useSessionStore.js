@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch, reactive } from 'vue'
 import { logger } from '../utils/logger'
+import { stripAttachmentTokens } from '../utils/chatAttachments'
 
 /**
  * 日志工具 - 使用新的文件日志系统
@@ -28,6 +29,7 @@ class SessionData {
 
     // UI 状态
     this.inputMessage = ''
+    this.inputAttachments = []
     this.isProcessing = false
     this.inputHistory = []
     this.historyIndex = -1
@@ -57,6 +59,43 @@ class SessionData {
     this.fastModeState = 'off' // 快速模式状态: 'off' | 'auto' | 'on'
     this.activeTasks = new Map() // 活跃的子任务 Map<taskId, taskData>
   }
+}
+
+function toPlainAttachment(attachment) {
+  if (!attachment || typeof attachment !== 'object') {
+    return attachment
+  }
+
+  return {
+    id: attachment.id || '',
+    kind: attachment.kind || 'file',
+    name: attachment.name || '',
+    path: attachment.path || '',
+    size: Number.isFinite(attachment.size) ? attachment.size : null,
+    mimeType: attachment.mimeType || null,
+    source: attachment.source || 'picker',
+    ...(Number.isFinite(attachment.startLine) ? { startLine: attachment.startLine } : {}),
+    ...(Number.isFinite(attachment.endLine) ? { endLine: attachment.endLine } : {})
+  }
+}
+
+function normalizeOutgoingContent(content) {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (!content || typeof content !== 'object') {
+    return content
+  }
+
+  if (typeof content.text === 'string' && Array.isArray(content.attachments)) {
+    return {
+      text: content.text,
+      attachments: content.attachments.map(toPlainAttachment)
+    }
+  }
+
+  return JSON.parse(JSON.stringify(content))
 }
 
 /**
@@ -128,6 +167,15 @@ export const useSessionStore = defineStore('session', () => {
     }
   })
 
+  const inputAttachments = computed({
+    get: () => currentSession.value?.inputAttachments || [],
+    set: (value) => {
+      if (currentSession.value) {
+        currentSession.value.inputAttachments = Array.isArray(value) ? value : []
+      }
+    }
+  })
+
   // 事件取消订阅函数
   let eventUnsubscribe = null
 
@@ -156,6 +204,7 @@ export const useSessionStore = defineStore('session', () => {
       if (result.state) {
         // 使用 reactive 包装每个消息对象以确保响应式
         sessionData.messages = (result.state.messages || []).map(msg => reactive(msg))
+        sessionData.inputAttachments = result.state.inputAttachments || []
         sessionData.inputHistory = result.state.inputHistory || []
         sessionData.envInfo = result.state.envInfo || null
         sessionData.silentMessages = (result.state.silentMessages || []).map(msg => reactive(msg))
@@ -223,10 +272,15 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     const sessionId = session.id
+    const outgoingContent = normalizeOutgoingContent(content)
 
     // 保存输入历史
-    if (content && (session.inputHistory.length === 0 || session.inputHistory[session.inputHistory.length - 1] !== content)) {
-      session.inputHistory.push(content)
+    const historyText = typeof outgoingContent === 'string'
+      ? outgoingContent
+      : stripAttachmentTokens(outgoingContent?.text || '', outgoingContent?.attachments || [])
+
+    if (historyText && (session.inputHistory.length === 0 || session.inputHistory[session.inputHistory.length - 1] !== historyText)) {
+      session.inputHistory.push(historyText)
       if (session.inputHistory.length > 100) {
         session.inputHistory.shift()
       }
@@ -236,6 +290,7 @@ export const useSessionStore = defineStore('session', () => {
     // 清空输入框，设置处理中
     // 注意：不在这里添加消息，后端会通过 'message' 事件发送
     session.inputMessage = ''
+    session.inputAttachments = []
     session.isProcessing = true
 
     // 清理悬浮框中的任务（发起新提问时清理上一轮的任务）
@@ -245,7 +300,7 @@ export const useSessionStore = defineStore('session', () => {
     try {
       const result = await window.electronAPI.sendMessage({
         sessionId,
-        content
+        content: outgoingContent
       })
 
       if (!result?.success) {
@@ -253,7 +308,8 @@ export const useSessionStore = defineStore('session', () => {
       }
     } catch (error) {
       session.isProcessing = false
-      session.inputMessage = content
+      session.inputMessage = typeof outgoingContent === 'string' ? outgoingContent : (outgoingContent?.text || '')
+      session.inputAttachments = Array.isArray(outgoingContent?.attachments) ? outgoingContent.attachments : []
       session.messages.push({
         id: `error-${Date.now()}`,
         role: 'system',
@@ -1154,6 +1210,9 @@ export const useSessionStore = defineStore('session', () => {
     if (data.inputMessage !== undefined) {
       session.inputMessage = data.inputMessage
     }
+    if (data.inputAttachments !== undefined) {
+      session.inputAttachments = Array.isArray(data.inputAttachments) ? data.inputAttachments : []
+    }
   }
 
   /**
@@ -1594,6 +1653,7 @@ export const useSessionStore = defineStore('session', () => {
     currentMessages,
     isProcessing,
     inputMessage,
+    inputAttachments,
     pendingPermission,
     pendingQuestion,
     pendingControlRequest,

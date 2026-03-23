@@ -1,10 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAppStore } from './stores/useAppStore'
 import { logger } from './utils/logger'
 import { buildRuntimeShortcuts, findMatchingShortcut, getDefaultShortcutBindings, normalizeShortcutBindings } from './utils/shortcuts'
-import Welcome from './views/welcome/Welcome.vue'
-import Workspace from './views/workspace/Workspace.vue'
+
+const Welcome = defineAsyncComponent(() => import('./views/welcome/Welcome.vue'))
+const Workspace = defineAsyncComponent(() => import('./views/workspace/Workspace.vue'))
 
 const store = useAppStore()
 const shortcutBindings = ref(getDefaultShortcutBindings())
@@ -117,6 +118,9 @@ watch(currentView, () => {
 })
 
 onMounted(async () => {
+  const appMountedAt = performance.now()
+  logger.info('App mounted', { phase: 'start', sinceMountedMs: 0 })
+
   // 检查多会话 API 是否可用（开发模式自动启用）
   const isDev = import.meta.env.DEV
   const forceMultiSession = localStorage.getItem('ccgui_force_multi_session') === 'true'
@@ -153,6 +157,10 @@ onMounted(async () => {
   // Update window title on mount
   updateWindowTitle()
   await loadShortcutBindings()
+  logger.info('App mounted', {
+    phase: 'after-shortcuts',
+    sinceMountedMs: Math.round(performance.now() - appMountedAt)
+  })
 
   document.addEventListener('keydown', handleGlobalSelectAll, true)
   document.addEventListener('keydown', handleGlobalShortcut, true)
@@ -165,6 +173,11 @@ onMounted(async () => {
   } catch (error) {
     logger.error('Failed to get runtime info', { error: error.message })
   }
+
+  logger.info('App mounted', {
+    phase: 'complete',
+    sinceMountedMs: Math.round(performance.now() - appMountedAt)
+  })
 
 })
 

@@ -127,6 +127,7 @@ function handleToggleChatPanel(event) {
         :original-value="activeTab.diffBaseContent"
         :language="activeTab.language"
         :diff-mode="activeTab.diffMode"
+        :read-only="activeTab.readOnly"
         @update:model-value="emit('update-content', activeTab.path, $event)"
         @save="emit('save-file', activeTab.path)"
       />

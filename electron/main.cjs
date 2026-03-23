@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, session, dialog, shell, protocol } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -8,12 +8,20 @@ const logger = require('./logger')
 const { encodeProjectPath, decodeProjectPath } = require('./project-paths')
 const appService = require('./services/app-service')
 const projectService = require('./services/project-service')
+const attachmentService = require('./services/attachment-service')
+
+const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+if (isDevRuntime) {
+  const devUserDataPath = path.join(app.getPath('appData'), 'CCGUI-dev')
+  app.setPath('userData', devUserDataPath)
+}
 
 // 初始化日志系统
 logger.initialize()
 
 // Global isDev flag - will be set before creating windows
-let isDev = process.env.NODE_ENV === 'development'
+let isDev = isDevRuntime
 
 let mainWindow
 let sessionManager
@@ -26,12 +34,92 @@ let terminalHostRequestSequence = 0
 const terminalHostPendingRequests = new Map()
 let isAppQuitting = false
 const pendingDockProjectOpens = []
+let appStartupStartedAt = Date.now()
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'ccgui-asset',
+    privileges: {
+      secure: true,
+      standard: true,
+      supportFetchAPI: true,
+      corsEnabled: true
+    }
+  }
+])
 
 /**
  * Get app icon path
  */
 function getIconPath() {
   return path.join(__dirname, '../build/icons/icon.icns')
+}
+
+function getCcgGuiHistoryRoot() {
+  return path.join(os.homedir(), '.ccgui', 'projects')
+}
+
+function isAllowedAssetPath(filePath) {
+  if (!filePath) return false
+
+  const resolved = path.resolve(filePath)
+  const mimeType = attachmentService.inferMimeType(resolved)
+  const allowedRoots = [
+    path.resolve(attachmentService.getTempAttachmentDir()),
+    path.resolve(getCcgGuiHistoryRoot())
+  ]
+
+  if (allowedRoots.some(root => resolved.startsWith(root))) {
+    return true
+  }
+
+  return typeof mimeType === 'string' && mimeType.startsWith('image/')
+}
+
+function buildAssetMimeType(filePath) {
+  return attachmentService.inferMimeType(filePath) || 'application/octet-stream'
+}
+
+function createTextResponse(body, status) {
+  return new Response(body, {
+    status,
+    headers: {
+      'content-type': 'text/plain; charset=utf-8'
+    }
+  })
+}
+
+function registerAssetProtocol() {
+  protocol.handle('ccgui-asset', async (request) => {
+    try {
+      const requestUrl = new URL(request.url)
+      const rawPath = requestUrl.searchParams.get('path') || ''
+      const filePath = decodeURIComponent(rawPath)
+
+      if (!filePath || !isAllowedAssetPath(filePath)) {
+        return createTextResponse('Forbidden', 403)
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return createTextResponse('Not Found', 404)
+      }
+
+      const data = fs.readFileSync(filePath)
+      return new Response(data, {
+        status: 200,
+        headers: {
+          'content-type': buildAssetMimeType(filePath),
+          'cache-control': 'no-store'
+        }
+      })
+    } catch (error) {
+      logger.error('[AssetProtocol] Failed to resolve asset request', {
+        error: error.message,
+        url: request.url
+      })
+      return createTextResponse('Internal Error', 500)
+    }
+  })
 }
 
 function getDefaultTerminalShell() {
@@ -219,6 +307,11 @@ function disposeTerminalsForWebContents(webContentsId) {
  * Create main application window
  */
 function createWindow() {
+  const windowCreateStartedAt = Date.now()
+  logger.info('[Startup] createWindow start', {
+    sinceAppStartMs: windowCreateStartedAt - appStartupStartedAt
+  })
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -226,6 +319,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
     icon: getIconPath(),
+    backgroundColor: '#111315',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -243,7 +337,7 @@ function createWindow() {
           "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5173 ws://localhost:5173; " +
           "style-src 'self' 'unsafe-inline' http://localhost:5173; " +
           "connect-src 'self' http://localhost:5173 ws://localhost:5173; " +
-          "img-src 'self' data: http://localhost:5173; " +
+          "img-src 'self' data: http://localhost:5173 ccgui-asset:; " +
           "font-src 'self' data: http://localhost:5173; " +
           "worker-src 'self' blob: http://localhost:5173; " +
           "child-src 'self' blob: http://localhost:5173; " +
@@ -256,10 +350,28 @@ function createWindow() {
   // Load app
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
-    mainWindow.webContents.openDevTools()
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
+
+  mainWindow.webContents.on('did-start-loading', () => {
+    logger.info('[Startup] did-start-loading', {
+      sinceAppStartMs: Date.now() - appStartupStartedAt
+    })
+  })
+
+  mainWindow.webContents.on('dom-ready', () => {
+    logger.info('[Startup] dom-ready', {
+      sinceAppStartMs: Date.now() - appStartupStartedAt
+    })
+  })
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    logger.info('[Startup] did-finish-load', {
+      sinceAppStartMs: Date.now() - appStartupStartedAt,
+      sinceCreateWindowMs: Date.now() - windowCreateStartedAt
+    })
+  })
 
   // Initialize Session Manager with callback to send events to renderer
   initSessionManager()
@@ -797,13 +909,42 @@ ipcMain.handle('update-session-ui-state', async (event, { sessionId, state }) =>
 
 // Send message
 ipcMain.handle('send-message', async (event, { sessionId, message, content }) => {
-  logger.info('[IPC] send-message:', { sessionId, contentLength: content?.length || message?.length })
+  logger.info('[IPC] send-message:', {
+    sessionId,
+    contentType: Array.isArray(content) ? 'array' : typeof content,
+    contentLength: typeof content === 'string' ? content.length : null,
+    attachmentCount: Array.isArray(content?.attachments) ? content.attachments.length : 0
+  })
 
   try {
     await sessionManager.sendMessage(sessionId, content)
     return { success: true }
   } catch (error) {
-    logger.error('[IPC] send-message error:', error)
+    logger.error('[IPC] send-message error:', {
+      message: error.message,
+      stack: error.stack,
+      sessionId
+    })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('save-temp-attachment', async (event, options = {}) => {
+  try {
+    const result = attachmentService.saveClipboardImage(options)
+    return { success: true, data: result }
+  } catch (error) {
+    logger.error('[IPC] save-temp-attachment error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('delete-temp-attachment', async (event, { path: filePath } = {}) => {
+  try {
+    const deleted = attachmentService.deleteTempAttachment(filePath)
+    return { success: true, deleted }
+  } catch (error) {
+    logger.error('[IPC] delete-temp-attachment error:', error)
     return { success: false, error: error.message }
   }
 })
@@ -1538,6 +1679,63 @@ ipcMain.handle('read-project-file', async (event, { projectPath, filePath }) => 
     }
   } catch (error) {
     logger.error('[Files] Failed to read project file', { projectPath, filePath, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('read-attachment-file', async (event, { filePath }) => {
+  try {
+    if (!filePath) {
+      throw new Error('缺少文件路径')
+    }
+
+    const absolutePath = path.resolve(filePath)
+    const stat = fs.statSync(absolutePath)
+
+    if (!stat.isFile()) {
+      throw new Error('目标不是文件')
+    }
+
+    if (stat.size > MAX_PREVIEW_FILE_SIZE) {
+      return {
+        success: false,
+        error: '文件过大，暂不支持预览',
+        code: 'FILE_TOO_LARGE',
+        file: {
+          path: absolutePath,
+          size: stat.size,
+          language: detectLanguageFromPath(absolutePath)
+        }
+      }
+    }
+
+    const buffer = fs.readFileSync(absolutePath)
+    if (isLikelyBinary(buffer)) {
+      return {
+        success: false,
+        error: '当前文件是二进制文件，暂不支持预览',
+        code: 'BINARY_FILE',
+        file: {
+          path: absolutePath,
+          size: stat.size,
+          language: detectLanguageFromPath(absolutePath)
+        }
+      }
+    }
+
+    return {
+      success: true,
+      file: {
+        path: absolutePath,
+        name: path.basename(absolutePath),
+        language: detectLanguageFromPath(absolutePath),
+        content: buffer.toString('utf8'),
+        size: stat.size,
+        updatedAt: stat.mtime.toISOString()
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to read attachment file', { filePath, error: error.message })
     return { success: false, error: error.message }
   }
 })
@@ -2635,20 +2833,24 @@ function createNewWindow() {
 // App lifecycle
 
 app.whenReady().then(() => {
+  appStartupStartedAt = Date.now()
   // Update isDev flag now that app is ready
   isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
   logger.info('[App] Development mode:', isDev)
-
-  try {
-    appService.syncCodexAccountsWithAuthConfig()
-    appService.startCodexAccountUsagePolling()
-  } catch (error) {
-    logger.warn('[CodexSettings] Failed to sync codex accounts on startup', { error: error.message })
-  }
+  logger.info('[App] userData path', { userData: app.getPath('userData') })
+  logger.info('[Startup] whenReady', { sinceAppStartMs: 0 })
+  registerAssetProtocol()
 
   createWindow()
   setupDockMenu()
   flushPendingDockProjectOpens()
+
+  Promise.resolve().then(() => {
+    appService.syncCodexAccountsWithAuthConfig()
+    appService.startCodexAccountUsagePolling()
+  }).catch(error => {
+    logger.warn('[CodexSettings] Failed to sync codex accounts on startup', { error: error.message })
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

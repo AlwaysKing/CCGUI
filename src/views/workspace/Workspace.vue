@@ -308,9 +308,13 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
 
 // Initialize
 onMounted(async () => {
-  // Fetch sessions for current project
+  // Render the workspace first, then hydrate project data in the background.
   if (store.currentProject) {
-    await store.fetchSessions(store.currentProject.id)
+    requestAnimationFrame(() => {
+      if (store.currentProject?.id) {
+        void store.fetchSessions(store.currentProject.id)
+      }
+    })
   }
 
   // Add global event listeners

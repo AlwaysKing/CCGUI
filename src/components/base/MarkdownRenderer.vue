@@ -47,11 +47,20 @@ function addCopyButtons() {
   const preElements = containerRef.value.querySelectorAll('pre')
 
   preElements.forEach((pre, index) => {
+    let wrapper = pre.parentElement
+    if (!wrapper || !wrapper.classList.contains('code-block-shell')) {
+      wrapper = document.createElement('div')
+      wrapper.className = 'code-block-shell'
+      pre.parentNode?.insertBefore(wrapper, pre)
+      wrapper.appendChild(pre)
+    }
+
     // 检查是否已经添加过复制按钮
-    if (pre.querySelector('.code-copy-btn')) return
+    if (wrapper.querySelector('.code-copy-btn')) return
 
     // 创建复制按钮
     const copyBtn = document.createElement('button')
+    copyBtn.type = 'button'
     copyBtn.className = 'code-copy-btn'
     copyBtn.title = '复制代码'
 
@@ -92,9 +101,7 @@ function addCopyButtons() {
       }
     }
 
-    // 设置 pre 为相对定位
-    pre.style.position = 'relative'
-    pre.appendChild(copyBtn)
+    wrapper.appendChild(copyBtn)
   })
 }
 
@@ -168,7 +175,15 @@ watch(() => props.content, () => {
   padding: 16px;
   overflow-x: auto;
   margin: 1em 0;
+}
+
+.markdown-content :deep(.code-block-shell) {
   position: relative;
+  margin: 1em 0;
+}
+
+.markdown-content :deep(.code-block-shell pre) {
+  margin: 0;
 }
 
 .markdown-content :deep(pre code) {

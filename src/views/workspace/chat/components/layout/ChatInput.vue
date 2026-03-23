@@ -4,11 +4,17 @@
  * 从 ChatWindow.vue 提取的输入组件
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import AttachmentComposer from './AttachmentComposer.vue'
+import { ATTACHMENT_TOKEN_REGEX, stripAttachmentTokens } from '../../../../../utils/chatAttachments'
 
 const props = defineProps({
   modelValue: {
     type: String,
     default: ''
+  },
+  attachments: {
+    type: Array,
+    default: () => []
   },
   isProcessing: {
     type: Boolean,
@@ -109,10 +115,11 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle'])
+const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle'])
 
 // 输入区域 ref
 const inputArea = ref(null)
+const attachmentComposerRef = ref(null)
 const modelMenuWrapper = ref(null)
 const subModelMenuWrapper = ref(null)
 const permissionMenuWrapper = ref(null)
@@ -121,9 +128,6 @@ const notificationMenuWrapper = ref(null)
 
 // 输入框是否聚焦
 const isInputFocused = ref(false)
-
-// 是否正在拖拽文件
-const isDragOver = ref(false)
 
 // 显示权限菜单
 const showPermissionMenu = ref(false)
@@ -167,6 +171,11 @@ const localValue = computed({
   set: (val) => emit('update:modelValue', val)
 })
 
+const localAttachments = computed({
+  get: () => props.attachments,
+  set: (val) => emit('update:attachments', val)
+})
+
 // 当前权限模式的标签
 const currentModeLabel = computed(() => {
   const mode = props.permissionModes.find(m => m.value === props.permissionMode)
@@ -181,7 +190,9 @@ const currentModeDescription = computed(() => {
 
 // 发送按钮是否禁用
 const sendDisabled = computed(() => {
-  return !localValue.value.trim() || props.isProcessing || props.hasPermission
+  const textWithoutTokens = String(localValue.value || '').replace(ATTACHMENT_TOKEN_REGEX, '').trim()
+  const hasContent = Boolean(textWithoutTokens || props.attachments.length > 0)
+  return !hasContent || props.isProcessing || props.hasPermission
 })
 
 // 权限模式对应的颜色主题
@@ -198,9 +209,16 @@ const modeThemeClass = computed(() => {
 
 // 发送消息
 function sendMessage() {
-  if (!localValue.value.trim() || props.isProcessing) return
+  if (sendDisabled.value || props.isProcessing) return
 
-  emit('send', localValue.value)
+  if (props.attachments.length > 0) {
+    emit('send', {
+      text: localValue.value,
+      attachments: props.attachments
+    })
+  } else {
+    emit('send', localValue.value)
+  }
   historyIndex = -1 // 重置历史索引
 }
 
@@ -229,7 +247,7 @@ function handleEnterKey(event) {
 // 处理上下键历史导航
 function handleHistoryKey(event) {
   // 如果输入框有内容且不在历史浏览模式，不触发历史导航
-  if (localValue.value.trim() && historyIndex === -1) {
+  if (stripAttachmentTokens(localValue.value, props.attachments).trim() && historyIndex === -1) {
     return
   }
 
@@ -292,6 +310,7 @@ function closeHistoryPicker() {
 function selectHistory(item) {
   isHistoryNavigation = true
   localValue.value = item
+  localAttachments.value = []
   isHistoryNavigation = false
   historyIndex = -1
   closeHistoryPicker()
@@ -420,36 +439,6 @@ function handleGlobalKeydown(event) {
   }
 }
 
-// 处理文件拖放
-function handleFileDrop(event) {
-  event.preventDefault()
-  isDragOver.value = false
-
-  const files = event.dataTransfer?.files
-  if (!files || files.length === 0) return
-
-  const filePaths = []
-  for (const file of files) {
-    if (file.path) {
-      filePaths.push(file.path)
-    }
-  }
-
-  if (filePaths.length > 0) {
-    appendText(filePaths.join(' '))
-  }
-}
-
-function handleDragEnter(event) {
-  event.preventDefault()
-  isDragOver.value = true
-}
-
-function handleDragLeave(event) {
-  event.preventDefault()
-  isDragOver.value = false
-}
-
 // 获取历史记录列表（逆序，最新的在前）
 function getHistoryList() {
   return [...props.inputHistory].reverse()
@@ -466,30 +455,29 @@ onUnmounted(() => {
 })
 
 function appendText(text) {
-  const nextText = String(text || '').trim()
-  if (!nextText) return
+  attachmentComposerRef.value?.appendText(text)
+}
 
-  localValue.value = localValue.value.trim()
-    ? `${localValue.value} ${nextText}`
-    : nextText
-
-  requestAnimationFrame(() => {
-    inputArea.value?.focus()
-    const cursorPosition = localValue.value.length
-    inputArea.value?.setSelectionRange?.(cursorPosition, cursorPosition)
-  })
+function openAttachmentPicker() {
+  attachmentComposerRef.value?.openFilePicker()
 }
 
 // 暴露方法
 defineExpose({
-  focus: () => inputArea.value?.focus(),
-  appendText
+  focus: () => attachmentComposerRef.value?.focus(),
+  appendText,
+  openAttachmentPicker
 })
 </script>
 
 <template>
   <div class="input-area">
-    <div class="input-container" :class="{ focused: isInputFocused, [modeThemeClass]: modeThemeClass }">
+    <div
+      class="input-container"
+      :class="{ focused: isInputFocused, [modeThemeClass]: modeThemeClass }"
+      @focusin="isInputFocused = true"
+      @focusout="isInputFocused = false"
+    >
       <!-- 工具栏 -->
       <div class="input-toolbar">
         <!-- 左侧按钮组 -->
@@ -602,6 +590,15 @@ defineExpose({
 
         <!-- 右侧按钮组 -->
         <div class="toolbar-right">
+          <button
+            @click="openAttachmentPicker"
+            class="attach-button"
+            title="添加附件"
+            :disabled="hasPermission || isProcessing"
+          >
+            📎
+          </button>
+
           <div ref="notificationMenuWrapper" class="notification-mode-wrapper">
             <button
               @click="toggleNotificationMenu"
@@ -690,25 +687,17 @@ defineExpose({
         </div>
       </div>
 
-      <!-- 文本输入框 -->
-      <textarea
-        ref="inputArea"
+      <AttachmentComposer
+        ref="attachmentComposerRef"
         v-model="localValue"
-        @keydown.enter="handleEnterKey"
-        @keydown.up="handleHistoryKey"
-        @keydown.down="handleHistoryKey"
-        @keydown="openHistoryPicker"
-        @input="handleInputChange"
-        @focus="isInputFocused = true"
-        @blur="isInputFocused = false"
-        @dragover.prevent
-        @dragenter="handleDragEnter"
-        @dragleave="handleDragLeave"
-        @drop="handleFileDrop"
-        :class="{ 'drag-over': isDragOver }"
-        placeholder="输入消息... (Enter 发送, Shift+Enter 换行，可拖拽文件)"
-        rows="3"
+        v-model:attachments="localAttachments"
+        placeholder="输入消息... (Enter 发送, Shift+Enter 换行，可拖拽文件或粘贴图片)"
+        :enter-to-send="enterModeLocked"
         :disabled="hasPermission"
+        @submit="sendMessage"
+        @history-up="handleHistoryKey"
+        @history-down="handleHistoryKey"
+        @history-picker="openHistoryPicker"
       />
     </div>
   </div>
@@ -1179,6 +1168,32 @@ defineExpose({
   align-items: center;
   gap: 4px;
   margin-right: -4.5px;
+}
+
+.attach-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.attach-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.attach-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .notification-mode-wrapper {

@@ -1,4 +1,13 @@
 const { ClaudeClient } = require('./client')
+const attachmentService = require('../../services/attachment-service')
+const {
+  replaceAttachmentTokens,
+  buildClaudeAttachmentReference
+} = require('../shared/ccgui-attachments')
+
+const CLAUDE_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+const CLAUDE_TEXT_FILE_MAX_BYTES = 256 * 1024
+const CLAUDE_PDF_MAX_BYTES = 4 * 1024 * 1024
 
 /**
  * ClaudeAdapter
@@ -21,6 +30,115 @@ class ClaudeAdapter extends ClaudeClient {
       provider: 'claude',
       providerPid: null
     }
+  }
+
+  async buildUserContentWithAttachments(message) {
+    const attachments = Array.isArray(message?.attachments) ? message.attachments : []
+    const rawText = Array.isArray(message?.message?.content)
+      ? (message.message.content.find(item => item?.type === 'text')?.text || '')
+      : ''
+
+    const content = []
+    const tokenSafeText = replaceAttachmentTokens(rawText, attachments, buildClaudeAttachmentReference)
+
+    for (const attachment of attachments) {
+      if (!attachment?.path) {
+        continue
+      }
+
+      const size = Number.isFinite(attachment.size)
+        ? attachment.size
+        : attachmentService.getAttachmentSize(attachment.path)
+      const mimeType = attachment.mimeType || attachmentService.inferMimeType(attachment.path)
+
+      if (attachment.kind === 'image') {
+        if (size && size > CLAUDE_IMAGE_MAX_BYTES) {
+          continue
+        }
+
+        const base64 = attachmentService.readFileAsBase64(attachment.path)
+        content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: mimeType || 'image/png',
+            data: base64
+          }
+        })
+        continue
+      }
+
+      if (attachment.kind === 'file-range') {
+        const snippet = attachmentService.readFileRange(
+          attachment.path,
+          attachment.startLine,
+          attachment.endLine
+        )
+
+        content.push({
+          type: 'text',
+          text: `<attached_file_range path="${attachment.path}" startLine="${attachment.startLine || ''}" endLine="${attachment.endLine || ''}">\n${snippet}\n</attached_file_range>`
+        })
+        continue
+      }
+
+      if (mimeType === 'application/pdf') {
+        if (size && size > CLAUDE_PDF_MAX_BYTES) {
+          continue
+        }
+
+        content.push({
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: 'application/pdf',
+            data: attachmentService.readFileAsBase64(attachment.path)
+          },
+          title: attachment.name
+        })
+        continue
+      }
+
+      if (attachmentService.isTextMimeType(mimeType, attachment.path)) {
+        if (size && size > CLAUDE_TEXT_FILE_MAX_BYTES) {
+          continue
+        }
+
+        content.push({
+          type: 'document',
+          source: {
+            type: 'text',
+            media_type: 'text/plain',
+            data: attachmentService.readTextFile(attachment.path)
+          },
+          title: attachment.name
+        })
+      }
+    }
+
+    content.push({
+      type: 'text',
+      text: tokenSafeText
+    })
+
+    return content
+  }
+
+  async sendMessage(message) {
+    if (message?.type === 'user' && Array.isArray(message?.attachments)) {
+      const transformed = {
+        ...message,
+        message: {
+          ...message.message,
+          role: 'user',
+          content: await this.buildUserContentWithAttachments(message)
+        }
+      }
+      super.sendMessage(transformed)
+      return
+    }
+
+    super.sendMessage(message)
   }
 
   collapseThinkingIfNeeded(messageId, snapshot, hasNewText = false) {

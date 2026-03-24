@@ -31,6 +31,10 @@ const props = defineProps({
   enterToSend: {
     type: Boolean,
     default: true
+  },
+  historyNavigationActive: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -143,6 +147,11 @@ function getSerializedDomValue() {
   return Array.from(editorRef.value.childNodes).map(serializeNode).join('')
 }
 
+function isHistoryNavigationCandidate() {
+  const currentValue = getSerializedDomValue()
+  return !currentValue.includes('\n')
+}
+
 function placeCaretAtEnd() {
   if (!editorRef.value) return
   editorRef.value.focus()
@@ -152,6 +161,10 @@ function placeCaretAtEnd() {
   const selection = window.getSelection()
   selection?.removeAllRanges()
   selection?.addRange(range)
+}
+
+function focusAndPlaceCaretAtEnd() {
+  placeCaretAtEnd()
 }
 
 function insertNodeAtSelection(node) {
@@ -267,20 +280,25 @@ async function handlePaste(event) {
   const items = Array.from(event.clipboardData?.items || [])
   const imageItems = items.filter(item => item.type?.startsWith('image/'))
 
-  if (!imageItems.length) {
+  if (imageItems.length) {
+    event.preventDefault()
+
+    const attachments = []
+    for (const item of imageItems) {
+      const file = item.getAsFile()
+      if (!file) continue
+      attachments.push(await saveClipboardImage(file))
+    }
+
+    await addAttachments(attachments)
     return
   }
 
   event.preventDefault()
-
-  const attachments = []
-  for (const item of imageItems) {
-    const file = item.getAsFile()
-    if (!file) continue
-    attachments.push(await saveClipboardImage(file))
+  const plainText = event.clipboardData?.getData('text/plain') || ''
+  if (plainText) {
+    insertTextAtCursor(plainText)
   }
-
-  await addAttachments(attachments)
 }
 
 async function handleFileInputChange(event) {
@@ -317,12 +335,28 @@ function handleKeydown(event) {
     return
   }
 
-  if (event.key === 'ArrowUp' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !hasContent.value) {
+  const canUseArrowHistory = isHistoryNavigationCandidate()
+
+  if (
+    event.key === 'ArrowUp' &&
+    !event.shiftKey &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    canUseArrowHistory &&
+    (!hasContent.value || props.historyNavigationActive)
+  ) {
     emit('history-up', event)
     return
   }
 
-  if (event.key === 'ArrowDown' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !hasContent.value) {
+  if (
+    event.key === 'ArrowDown' &&
+    !event.shiftKey &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    canUseArrowHistory &&
+    (!hasContent.value || props.historyNavigationActive)
+  ) {
     emit('history-down', event)
     return
   }
@@ -386,7 +420,8 @@ function focus() {
 defineExpose({
   focus,
   appendText,
-  openFilePicker
+  openFilePicker,
+  focusAndPlaceCaretAtEnd
 })
 
 watch(() => props.modelValue, async () => {
@@ -395,6 +430,10 @@ watch(() => props.modelValue, async () => {
   }
   await nextTick()
   renderEditorFromModel()
+  if (props.historyNavigationActive) {
+    await nextTick()
+    focusAndPlaceCaretAtEnd()
+  }
 }, { immediate: true })
 
 watch(() => props.attachments, async () => {

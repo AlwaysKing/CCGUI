@@ -3,7 +3,7 @@
  * ChatInput - 聊天输入区域组件
  * 从 ChatWindow.vue 提取的输入组件
  */
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import AttachmentComposer from './AttachmentComposer.vue'
 import { ATTACHMENT_TOKEN_REGEX, stripAttachmentTokens } from '../../../../../utils/chatAttachments'
 
@@ -105,6 +105,14 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
+  queueCount: {
+    type: Number,
+    default: 0
+  },
+  queueVisible: {
+    type: Boolean,
+    default: true
+  },
   notificationOptions: {
     type: Array,
     default: () => []
@@ -115,7 +123,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle'])
+const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility'])
 
 // 输入区域 ref
 const inputArea = ref(null)
@@ -148,6 +156,10 @@ function toggleEnterMode() {
   enterModeLocked.value = !enterModeLocked.value
 }
 
+function toggleQueueVisibility() {
+  emit('toggleQueueVisibility')
+}
+
 const enterModeIcon = computed(() => {
   return enterModeLocked.value ? '⏎' : '⏎'
 })
@@ -160,7 +172,7 @@ const enterModeTitle = computed(() => {
 const showHistoryPicker = ref(false)
 
 // 当前历史索引
-let historyIndex = -1
+const historyIndex = ref(-1)
 
 // 标记是否正在通过历史导航设置值
 let isHistoryNavigation = false
@@ -192,7 +204,7 @@ const currentModeDescription = computed(() => {
 const sendDisabled = computed(() => {
   const textWithoutTokens = String(localValue.value || '').replace(ATTACHMENT_TOKEN_REGEX, '').trim()
   const hasContent = Boolean(textWithoutTokens || props.attachments.length > 0)
-  return !hasContent || props.isProcessing || props.hasPermission
+  return !hasContent || props.hasPermission
 })
 
 // 权限模式对应的颜色主题
@@ -209,7 +221,7 @@ const modeThemeClass = computed(() => {
 
 // 发送消息
 function sendMessage() {
-  if (sendDisabled.value || props.isProcessing) return
+  if (sendDisabled.value) return
 
   if (props.attachments.length > 0) {
     emit('send', {
@@ -219,7 +231,7 @@ function sendMessage() {
   } else {
     emit('send', localValue.value)
   }
-  historyIndex = -1 // 重置历史索引
+  historyIndex.value = -1 // 重置历史索引
 }
 
 // 处理 Enter 键
@@ -247,7 +259,7 @@ function handleEnterKey(event) {
 // 处理上下键历史导航
 function handleHistoryKey(event) {
   // 如果输入框有内容且不在历史浏览模式，不触发历史导航
-  if (stripAttachmentTokens(localValue.value, props.attachments).trim() && historyIndex === -1) {
+  if (stripAttachmentTokens(localValue.value, props.attachments).trim() && historyIndex.value === -1) {
     return
   }
 
@@ -259,26 +271,29 @@ function handleHistoryKey(event) {
   if (event.key === 'ArrowUp') {
     event.preventDefault()
     // 向上：浏览更早的历史（索引增大）
-    if (historyIndex < props.inputHistory.length - 1) {
-      historyIndex++
+    if (historyIndex.value < props.inputHistory.length - 1) {
+      historyIndex.value++
       isHistoryNavigation = true
-      localValue.value = props.inputHistory[props.inputHistory.length - 1 - historyIndex]
+      localValue.value = props.inputHistory[props.inputHistory.length - 1 - historyIndex.value]
       isHistoryNavigation = false
+      nextTick(() => attachmentComposerRef.value?.focusAndPlaceCaretAtEnd?.())
     }
   } else if (event.key === 'ArrowDown') {
     event.preventDefault()
     // 向下：浏览更新的历史（索引减小）
-    if (historyIndex > 0) {
-      historyIndex--
+    if (historyIndex.value > 0) {
+      historyIndex.value--
       isHistoryNavigation = true
-      localValue.value = props.inputHistory[props.inputHistory.length - 1 - historyIndex]
+      localValue.value = props.inputHistory[props.inputHistory.length - 1 - historyIndex.value]
       isHistoryNavigation = false
-    } else if (historyIndex === 0) {
+      nextTick(() => attachmentComposerRef.value?.focusAndPlaceCaretAtEnd?.())
+    } else if (historyIndex.value === 0) {
       // 回到最新状态，清空输入框
-      historyIndex = -1
+      historyIndex.value = -1
       isHistoryNavigation = true
       localValue.value = ''
       isHistoryNavigation = false
+      nextTick(() => attachmentComposerRef.value?.focusAndPlaceCaretAtEnd?.())
     }
   }
 }
@@ -312,14 +327,15 @@ function selectHistory(item) {
   localValue.value = item
   localAttachments.value = []
   isHistoryNavigation = false
-  historyIndex = -1
+  historyIndex.value = -1
   closeHistoryPicker()
+  nextTick(() => attachmentComposerRef.value?.focusAndPlaceCaretAtEnd?.())
 }
 
 // 处理输入变化
 function handleInputChange() {
-  if (!isHistoryNavigation && historyIndex !== -1) {
-    historyIndex = -1
+  if (!isHistoryNavigation && historyIndex.value !== -1) {
+    historyIndex.value = -1
   }
 }
 
@@ -633,6 +649,17 @@ defineExpose({
             </div>
           </div>
 
+          <button
+            v-if="queueCount > 0"
+            @click="toggleQueueVisibility"
+            class="queue-count-btn"
+            :class="{ active: queueVisible }"
+            :title="queueVisible ? `隐藏排队消息 (${queueCount})` : `显示排队消息 (${queueCount})`"
+            type="button"
+          >
+            {{ queueCount }}
+          </button>
+
           <!-- Enter 模式切换按钮 -->
           <button
             @click="toggleEnterMode"
@@ -693,6 +720,7 @@ defineExpose({
         v-model:attachments="localAttachments"
         placeholder="输入消息... (Enter 发送, Shift+Enter 换行，可拖拽文件或粘贴图片)"
         :enter-to-send="enterModeLocked"
+        :history-navigation-active="historyIndex !== -1"
         :disabled="hasPermission"
         @submit="sendMessage"
         @history-up="handleHistoryKey"
@@ -1229,6 +1257,34 @@ defineExpose({
 .notification-mode-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.queue-count-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(249, 115, 22, 0.22);
+  border-radius: 6px;
+  background: rgba(249, 115, 22, 0.06);
+  color: #F97316;
+  font-size: 11px;
+  line-height: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.queue-count-btn:hover {
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(249, 115, 22, 0.35);
+}
+
+.queue-count-btn.active {
+  background: rgba(249, 115, 22, 0.16);
 }
 
 .notification-menu {

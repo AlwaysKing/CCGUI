@@ -57,8 +57,39 @@ function buildScannedSessionDefaultSettings() {
   }
 }
 
+function normalizeToolBinding(binding = null, fallbackTool = null, fallbackNativeSessionId = null) {
+  const tool = typeof binding?.tool === 'string' && binding.tool.trim()
+    ? binding.tool.trim()
+    : (typeof fallbackTool === 'string' && fallbackTool.trim() ? fallbackTool.trim() : null)
+  const nativeSessionId = typeof binding?.nativeSessionId === 'string' && binding.nativeSessionId.trim()
+    ? binding.nativeSessionId.trim()
+    : (typeof fallbackNativeSessionId === 'string' && fallbackNativeSessionId.trim() ? fallbackNativeSessionId.trim() : null)
+
+  if (!tool) {
+    return null
+  }
+
+  return {
+    tool,
+    nativeSessionId: nativeSessionId || null
+  }
+}
+
+function resolveToolBinding(settings = {}, fallbackSessionId = null) {
+  const tool = settings?.toolBinding?.tool
+    || settings?.tool
+    || settings?.provider
+    || (settings?.codexThreadId ? 'codex' : null)
+  const nativeSessionId = settings?.toolBinding?.nativeSessionId
+    || settings?.codexThreadId
+    || null
+
+  return normalizeToolBinding(settings?.toolBinding, tool, nativeSessionId)
+}
+
 function resolveProvider(projectSettings = {}, sessionSettings = null) {
-  const sessionTool = sessionSettings?.tool || sessionSettings?.provider
+  const sessionBinding = resolveToolBinding(sessionSettings)
+  const sessionTool = sessionBinding?.tool || sessionSettings?.tool || sessionSettings?.provider
   if (sessionTool === 'codex') return 'codex'
   if (sessionTool === 'claude') return 'claude'
 
@@ -112,12 +143,30 @@ function buildSessionTargetId({ provider = '', targetKind = 'provider', modelId 
   return [provider || '', targetKind || 'provider', modelId || '', credentialId || ''].join(':')
 }
 
+function buildVirtualTargetId(provider = 'claude', targetKind = 'system') {
+  return buildSessionTargetId({
+    provider,
+    targetKind,
+    modelId: '',
+    credentialId: ''
+  })
+}
+
 function buildSessionTargetLabel(model = null, credential = null, options = {}) {
   const providerLabel = model?.friendlyName || model?.id || options.providerLabel || '未命名供应商'
   if (!credential?.name) {
     return providerLabel
   }
   return `${providerLabel} - ${credential.name}`
+}
+
+function summarizeModelTarget(model = null, credential = null, preferredCardId = null, fallback = '未设置默认模型') {
+  if (!model) return fallback
+  const defaultCard = resolveConfiguredDefaultCard(model, preferredCardId)
+  const parts = [model.friendlyName || model.id]
+  if (credential?.name) parts.push(credential.name)
+  if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
+  return parts.join(' · ')
 }
 
 function buildOpenAiTargetOption(currentTargetId = null) {
@@ -131,6 +180,7 @@ function buildOpenAiTargetOption(currentTargetId = null) {
   return {
     id,
     label: 'OpenAI',
+    menuLabel: 'OpenAI',
     providerId: 'openai',
     providerLabel: 'OpenAI',
     credentialId: null,
@@ -160,6 +210,7 @@ function buildProviderTargetOptions(provider, models = [], currentTargetId = nul
       return {
         id,
         label: buildSessionTargetLabel(model, credential),
+        menuLabel: credential?.name || buildSessionTargetLabel(model, credential),
         providerId: model.id,
         providerLabel: model.friendlyName || model.id,
         credentialId: credential?.id || null,
@@ -174,7 +225,70 @@ function buildProviderTargetOptions(provider, models = [], currentTargetId = nul
   })
 }
 
+function buildClaudeVirtualTargetOptions({
+  appConfig,
+  projectSettings = {},
+  currentTargetId = null
+} = {}) {
+  const systemModel = resolveSystemSelectedModel(appConfig, 'claude')
+  const systemCredential = systemModel
+    ? getDefaultCredential(systemModel, appConfig?.settings?.selectedClaudeCredentialId || null)
+    : null
+
+  const projectResolved = resolveSessionSettings(appConfig, projectSettings, null, 'claude')
+  const projectModel = projectResolved?.modelId
+    ? findProviderModel(appConfig, 'claude', projectResolved.modelId)
+    : systemModel
+  const projectCredential = projectModel
+    ? getDefaultCredential(projectModel, projectResolved.credentialId || null)
+    : systemCredential
+
+  return [
+    {
+      id: buildVirtualTargetId('claude', 'system'),
+      label: `系统（${summarizeModelTarget(systemModel, systemCredential, systemModel?.defaultCardId, '未设置默认模型')}）`,
+      menuLabel: '系统',
+      providerId: null,
+      providerLabel: '系统',
+      credentialId: null,
+      credentialLabel: null,
+      authMode: 'system',
+      selectable: true,
+      isCurrent: currentTargetId === buildVirtualTargetId('claude', 'system'),
+      targetKind: 'system',
+      modelId: null
+    },
+    {
+      id: buildVirtualTargetId('claude', 'project'),
+      label: `项目（${summarizeModelTarget(projectModel, projectCredential, projectResolved?.modelCardId || projectModel?.defaultCardId, '未设置默认模型')}）`,
+      menuLabel: '项目',
+      providerId: null,
+      providerLabel: '项目',
+      credentialId: null,
+      credentialLabel: null,
+      authMode: 'project',
+      selectable: true,
+      isCurrent: currentTargetId === buildVirtualTargetId('claude', 'project'),
+      targetKind: 'project',
+      modelId: null
+    }
+  ]
+}
+
 function resolveCurrentSessionTarget(provider, resolvedSettings = {}) {
+  if (provider === 'claude') {
+    const sessionMode = resolvedSettings?.meta?.session?.modelMode || null
+    if (sessionMode === 'system') {
+      return buildVirtualTargetId('claude', 'system')
+    }
+    if (sessionMode === 'project') {
+      return buildVirtualTargetId('claude', 'project')
+    }
+    if (!resolvedSettings?.meta?.session) {
+      return buildVirtualTargetId('claude', 'project')
+    }
+  }
+
   if (provider === 'codex' && (!resolvedSettings.modelId || resolvedSettings.targetKind === 'openai')) {
     return buildSessionTargetId({
       provider: 'codex',
@@ -204,31 +318,119 @@ function applyCodexTargetAvailability(options = [], currentTarget = null) {
   const currentTargetKind = currentTarget.targetKind || 'provider'
   const currentProviderId = currentTarget.providerId || null
 
-  return options.map(option => {
-    if (currentTargetKind === 'openai') {
-      const selectable = option.targetKind === 'openai'
-      return {
-        ...option,
-        selectable,
-        reasonDisabled: selectable ? '' : '当前 Codex 会话已绑定 OpenAI 上下文'
-      }
-    }
-
-    if (currentProviderId && option.targetKind === 'provider' && option.providerId === currentProviderId) {
-      return {
+  if (currentTargetKind === 'openai') {
+    return options
+      .filter(option => option.targetKind === 'openai')
+      .map(option => ({
         ...option,
         selectable: true,
         reasonDisabled: ''
-      }
+      }))
+  }
+
+  if (!currentProviderId) {
+    return options
+  }
+
+  return options
+    .filter(option => option.targetKind === 'provider' && option.providerId === currentProviderId)
+    .map(option => ({
+      ...option,
+      selectable: true,
+      reasonDisabled: ''
+    }))
+}
+
+async function getAvailableTargets({ projectId = null, provider = null, sessionId = null } = {}) {
+  const appConfig = appConfigManager.loadConfig()
+
+  if (sessionId) {
+    const projectConfig = projectConfigManager.loadProjectConfig(projectId)
+    const sessionConfig = sessionConfigManager.getSession(projectId, sessionId)
+    const resolvedProvider = resolveProvider(projectConfig?.settings || {}, sessionConfig?.settings || null)
+    const resolved = resolveSessionSettings(
+      appConfig,
+      projectConfig?.settings || {},
+      sessionConfig?.settings || null,
+      resolvedProvider
+    )
+    const currentTargetId = resolveCurrentSessionTarget(resolvedProvider, resolved)
+    const activeModels = getProviderModels(appConfig, resolvedProvider).filter(model => model.isActive !== false)
+
+    let options = buildProviderTargetOptions(resolvedProvider, activeModels, currentTargetId)
+    if (resolvedProvider === 'claude') {
+      options = [
+        ...buildClaudeVirtualTargetOptions({
+          appConfig,
+          projectSettings: projectConfig?.settings || {},
+          currentTargetId
+        }),
+        ...options
+      ]
+    } else if (resolvedProvider === 'codex') {
+      options = [
+        buildOpenAiTargetOption(currentTargetId),
+        ...options
+      ]
+      const currentTarget = options.find(option => option.id === currentTargetId) || null
+      options = applyCodexTargetAvailability(options, currentTarget)
     }
 
-    const selectable = false
     return {
-      ...option,
-      selectable,
-      reasonDisabled: '当前 Codex 会话只能切换同一供应商下的令牌'
+      provider: resolvedProvider,
+      currentTargetId,
+      options
     }
-  })
+  }
+
+  const normalizedProvider = provider === 'codex' ? 'codex' : 'claude'
+  const activeModels = getProviderModels(appConfig, normalizedProvider).filter(model => model.isActive !== false)
+
+  let options = buildProviderTargetOptions(normalizedProvider, activeModels, null)
+  if (normalizedProvider === 'codex') {
+    options = [
+      buildOpenAiTargetOption(null),
+      ...options
+    ]
+  }
+
+  return {
+    provider: normalizedProvider,
+    currentTargetId: null,
+    options
+  }
+}
+
+async function validateSessionTarget(projectId, sessionId, target = {}) {
+  const available = await getAvailableTargets({ projectId, sessionId })
+  const targetId = typeof target?.targetId === 'string' && target.targetId.trim()
+    ? target.targetId.trim()
+    : buildSessionTargetId({
+      provider: available.provider,
+      targetKind: typeof target?.targetKind === 'string' && target.targetKind.trim() ? target.targetKind.trim() : 'provider',
+      modelId: typeof target?.modelId === 'string' && target.modelId.trim() ? target.modelId.trim() : '',
+      credentialId: typeof target?.credentialId === 'string' && target.credentialId.trim() ? target.credentialId.trim() : ''
+    })
+
+  const option = available.options.find(item => item.id === targetId) || null
+  if (!option) {
+    return {
+      valid: false,
+      reason: '目标模型不存在或已不可用'
+    }
+  }
+
+  if (option.selectable === false) {
+    return {
+      valid: false,
+      reason: option.reasonDisabled || '当前会话不允许切换到该目标'
+    }
+  }
+
+  return {
+    valid: true,
+    option
+  }
 }
 
 function readClaudeRuntimeDefaults() {
@@ -361,7 +563,12 @@ function ensureSessionConfig(projectId, providerSession) {
   const existing = sessionConfigManager.getSession(projectId, providerSession.id)
   const providerSettings = {
     ...buildScannedSessionDefaultSettings(),
-    ...(providerSession.settings || {})
+    ...(providerSession.settings || {}),
+    toolBinding: normalizeToolBinding(
+      providerSession?.settings?.toolBinding,
+      providerSession?.settings?.provider || providerSession?.settings?.tool || providerSession?.provider || null,
+      providerSession?.id || null
+    )
   }
 
   if (existing) {
@@ -399,26 +606,17 @@ function ensureSessionConfig(projectId, providerSession) {
 }
 
 function resolveLinkedSessionProvider(session = null) {
-  const settings = session?.settings || {}
-
-  if (settings.codexThreadId) {
-    return 'codex'
-  }
-
-  if (settings.provider === 'codex' || settings.tool === 'codex') {
-    return 'codex'
-  }
-
-  if (settings.provider === 'claude' || settings.tool === 'claude') {
-    return 'claude'
-  }
-
-  return null
+  return resolveToolBinding(session?.settings || {}, session?.id || null)?.tool || null
 }
 
 function getCodexSessionNativeIds(session = null) {
   const settings = session?.settings || {}
   const nativeIds = new Set()
+  const binding = resolveToolBinding(settings, session?.id || null)
+
+  if (binding?.tool === 'codex' && binding.nativeSessionId) {
+    nativeIds.add(binding.nativeSessionId)
+  }
 
   const currentThreadId = typeof settings.codexThreadId === 'string' ? settings.codexThreadId.trim() : ''
   if (currentThreadId) {
@@ -433,19 +631,16 @@ function getCodexSessionNativeIds(session = null) {
     }
   }
 
-  if (nativeIds.size === 0 && typeof session?.id === 'string' && session.id) {
-    nativeIds.add(session.id)
-  }
-
   return Array.from(nativeIds)
 }
 
 function isProviderPlaceholderSession(session = null) {
   const provider = resolveLinkedSessionProvider(session)
   if (provider === 'codex') {
-    const currentThreadId = typeof session?.settings?.codexThreadId === 'string'
+    const binding = resolveToolBinding(session?.settings || {}, session?.id || null)
+    const currentThreadId = binding?.nativeSessionId || (typeof session?.settings?.codexThreadId === 'string'
       ? session.settings.codexThreadId.trim()
-      : ''
+      : '')
     return Boolean(currentThreadId) && session?.id === currentThreadId
   }
 
@@ -453,8 +648,8 @@ function isProviderPlaceholderSession(session = null) {
 }
 
 function resolveSessionBindingMeta(session = null, providerData = null) {
-  const provider = resolveLinkedSessionProvider(session)
-  if (!provider) {
+  const binding = resolveToolBinding(session?.settings || {}, session?.id || null)
+  if (!binding?.tool) {
     return {
       bindingState: 'none',
       bindingLabel: '',
@@ -462,6 +657,7 @@ function resolveSessionBindingMeta(session = null, providerData = null) {
     }
   }
 
+  const provider = binding.tool
   const providerName = provider === 'codex' ? 'Codex' : 'Claude'
   if (providerData) {
     return {
@@ -471,35 +667,24 @@ function resolveSessionBindingMeta(session = null, providerData = null) {
     }
   }
 
-  if (provider === 'codex') {
-    const currentThreadId = typeof session?.settings?.codexThreadId === 'string'
-      ? session.settings.codexThreadId.trim()
-      : ''
-    if (currentThreadId) {
-      return {
-        bindingState: 'missing',
-        bindingLabel: 'Codex 绑定失效',
-        bindingMissing: true
-      }
-    }
-
+  if (!binding.nativeSessionId) {
     return {
       bindingState: 'pending',
-      bindingLabel: '待绑定 Codex',
+      bindingLabel: `待绑定 ${providerName}`,
       bindingMissing: false
     }
   }
 
-  const hasProviderLikeId = typeof session?.id === 'string' && session.id.trim().length > 0
   return {
-    bindingState: hasProviderLikeId ? 'missing' : 'pending',
-    bindingLabel: hasProviderLikeId ? `${providerName} 绑定失效` : `待绑定 ${providerName}`,
-    bindingMissing: hasProviderLikeId
+    bindingState: 'missing',
+    bindingLabel: `${providerName} 绑定失效`,
+    bindingMissing: true
   }
 }
 
 function buildProviderSessionIdentity(session = null) {
-  const provider = resolveLinkedSessionProvider(session)
+  const binding = resolveToolBinding(session?.settings || {}, session?.id || null)
+  const provider = binding?.tool || null
   if (!provider) {
     return null
   }
@@ -519,7 +704,7 @@ function buildProviderSessionIdentity(session = null) {
     }
   }
 
-  const nativeId = session?.id || null
+  const nativeId = binding?.nativeSessionId || null
   if (!nativeId) {
     return null
   }
@@ -1022,11 +1207,52 @@ function copySession(projectId, sessionId) {
   })
 }
 
-function createSession(projectId, name, settings) {
-  return sessionConfigManager.createSession(projectId, {
+async function createSession(projectId, name, settings) {
+  const sessionConfig = sessionConfigManager.createSession(projectId, {
     name: name || '新会话',
     settings: settings || {}
   })
+
+  const tool = resolveProvider({}, settings || {})
+  const source = providerSessionSourcesById[tool]
+  if (!source?.createSession) {
+    return sessionConfig
+  }
+
+  try {
+    const created = await Promise.resolve(source.createSession({
+      projectId,
+      projectPath: decodeProjectPath(projectId),
+      sessionId: sessionConfig.id,
+      settings: sessionConfig.settings || {}
+    }))
+    const nativeSessionId = typeof created?.nativeSessionId === 'string' && created.nativeSessionId.trim()
+      ? created.nativeSessionId.trim()
+      : null
+    const nextSettings = {
+      ...(sessionConfig.settings || {}),
+      toolBinding: normalizeToolBinding(
+        sessionConfig.settings?.toolBinding,
+        tool,
+        nativeSessionId
+      )
+    }
+    if (tool === 'codex' && nativeSessionId) {
+      nextSettings.codexThreadId = nativeSessionId
+    }
+
+    return sessionConfigManager.updateSession(projectId, sessionConfig.id, {
+      settings: nextSettings
+    })
+  } catch (error) {
+    logger.warn('[ProjectService] Failed to create provider-native session binding', {
+      projectId,
+      sessionId: sessionConfig.id,
+      tool,
+      error: error.message
+    })
+    return sessionConfig
+  }
 }
 
 async function deleteSession(projectId, sessionId) {
@@ -1101,12 +1327,14 @@ function resolveRuntimeConfig(projectId, sessionId) {
   const appConfig = appConfigManager.loadConfig()
   const projectConfig = projectConfigManager.loadProjectConfig(projectId)
   const sessionConfig = sessionConfigManager.getSession(projectId, sessionId)
+  const provider = resolveProvider(projectConfig?.settings || {}, sessionConfig?.settings || null)
 
   return {
     settings: resolveSessionSettings(
       appConfig,
       projectConfig?.settings || {},
-      sessionConfig?.settings || null
+      sessionConfig?.settings || null,
+      provider
     ),
     appConfig,
     projectConfig,
@@ -1126,7 +1354,8 @@ async function listSessionSubmodels(projectId, sessionId, options = {}) {
   const resolved = resolveSessionSettings(
     appConfig,
     projectConfig?.settings || {},
-    sessionConfig?.settings || null
+    sessionConfig?.settings || null,
+    provider
   )
 
   const configuredModel = resolved.targetKind === 'openai'
@@ -1158,36 +1387,6 @@ async function listSessionSubmodels(projectId, sessionId, options = {}) {
   }
 }
 
-async function listSessionTargets(projectId, sessionId) {
-  const appConfig = appConfigManager.loadConfig()
-  const projectConfig = projectConfigManager.loadProjectConfig(projectId)
-  const sessionConfig = sessionConfigManager.getSession(projectId, sessionId)
-  const provider = resolveProvider(projectConfig?.settings || {}, sessionConfig?.settings || null)
-  const resolved = resolveSessionSettings(
-    appConfig,
-    projectConfig?.settings || {},
-    sessionConfig?.settings || null
-  )
-  const currentTargetId = resolveCurrentSessionTarget(provider, resolved)
-  const activeModels = getProviderModels(appConfig, provider).filter(model => model.isActive !== false)
-
-  let options = buildProviderTargetOptions(provider, activeModels, currentTargetId)
-  if (provider === 'codex') {
-    options = [
-      buildOpenAiTargetOption(currentTargetId),
-      ...options
-    ]
-    const currentTarget = options.find(option => option.id === currentTargetId) || null
-    options = applyCodexTargetAvailability(options, currentTarget)
-  }
-
-  return {
-    provider,
-    currentTargetId,
-    options
-  }
-}
-
 async function listSessionReasoningCapabilities(projectId, sessionId, options = {}) {
   const appConfig = appConfigManager.loadConfig()
   const projectConfig = projectConfigManager.loadProjectConfig(projectId)
@@ -1196,7 +1395,8 @@ async function listSessionReasoningCapabilities(projectId, sessionId, options = 
   const resolved = resolveSessionSettings(
     appConfig,
     projectConfig?.settings || {},
-    sessionConfig?.settings || null
+    sessionConfig?.settings || null,
+    provider
   )
   const workingDirectory = options.workingDirectory || decodeProjectPath(projectId)
   const runtimeModel = typeof options.model === 'string' ? options.model.trim() : ''
@@ -1250,7 +1450,8 @@ module.exports = {
   getProjectSessions,
   getSessionConfig,
   getSessionMessages,
-  listSessionTargets,
+  getAvailableTargets,
+  validateSessionTarget,
   openSession,
   removeProject,
   renameSession,

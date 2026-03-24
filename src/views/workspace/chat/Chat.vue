@@ -147,6 +147,7 @@ const {
   loadModelConfigContext,
   loadProviderSubModels,
   loadSessionEffortCapabilities,
+  isSwitchingSessionControls,
   handleQuickModelChange,
   handleQuickSubModelChange,
   handleQuickEffortChange,
@@ -338,6 +339,29 @@ const centerResizeTimerLabel = computed(() => {
   }
 
   return formatCenterTimer(currentTime.value - activeUserMessage.startTime)
+})
+
+const latestRuntimeTransitionMessage = computed(() => {
+  return [...messages.value].reverse().find(message =>
+    message?.role === 'system_notification' && (
+      message.notificationType === 'session-runtime-starting' ||
+      message.notificationType === 'session-runtime-restarting' ||
+      message.notificationType === 'session-runtime-ready' ||
+      message.notificationType === 'session-config-applied' ||
+      message.notificationType === 'session-effort-changed' ||
+      message.notificationType === 'runtime-stopped' ||
+      message.notificationType === 'runtime-exit'
+    )
+  ) || null
+})
+
+const isRuntimeTransitioning = computed(() => {
+  const type = latestRuntimeTransitionMessage.value?.notificationType
+  return type === 'session-runtime-starting' || type === 'session-runtime-restarting'
+})
+
+const toolbarLocked = computed(() => {
+  return isRuntimeTransitioning.value || isSwitchingSessionControls.value
 })
 
 const collapsibleStats = computed(() => {
@@ -1709,6 +1733,7 @@ async function handleQuestionAnswer(requestId, answers) {
         v-model="inputMessage"
         v-model:attachments="inputAttachments"
         :is-processing="isProcessing"
+        :toolbar-locked="toolbarLocked"
         :has-permission="pendingPermission !== null || pendingControlRequest !== null"
         :permission-mode="permissionMode"
         :permission-modes="permissionModes"

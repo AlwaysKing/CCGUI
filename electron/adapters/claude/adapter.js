@@ -267,7 +267,12 @@ class ClaudeAdapter extends ClaudeClient {
   }
 
   getSessionSettingsPatch() {
-    return null
+    return {
+      toolBinding: {
+        tool: 'claude',
+        nativeSessionId: this.sessionId || null
+      }
+    }
   }
 
   handleSystemMessage(message) {

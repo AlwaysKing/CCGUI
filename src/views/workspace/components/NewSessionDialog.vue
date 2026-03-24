@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '../../../stores/useAppStore'
-import { getProviderModels } from '../../../utils/provider-models'
+import { getDefaultCredential, getProviderModels } from '../../../utils/provider-models'
 import { useDialogStack } from '../../../composables/useDialogStack'
+import AppSelect from '@/components/base/AppSelect.vue'
+import { getChatMessageThemePresetLabel } from '@/utils/chatMessageTheme'
 
 const store = useAppStore()
 
@@ -21,12 +23,25 @@ const modelCardMode = ref('default')
 const promptsMode = ref('project')
 const documentsMode = ref('project')
 const selectedModelId = ref(null)
+const selectedCredentialId = ref(null)
+const selectedTargetKind = ref('provider')
+const selectedTargetId = ref(null)
 const selectedModelCardId = ref(null)
 const selectedPromptIds = ref([])
 const selectedDocumentIds = ref([])
 const systemModels = ref([])
+const providerTargets = ref([])
 const systemPrompts = ref([])
 const systemDocuments = ref([])
+const appConfig = ref(null)
+const projectConfig = ref(null)
+const codexRuntimeSettings = ref({
+  authMode: 'provider',
+  model: '',
+  modelProvider: '',
+  activeAccountId: null,
+  activeAccountName: ''
+})
 const isCreating = ref(false)
 const error = ref('')
 
@@ -49,6 +64,27 @@ const availableModels = computed(() => {
   return systemModels.value.filter(model => model.isActive !== false)
 })
 
+const groupedProviderTargets = computed(() => {
+  const groups = []
+  const byProvider = new Map()
+
+  for (const option of providerTargets.value) {
+    const groupKey = option.providerLabel || option.providerId || '其他'
+    if (!byProvider.has(groupKey)) {
+      const group = {
+        key: groupKey,
+        label: option.providerLabel || groupKey,
+        options: []
+      }
+      byProvider.set(groupKey, group)
+      groups.push(group)
+    }
+    byProvider.get(groupKey).options.push(option)
+  }
+
+  return groups
+})
+
 const availableModelCards = computed(() => {
   if (!selectedModelId.value) return []
   const model = systemModels.value.find(item => item.id === selectedModelId.value)
@@ -63,14 +99,50 @@ const baseDocumentIds = computed(() => {
   return systemDocuments.value.filter(doc => doc.isBase !== false).map(doc => doc.id)
 })
 
+const systemPromptsSummary = computed(() => summarizeNames(systemPrompts.value.filter(prompt => prompt.isBase === true)))
+const projectPromptsSummary = computed(() => summarizePromptSummary(projectConfig.value?.settings || {}, 'project'))
+const systemDocumentsSummary = computed(() => summarizeNames(systemDocuments.value.filter(doc => doc.isBase !== false)))
+const projectDocumentsSummary = computed(() => summarizeDocumentSummary(projectConfig.value?.settings || {}, 'project'))
+const projectThemeSummary = computed(() => {
+  const settings = projectConfig.value?.settings || {}
+  const mode = settings.chatMessageThemeMode || 'app'
+  const preset = settings.chatMessageThemePreset || 'classic'
+  if (mode === 'app') return `系统 · ${getChatMessageThemePresetLabel(preset)}`
+  if (mode === 'project') return '项目'
+  return getChatMessageThemePresetLabel(preset)
+})
+
 async function loadSystemConfig() {
   try {
     const result = await window.electronAPI.getAppConfig()
     if (result?.success) {
       const config = result.config || {}
+      appConfig.value = config
       systemPrompts.value = config.settings?.prompts || []
       systemDocuments.value = config.documents || []
       systemModels.value = getProviderModels(config, selectedTool.value)
+    }
+
+    const [targetResult, projectConfigResult, codexSettingsResult] = await Promise.all([
+      window.electronAPI.getAvailableTargets({
+        projectId: props.projectId,
+        provider: selectedTool.value
+      }),
+      window.electronAPI.getProjectConfig({ projectId: props.projectId }),
+      window.electronAPI.getCodexSettings()
+    ])
+    providerTargets.value = targetResult?.success
+      ? (Array.isArray(targetResult.options) ? targetResult.options : [])
+      : []
+    projectConfig.value = projectConfigResult?.config || null
+    if (codexSettingsResult?.success && codexSettingsResult.settings) {
+      codexRuntimeSettings.value = {
+        authMode: codexSettingsResult.settings.authMode || 'provider',
+        model: codexSettingsResult.settings.model || '',
+        modelProvider: codexSettingsResult.settings.modelProvider || '',
+        activeAccountId: codexSettingsResult.settings.activeAccountId || null,
+        activeAccountName: codexSettingsResult.settings.activeAccountName || ''
+      }
     }
   } catch (e) {
     console.error('Failed to load system config:', e)
@@ -88,12 +160,104 @@ function onModelChange() {
   }
 }
 
+function syncSelectedTarget(optionId) {
+  selectedTargetId.value = optionId || null
+  const option = providerTargets.value.find(item => item.id === optionId) || null
+  selectedModelId.value = option?.modelId || null
+  selectedCredentialId.value = option?.credentialId || null
+  selectedTargetKind.value = option?.targetKind || 'provider'
+  onModelChange()
+}
+
+function getSelectedTargetLabel() {
+  const option = providerTargets.value.find(item => item.id === selectedTargetId.value) || null
+  return option?.label || ''
+}
+
+function mapTargetGroups(groups = []) {
+  return groups.map(group => ({
+    ...group,
+    options: (group.options || []).map(option => ({
+      ...option,
+      value: option.id
+    }))
+  }))
+}
+
+function summarizeNames(items = [], fallback = '未配置') {
+  if (!Array.isArray(items) || items.length === 0) return fallback
+  const names = items.map(item => item?.name).filter(Boolean)
+  if (!names.length) return fallback
+  return names.length <= 3 ? names.join('、') : `${names.slice(0, 3).join('、')} 等 ${names.length} 项`
+}
+
+function summarizePromptSummary(settings = {}, mode = 'project') {
+  if (mode === 'system') return systemPromptsSummary.value
+  const savedPromptMode = settings.promptMode || (Array.isArray(settings.promptIds) ? (settings.promptIds.length > 0 ? 'custom' : 'none') : 'system')
+  if (savedPromptMode === 'custom') {
+    const selected = systemPrompts.value.filter(prompt => (settings.promptIds || []).includes(prompt.id))
+    return summarizeNames(selected)
+  }
+  if (savedPromptMode === 'none') return '不使用'
+  return systemPromptsSummary.value
+}
+
+function summarizeDocumentSummary(settings = {}, mode = 'project') {
+  if (mode === 'system') return systemDocumentsSummary.value
+  const savedMode = settings.documentMode || (Array.isArray(settings.documentIds) ? (settings.documentIds.length > 0 ? 'custom' : 'none') : 'system')
+  if (savedMode === 'custom') {
+    const selected = systemDocuments.value.filter(doc => (settings.documentIds || []).includes(doc.id))
+    return summarizeNames(selected)
+  }
+  if (savedMode === 'none') return '不使用'
+  return systemDocumentsSummary.value
+}
+
 function getDefaultModelCardName() {
   const model = systemModels.value.find(item => item.id === selectedModelId.value)
   if (!model?.modelCards?.length) return '无可用模型'
   const defaultCard = model.modelCards.find(card => card.id === model.defaultCardId)
   const card = defaultCard || model.modelCards[0]
   return card?.modelName || card?.id || '默认模型'
+}
+
+function getSystemModelSummary() {
+  if (selectedTool.value === 'codex' && codexRuntimeSettings.value.authMode === 'chatgpt') {
+    const parts = ['账号模式']
+    if (codexRuntimeSettings.value.activeAccountName) parts.push(codexRuntimeSettings.value.activeAccountName)
+    if (codexRuntimeSettings.value.model) parts.push(codexRuntimeSettings.value.model)
+    return parts.join(' · ')
+  }
+
+  const settings = appConfig.value?.settings || {}
+  const modelId = selectedTool.value === 'codex' ? settings.selectedCodexModelId : settings.selectedClaudeModelId
+  const credentialId = selectedTool.value === 'codex' ? settings.selectedCodexCredentialId : settings.selectedClaudeCredentialId
+  const model = systemModels.value.find(item => item.id === modelId) || null
+  if (!model) return '当前系统未设置默认模型'
+  const credential = getDefaultCredential(model, credentialId)
+  const defaultCard = model.modelCards?.find(item => item.id === model.defaultCardId) || model.modelCards?.[0] || null
+  const parts = [model.friendlyName || model.name || model.id]
+  if (credential?.name) parts.push(credential.name)
+  if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
+  return parts.join(' · ')
+}
+
+function getProjectModelSummary() {
+  const providerSettings = selectedTool.value === 'codex'
+    ? (projectConfig.value?.settings?.providerModelSettings?.codex || projectConfig.value?.settings?.codexModelConfig || projectConfig.value?.settings || {})
+    : (projectConfig.value?.settings?.providerModelSettings?.claude || projectConfig.value?.settings?.claudeModelConfig || projectConfig.value?.settings || {})
+
+  const savedModelMode = providerSettings.modelMode || (providerSettings.modelId ? 'custom' : 'system')
+  if (savedModelMode !== 'custom' || !providerSettings.modelId) return getSystemModelSummary()
+
+  const model = systemModels.value.find(item => item.id === providerSettings.modelId) || null
+  if (!model) return '当前项目未设置默认模型'
+  const credential = getDefaultCredential(model, providerSettings.credentialId)
+  const defaultCard = model.modelCards?.find(item => item.id === (providerSettings.modelCardId || model.defaultCardId)) || model.modelCards?.[0] || null
+  const parts = [model.friendlyName || model.name || model.id]
+  if (credential?.name) parts.push(credential.name)
+  if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
+  return parts.join(' · ')
 }
 
 function togglePrompt(promptId) {
@@ -133,6 +297,8 @@ async function handleCreate() {
       tool: selectedTool.value,
       modelMode: modelMode.value,
       modelId: modelMode.value === 'custom' ? selectedModelId.value : null,
+      credentialId: modelMode.value === 'custom' ? selectedCredentialId.value : null,
+      targetKind: modelMode.value === 'custom' ? selectedTargetKind.value : null,
       modelCardId: modelMode.value === 'custom' && modelCardMode.value === 'custom' ? selectedModelCardId.value : null,
       promptMode: promptsMode.value,
       promptIds: promptsMode.value === 'custom' ? [...selectedPromptIds.value] : [],
@@ -152,13 +318,15 @@ async function handleCreate() {
 }
 
 watch(modelMode, (newValue) => {
-  if (newValue === 'custom' && availableModels.value.length > 0) {
-    if (!selectedModelId.value) {
-      selectedModelId.value = availableModels.value[0].id
-      onModelChange()
+  if (newValue === 'custom' && providerTargets.value.length > 0) {
+    if (!selectedTargetId.value) {
+      syncSelectedTarget(providerTargets.value[0].id)
     }
   } else if (newValue !== 'custom') {
+    selectedTargetId.value = null
     selectedModelId.value = null
+    selectedCredentialId.value = null
+    selectedTargetKind.value = 'provider'
     selectedModelCardId.value = null
   }
 })
@@ -166,11 +334,13 @@ watch(modelMode, (newValue) => {
 watch(selectedTool, async () => {
   await loadSystemConfig()
   if (modelMode.value === 'custom') {
-    const firstModel = availableModels.value[0] || null
-    selectedModelId.value = firstModel?.id || null
-    onModelChange()
+    const firstTarget = providerTargets.value[0] || null
+    syncSelectedTarget(firstTarget?.id || null)
   } else {
+    selectedTargetId.value = null
     selectedModelId.value = null
+    selectedCredentialId.value = null
+    selectedTargetKind.value = 'provider'
     selectedModelCardId.value = null
   }
 })
@@ -259,7 +429,11 @@ onMounted(() => {
 
           <div v-if="showAdvanced" class="advanced-panel">
             <div class="config-section">
-              <label class="config-label">模型</label>
+              <label class="config-label">
+                模型
+                <span v-if="modelMode === 'system'" class="current-config-hint">- {{ getSystemModelSummary() }}</span>
+                <span v-else-if="modelMode === 'project'" class="current-config-hint">- {{ getProjectModelSummary() }}</span>
+              </label>
               <div class="radio-group">
                 <label class="radio-item">
                   <input type="radio" v-model="modelMode" value="system" />
@@ -276,12 +450,15 @@ onMounted(() => {
               </div>
               <div v-if="modelMode === 'custom'" class="config-content">
                 <div class="select-row">
-                  <select v-model="selectedModelId" class="select-input" @change="onModelChange">
-                    <option value="" disabled>-- 选择模型供应商配置 --</option>
-                    <option v-for="model in availableModels" :key="model.id" :value="model.id">
-                      {{ model.friendlyName || model.id }}
-                    </option>
-                  </select>
+                  <AppSelect
+                    v-model="selectedTargetId"
+                    class="select-input"
+                    full-width
+                    placeholder="-- 选择供应商与令牌 --"
+                    :groups="mapTargetGroups(groupedProviderTargets)"
+                    :selected-label="getSelectedTargetLabel()"
+                    @change="syncSelectedTarget($event?.value || null)"
+                  />
                 </div>
                 <div v-if="selectedModelId && availableModelCards.length > 0" class="model-cards-wrapper">
                   <div class="cards-header">
@@ -328,7 +505,11 @@ onMounted(() => {
             </div>
 
             <div class="config-section">
-              <label class="config-label">提示词</label>
+              <label class="config-label">
+                提示词
+                <span v-if="promptsMode === 'system'" class="current-config-hint">- {{ systemPromptsSummary }}</span>
+                <span v-else-if="promptsMode === 'project'" class="current-config-hint">- {{ projectPromptsSummary }}</span>
+              </label>
               <div class="radio-group">
                 <label class="radio-item">
                   <input type="radio" v-model="promptsMode" value="system" />
@@ -367,7 +548,11 @@ onMounted(() => {
             </div>
 
             <div class="config-section">
-              <label class="config-label">规范文档</label>
+              <label class="config-label">
+                规范文档
+                <span v-if="documentsMode === 'system'" class="current-config-hint">- {{ systemDocumentsSummary }}</span>
+                <span v-else-if="documentsMode === 'project'" class="current-config-hint">- {{ projectDocumentsSummary }}</span>
+              </label>
               <div class="radio-group">
                 <label class="radio-item">
                   <input type="radio" v-model="documentsMode" value="system" />
@@ -587,6 +772,13 @@ onMounted(() => {
   font-weight: 500;
 }
 
+.current-config-hint {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #6B7280;
+}
+
 .radio-group {
   display: flex;
   gap: 16px;
@@ -626,18 +818,7 @@ onMounted(() => {
 
 .select-input {
   width: 100%;
-  padding: 10px 12px;
-  background: #111113;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
-  color: #E5E7EB;
-  font-size: 13px;
   box-sizing: border-box;
-}
-
-.select-input:focus {
-  outline: none;
-  border-color: #F97316;
 }
 
 .model-cards-wrapper {

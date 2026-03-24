@@ -6,6 +6,7 @@
 import { ref } from 'vue'
 import SettingsSection from './common/SettingsSection.vue'
 import SettingItem from './common/SettingItem.vue'
+import AppSelect from '@/components/base/AppSelect.vue'
 
 const systemSoundGroups = [
   {
@@ -50,6 +51,16 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:settings', 'save-settings', 'test-bark', 'save-bark'])
+
+const themeOptions = [
+  { value: 'dark', label: '深色模式' },
+  { value: 'light', label: '浅色模式（开发中）', disabled: true }
+]
+
+const languageOptions = [
+  { value: 'zh-CN', label: '简体中文' },
+  { value: 'en-US', label: 'English (开发中)', disabled: true }
+]
 
 // Bark 测试和保存状态
 const testingBark = ref(false)
@@ -104,18 +115,22 @@ async function handleTestSound() {
   <SettingsSection title="软件配置">
     <!-- 主题设置 -->
     <SettingItem title="主题" description="选择应用的主题外观">
-      <select :value="settings.theme" @change="updateSettings({ ...settings, theme: $event.target.value }, true)" class="setting-select">
-        <option value="dark">深色模式</option>
-        <option value="light" disabled>浅色模式（开发中）</option>
-      </select>
+      <AppSelect
+        :model-value="settings.theme"
+        class="setting-select"
+        :options="themeOptions"
+        @update:model-value="updateSettings({ ...settings, theme: $event }, true)"
+      />
     </SettingItem>
 
     <!-- 语言设置 -->
     <SettingItem title="语言" description="选择应用的显示语言">
-      <select :value="settings.language" @change="updateSettings({ ...settings, language: $event.target.value }, true)" class="setting-select">
-        <option value="zh-CN">简体中文</option>
-        <option value="en-US" disabled>English (开发中)</option>
-      </select>
+      <AppSelect
+        :model-value="settings.language"
+        class="setting-select"
+        :options="languageOptions"
+        @update:model-value="updateSettings({ ...settings, language: $event }, true)"
+      />
     </SettingItem>
 
     <SettingItem title="提示音" description="选择一个 macOS 系统提示音或扩展 UI 音效，用于后续通知提示">
@@ -123,17 +138,12 @@ async function handleTestSound() {
         <button class="btn-test" @click="handleTestSound" :disabled="testingSound">
           {{ testingSound ? '试听中...' : '试听' }}
         </button>
-        <select
-          :value="settings.notificationSound || 'Glass'"
-          @change="updateSettings({ ...settings, notificationSound: $event.target.value }, true)"
+        <AppSelect
+          :model-value="settings.notificationSound || 'Glass'"
           class="setting-select"
-        >
-          <optgroup v-for="group in systemSoundGroups" :key="group.label" :label="group.label">
-            <option v-for="option in group.options" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </optgroup>
-        </select>
+          :groups="systemSoundGroups"
+          @update:model-value="updateSettings({ ...settings, notificationSound: $event }, true)"
+        />
       </div>
     </SettingItem>
 
@@ -177,20 +187,7 @@ async function handleTestSound() {
 
 <style scoped>
 .setting-select {
-  background: var(--app-soft-surface);
-  border: 1px solid var(--app-soft-border);
-  border-radius: 8px;
-  padding: 8px 12px;
-  color: #F4F4F5;
-  font-size: 13px;
-  cursor: pointer;
   min-width: 150px;
-}
-
-.setting-select:focus {
-  outline: none;
-  border-color: #F97316;
-  background: var(--app-soft-surface-hover);
 }
 
 .setting-input {

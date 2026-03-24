@@ -1,6 +1,7 @@
 <script setup>
 import SettingsSection from './common/SettingsSection.vue'
 import SettingItem from './common/SettingItem.vue'
+import AppSelect from '@/components/base/AppSelect.vue'
 
 const props = defineProps({
   settings: {
@@ -55,15 +56,12 @@ function updateSettings(nextSettings, autoSave = false) {
 <template>
   <SettingsSection title="终端配置">
     <SettingItem title="终端主题" description="选择终端配色方案，影响背景、文本、光标和 ANSI 颜色">
-      <select
-        :value="settings.terminalTheme || 'ccgui-dark'"
-        @change="updateSettings({ ...settings, terminalTheme: $event.target.value }, true)"
+      <AppSelect
+        :model-value="settings.terminalTheme || 'ccgui-dark'"
         class="setting-select"
-      >
-        <option v-for="option in terminalThemeOptions" :key="option.value" :value="option.value">
-          {{ option.label }}
-        </option>
-      </select>
+        :options="terminalThemeOptions"
+        @update:model-value="updateSettings({ ...settings, terminalTheme: $event }, true)"
+      />
     </SettingItem>
 
     <SettingItem
@@ -99,20 +97,7 @@ function updateSettings(nextSettings, autoSave = false) {
 
 <style scoped>
 .setting-select {
-  background: var(--app-soft-surface);
-  border: 1px solid var(--app-soft-border);
-  border-radius: 8px;
-  padding: 8px 12px;
-  color: #F4F4F5;
-  font-size: 13px;
-  cursor: pointer;
   min-width: 180px;
-}
-
-.setting-select:focus {
-  outline: none;
-  border-color: #F97316;
-  background: var(--app-soft-surface-hover);
 }
 
 .setting-input {

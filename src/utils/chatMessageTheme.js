@@ -35,6 +35,10 @@ export const CHAT_MESSAGE_THEME_PRESET_OPTIONS = [
   { value: 'codex', label: '编程模式' }
 ]
 
+export function getChatMessageThemePresetLabel(presetKey = 'classic') {
+  return CHAT_MESSAGE_THEME_PRESET_OPTIONS.find(option => option.value === presetKey)?.label || '聊天模式'
+}
+
 function pickThemeFields(source = {}) {
   return CHAT_MESSAGE_THEME_FIELDS.reduce((acc, key) => {
     if (typeof source?.[key] === 'string' && source[key].trim()) {

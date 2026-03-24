@@ -427,13 +427,13 @@ export const useSessionStore = defineStore('session', () => {
     })
   }
 
-  async function listSessionTargets(options = {}) {
+  async function getAvailableTargets(options = {}) {
     const session = currentSession.value
     if (!session) {
       throw new Error('No active session')
     }
 
-    return window.electronAPI.listSessionTargets({
+    return window.electronAPI.getAvailableTargets({
       sessionId: session.id,
       ...options
     })
@@ -1735,7 +1735,7 @@ export const useSessionStore = defineStore('session', () => {
     sendControlRequest,
     setSessionModel,
     listSessionSubmodels,
-    listSessionTargets,
+    getAvailableTargets,
     setSessionSubmodel,
     setSessionTarget,
     listSessionEffortOptions,

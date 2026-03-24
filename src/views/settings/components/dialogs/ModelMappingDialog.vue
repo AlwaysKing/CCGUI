@@ -6,6 +6,7 @@
 import { ref, watch, computed } from 'vue'
 import { useDialogStack } from '../../../../composables/useDialogStack'
 import IconButton from '@/components/base/IconButton.vue'
+import AppSelect from '@/components/base/AppSelect.vue'
 
 const props = defineProps({
   visible: {
@@ -77,6 +78,20 @@ watch(() => props.model, syncData, { immediate: true, deep: true })
 function getCardName(cardId) {
   const card = availableCards.value.find(c => c.id === cardId)
   return card?.modelName || '未命名'
+}
+
+function getMappingOptions(index) {
+  const options = availableCards.value.map(card => ({
+    value: card.id,
+    label: card.modelName || '未命名'
+  }))
+  if (index > 0) {
+    return [
+      { value: null, label: '默认' },
+      ...options
+    ]
+  }
+  return options
 }
 
 // 关闭对话框
@@ -151,12 +166,12 @@ function clearAll() {
           <div v-for="(type, index) in mappingTypes" :key="type.key" class="mapping-item" :class="{ 'full-width': index === 0 }">
             <div class="mapping-label">{{ type.label }}</div>
             <div class="mapping-desc">{{ type.description }}</div>
-            <select v-model="mappings[type.key]" class="mapping-select">
-              <option v-if="index > 0" :value="null">默认</option>
-              <option v-for="card in availableCards" :key="card.id" :value="card.id">
-                {{ card.modelName || '未命名' }}
-              </option>
-            </select>
+            <AppSelect
+              v-model="mappings[type.key]"
+              class="mapping-select"
+              full-width
+              :options="getMappingOptions(index)"
+            />
           </div>
         </div>
 
@@ -276,18 +291,6 @@ function clearAll() {
 
 .mapping-select {
   margin-top: 4px;
-  padding: 5px 10px;
-  font-size: 12px;
-  background: #18181B;
-  border: 1px solid #52525B;
-  border-radius: 6px;
-  color: #F4F4F5;
-  cursor: pointer;
-}
-
-.mapping-select:focus {
-  outline: none;
-  border-color: #F97316;
 }
 
 .quick-actions {

@@ -118,12 +118,28 @@ function listClaudeSessions({ projectId }) {
       createdAt: stat.birthtime.toISOString(),
       updatedAt: stat.mtime.toISOString(),
       settings: {
-        provider: 'claude'
+        provider: 'claude',
+        toolBinding: {
+          tool: 'claude',
+          nativeSessionId: sessionId
+        }
       }
     })
   }
 
   return sessions
+}
+
+function createClaudeSession({ projectId, sessionId }) {
+  const projectDir = path.join(getClaudeProjectsDir(), projectId)
+  fs.mkdirSync(projectDir, { recursive: true })
+  const sessionFile = path.join(projectDir, `${sessionId}.jsonl`)
+  if (!fs.existsSync(sessionFile)) {
+    fs.writeFileSync(sessionFile, '', 'utf-8')
+  }
+  return {
+    nativeSessionId: sessionId
+  }
 }
 
 function extractClaudeTextContent(content) {
@@ -249,6 +265,7 @@ const claudeSessionSource = {
   provider: 'claude',
   scanProjects: scanClaudeProjects,
   listProjectSessions: listClaudeSessions,
+  createSession: createClaudeSession,
   loadSessionHistory: loadClaudeSessionHistory,
   deleteSession: deleteClaudeSession,
   deleteProject: deleteClaudeProject

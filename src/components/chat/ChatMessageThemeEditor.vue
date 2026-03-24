@@ -5,6 +5,7 @@ import {
   buildChatMessageThemeFromPreset
 } from '@/utils/chatMessageTheme'
 import MessageList from '@/views/workspace/chat/components/messages/MessageList.vue'
+import AppSelect from '@/components/base/AppSelect.vue'
 
 const props = defineProps({
   mode: {
@@ -320,45 +321,59 @@ onUnmounted(() => {
 
         <div v-if="canChoosePreset" class="theme-preset-row">
           <span class="row-label">预设</span>
-          <select
+          <AppSelect
+            :model-value="presetKey"
             class="theme-select"
+            full-width
             :disabled="disabled"
-            :value="presetKey"
-            @change="handlePresetChange($event.target.value)"
-          >
-            <option v-for="option in CHAT_MESSAGE_THEME_PRESET_OPTIONS" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
+            :options="CHAT_MESSAGE_THEME_PRESET_OPTIONS"
+            @update:model-value="handlePresetChange"
+          />
         </div>
 
         <div v-if="canEditTheme" class="theme-grid">
           <div class="theme-field">
             <label class="field-label">头像</label>
-            <select class="theme-select" :value="themeConfig.avatarMode" @change="updateField('avatarMode', $event.target.value)">
-              <option v-for="option in fieldOptions.avatarMode" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
+            <AppSelect
+              :model-value="themeConfig.avatarMode"
+              class="theme-select"
+              full-width
+              :options="fieldOptions.avatarMode"
+              @update:model-value="updateField('avatarMode', $event)"
+            />
           </div>
 
           <div class="theme-field">
             <label class="field-label">状态样式</label>
-            <select class="theme-select" :value="themeConfig.statusStyle" @change="updateField('statusStyle', $event.target.value)">
-              <option v-for="option in fieldOptions.statusStyle" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
+            <AppSelect
+              :model-value="themeConfig.statusStyle"
+              class="theme-select"
+              full-width
+              :options="fieldOptions.statusStyle"
+              @update:model-value="updateField('statusStyle', $event)"
+            />
           </div>
 
           <div class="theme-field">
             <label class="field-label">消息边框</label>
-            <select class="theme-select" :value="themeConfig.messageSurface" @change="updateField('messageSurface', $event.target.value)">
-              <option v-for="option in fieldOptions.messageSurface" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
+            <AppSelect
+              :model-value="themeConfig.messageSurface"
+              class="theme-select"
+              full-width
+              :options="fieldOptions.messageSurface"
+              @update:model-value="updateField('messageSurface', $event)"
+            />
           </div>
 
           <div class="theme-field">
             <label class="field-label">消息间隔</label>
-            <select class="theme-select" :value="themeConfig.messageSpacing" @change="updateField('messageSpacing', $event.target.value)">
-              <option v-for="option in fieldOptions.messageSpacing" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
+            <AppSelect
+              :model-value="themeConfig.messageSpacing"
+              class="theme-select"
+              full-width
+              :options="fieldOptions.messageSpacing"
+              @update:model-value="updateField('messageSpacing', $event)"
+            />
           </div>
         </div>
 
@@ -471,25 +486,6 @@ onUnmounted(() => {
 }
 
 .theme-select {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025) 0%, rgba(255, 255, 255, 0.01) 100%),
-    rgba(18, 20, 24, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 8px;
-  padding: 8px 10px;
-  color: #F4F4F5;
-  font-size: 13px;
-  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.theme-select:focus {
-  outline: none;
-  border-color: #F97316;
-  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.12);
-}
-
-.theme-select:hover {
-  border-color: rgba(255, 255, 255, 0.11);
 }
 
 .theme-hint {

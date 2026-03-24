@@ -3,7 +3,7 @@
  * ModelSettings - 模型配置区域
  * 包含 Claude 和 Codex 独立的配置和模型供应商列表
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import SettingsSection from './common/SettingsSection.vue'
 import SubsectionHeader from './common/SubsectionHeader.vue'
 import DetailRow from './common/DetailRow.vue'
@@ -79,6 +79,7 @@ const showCodexToken = ref(false)
 const visibleClaudeModelTokens = ref(new Set())
 const visibleCodexModelTokens = ref(new Set())
 const visibleCodexAccountSecrets = ref(new Set())
+const activationMenu = ref({ provider: null, modelId: null })
 const claudeModelsCollapsed = ref(true)
 const codexAccountsCollapsed = ref(true)
 const codexModelsCollapsed = ref(true)
@@ -99,6 +100,9 @@ const hasAnyModelMapping = computed(() => {
 })
 
 const activeCodexAccount = computed(() => {
+  if (props.codexConfig?.authMode !== 'chatgpt') {
+    return null
+  }
   const accounts = Array.isArray(props.codexConfig?.accounts) ? props.codexConfig.accounts : []
   const selectedId = props.codexConfig?.selectedAccountId || null
   return accounts.find(account => account.id === selectedId) || null
@@ -135,6 +139,106 @@ const activeCodexModelProviderLabel = computed(() => {
   return model?.friendlyName || providerId
 })
 
+function isClaudeCredentialActive(model, credential) {
+  if (!model || !credential) return false
+  return defaultConfigMatchesModel(props.defaultConfig, model, credential)
+}
+
+function isCodexCredentialActive(model, credential) {
+  if (!model || !credential) return false
+  if (props.codexConfig?.authMode === 'chatgpt') return false
+  return props.codexConfig?.modelProvider === buildCodexProviderId(model.id)
+    && (props.codexConfig?.authToken || '') === (credential.token || '')
+}
+
+function defaultConfigMatchesModel(config, model, credential) {
+  return (config?.apiUrl || '') === (model?.apiUrl || '')
+    && (config?.authToken || '') === (credential?.token || '')
+}
+
+function buildCodexProviderId(modelId = '') {
+  const suffix = String(modelId || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  return suffix ? `ccgui_model_${suffix}` : 'ccgui'
+}
+
+function getActiveCredential(model, provider) {
+  const credentials = getModelCredentials(model)
+  if (!credentials.length) return null
+  const matcher = provider === 'codex' ? isCodexCredentialActive : isClaudeCredentialActive
+  return credentials.find(credential => matcher(model, credential)) || null
+}
+
+function getActivationLabel(model, provider) {
+  const credentials = getModelCredentials(model)
+  const activeCredential = getActiveCredential(model, provider)
+  if (!activeCredential) {
+    return '激活'
+  }
+  return credentials.length > 1 ? `激活:${activeCredential.name || '未命名令牌'}` : '激活'
+}
+
+function isModelActivated(model, provider) {
+  return !!getActiveCredential(model, provider)
+}
+
+function isActivationMenuOpen(provider, modelId) {
+  return activationMenu.value.provider === provider && activationMenu.value.modelId === modelId
+}
+
+function closeActivationMenu() {
+  activationMenu.value = { provider: null, modelId: null }
+}
+
+function handleGlobalPointerDown(event) {
+  const target = event?.target
+  if (target instanceof Element && target.closest('.activation-badge-wrapper')) {
+    return
+  }
+  closeActivationMenu()
+}
+
+function handleActivateModel(provider, model) {
+  const credentials = getModelCredentials(model)
+  if (!credentials.length) return
+
+  if (credentials.length === 1) {
+    emitActivateModel(provider, model, credentials[0].id)
+    return
+  }
+
+  if (isActivationMenuOpen(provider, model.id)) {
+    closeActivationMenu()
+    return
+  }
+
+  activationMenu.value = { provider, modelId: model.id }
+}
+
+function handleActivateCredential(provider, model, credentialId) {
+  emitActivateModel(provider, model, credentialId)
+  closeActivationMenu()
+}
+
+function emitActivateModel(provider, model, credentialId) {
+  if (provider === 'codex') {
+    emit('apply-codex-model', { model, credentialId })
+    return
+  }
+  emit('apply-claude-model', { model, credentialId })
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleGlobalPointerDown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', handleGlobalPointerDown)
+})
+
 function sortSelectedFirst(items, selectedId) {
   return [...items].sort((a, b) => {
     const aSelected = a?.id === selectedId ? 1 : 0
@@ -143,7 +247,7 @@ function sortSelectedFirst(items, selectedId) {
   })
 }
 
-function sortModels(items, selectedId) {
+function sortModels(items) {
   return [...items].sort((a, b) => {
     const aEnabled = a?.isActive !== false ? 1 : 0
     const bEnabled = b?.isActive !== false ? 1 : 0
@@ -152,20 +256,18 @@ function sortModels(items, selectedId) {
       return bEnabled - aEnabled
     }
 
-    const aSelected = a?.id === selectedId ? 1 : 0
-    const bSelected = b?.id === selectedId ? 1 : 0
-    return bSelected - aSelected
+    return 0
   })
 }
 
 const sortedClaudeModels = computed(() => {
   const models = Array.isArray(props.claudeModels) ? props.claudeModels : []
-  return sortModels(models, props.selectedClaudeModelId)
+  return sortModels(models)
 })
 
 const sortedCodexModels = computed(() => {
   const models = Array.isArray(props.codexModels) ? props.codexModels : []
-  return sortModels(models, props.selectedCodexModelId)
+  return sortModels(models)
 })
 
 const sortedCodexAccounts = computed(() => {
@@ -182,7 +284,7 @@ function getModelCredentials(model) {
   if (model?.authToken) {
     return [{
       id: model.defaultCredentialId || 'default',
-      name: '默认令牌',
+      name: '默认',
       token: model.authToken
     }]
   }
@@ -476,11 +578,31 @@ function toggleSectionCollapse(section) {
               </button>
             </div>
             <div class="model-actions">
-              <IconButton @click.stop="emit('apply-claude-model', model)" title="应用">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-              </IconButton>
+              <div class="activation-badge-wrapper">
+                <button
+                  type="button"
+                  class="activation-badge"
+                  :class="{ active: isModelActivated(model, 'claude') }"
+                  @click.stop="handleActivateModel('claude', model)"
+                >
+                  {{ getActivationLabel(model, 'claude') }}
+                </button>
+                <div
+                  v-if="isActivationMenuOpen('claude', model.id)"
+                  class="activation-menu"
+                >
+                  <button
+                    v-for="credential in getModelCredentials(model)"
+                    :key="credential.id"
+                    type="button"
+                    class="activation-menu-item"
+                    :class="{ active: isClaudeCredentialActive(model, credential) }"
+                    @click.stop="handleActivateCredential('claude', model, credential.id)"
+                  >
+                    {{ credential.name || '未命名令牌' }}
+                  </button>
+                </div>
+              </div>
               <IconButton @click.stop="emit('edit-claude-model', model)" title="编辑">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -741,7 +863,6 @@ function toggleSectionCollapse(section) {
             <div class="model-header">
               <h4 class="model-name">
                 {{ account.name || '未命名账号' }}
-                <span v-if="codexConfig.selectedAccountId === account.id" class="account-active-badge">激活</span>
                 <span
                   v-for="badge in getCodexAccountUsageBadges(account)"
                   :key="`${account.id}-${badge}`"
@@ -751,11 +872,16 @@ function toggleSectionCollapse(section) {
                 </span>
               </h4>
               <div class="model-actions">
-                <IconButton @click.stop="emit('apply-codex-account', account)" title="设为当前账号">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                </IconButton>
+                <div class="activation-badge-wrapper">
+                  <button
+                    type="button"
+                    class="activation-badge"
+                    :class="{ active: codexConfig.authMode === 'chatgpt' && codexConfig.selectedAccountId === account.id }"
+                    @click.stop="emit('apply-codex-account', account)"
+                  >
+                    激活
+                  </button>
+                </div>
                 <IconButton @click.stop="emit('edit-codex-account', account)" title="编辑">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -1017,11 +1143,31 @@ function toggleSectionCollapse(section) {
               </button>
             </div>
             <div class="model-actions">
-              <IconButton @click.stop="emit('apply-codex-model', model)" title="应用">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-              </IconButton>
+              <div class="activation-badge-wrapper">
+                <button
+                  type="button"
+                  class="activation-badge"
+                  :class="{ active: isModelActivated(model, 'codex') }"
+                  @click.stop="handleActivateModel('codex', model)"
+                >
+                  {{ getActivationLabel(model, 'codex') }}
+                </button>
+                <div
+                  v-if="isActivationMenuOpen('codex', model.id)"
+                  class="activation-menu"
+                >
+                  <button
+                    v-for="credential in getModelCredentials(model)"
+                    :key="credential.id"
+                    type="button"
+                    class="activation-menu-item"
+                    :class="{ active: isCodexCredentialActive(model, credential) }"
+                    @click.stop="handleActivateCredential('codex', model, credential.id)"
+                  >
+                    {{ credential.name || '未命名令牌' }}
+                  </button>
+                </div>
+              </div>
               <IconButton @click.stop="emit('edit-codex-model', model)" title="编辑">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -1379,6 +1525,75 @@ function toggleSectionCollapse(section) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.activation-badge-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.activation-badge {
+  border: 1px solid #3F3F46;
+  background: rgba(39, 39, 42, 0.9);
+  color: #71717A;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.activation-badge:hover {
+  border-color: #71717A;
+  color: #E4E4E7;
+}
+
+.activation-badge.active {
+  color: #F97316;
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(249, 115, 22, 0.32);
+}
+
+.activation-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 136px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: #1F1F23;
+  border: 1px solid #3F3F46;
+  border-radius: 10px;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28);
+  z-index: 30;
+}
+
+.activation-menu-item {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #D4D4D8;
+  font-size: 12px;
+  text-align: left;
+  line-height: 1.2;
+  padding: 7px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.activation-menu-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.activation-menu-item.active {
+  color: #F97316;
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(249, 115, 22, 0.2);
 }
 
 .model-btn-activate {

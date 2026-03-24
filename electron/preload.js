@@ -226,7 +226,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   // Session target API
   // ============================================
-  listSessionTargets: (options) => ipcRenderer.invoke('list-session-targets', options),
+  getAvailableTargets: (options) => ipcRenderer.invoke('get-available-targets', options),
   setSessionTarget: (options) => ipcRenderer.invoke('set-session-target', options),
 
   // ============================================

@@ -41,7 +41,7 @@ export function getModelCredentials(model = null) {
       id: typeof model.defaultCredentialId === 'string' && model.defaultCredentialId.trim()
         ? model.defaultCredentialId.trim()
         : 'default',
-      name: '默认令牌',
+      name: '默认',
       token: model.authToken
     }]
   }

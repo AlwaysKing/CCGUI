@@ -20,6 +20,10 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  toolbarLocked: {
+    type: Boolean,
+    default: false
+  },
   hasPermission: {
     type: Boolean,
     default: false
@@ -217,6 +221,34 @@ const modeThemeClass = computed(() => {
     'auto': 'mode-edit' // 白色（auto 如果存在）
   }
   return modeColors[props.permissionMode] || ''
+})
+
+const disablePrimarySessionControls = computed(() => {
+  return props.toolbarLocked || props.isProcessing
+})
+
+const disablePermissionModeControl = computed(() => {
+  return props.toolbarLocked
+})
+
+const disableAttachmentControl = computed(() => {
+  return props.toolbarLocked || props.hasPermission || props.isProcessing
+})
+
+const disableNotificationControl = computed(() => {
+  return props.toolbarLocked || !props.canConfigureNotifications
+})
+
+const disableQueueControl = computed(() => {
+  return props.toolbarLocked
+})
+
+const disableEnterModeControl = computed(() => {
+  return props.toolbarLocked || props.isProcessing
+})
+
+const disableSendControl = computed(() => {
+  return props.toolbarLocked || sendDisabled.value
 })
 
 // 发送消息
@@ -503,7 +535,7 @@ defineExpose({
               @click="toggleModelMenu"
               class="model-mode-btn"
               title="快速切换模型供应商"
-              :disabled="!canSwitchModel"
+              :disabled="disablePrimarySessionControls || !canSwitchModel"
             >
               <span class="model-mode-icon" aria-hidden="true">✨</span>
               <span class="model-mode-text">{{ currentModelLabel }}</span>
@@ -515,6 +547,8 @@ defineExpose({
                 :key="option.key"
                 class="model-menu-item"
                 :class="{ active: currentModelKey === option.key }"
+                :disabled="option.selectable === false"
+                :title="option.reasonDisabled || option.label"
                 @click="selectModel(option)"
               >
                 <span class="model-menu-label">{{ option.label }}</span>
@@ -528,7 +562,7 @@ defineExpose({
               @click="toggleSubModelMenu"
               class="submodel-mode-btn"
               title="切换模型"
-              :disabled="!canSwitchSubModel || subModelLoading"
+              :disabled="disablePrimarySessionControls || !canSwitchSubModel || subModelLoading"
             >
               <span class="submodel-mode-icon" aria-hidden="true">◌</span>
               <span class="submodel-mode-text">{{ subModelLoading ? '加载中' : currentSubModelLabel }}</span>
@@ -555,7 +589,7 @@ defineExpose({
               @click="toggleEffortMenu"
               class="effort-mode-btn"
               :title="`思考力度: ${currentEffortDescription}`"
-              :disabled="isProcessing || !canSwitchEffort || effortLoading"
+              :disabled="disablePrimarySessionControls || !canSwitchEffort || effortLoading"
             >
               {{ effortLoading ? '🧠 加载中' : currentEffortLabel }}
             </button>
@@ -582,7 +616,7 @@ defineExpose({
               @click="togglePermissionMenu"
               class="permission-mode-btn"
               :title="`权限模式: ${currentModeDescription}`"
-              :disabled="isProcessing"
+              :disabled="disablePermissionModeControl"
             >
               {{ currentModeLabel }}
             </button>
@@ -610,7 +644,7 @@ defineExpose({
             @click="openAttachmentPicker"
             class="attach-button"
             title="添加附件"
-            :disabled="hasPermission || isProcessing"
+            :disabled="disableAttachmentControl"
           >
             📎
           </button>
@@ -621,7 +655,7 @@ defineExpose({
               class="notification-mode-btn"
               :class="{ active: hasEnabledNotifications }"
               :title="notificationButtonTitle"
-              :disabled="!canConfigureNotifications"
+              :disabled="disableNotificationControl"
             >
               {{ hasEnabledNotifications ? '🔔' : '🔕' }}
             </button>
@@ -656,6 +690,7 @@ defineExpose({
             :class="{ active: queueVisible }"
             :title="queueVisible ? `隐藏排队消息 (${queueCount})` : `显示排队消息 (${queueCount})`"
             type="button"
+            :disabled="disableQueueControl"
           >
             {{ queueCount }}
           </button>
@@ -666,7 +701,7 @@ defineExpose({
             class="enter-mode-btn"
             :class="{ locked: enterModeLocked }"
             :title="enterModeTitle"
-            :disabled="isProcessing"
+            :disabled="disableEnterModeControl"
           >
             <span class="enter-keycap" :class="{ locked: enterModeLocked }">
               <span class="enter-keycap-icon">{{ enterModeIcon }}</span>
@@ -678,7 +713,7 @@ defineExpose({
           <button
             v-if="!isProcessing"
             @click="sendMessage"
-            :disabled="sendDisabled"
+            :disabled="disableSendControl"
             class="send-button"
           >
             发送
@@ -688,6 +723,7 @@ defineExpose({
             @click="handleInterrupt"
             class="interrupt-button"
             title="打断"
+            :disabled="props.toolbarLocked"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="6" width="12" height="12" rx="2"></rect>

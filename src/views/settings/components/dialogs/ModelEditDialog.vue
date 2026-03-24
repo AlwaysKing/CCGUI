@@ -92,7 +92,7 @@ watch(() => props.model, (model) => {
           }))
         : [{
             id: model.defaultCredentialId || 'default',
-            name: '默认令牌',
+            name: '默认',
             token: model.authToken || ''
           }],
       defaultCredentialId: model.defaultCredentialId || model.credentials?.[0]?.id || 'default',
@@ -106,7 +106,7 @@ watch(() => props.model, (model) => {
     formData.value = {
       friendlyName: '',
       apiUrl: '',
-      credentials: [{ id: firstCredentialId, name: '默认令牌', token: '' }],
+      credentials: [{ id: firstCredentialId, name: '默认', token: '' }],
       defaultCredentialId: firstCredentialId,
       defaultCardId: firstCardId,
       modelCards: [{ id: firstCardId, modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '' }]
@@ -273,7 +273,7 @@ function handleSave() {
                   :class="{ active: formData.defaultCredentialId === credential.id }"
                   @click="setDefaultCredential(credential.id)"
                 >
-                  {{ formData.defaultCredentialId === credential.id ? '默认令牌' : '设为默认' }}
+                  {{ formData.defaultCredentialId === credential.id ? '默认' : '设为默认' }}
                 </button>
                 <button
                   v-if="formData.credentials.length > 1"

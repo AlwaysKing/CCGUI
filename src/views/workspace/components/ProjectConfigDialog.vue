@@ -1,9 +1,10 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { getProviderModels } from '../../../utils/provider-models'
+import { getDefaultCredential, getProviderModels } from '../../../utils/provider-models'
 import { useDialogStack } from '../../../composables/useDialogStack'
 import ChatMessageThemeEditor from '@/components/chat/ChatMessageThemeEditor.vue'
-import { buildChatMessageThemeFromPreset, normalizeChatMessageTheme } from '@/utils/chatMessageTheme'
+import { buildChatMessageThemeFromPreset, getChatMessageThemePresetLabel, normalizeChatMessageTheme } from '@/utils/chatMessageTheme'
+import AppSelect from '@/components/base/AppSelect.vue'
 
 const props = defineProps({
   visible: {
@@ -21,8 +22,10 @@ const emit = defineEmits(['close', 'saved'])
 useDialogStack(computed(() => props.visible), () => emit('close'))
 
 // 配置选项
-const modelMode = ref('system')
-const modelCardMode = ref('default')
+const claudeModelMode = ref('system')
+const claudeModelCardMode = ref('default')
+const codexModelMode = ref('system')
+const codexModelCardMode = ref('default')
 const promptsMode = ref('system')
 const documentsMode = ref('system')
 const chatMessageThemeMode = ref('app')
@@ -30,31 +33,57 @@ const chatMessageThemePreset = ref('classic')
 const chatMessageTheme = ref(buildChatMessageThemeFromPreset('classic'))
 
 // 选择的配置
-const selectedModelId = ref(null)
-const selectedModelCardId = ref(null)
+const selectedClaudeTargetId = ref(null)
+const selectedClaudeModelId = ref(null)
+const selectedClaudeCredentialId = ref(null)
+const selectedClaudeTargetKind = ref('provider')
+const selectedClaudeModelCardId = ref(null)
+const selectedCodexTargetId = ref(null)
+const selectedCodexModelId = ref(null)
+const selectedCodexCredentialId = ref(null)
+const selectedCodexTargetKind = ref('provider')
+const selectedCodexModelCardId = ref(null)
 const selectedPromptIds = ref([])
 const selectedDocumentIds = ref([])
 
 // 系统配置数据
-const systemModels = ref([])
+const claudeSystemModels = ref([])
+const codexSystemModels = ref([])
+const claudeProviderTargets = ref([])
+const codexProviderTargets = ref([])
 const systemPrompts = ref([])
 const systemDocuments = ref([])
+const appConfig = ref(null)
+const codexRuntimeSettings = ref({
+  authMode: 'provider',
+  model: '',
+  modelProvider: '',
+  activeAccountId: null,
+  activeAccountName: ''
+})
 
 // 状态
 const loading = ref(false)
 const saving = ref(false)
 
 // 计算属性：可用的模型列表（已激活的）
-const availableModels = computed(() => {
-  return systemModels.value.filter(m => m.isActive !== false)
-})
+const availableClaudeModels = computed(() => claudeSystemModels.value.filter(m => m.isActive !== false))
+const availableCodexModels = computed(() => codexSystemModels.value.filter(m => m.isActive !== false))
 
-// 计算属性：选中模型的卡片列表
-const availableModelCards = computed(() => {
-  if (!selectedModelId.value) return []
-  const model = systemModels.value.find(m => m.id === selectedModelId.value)
+const availableClaudeModelCards = computed(() => {
+  if (!selectedClaudeModelId.value) return []
+  const model = claudeSystemModels.value.find(m => m.id === selectedClaudeModelId.value)
   return model?.modelCards || []
 })
+
+const availableCodexModelCards = computed(() => {
+  if (!selectedCodexModelId.value) return []
+  const model = codexSystemModels.value.find(m => m.id === selectedCodexModelId.value)
+  return model?.modelCards || []
+})
+
+const groupedClaudeTargets = computed(() => groupTargets(claudeProviderTargets.value))
+const groupedCodexTargets = computed(() => groupTargets(codexProviderTargets.value))
 
 // 计算属性：基础提示词ID列表
 const basePromptIds = computed(() => {
@@ -70,23 +99,67 @@ const baseDocumentIds = computed(() => {
     .map(d => d.id)
 })
 
+const systemPromptsSummary = computed(() => summarizeNames(systemPrompts.value.filter(prompt => prompt.isBase === true)))
+const systemDocumentsSummary = computed(() => summarizeNames(systemDocuments.value.filter(doc => doc.isBase !== false)))
+const appThemeSummary = computed(() => {
+  const preset = appConfig.value?.settings?.chatMessageThemePreset || 'classic'
+  return getChatMessageThemePresetLabel(preset)
+})
+
 // 加载系统配置
 async function loadSystemConfig() {
   try {
     const result = await window.electronAPI.getAppConfig()
     if (result && result.success) {
       const config = result.config
+      appConfig.value = config
       if (config.settings) {
-        systemModels.value = getProviderModels(config, 'claude')
+        claudeSystemModels.value = getProviderModels(config, 'claude')
+        codexSystemModels.value = getProviderModels(config, 'codex')
         systemPrompts.value = config.settings.prompts || []
       }
       if (config.documents) {
         systemDocuments.value = config.documents
       }
     }
+
+    const [claudeTargetResult, codexTargetResult, codexSettingsResult] = await Promise.all([
+      window.electronAPI.getAvailableTargets({ projectId: props.projectId, provider: 'claude' }),
+      window.electronAPI.getAvailableTargets({ projectId: props.projectId, provider: 'codex' }),
+      window.electronAPI.getCodexSettings()
+    ])
+
+    claudeProviderTargets.value = claudeTargetResult?.success ? (claudeTargetResult.options || []) : []
+    codexProviderTargets.value = codexTargetResult?.success ? (codexTargetResult.options || []) : []
+    if (codexSettingsResult?.success && codexSettingsResult.settings) {
+      codexRuntimeSettings.value = {
+        authMode: codexSettingsResult.settings.authMode || 'provider',
+        model: codexSettingsResult.settings.model || '',
+        modelProvider: codexSettingsResult.settings.modelProvider || '',
+        activeAccountId: codexSettingsResult.settings.activeAccountId || null,
+        activeAccountName: codexSettingsResult.settings.activeAccountName || ''
+      }
+    }
   } catch (e) {
     console.error('Failed to load system config:', e)
   }
+}
+
+function groupTargets(options = []) {
+  const groups = []
+  const seen = new Map()
+
+  for (const option of options) {
+    const key = option.providerLabel || option.providerId || '其他'
+    if (!seen.has(key)) {
+      const group = { key, label: key, options: [] }
+      seen.set(key, group)
+      groups.push(group)
+    }
+    seen.get(key).options.push(option)
+  }
+
+  return groups
 }
 
 // 加载项目配置
@@ -99,20 +172,8 @@ async function loadProjectConfig() {
     if (result && result.config) {
       const settings = result.config.settings || {}
 
-      // 模型配置
-      const savedModelMode = settings.modelMode || (settings.modelId ? 'custom' : 'system')
-      if (savedModelMode === 'custom' && settings.modelId) {
-        modelMode.value = 'custom'
-        selectedModelId.value = settings.modelId
-        if (settings.modelCardId) {
-          modelCardMode.value = 'custom'
-          selectedModelCardId.value = settings.modelCardId
-        } else {
-          modelCardMode.value = 'default'
-        }
-      } else {
-        modelMode.value = 'system'
-      }
+      applyProviderModelConfig('claude', settings.providerModelSettings?.claude || settings.claudeModelConfig || settings)
+      applyProviderModelConfig('codex', settings.providerModelSettings?.codex || settings.codexModelConfig || settings)
 
       // 提示词配置
       const savedPromptMode = settings.promptMode || (
@@ -150,6 +211,29 @@ async function loadProjectConfig() {
   }
 }
 
+function applyProviderModelConfig(provider, settings = {}) {
+  const savedModelMode = settings.modelMode || (settings.modelId ? 'custom' : 'system')
+
+  if (provider === 'claude') {
+    claudeModelMode.value = savedModelMode === 'custom' && settings.modelId ? 'custom' : 'system'
+    selectedClaudeModelId.value = savedModelMode === 'custom' ? (settings.modelId || null) : null
+    selectedClaudeCredentialId.value = savedModelMode === 'custom' ? (settings.credentialId || null) : null
+    selectedClaudeTargetKind.value = savedModelMode === 'custom' ? (settings.targetKind || 'provider') : 'provider'
+    claudeModelCardMode.value = settings.modelCardId ? 'custom' : 'default'
+    selectedClaudeModelCardId.value = settings.modelCardId || null
+    syncTargetFromModel('claude')
+    return
+  }
+
+  codexModelMode.value = savedModelMode === 'custom' && settings.modelId ? 'custom' : 'system'
+  selectedCodexModelId.value = savedModelMode === 'custom' ? (settings.modelId || null) : null
+  selectedCodexCredentialId.value = savedModelMode === 'custom' ? (settings.credentialId || null) : null
+  selectedCodexTargetKind.value = savedModelMode === 'custom' ? (settings.targetKind || 'provider') : 'provider'
+  codexModelCardMode.value = settings.modelCardId ? 'custom' : 'default'
+  selectedCodexModelCardId.value = settings.modelCardId || null
+  syncTargetFromModel('codex')
+}
+
 // 切换提示词选择
 function togglePrompt(promptId) {
   const index = selectedPromptIds.value.indexOf(promptId)
@@ -170,25 +254,126 @@ function toggleDocument(docId) {
   }
 }
 
-// 模型配置切换时
-function onModelChange() {
-  modelCardMode.value = 'default'
-  const model = systemModels.value.find(m => m.id === selectedModelId.value)
-  if (model?.modelCards?.length > 0) {
-    const defaultCard = model.modelCards.find(c => c.id === model.defaultCardId)
-    selectedModelCardId.value = defaultCard?.id || model.modelCards[0].id
+function syncTargetFromModel(provider) {
+  const targets = provider === 'codex' ? codexProviderTargets.value : claudeProviderTargets.value
+  const modelId = provider === 'codex' ? selectedCodexModelId.value : selectedClaudeModelId.value
+  const credentialId = provider === 'codex' ? selectedCodexCredentialId.value : selectedClaudeCredentialId.value
+  const targetKind = provider === 'codex' ? selectedCodexTargetKind.value : selectedClaudeTargetKind.value
+
+  const match = targets.find(option =>
+    (option.modelId || null) === (modelId || null) &&
+    (option.credentialId || null) === (credentialId || null) &&
+    (option.targetKind || 'provider') === (targetKind || 'provider')
+  ) || null
+
+  if (provider === 'codex') {
+    selectedCodexTargetId.value = match?.id || null
   } else {
-    selectedModelCardId.value = null
+    selectedClaudeTargetId.value = match?.id || null
   }
 }
 
-// 获取默认模型卡片名称
-function getDefaultModelCardName() {
-  const model = systemModels.value.find(m => m.id === selectedModelId.value)
+function onModelChange(provider) {
+  const models = provider === 'codex' ? codexSystemModels.value : claudeSystemModels.value
+  const modelId = provider === 'codex' ? selectedCodexModelId.value : selectedClaudeModelId.value
+  const model = models.find(m => m.id === modelId)
+
+  if (provider === 'codex') {
+    codexModelCardMode.value = 'default'
+    if (model?.modelCards?.length > 0) {
+      const defaultCard = model.modelCards.find(c => c.id === model.defaultCardId)
+      selectedCodexModelCardId.value = defaultCard?.id || model.modelCards[0].id
+    } else {
+      selectedCodexModelCardId.value = null
+    }
+    return
+  }
+
+  claudeModelCardMode.value = 'default'
+  if (model?.modelCards?.length > 0) {
+    const defaultCard = model.modelCards.find(c => c.id === model.defaultCardId)
+    selectedClaudeModelCardId.value = defaultCard?.id || model.modelCards[0].id
+  } else {
+    selectedClaudeModelCardId.value = null
+  }
+}
+
+function handleTargetChange(provider, optionId) {
+  const targets = provider === 'codex' ? codexProviderTargets.value : claudeProviderTargets.value
+  const option = targets.find(item => item.id === optionId) || null
+  if (!option) return
+
+  if (provider === 'codex') {
+    selectedCodexTargetId.value = option.id
+    selectedCodexModelId.value = option.modelId || null
+    selectedCodexCredentialId.value = option.credentialId || null
+    selectedCodexTargetKind.value = option.targetKind || 'provider'
+    onModelChange('codex')
+    return
+  }
+
+  selectedClaudeTargetId.value = option.id
+  selectedClaudeModelId.value = option.modelId || null
+  selectedClaudeCredentialId.value = option.credentialId || null
+  selectedClaudeTargetKind.value = option.targetKind || 'provider'
+  onModelChange('claude')
+}
+
+function getSelectedTargetLabel(provider) {
+  const options = provider === 'codex' ? codexProviderTargets.value : claudeProviderTargets.value
+  const targetId = provider === 'codex' ? selectedCodexTargetId.value : selectedClaudeTargetId.value
+  const option = options.find(item => item.id === targetId) || null
+  return option?.label || ''
+}
+
+function mapTargetGroups(groups = []) {
+  return groups.map(group => ({
+    ...group,
+    options: (group.options || []).map(option => ({
+      ...option,
+      value: option.id
+    }))
+  }))
+}
+
+function getDefaultModelCardName(provider) {
+  const models = provider === 'codex' ? codexSystemModels.value : claudeSystemModels.value
+  const modelId = provider === 'codex' ? selectedCodexModelId.value : selectedClaudeModelId.value
+  const model = models.find(m => m.id === modelId)
   if (!model?.modelCards?.length) return '无可用模型'
   const defaultCard = model.modelCards.find(c => c.id === model.defaultCardId)
   const card = defaultCard || model.modelCards[0]
   return card?.modelName || card?.id || '默认模型'
+}
+
+function getSystemModelSummary(provider) {
+  if (provider === 'codex' && codexRuntimeSettings.value.authMode === 'chatgpt') {
+    const parts = ['账号模式']
+    if (codexRuntimeSettings.value.activeAccountName) parts.push(codexRuntimeSettings.value.activeAccountName)
+    if (codexRuntimeSettings.value.model) parts.push(codexRuntimeSettings.value.model)
+    return parts.join(' · ')
+  }
+
+  const settings = appConfig.value?.settings || {}
+  const models = provider === 'codex' ? codexSystemModels.value : claudeSystemModels.value
+  const modelId = provider === 'codex' ? settings.selectedCodexModelId : settings.selectedClaudeModelId
+  const credentialId = provider === 'codex' ? settings.selectedCodexCredentialId : settings.selectedClaudeCredentialId
+  const model = models.find(item => item.id === modelId) || null
+  if (!model) return '当前系统未设置默认模型'
+
+  const credential = getDefaultCredential(model, credentialId)
+  const defaultCard = model.modelCards?.find(item => item.id === model.defaultCardId) || model.modelCards?.[0] || null
+  const parts = [model.friendlyName || model.name || model.id]
+  if (credential?.name) parts.push(credential.name)
+  if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
+  return parts.join(' · ')
+}
+
+function summarizeNames(items = [], fallback = '未配置') {
+  if (!Array.isArray(items) || items.length === 0) return fallback
+  const names = items.map(item => item?.name).filter(Boolean)
+  if (!names.length) return fallback
+  return names.length <= 3 ? names.join('、') : `${names.slice(0, 3).join('、')} 等 ${names.length} 项`
 }
 
 // 保存配置
@@ -198,9 +383,22 @@ async function handleSave() {
   saving.value = true
   try {
     const settings = {
-      modelMode: modelMode.value,
-      modelId: modelMode.value === 'custom' ? selectedModelId.value : null,
-      modelCardId: modelMode.value === 'custom' && modelCardMode.value === 'custom' ? selectedModelCardId.value : null,
+      providerModelSettings: {
+        claude: {
+          modelMode: claudeModelMode.value,
+          modelId: claudeModelMode.value === 'custom' ? selectedClaudeModelId.value : null,
+          credentialId: claudeModelMode.value === 'custom' ? selectedClaudeCredentialId.value : null,
+          targetKind: claudeModelMode.value === 'custom' ? selectedClaudeTargetKind.value : null,
+          modelCardId: claudeModelMode.value === 'custom' && claudeModelCardMode.value === 'custom' ? selectedClaudeModelCardId.value : null
+        },
+        codex: {
+          modelMode: codexModelMode.value,
+          modelId: codexModelMode.value === 'custom' ? selectedCodexModelId.value : null,
+          credentialId: codexModelMode.value === 'custom' ? selectedCodexCredentialId.value : null,
+          targetKind: codexModelMode.value === 'custom' ? selectedCodexTargetKind.value : null,
+          modelCardId: codexModelMode.value === 'custom' && codexModelCardMode.value === 'custom' ? selectedCodexModelCardId.value : null
+        }
+      },
       promptMode: promptsMode.value,
       promptIds: promptsMode.value === 'custom' ? [...selectedPromptIds.value] : [],
       documentMode: documentsMode.value,
@@ -234,15 +432,31 @@ watch(() => props.visible, (visible) => {
 })
 
 // 监听模式变化
-watch(modelMode, (newVal) => {
-  if (newVal === 'custom' && availableModels.value.length > 0) {
-    if (!selectedModelId.value) {
-      selectedModelId.value = availableModels.value[0].id
-      onModelChange()
+watch(claudeModelMode, (newVal) => {
+  if (newVal === 'custom' && claudeProviderTargets.value.length > 0) {
+    if (!selectedClaudeTargetId.value) {
+      handleTargetChange('claude', claudeProviderTargets.value[0].id)
     }
   } else if (newVal !== 'custom') {
-    selectedModelId.value = null
-    selectedModelCardId.value = null
+    selectedClaudeTargetId.value = null
+    selectedClaudeModelId.value = null
+    selectedClaudeCredentialId.value = null
+    selectedClaudeTargetKind.value = 'provider'
+    selectedClaudeModelCardId.value = null
+  }
+})
+
+watch(codexModelMode, (newVal) => {
+  if (newVal === 'custom' && codexProviderTargets.value.length > 0) {
+    if (!selectedCodexTargetId.value) {
+      handleTargetChange('codex', codexProviderTargets.value[0].id)
+    }
+  } else if (newVal !== 'custom') {
+    selectedCodexTargetId.value = null
+    selectedCodexModelId.value = null
+    selectedCodexCredentialId.value = null
+    selectedCodexTargetKind.value = 'provider'
+    selectedCodexModelCardId.value = null
   }
 })
 
@@ -293,76 +507,124 @@ onMounted(() => {
         </div>
 
         <template v-else>
-          <!-- 模型选择 -->
+          <!-- Claude 模型 -->
           <div class="config-section">
-            <label class="config-label">模型</label>
+            <label class="config-label">
+              Claude 模型
+              <span v-if="claudeModelMode === 'system'" class="current-config-hint">- {{ getSystemModelSummary('claude') }}</span>
+            </label>
             <div class="radio-group">
               <label class="radio-item">
-                <input type="radio" v-model="modelMode" value="system" />
+                <input type="radio" v-model="claudeModelMode" value="system" />
                 <span>系统</span>
               </label>
               <label class="radio-item">
-                <input type="radio" v-model="modelMode" value="custom" />
+                <input type="radio" v-model="claudeModelMode" value="custom" />
                 <span>自定义</span>
               </label>
             </div>
-            <div v-if="modelMode === 'custom'" class="model-select-wrapper">
+            <div v-if="claudeModelMode === 'custom'" class="model-select-wrapper">
               <div class="select-row">
-                <select v-model="selectedModelId" class="select-input" @change="onModelChange">
-                  <option value="" disabled>-- 选择模型供应商配置 --</option>
-                  <option v-for="model in availableModels" :key="model.id" :value="model.id">
-                    {{ model.friendlyName || model.id }}
-                  </option>
-                </select>
+                <AppSelect
+                  v-model="selectedClaudeTargetId"
+                  class="select-input"
+                  full-width
+                  placeholder="-- 选择供应商与令牌 --"
+                  :groups="mapTargetGroups(groupedClaudeTargets)"
+                  :selected-label="getSelectedTargetLabel('claude')"
+                  @change="handleTargetChange('claude', $event?.value || null)"
+                />
               </div>
-              <!-- 子模型选择 -->
-              <div v-if="selectedModelId && availableModelCards.length > 0" class="model-cards-wrapper">
+              <div v-if="selectedClaudeModelId && availableClaudeModelCards.length > 0" class="model-cards-wrapper">
                 <div class="cards-header">
                   <span class="cards-label">模型</span>
                   <div class="segment-control">
-                    <button
-                      type="button"
-                      class="segment-btn"
-                      :class="{ active: modelCardMode === 'default' }"
-                      @click="modelCardMode = 'default'"
-                    >
-                      默认
-                    </button>
-                    <button
-                      type="button"
-                      class="segment-btn"
-                      :class="{ active: modelCardMode === 'custom' }"
-                      @click="modelCardMode = 'custom'"
-                    >
-                      自选
-                    </button>
+                    <button type="button" class="segment-btn" :class="{ active: claudeModelCardMode === 'default' }" @click="claudeModelCardMode = 'default'">默认</button>
+                    <button type="button" class="segment-btn" :class="{ active: claudeModelCardMode === 'custom' }" @click="claudeModelCardMode = 'custom'">自选</button>
                   </div>
                 </div>
-                <div v-if="modelCardMode === 'custom'" class="model-cards-list">
+                <div v-if="claudeModelCardMode === 'custom'" class="model-cards-list">
                   <button
-                    v-for="card in availableModelCards"
+                    v-for="card in availableClaudeModelCards"
                     :key="card.id"
                     type="button"
                     class="model-card-badge"
-                    :class="{ active: selectedModelCardId === card.id }"
-                    @click="selectedModelCardId = card.id"
+                    :class="{ active: selectedClaudeModelCardId === card.id }"
+                    @click="selectedClaudeModelCardId = card.id"
                   >
                     {{ card.modelName || card.id }}
                   </button>
                 </div>
                 <div v-else class="default-card-hint">
-                  {{ getDefaultModelCardName() }}
+                  {{ getDefaultModelCardName('claude') }}
                 </div>
               </div>
-              <p v-if="availableModels.length === 0" class="empty-hint">
-                暂无可用模型供应商，请先在设置中添加并激活模型供应商
-              </p>
+              <p v-if="availableClaudeModels.length === 0" class="empty-hint">暂无可用模型供应商，请先在设置中添加并激活模型供应商</p>
+            </div>
+          </div>
+
+          <div class="config-section">
+            <label class="config-label">
+              Codex 模型
+              <span v-if="codexModelMode === 'system'" class="current-config-hint">- {{ getSystemModelSummary('codex') }}</span>
+            </label>
+            <div class="radio-group">
+              <label class="radio-item">
+                <input type="radio" v-model="codexModelMode" value="system" />
+                <span>系统</span>
+              </label>
+              <label class="radio-item">
+                <input type="radio" v-model="codexModelMode" value="custom" />
+                <span>自定义</span>
+              </label>
+            </div>
+            <div v-if="codexModelMode === 'custom'" class="model-select-wrapper">
+              <div class="select-row">
+                <AppSelect
+                  v-model="selectedCodexTargetId"
+                  class="select-input"
+                  full-width
+                  placeholder="-- 选择供应商与令牌 --"
+                  :groups="mapTargetGroups(groupedCodexTargets)"
+                  :selected-label="getSelectedTargetLabel('codex')"
+                  @change="handleTargetChange('codex', $event?.value || null)"
+                />
+              </div>
+              <p class="config-hint">Codex 一旦绑定供应商，后续会话只能在同一供应商的不同令牌之间切换。</p>
+              <div v-if="selectedCodexModelId && availableCodexModelCards.length > 0" class="model-cards-wrapper">
+                <div class="cards-header">
+                  <span class="cards-label">模型</span>
+                  <div class="segment-control">
+                    <button type="button" class="segment-btn" :class="{ active: codexModelCardMode === 'default' }" @click="codexModelCardMode = 'default'">默认</button>
+                    <button type="button" class="segment-btn" :class="{ active: codexModelCardMode === 'custom' }" @click="codexModelCardMode = 'custom'">自选</button>
+                  </div>
+                </div>
+                <div v-if="codexModelCardMode === 'custom'" class="model-cards-list">
+                  <button
+                    v-for="card in availableCodexModelCards"
+                    :key="card.id"
+                    type="button"
+                    class="model-card-badge"
+                    :class="{ active: selectedCodexModelCardId === card.id }"
+                    @click="selectedCodexModelCardId = card.id"
+                  >
+                    {{ card.modelName || card.id }}
+                  </button>
+                </div>
+                <div v-else class="default-card-hint">
+                  {{ getDefaultModelCardName('codex') }}
+                </div>
+              </div>
+              <p v-if="availableCodexModels.length === 0" class="empty-hint">暂无可用模型供应商，请先在设置中添加并激活模型供应商</p>
             </div>
           </div>
 
           <!-- 提示词选择 -->
           <div class="config-section">
-            <label class="config-label">提示词</label>
+            <label class="config-label">
+              提示词
+              <span v-if="promptsMode === 'system'" class="current-config-hint">- {{ systemPromptsSummary }}</span>
+            </label>
             <div class="radio-group">
               <label class="radio-item">
                 <input type="radio" v-model="promptsMode" value="system" />
@@ -398,7 +660,10 @@ onMounted(() => {
 
           <!-- 规范文档选择 -->
           <div class="config-section">
-            <label class="config-label">规范文档</label>
+            <label class="config-label">
+              规范文档
+              <span v-if="documentsMode === 'system'" class="current-config-hint">- {{ systemDocumentsSummary }}</span>
+            </label>
             <div class="radio-group">
               <label class="radio-item">
                 <input type="radio" v-model="documentsMode" value="system" />
@@ -433,7 +698,10 @@ onMounted(() => {
           </div>
 
           <div class="config-section">
-            <label class="config-label">消息主题</label>
+            <label class="config-label">
+              消息主题
+              <span v-if="chatMessageThemeMode === 'app'" class="current-config-hint">- {{ appThemeSummary }}</span>
+            </label>
             <div class="radio-group">
               <label class="radio-item">
                 <input type="radio" v-model="chatMessageThemeMode" value="app" />
@@ -696,24 +964,6 @@ onMounted(() => {
 
 .select-input {
   width: 100%;
-  padding: 8px 12px;
-  background: #1E1E1E;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
-  color: #E5E7EB;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.select-input option {
-  background: #1E1E1E;
-  color: #E5E7EB;
-  padding: 8px;
-}
-
-.select-input:focus {
-  outline: none;
-  border-color: #F97316;
 }
 
 .checkbox-list {
@@ -771,6 +1021,20 @@ onMounted(() => {
   color: #6B7280;
   margin: 0;
   padding: 8px 0;
+}
+
+.config-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #A1A1AA;
+}
+
+.current-config-hint {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #6B7280;
 }
 
 .dialog-footer {

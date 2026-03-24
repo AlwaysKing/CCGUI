@@ -151,7 +151,7 @@ function migrateModelSettings(config) {
           typeof model.authToken === 'string' && model.authToken.trim()
             ? [{
                 id: model.defaultCredentialId || 'default',
-                name: '默认令牌',
+                name: '默认',
                 token: model.authToken
               }]
             : []

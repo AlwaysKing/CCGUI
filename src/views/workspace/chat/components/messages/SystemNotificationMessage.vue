@@ -200,7 +200,7 @@ const notificationContent = computed(() => {
     return {
       icon: '✅',
       title: `${providerLabel} 启动完成`,
-      description: `供应商: ${providerLabel} 模型供应商: ${modelText} 模型: ${subModelText} 思考力度: ${effortText}${elapsedText ? ` 耗时: ${elapsedText}` : ''}`
+      description: `模型供应商: ${modelText} 模型: ${subModelText} 思考力度: ${effortText}${elapsedText ? ` 耗时: ${elapsedText}` : ''}`
     }
   }
 
@@ -221,7 +221,7 @@ const notificationContent = computed(() => {
     return {
       icon: iconMap[changeType] || '🧠',
       title,
-      description: `供应商: ${providerLabel} 模型供应商: ${modelText} 模型: ${subModelText} 思考力度: ${effortText}${elapsedText ? ` 耗时: ${elapsedText}` : ''}`
+      description: `模型供应商: ${modelText} 模型: ${subModelText} 思考力度: ${effortText}${elapsedText ? ` 耗时: ${elapsedText}` : ''}`
     }
   }
 

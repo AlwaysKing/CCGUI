@@ -308,7 +308,11 @@ async function listCodexSessions({ projectPath }) {
           updatedAt,
           settings: {
             provider: 'codex',
-            codexThreadId: thread.id
+            codexThreadId: thread.id,
+            toolBinding: {
+              tool: 'codex',
+              nativeSessionId: thread.id
+            }
           }
         }
       })
@@ -352,6 +356,7 @@ const codexSessionSource = {
   provider: 'codex',
   scanProjects: scanCodexProjects,
   listProjectSessions: listCodexSessions,
+  createSession: async () => ({ nativeSessionId: null }),
   loadSessionHistory: loadCodexSessionHistory,
   deleteSession: deleteCodexSession,
   deleteProject: async () => {}

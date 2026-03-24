@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import { computed } from 'vue'
 import { useDialogStack } from '../../../../composables/useDialogStack'
+import AppSelect from '@/components/base/AppSelect.vue'
 
 const props = defineProps({
   visible: {
@@ -129,11 +130,12 @@ function handleSave() {
 
         <div class="form-item">
           <label class="form-label">思考力度</label>
-          <select v-model="formData.modelReasoningEffort" class="form-select">
-            <option v-for="option in effortOptions" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
+          <AppSelect
+            v-model="formData.modelReasoningEffort"
+            class="form-select"
+            full-width
+            :options="effortOptions"
+          />
         </div>
 
         <div class="form-item">
@@ -240,12 +242,6 @@ function handleSave() {
 .form-input,
 .form-select {
   width: 100%;
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
-  padding: 10px 12px;
-  color: #F4F4F5;
-  font-size: 14px;
   box-sizing: border-box;
 }
 

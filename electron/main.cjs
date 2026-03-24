@@ -1217,12 +1217,12 @@ ipcMain.handle('list-session-submodels', async (event, { projectId, sessionId, w
   }
 })
 
-ipcMain.handle('list-session-targets', async (event, { projectId, sessionId }) => {
+ipcMain.handle('get-available-targets', async (event, { projectId, provider, sessionId }) => {
   try {
-    const result = await projectService.listSessionTargets(projectId, sessionId)
+    const result = await projectService.getAvailableTargets({ projectId, provider, sessionId })
     return { success: true, ...result }
   } catch (error) {
-    logger.error('[SessionConfig] Failed to list session targets', { projectId, sessionId, error: error.message })
+    logger.error('[SessionConfig] Failed to get available targets', { projectId, provider, sessionId, error: error.message })
     return { success: false, error: error.message }
   }
 })
@@ -1457,7 +1457,7 @@ ipcMain.handle('get-running-sessions', async () => {
 
 // Create a new session
 ipcMain.handle('create-session', async (event, { projectId, name, settings }) => {
-  const sessionConfig = projectService.createSession(projectId, name, settings)
+  const sessionConfig = await projectService.createSession(projectId, name, settings)
 
   return {
     id: sessionConfig.id,
@@ -2340,6 +2340,16 @@ ipcMain.handle('get-codex-settings', async () => {
     const settings = appService.readCodexConfigFile()
     const auth = readCodexAuthFile()
     const appConfig = appService.getAppConfig()
+    const codexAccounts = Array.isArray(appConfig.settings?.codexAccounts)
+      ? appConfig.settings.codexAccounts
+      : []
+    const activeAccount = auth.authMode === 'chatgpt'
+      ? (
+          codexAccounts.find(account => account?.accountId && account.accountId === auth.accountId) ||
+          codexAccounts.find(account => account?.id && account.id === appConfig.settings?.selectedCodexAccountId) ||
+          null
+        )
+      : null
     return {
       success: true,
       settings: {
@@ -2349,7 +2359,9 @@ ipcMain.handle('get-codex-settings', async () => {
         modelReasoningEffort: settings.modelReasoningEffort || 'medium',
         apiUrl: settings.apiUrl || '',
         proxyUrl: appConfig.settings?.codexProxy || '',
-        authToken: auth.authToken || ''
+        authToken: auth.authToken || '',
+        activeAccountId: activeAccount?.id || null,
+        activeAccountName: activeAccount?.name || ''
       }
     }
   } catch (error) {

@@ -315,7 +315,7 @@ useDialogStack(computed(() => true), handleClose)
     <!-- 模型映射确认对话框 -->
     <ModelMappingDialog
       v-model:visible="showMappingDialog"
-      :model="pendingModel"
+      :model="pendingModel?.model || null"
       @confirm="handleMappingConfirm"
       @close="showMappingDialog = false"
     />

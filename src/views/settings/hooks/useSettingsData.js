@@ -42,7 +42,7 @@ function normalizeModelEntry(model = {}) {
         typeof model.authToken === 'string' && model.authToken.trim()
           ? [{
               id: model.defaultCredentialId || 'default',
-              name: '默认令牌',
+              name: '默认',
               token: model.authToken
             }]
           : []
@@ -453,7 +453,9 @@ export function useSettingsData(emit) {
     await saveAppConfig()
   }
 
-  function handleApplyClaudeModel(model) {
+  function handleApplyClaudeModel(payload) {
+    const model = payload?.model || payload
+    const credentialId = payload?.credentialId || null
     if (!model) return
 
     const cardCount = model.modelCards?.length || 0
@@ -462,19 +464,21 @@ export function useSettingsData(emit) {
       applyClaudeModelWithMappings(model, {
         ANTHROPIC_MODEL: defaultModelName,
         model: defaultModelName
-      }, true)
+      }, true, credentialId)
       return
     }
 
-    pendingModel.value = model
+    pendingModel.value = { model, credentialId }
     showMappingDialog.value = true
   }
 
-  async function handleApplyCodexModel(model) {
+  async function handleApplyCodexModel(payload) {
+    const model = payload?.model || payload
+    const credentialId = payload?.credentialId || null
     if (!model) return
 
     try {
-      const credential = getDefaultCredential(model, selectedCodexCredentialId.value)
+      const credential = getDefaultCredential(model, credentialId || selectedCodexCredentialId.value)
       const result = await window.electronAPI.updateCodexSettings({
         updates: {
           apiUrl: model.apiUrl || '',
@@ -488,16 +492,11 @@ export function useSettingsData(emit) {
         alert('应用 Codex 模型供应商配置失败: ' + (result?.error || '未知错误'))
         return
       }
-
-      codexConfig.value.apiUrl = model.apiUrl || ''
-      codexConfig.value.authToken = credential?.token || ''
-      codexConfig.value.model = model.modelCards?.[0]?.modelName || ''
-      codexConfig.value.authMode = 'provider'
-      codexConfig.value.modelProvider = buildCodexProviderId(model.id)
       selectedCodexModelId.value = model.id
       selectedCodexCredentialId.value = credential?.id || null
 
       await saveAppConfig()
+      await loadSettings()
       alert('Codex 模型供应商配置已应用')
     } catch (error) {
       console.error('应用 Codex 模型失败:', error)
@@ -509,16 +508,16 @@ export function useSettingsData(emit) {
     if (!pendingModel.value) return
 
     try {
-      await applyClaudeModelWithMappings(pendingModel.value, mappings)
+      await applyClaudeModelWithMappings(pendingModel.value.model, mappings, false, pendingModel.value.credentialId || null)
     } finally {
       showMappingDialog.value = false
       pendingModel.value = null
     }
   }
 
-  async function applyClaudeModelWithMappings(model, mappings, clearMappings = false) {
+  async function applyClaudeModelWithMappings(model, mappings, clearMappings = false, credentialOverrideId = null) {
     try {
-      const credential = getDefaultCredential(model, selectedClaudeCredentialId.value)
+      const credential = getDefaultCredential(model, credentialOverrideId || selectedClaudeCredentialId.value)
       const env = {
         ANTHROPIC_BASE_URL: model.apiUrl || '',
         ANTHROPIC_AUTH_TOKEN: credential?.token || ''
@@ -542,18 +541,11 @@ export function useSettingsData(emit) {
         return
       }
 
-      defaultConfig.value.apiUrl = model.apiUrl || ''
-      defaultConfig.value.authToken = credential?.token || ''
-      defaultConfig.value.anthropicModel = mappings.ANTHROPIC_MODEL || ''
-      defaultConfig.value.anthropicDefaultSonnetModel = mappings.ANTHROPIC_DEFAULT_SONNET_MODEL || ''
-      defaultConfig.value.anthropicDefaultOpusModel = mappings.ANTHROPIC_DEFAULT_OPUS_MODEL || ''
-      defaultConfig.value.anthropicDefaultHaikuModel = mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL || ''
-      defaultConfig.value.anthropicSmallFastModel = mappings.ANTHROPIC_SMALL_FAST_MODEL || ''
-      if (mappings.model) {
-        defaultConfig.value.model = mappings.model
-      }
+      selectedClaudeModelId.value = model.id
+      selectedClaudeCredentialId.value = credential?.id || null
 
       await saveAppConfig()
+      await loadSettings()
       alert('Claude 模型供应商配置已应用')
     } catch (error) {
       console.error('应用 Claude 模型失败:', error)
@@ -593,29 +585,9 @@ export function useSettingsData(emit) {
         return
       }
 
-      codexConfig.value = {
-        authMode: result.settings?.authMode || codexConfig.value.authMode || 'provider',
-        modelProvider: result.settings?.modelProvider || codexConfig.value.modelProvider || '',
-        apiUrl: result.settings?.apiUrl || config.apiUrl || '',
-        authToken: result.settings?.authToken || config.authToken || '',
-        model: result.settings?.model || config.model || '',
-        modelReasoningEffort: result.settings?.modelReasoningEffort || config.modelReasoningEffort || 'medium',
-        proxyUrl: result.settings?.proxyUrl || config.proxyUrl || '',
-        accounts: config.accounts || codexConfig.value.accounts || [],
-        selectedAccountId: config.selectedAccountId || null
-      }
-
-      if (codexConfig.value.authMode === 'chatgpt') {
-        selectedCodexModelId.value = null
-        selectedCodexCredentialId.value = null
-      } else {
-        const matchedModel = codexModels.value.find(model => buildCodexProviderId(model.id) === codexConfig.value.modelProvider)
-        selectedCodexModelId.value = matchedModel?.id || null
-        selectedCodexCredentialId.value = getDefaultCredential(matchedModel)?.id || null
-      }
-
       showCodexConfigDialog.value = false
       await saveAppConfig()
+      await loadSettings()
       emit('saved')
     } catch (error) {
       console.error('Failed to save Codex config:', error)
@@ -636,7 +608,7 @@ export function useSettingsData(emit) {
         return
       }
 
-      codexConfig.value.proxyUrl = result.settings?.proxyUrl || proxyUrl || ''
+      await loadSettings()
       emit('saved')
     } catch (error) {
       console.error('Failed to save Codex proxy:', error)
@@ -690,19 +662,13 @@ export function useSettingsData(emit) {
 
   async function handleApplyCodexAccount(account) {
     if (!account) return
-    const result = await window.electronAPI.applyCodexAccount({ account })
+    const result = await window.electronAPI.applyCodexAccount({ account: toDeepPlain(account) })
     if (!result?.success) {
       alert('应用账号失败: ' + (result?.error || '未知错误'))
       return
     }
 
-    codexConfig.value.accounts = result.config?.settings?.codexAccounts || codexConfig.value.accounts
-    codexConfig.value.selectedAccountId = result.config?.settings?.selectedCodexAccountId || account.id
-    codexConfig.value.authMode = 'chatgpt'
-    codexConfig.value.modelProvider = ''
-    selectedCodexModelId.value = null
-    selectedCodexCredentialId.value = null
-    await saveAppConfig()
+    await loadSettings()
   }
 
   function handleAddPrompt() {

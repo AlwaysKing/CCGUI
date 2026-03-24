@@ -4,6 +4,7 @@
  */
 import { ref, watch, computed } from 'vue'
 import { useDialogStack } from '../../../../composables/useDialogStack'
+import AppSelect from '@/components/base/AppSelect.vue'
 
 const props = defineProps({
   visible: {
@@ -168,11 +169,12 @@ function handleSave() {
             思考力度
             <span class="label-hint">控制模型的思考力度</span>
           </label>
-          <select v-model="formData.effort" class="form-select">
-            <option v-for="option in effortOptions" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
+          <AppSelect
+            v-model="formData.effort"
+            class="form-select"
+            full-width
+            :options="effortOptions"
+          />
         </div>
 
         <!-- 模型映射 -->
@@ -323,22 +325,12 @@ function handleSave() {
 .form-input,
 .form-select {
   width: 100%;
-  background: #27272A;
-  border: 1px solid #3F3F46;
-  border-radius: 6px;
-  padding: 10px 12px;
-  color: #F4F4F5;
-  font-size: 14px;
 }
 
 .form-input:focus,
 .form-select:focus {
   outline: none;
   border-color: #F97316;
-}
-
-.form-select {
-  cursor: pointer;
 }
 
 .input-with-action {

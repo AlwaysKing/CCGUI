@@ -1012,7 +1012,13 @@ class CodexAdapter extends CodexClient {
 
   getSessionSettingsPatch() {
     const threadId = this.getThreadId?.()
-    return threadId ? { codexThreadId: threadId } : null
+    return threadId ? {
+      codexThreadId: threadId,
+      toolBinding: {
+        tool: 'codex',
+        nativeSessionId: threadId
+      }
+    } : null
   }
 }
 

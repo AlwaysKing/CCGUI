@@ -161,8 +161,22 @@ function resolveSessionChatMessageTheme(appConfig, projectSettings = {}, session
   }
 }
 
-function normalizeProjectSettings(settings = {}) {
-  const modelMode = settings.modelMode || (settings.modelId ? 'custom' : 'system')
+function pickProviderProjectModelSettings(settings = {}, provider = 'claude') {
+  const providerKey = provider === 'codex' ? 'codex' : 'claude'
+  const providerSpecific = settings?.providerModelSettings?.[providerKey]
+    || settings?.[`${providerKey}ModelConfig`]
+    || null
+
+  if (providerSpecific && typeof providerSpecific === 'object') {
+    return providerSpecific
+  }
+
+  return settings
+}
+
+function normalizeProjectSettings(settings = {}, provider = 'claude') {
+  const modelSettings = pickProviderProjectModelSettings(settings, provider)
+  const modelMode = modelSettings.modelMode || (modelSettings.modelId ? 'custom' : 'system')
   const promptMode = settings.promptMode || (
     Array.isArray(settings.promptIds) ? (settings.promptIds.length > 0 ? 'custom' : 'none') : 'system'
   )
@@ -172,14 +186,14 @@ function normalizeProjectSettings(settings = {}) {
 
   return {
     modelMode,
-    modelId: modelMode === 'custom' ? settings.modelId || null : null,
-    modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null,
-    credentialId: modelMode === 'custom' ? settings.credentialId || null : null,
-    targetKind: typeof settings.targetKind === 'string' && settings.targetKind.trim()
-      ? settings.targetKind.trim()
+    modelId: modelMode === 'custom' ? modelSettings.modelId || null : null,
+    modelCardId: modelMode === 'custom' ? modelSettings.modelCardId || null : null,
+    credentialId: modelMode === 'custom' ? modelSettings.credentialId || null : null,
+    targetKind: typeof modelSettings.targetKind === 'string' && modelSettings.targetKind.trim()
+      ? modelSettings.targetKind.trim()
       : null,
-    effort: normalizeEffortValue(settings.effort),
-    debug: settings.debug === true,
+    effort: normalizeEffortValue(modelSettings.effort),
+    debug: modelSettings.debug === true,
     promptMode,
     promptIds: promptMode === 'custom' && Array.isArray(settings.promptIds) ? settings.promptIds : [],
     documentMode,
@@ -213,8 +227,8 @@ function normalizeSessionSettings(settings = {}) {
   }
 }
 
-function resolveProjectSettings(appConfig, projectSettings = {}) {
-  const normalized = normalizeProjectSettings(projectSettings)
+function resolveProjectSettings(appConfig, projectSettings = {}, provider = 'claude') {
+  const normalized = normalizeProjectSettings(projectSettings, provider)
   const basePromptIds = getBasePromptIds(appConfig)
   const baseDocumentIds = getBaseDocumentIds(appConfig)
 
@@ -234,8 +248,8 @@ function resolveProjectSettings(appConfig, projectSettings = {}) {
   }
 }
 
-function resolveSessionSettings(appConfig, projectSettings = {}, sessionSettings = null) {
-  const projectResolved = resolveProjectSettings(appConfig, projectSettings)
+function resolveSessionSettings(appConfig, projectSettings = {}, sessionSettings = null, provider = 'claude') {
+  const projectResolved = resolveProjectSettings(appConfig, projectSettings, provider)
   if (!sessionSettings || Object.keys(sessionSettings).length === 0) {
     return {
       ...projectResolved,

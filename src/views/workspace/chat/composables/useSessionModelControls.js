@@ -85,6 +85,8 @@ export function useSessionModelControls({
   const projectConfig = ref(null)
   const sessionConfig = ref(null)
   const providerSubModelOptions = ref([])
+  const sessionTargetOptions = ref([])
+  const currentSessionTargetId = ref('')
   const providerSubModelDefaultValue = ref('')
   const providerSubModelLoading = ref(false)
   const lastLoadedSubModelProvider = ref('')
@@ -93,11 +95,18 @@ export function useSessionModelControls({
   const providerEffortLoading = ref(false)
   const providerSupportsRuntimeEffortSwitch = ref(false)
   const lastLoadedEffortKey = ref('')
+  const targetSwitching = ref(false)
+  const subModelSwitching = ref(false)
+  const effortSwitching = ref(false)
   const subModelCache = new Map()
   const effortCapabilityCache = new Map()
 
+  const isSwitchingSessionControls = computed(() => {
+    return targetSwitching.value || subModelSwitching.value || effortSwitching.value
+  })
+
   const canQuickSwitchModel = computed(() => {
-    return !!appStore.currentSession?.id
+    return !!appStore.currentSession?.id && sessionTargetOptions.value.some(option => option.selectable !== false)
   })
 
   const canQuickSwitchSubModel = computed(() => {
@@ -113,50 +122,30 @@ export function useSessionModelControls({
   })
 
   const availableModelOptions = computed(() => {
-    const models = getProviderModels(appConfig.value, currentModelProvider.value).filter(model => model.isActive !== false)
-    const customOptions = models.map(model => ({
-      key: model.id,
-      mode: 'custom',
-      modelId: model.id,
-      modelCardId: null,
-      label: model.friendlyName || model.id
+    return sessionTargetOptions.value.map(option => ({
+      key: option.id,
+      label: option.label,
+      targetKind: option.targetKind,
+      modelId: option.modelId || null,
+      credentialId: option.credentialId || null,
+      selectable: option.selectable !== false,
+      reasonDisabled: option.reasonDisabled || ''
     }))
-
-    return [
-      { key: 'system', mode: 'system', modelId: null, modelCardId: null, label: '系统' },
-      { key: 'project', mode: 'project', modelId: null, modelCardId: null, label: '项目' },
-      ...customOptions
-    ]
   })
 
   const currentModelLabel = computed(() => {
+    const currentTarget = sessionTargetOptions.value.find(option => option.id === currentSessionTargetId.value)
+    if (currentTarget?.label) {
+      return currentTarget.label
+    }
     const normalizedSession = normalizeSessionModelSettings(sessionConfig.value?.settings || {})
-
-    if (!sessionConfig.value?.settings || Object.keys(sessionConfig.value.settings).length === 0) {
-      return '项目'
-    }
-
-    if (normalizedSession.modelMode === 'custom') {
-      return formatModelLabel(appConfig.value, currentModelProvider.value, normalizedSession.modelId)
-    }
-    if (normalizedSession.modelMode === 'system') {
-      return '系统'
-    }
-    return '项目'
+    return normalizedSession.modelMode === 'custom'
+      ? formatModelLabel(appConfig.value, currentModelProvider.value, normalizedSession.modelId)
+      : '系统'
   })
 
   const currentModelSelectionKey = computed(() => {
-    const normalizedSession = normalizeSessionModelSettings(sessionConfig.value?.settings || {})
-
-    if (!sessionConfig.value?.settings || Object.keys(sessionConfig.value.settings).length === 0) {
-      return 'project'
-    }
-
-    if (normalizedSession.modelMode === 'custom') {
-      return normalizedSession.modelId || 'project'
-    }
-
-    return normalizedSession.modelMode
+    return currentSessionTargetId.value || 'system'
   })
 
   const currentSubModelValue = computed(() => {
@@ -232,6 +221,16 @@ export function useSessionModelControls({
       }
       projectConfig.value = projectResult?.config || null
       sessionConfig.value = sessionResult?.config || null
+      const targetResult = await sessionStore.getAvailableTargets({
+        projectId: appStore.currentProject.id
+      })
+      if (targetResult?.success) {
+        sessionTargetOptions.value = Array.isArray(targetResult.options) ? targetResult.options : []
+        currentSessionTargetId.value = targetResult.currentTargetId || ''
+      } else {
+        sessionTargetOptions.value = []
+        currentSessionTargetId.value = ''
+      }
     } catch (error) {
       logger.error('[Chat] Failed to load model config context', { error: error.message })
     }
@@ -346,29 +345,28 @@ export function useSessionModelControls({
     if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
 
     const plainOption = toPlainObject(option)
-    const existingSettings = toPlainObject(sessionConfig.value?.settings)
-    const normalizedSession = normalizeSessionModelSettings(existingSettings)
-    if (
-      normalizedSession.modelMode === plainOption.mode &&
-      (plainOption.mode !== 'custom' || (
-        normalizedSession.modelId === plainOption.modelId &&
-        (normalizedSession.modelCardId || null) === (plainOption.modelCardId || null)
-      ))
-    ) {
+    if (!plainOption?.key || plainOption.key === currentSessionTargetId.value) {
       return
     }
 
+    if (plainOption.selectable === false) {
+      alert(plainOption.reasonDisabled || '当前会话暂时不能切换到这个供应商令牌')
+      return
+    }
+
+    targetSwitching.value = true
     try {
-      const result = await sessionStore.setSessionModel({
+      const result = await sessionStore.setSessionTarget({
         projectId: appStore.currentProject.id,
         workingDirectory: appStore.currentProject.path || workingDirectory.value || '',
-        mode: plainOption.mode,
-        modelId: plainOption.mode === 'custom' ? plainOption.modelId : null,
-        modelCardId: plainOption.mode === 'custom' ? (plainOption.modelCardId || null) : null
+        targetId: plainOption.key,
+        targetKind: plainOption.targetKind || 'provider',
+        modelId: plainOption.modelId || null,
+        credentialId: plainOption.credentialId || null
       })
 
       if (!result?.success) {
-        throw new Error(result?.error || '切换模型失败')
+        throw new Error(result?.error || '切换供应商令牌失败')
       }
 
       resetSubModelStateRefs({
@@ -387,8 +385,10 @@ export function useSessionModelControls({
       await loadSessionEffortCapabilities({ force: true })
       await appStore.fetchSessions(appStore.currentProject.id)
     } catch (error) {
-      logger.error('[Chat] Failed to quick switch model', { error: error.message })
-      alert('切换模型失败: ' + error.message)
+      logger.error('[Chat] Failed to quick switch session target', { error: error.message })
+      alert('切换供应商令牌失败: ' + error.message)
+    } finally {
+      targetSwitching.value = false
     }
   }
 
@@ -405,6 +405,7 @@ export function useSessionModelControls({
       return
     }
 
+    subModelSwitching.value = true
     try {
       const result = await sessionStore.setSessionSubmodel({
         model: selectedValue,
@@ -422,6 +423,8 @@ export function useSessionModelControls({
         error: error.message
       })
       alert('切换子模型失败: ' + error.message)
+    } finally {
+      subModelSwitching.value = false
     }
   }
 
@@ -438,6 +441,7 @@ export function useSessionModelControls({
 
     const currentModel = currentSubModelValue.value || (typeof envInfo.value?.model === 'string' ? envInfo.value.model.trim() : '')
 
+    effortSwitching.value = true
     try {
       const result = await sessionStore.setSessionEffort({
         projectId: appStore.currentProject.id,
@@ -463,6 +467,8 @@ export function useSessionModelControls({
         error: error.message
       })
       alert('切换思考力度失败: ' + error.message)
+    } finally {
+      effortSwitching.value = false
     }
   }
 
@@ -519,6 +525,7 @@ export function useSessionModelControls({
     currentEffortValue,
     currentEffortKey,
     providerSupportsRuntimeEffortSwitch,
+    isSwitchingSessionControls,
     loadModelConfigContext,
     loadProviderSubModels,
     loadSessionEffortCapabilities,

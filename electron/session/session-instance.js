@@ -22,6 +22,24 @@ function pickFirstDefined(...values) {
   return null
 }
 
+function normalizeToolBinding(binding = null, fallbackTool = null, fallbackNativeSessionId = null) {
+  const tool = typeof binding?.tool === 'string' && binding.tool.trim()
+    ? binding.tool.trim()
+    : (typeof fallbackTool === 'string' && fallbackTool.trim() ? fallbackTool.trim() : null)
+  const nativeSessionId = typeof binding?.nativeSessionId === 'string' && binding.nativeSessionId.trim()
+    ? binding.nativeSessionId.trim()
+    : (typeof fallbackNativeSessionId === 'string' && fallbackNativeSessionId.trim() ? fallbackNativeSessionId.trim() : null)
+
+  if (!tool) {
+    return null
+  }
+
+  return {
+    tool,
+    nativeSessionId: nativeSessionId || null
+  }
+}
+
 function normalizeSessionControlRequest(message = {}) {
   const request = message.request && typeof message.request === 'object'
     ? message.request
@@ -488,7 +506,7 @@ class SessionInstance {
   }
 
   resolveProvider(projectSettings = {}, sessionSettings = null) {
-    const sessionTool = sessionSettings?.tool || sessionSettings?.provider
+    const sessionTool = sessionSettings?.toolBinding?.tool || sessionSettings?.tool || sessionSettings?.provider
     if (sessionTool === 'codex') {
       return 'codex'
     }
@@ -804,6 +822,11 @@ class SessionInstance {
     }
 
     const normalizedPatch = { ...sessionSettingsPatch }
+    normalizedPatch.toolBinding = normalizeToolBinding(
+      normalizedPatch.toolBinding,
+      normalizedPatch.tool || normalizedPatch.provider || this.provider || this.sessionSettings?.toolBinding?.tool || this.sessionSettings?.tool || this.sessionSettings?.provider || null,
+      normalizedPatch.codexThreadId || this.sessionSettings?.toolBinding?.nativeSessionId || null
+    )
     const currentThreadId = typeof this.sessionSettings?.codexThreadId === 'string'
       ? this.sessionSettings.codexThreadId.trim()
       : ''
@@ -826,7 +849,12 @@ class SessionInstance {
       normalizedPatch.codexThreadAliases = Array.from(aliasSet)
     }
 
-    const hasChanges = Object.keys(normalizedPatch).some(key => this.sessionSettings?.[key] !== normalizedPatch[key])
+    const hasChanges = Object.keys(normalizedPatch).some(key => {
+      if (key === 'toolBinding') {
+        return JSON.stringify(this.sessionSettings?.toolBinding || null) !== JSON.stringify(normalizedPatch.toolBinding || null)
+      }
+      return this.sessionSettings?.[key] !== normalizedPatch[key]
+    })
     if (!hasChanges) {
       return
     }
@@ -2035,15 +2063,27 @@ class SessionInstance {
     const nextCredentialId = nextTargetKind === 'provider'
       ? (typeof target?.credentialId === 'string' && target.credentialId.trim() ? target.credentialId.trim() : null)
       : null
+    const targetValidation = await projectService.validateSessionTarget(this.projectId, this.id, {
+      targetId: typeof target?.targetId === 'string' ? target.targetId : '',
+      targetKind: nextTargetKind,
+      modelId: nextModelId,
+      credentialId: nextCredentialId
+    })
+    if (!targetValidation?.valid) {
+      throw new Error(targetValidation?.reason || '当前会话不允许切换到该目标')
+    }
 
     const sessionConfig = projectService.getSessionConfig(this.projectId, this.id)
     const currentSettings = (sessionConfig?.settings && typeof sessionConfig.settings === 'object')
       ? sessionConfig.settings
       : {}
+    const nextModelMode = nextTargetKind === 'provider'
+      ? 'custom'
+      : (nextTargetKind === 'project' ? 'project' : 'system')
 
     const nextSettings = {
       ...currentSettings,
-      modelMode: nextTargetKind === 'provider' ? 'custom' : 'system',
+      modelMode: nextModelMode,
       modelId: nextModelId,
       modelCardId: nextTargetKind === 'provider' && currentSettings.modelId === nextModelId
         ? (currentSettings.modelCardId || null)

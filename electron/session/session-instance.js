@@ -2173,6 +2173,11 @@ class SessionInstance {
       historyManager.updateSessionEnvInfo(this.projectId, this.id, this.envInfo)
       this.emit('env-info', this.envInfo)
 
+      // Persist the latest provider-native session/thread identifier before the
+      // runtime is torn down, otherwise a closed/reopened Codex session may
+      // resume with a stale thread binding.
+      this.persistRuntimeSessionSettingsPatch()
+
       this.runtimeManager.stop()
       this.runtimeManager = null
     }

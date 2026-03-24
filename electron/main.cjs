@@ -2290,16 +2290,18 @@ ipcMain.handle('get-codex-settings', async () => {
   try {
     appService.syncCodexModelProviders()
     const settings = appService.readCodexConfigFile()
+    const auth = readCodexAuthFile()
     const appConfig = appService.getAppConfig()
     return {
       success: true,
       settings: {
+        authMode: auth.authMode || 'provider',
         model: settings.model || '',
         modelProvider: settings.modelProvider || '',
         modelReasoningEffort: settings.modelReasoningEffort || 'medium',
         apiUrl: settings.apiUrl || '',
         proxyUrl: appConfig.settings?.codexProxy || '',
-        authToken: readCodexAuthFile().authToken || ''
+        authToken: auth.authToken || ''
       }
     }
   } catch (error) {

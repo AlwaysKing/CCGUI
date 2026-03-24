@@ -210,6 +210,8 @@ function scrollToUserMessage() {
   max-height: calc(var(--max-height, 300px) - 50px);
   overflow-y: auto;
   width: 100%;
+  scrollbar-width: thin;
+  scrollbar-color: #52525B transparent;
 }
 
 /* 悬停时：隐藏折叠，显示展开 */
@@ -295,8 +297,8 @@ function scrollToUserMessage() {
   font-size: 13px;
   color: #F1F5F9;
   word-break: break-word;
-  max-height: calc(var(--max-height, 300px) - 80px);
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
   width: 100%;
   position: relative;
   cursor: text;
@@ -317,5 +319,27 @@ function scrollToUserMessage() {
 
 .sticky-text-md :deep(.copy-btn:hover) {
   opacity: 1;
+}
+</style>
+
+<style>
+.sticky-header .sticky-expanded::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.sticky-header .sticky-expanded::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.sticky-header .sticky-expanded::-webkit-scrollbar-thumb {
+  background: #52525B;
+  border-radius: 999px;
+  border: none;
+}
+
+.sticky-header .sticky-expanded::-webkit-scrollbar-thumb:hover {
+  background: #71717A;
 }
 </style>

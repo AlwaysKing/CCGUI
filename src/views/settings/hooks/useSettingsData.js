@@ -63,6 +63,8 @@ export function useSettingsData(emit) {
   })
 
   const codexConfig = ref({
+    authMode: 'provider',
+    modelProvider: '',
     apiUrl: '',
     authToken: '',
     model: '',
@@ -144,11 +146,20 @@ export function useSettingsData(emit) {
 
       const codexResult = await window.electronAPI.getCodexSettings()
       if (codexResult?.success && codexResult.settings) {
+        codexConfig.value.authMode = codexResult.settings.authMode || 'provider'
+        codexConfig.value.modelProvider = codexResult.settings.modelProvider || ''
         codexConfig.value.apiUrl = codexResult.settings.apiUrl || ''
         codexConfig.value.authToken = codexResult.settings.authToken || ''
         codexConfig.value.model = codexResult.settings.model || ''
         codexConfig.value.modelReasoningEffort = codexResult.settings.modelReasoningEffort || 'medium'
         codexConfig.value.proxyUrl = codexResult.settings.proxyUrl || ''
+
+        if (codexConfig.value.authMode === 'chatgpt') {
+          selectedCodexModelId.value = null
+        } else {
+          const matchedModel = codexModels.value.find(model => buildCodexProviderId(model.id) === codexConfig.value.modelProvider)
+          selectedCodexModelId.value = matchedModel?.id || null
+        }
       }
     } catch (error) {
       console.error('Failed to load settings:', error)
@@ -373,6 +384,9 @@ export function useSettingsData(emit) {
       codexConfig.value.apiUrl = model.apiUrl || ''
       codexConfig.value.authToken = model.authToken || ''
       codexConfig.value.model = model.modelCards?.[0]?.modelName || ''
+      codexConfig.value.authMode = 'provider'
+      codexConfig.value.modelProvider = buildCodexProviderId(model.id)
+      selectedCodexModelId.value = model.id
 
       await saveAppConfig()
       alert('Codex 模型供应商配置已应用')
@@ -470,6 +484,8 @@ export function useSettingsData(emit) {
       }
 
       codexConfig.value = {
+        authMode: result.settings?.authMode || codexConfig.value.authMode || 'provider',
+        modelProvider: result.settings?.modelProvider || codexConfig.value.modelProvider || '',
         apiUrl: result.settings?.apiUrl || config.apiUrl || '',
         authToken: result.settings?.authToken || config.authToken || '',
         model: result.settings?.model || config.model || '',
@@ -477,6 +493,13 @@ export function useSettingsData(emit) {
         proxyUrl: result.settings?.proxyUrl || config.proxyUrl || '',
         accounts: config.accounts || codexConfig.value.accounts || [],
         selectedAccountId: config.selectedAccountId || null
+      }
+
+      if (codexConfig.value.authMode === 'chatgpt') {
+        selectedCodexModelId.value = null
+      } else {
+        const matchedModel = codexModels.value.find(model => buildCodexProviderId(model.id) === codexConfig.value.modelProvider)
+        selectedCodexModelId.value = matchedModel?.id || null
       }
 
       showCodexConfigDialog.value = false
@@ -563,6 +586,9 @@ export function useSettingsData(emit) {
 
     codexConfig.value.accounts = result.config?.settings?.codexAccounts || codexConfig.value.accounts
     codexConfig.value.selectedAccountId = result.config?.settings?.selectedCodexAccountId || account.id
+    codexConfig.value.authMode = 'chatgpt'
+    codexConfig.value.modelProvider = ''
+    selectedCodexModelId.value = null
     await saveAppConfig()
   }
 

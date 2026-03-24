@@ -112,6 +112,27 @@ const activeCodexAccountLabel = computed(() => {
   return ''
 })
 
+const codexAuthModeLabel = computed(() => {
+  return props.codexConfig?.authMode === 'chatgpt' ? '账号' : '模型供应商'
+})
+
+const activeCodexModelProviderLabel = computed(() => {
+  if (props.codexConfig?.authMode === 'chatgpt') {
+    return ''
+  }
+
+  const providerId = props.codexConfig?.modelProvider || ''
+  if (!providerId) {
+    return ''
+  }
+
+  const model = (Array.isArray(props.codexModels) ? props.codexModels : []).find(item =>
+    item?.id && `ccgui_model_${String(item.id).trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '')}` === providerId
+  )
+
+  return model?.friendlyName || providerId
+})
+
 function sortSelectedFirst(items, selectedId) {
   return [...items].sort((a, b) => {
     const aSelected = a?.id === selectedId ? 1 : 0
@@ -609,6 +630,12 @@ function toggleSectionCollapse(section) {
         </DetailRow>
         <DetailRow v-if="activeCodexAccountLabel" label="账号">
           {{ activeCodexAccountLabel }}
+        </DetailRow>
+        <DetailRow label="认证方式">
+          {{ codexAuthModeLabel }}
+        </DetailRow>
+        <DetailRow v-if="activeCodexModelProviderLabel" label="当前供应商">
+          {{ activeCodexModelProviderLabel }}
         </DetailRow>
         <DetailRow label="模型" :code="true">
           {{ codexConfig.model || '系统默认' }}

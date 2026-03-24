@@ -4,7 +4,7 @@ const fs = require('fs')
 const os = require('os')
 const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
-const { findProviderModel } = require('../shared/model-config')
+const { findProviderModel, getDefaultCredential } = require('../shared/model-config')
 const { buildDeveloperInstructions } = require('../shared/developer-instructions')
 
 // Helper to calculate project ID from path (same as SessionInstance)
@@ -169,9 +169,10 @@ class ClaudeClient {
       }
 
       // 设置 Auth Token (ANTHROPIC_AUTH_TOKEN)
-      if (modelConfig.authToken) {
-        envVars.ANTHROPIC_AUTH_TOKEN = modelConfig.authToken
-        logger.info(`[ClaudeClient] Setting ANTHROPIC_AUTH_TOKEN: ${modelConfig.authToken.substring(0, 10)}...`)
+      const credential = getDefaultCredential(modelConfig, this.projectSettings?.credentialId)
+      if (credential?.token) {
+        envVars.ANTHROPIC_AUTH_TOKEN = credential.token
+        logger.info(`[ClaudeClient] Setting ANTHROPIC_AUTH_TOKEN: ${credential.token.substring(0, 10)}...`)
       }
 
       // 获取模型卡片列表

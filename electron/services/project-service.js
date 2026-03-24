@@ -4,7 +4,12 @@ const path = require('path')
 const logger = require('../logger')
 const { encodeProjectPath, decodeProjectPath } = require('../project-paths')
 const { providerSessionSources, providerSessionSourcesById } = require('../adapters/session-sources')
-const { getProviderModels, findProviderModel } = require('../adapters/shared/model-config')
+const {
+  getProviderModels,
+  findProviderModel,
+  getModelCredentials,
+  getDefaultCredential
+} = require('../adapters/shared/model-config')
 const {
   listClaudeModels,
   listClaudeReasoningCapabilities
@@ -29,6 +34,8 @@ function buildScannedProjectDefaultSettings() {
     modelMode: 'system',
     modelId: null,
     modelCardId: null,
+    credentialId: null,
+    targetKind: null,
     promptMode: 'none',
     promptIds: [],
     documentMode: 'none',
@@ -41,6 +48,8 @@ function buildScannedSessionDefaultSettings() {
     modelMode: 'system',
     modelId: null,
     modelCardId: null,
+    credentialId: null,
+    targetKind: null,
     promptMode: 'none',
     promptIds: [],
     documentMode: 'none',
@@ -97,6 +106,129 @@ function buildConfiguredSubModelOptions(model = null, preferredCardId = null) {
       isConfigured: true,
       isDefault: defaultCard?.id === card.id
     }))
+}
+
+function buildSessionTargetId({ provider = '', targetKind = 'provider', modelId = '', credentialId = '' } = {}) {
+  return [provider || '', targetKind || 'provider', modelId || '', credentialId || ''].join(':')
+}
+
+function buildSessionTargetLabel(model = null, credential = null, options = {}) {
+  const providerLabel = model?.friendlyName || model?.id || options.providerLabel || '未命名供应商'
+  if (!credential?.name) {
+    return providerLabel
+  }
+  return `${providerLabel} - ${credential.name}`
+}
+
+function buildOpenAiTargetOption(currentTargetId = null) {
+  const id = buildSessionTargetId({
+    provider: 'codex',
+    targetKind: 'openai',
+    modelId: 'openai',
+    credentialId: ''
+  })
+
+  return {
+    id,
+    label: 'OpenAI',
+    providerId: 'openai',
+    providerLabel: 'OpenAI',
+    credentialId: null,
+    credentialLabel: null,
+    authMode: 'account',
+    selectable: true,
+    isCurrent: currentTargetId === id,
+    targetKind: 'openai',
+    modelId: null
+  }
+}
+
+function buildProviderTargetOptions(provider, models = [], currentTargetId = null) {
+  return models.flatMap(model => {
+    const credentials = getModelCredentials(model)
+    const defaultCredential = getDefaultCredential(model)
+    const targetCredentials = credentials.length > 0 ? credentials : [defaultCredential].filter(Boolean)
+
+    return targetCredentials.map(credential => {
+      const id = buildSessionTargetId({
+        provider,
+        targetKind: 'provider',
+        modelId: model.id,
+        credentialId: credential?.id || ''
+      })
+
+      return {
+        id,
+        label: buildSessionTargetLabel(model, credential),
+        providerId: model.id,
+        providerLabel: model.friendlyName || model.id,
+        credentialId: credential?.id || null,
+        credentialLabel: credential?.name || null,
+        authMode: 'provider',
+        selectable: true,
+        isCurrent: currentTargetId === id,
+        targetKind: 'provider',
+        modelId: model.id
+      }
+    })
+  })
+}
+
+function resolveCurrentSessionTarget(provider, resolvedSettings = {}) {
+  if (provider === 'codex' && (!resolvedSettings.modelId || resolvedSettings.targetKind === 'openai')) {
+    return buildSessionTargetId({
+      provider: 'codex',
+      targetKind: 'openai',
+      modelId: 'openai',
+      credentialId: ''
+    })
+  }
+
+  if (resolvedSettings.modelId) {
+    return buildSessionTargetId({
+      provider,
+      targetKind: resolvedSettings.targetKind || 'provider',
+      modelId: resolvedSettings.modelId,
+      credentialId: resolvedSettings.credentialId || ''
+    })
+  }
+
+  return null
+}
+
+function applyCodexTargetAvailability(options = [], currentTarget = null) {
+  if (!currentTarget) {
+    return options
+  }
+
+  const currentTargetKind = currentTarget.targetKind || 'provider'
+  const currentProviderId = currentTarget.providerId || null
+
+  return options.map(option => {
+    if (currentTargetKind === 'openai') {
+      const selectable = option.targetKind === 'openai'
+      return {
+        ...option,
+        selectable,
+        reasonDisabled: selectable ? '' : '当前 Codex 会话已绑定 OpenAI 上下文'
+      }
+    }
+
+    if (currentProviderId && option.targetKind === 'provider' && option.providerId === currentProviderId) {
+      return {
+        ...option,
+        selectable: true,
+        reasonDisabled: ''
+      }
+    }
+
+    const selectable = false
+    return {
+      ...option,
+      selectable,
+      reasonDisabled: '当前 Codex 会话只能切换同一供应商下的令牌'
+    }
+  })
 }
 
 function readClaudeRuntimeDefaults() {
@@ -997,9 +1129,11 @@ async function listSessionSubmodels(projectId, sessionId, options = {}) {
     sessionConfig?.settings || null
   )
 
-  const configuredModel = resolved.modelId
-    ? findProviderModel(appConfig, provider, resolved.modelId)
-    : resolveSystemSelectedModel(appConfig, provider)
+  const configuredModel = resolved.targetKind === 'openai'
+    ? null
+    : (resolved.modelId
+        ? findProviderModel(appConfig, provider, resolved.modelId)
+        : resolveSystemSelectedModel(appConfig, provider))
   const configuredOptions = buildConfiguredSubModelOptions(configuredModel, resolved.modelCardId)
   const defaultCard = resolveConfiguredDefaultCard(configuredModel, resolved.modelCardId)
   const workingDirectory = options.workingDirectory || decodeProjectPath(projectId)
@@ -1024,6 +1158,36 @@ async function listSessionSubmodels(projectId, sessionId, options = {}) {
   }
 }
 
+async function listSessionTargets(projectId, sessionId) {
+  const appConfig = appConfigManager.loadConfig()
+  const projectConfig = projectConfigManager.loadProjectConfig(projectId)
+  const sessionConfig = sessionConfigManager.getSession(projectId, sessionId)
+  const provider = resolveProvider(projectConfig?.settings || {}, sessionConfig?.settings || null)
+  const resolved = resolveSessionSettings(
+    appConfig,
+    projectConfig?.settings || {},
+    sessionConfig?.settings || null
+  )
+  const currentTargetId = resolveCurrentSessionTarget(provider, resolved)
+  const activeModels = getProviderModels(appConfig, provider).filter(model => model.isActive !== false)
+
+  let options = buildProviderTargetOptions(provider, activeModels, currentTargetId)
+  if (provider === 'codex') {
+    options = [
+      buildOpenAiTargetOption(currentTargetId),
+      ...options
+    ]
+    const currentTarget = options.find(option => option.id === currentTargetId) || null
+    options = applyCodexTargetAvailability(options, currentTarget)
+  }
+
+  return {
+    provider,
+    currentTargetId,
+    options
+  }
+}
+
 async function listSessionReasoningCapabilities(projectId, sessionId, options = {}) {
   const appConfig = appConfigManager.loadConfig()
   const projectConfig = projectConfigManager.loadProjectConfig(projectId)
@@ -1039,9 +1203,11 @@ async function listSessionReasoningCapabilities(projectId, sessionId, options = 
 
   let configuredModelName = ''
   if (!runtimeModel) {
-    const configuredModel = resolved.modelId
-      ? findProviderModel(appConfig, provider, resolved.modelId)
-      : resolveSystemSelectedModel(appConfig, provider)
+    const configuredModel = resolved.targetKind === 'openai'
+      ? null
+      : (resolved.modelId
+          ? findProviderModel(appConfig, provider, resolved.modelId)
+          : resolveSystemSelectedModel(appConfig, provider))
     const defaultCard = resolveConfiguredDefaultCard(configuredModel, resolved.modelCardId)
     configuredModelName = defaultCard?.modelName || ''
   }
@@ -1084,6 +1250,7 @@ module.exports = {
   getProjectSessions,
   getSessionConfig,
   getSessionMessages,
+  listSessionTargets,
   openSession,
   removeProject,
   renameSession,

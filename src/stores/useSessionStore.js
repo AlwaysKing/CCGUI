@@ -427,6 +427,30 @@ export const useSessionStore = defineStore('session', () => {
     })
   }
 
+  async function listSessionTargets(options = {}) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    return window.electronAPI.listSessionTargets({
+      sessionId: session.id,
+      ...options
+    })
+  }
+
+  async function setSessionTarget(options = {}) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    return window.electronAPI.setSessionTarget({
+      sessionId: session.id,
+      ...options
+    })
+  }
+
   async function setSessionSubmodel(options = {}) {
     const session = currentSession.value
     if (!session) {
@@ -1711,7 +1735,9 @@ export const useSessionStore = defineStore('session', () => {
     sendControlRequest,
     setSessionModel,
     listSessionSubmodels,
+    listSessionTargets,
     setSessionSubmodel,
+    setSessionTarget,
     listSessionEffortOptions,
     setSessionEffort,
     setPermissionMode,

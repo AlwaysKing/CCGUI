@@ -62,6 +62,8 @@ const emit = defineEmits([
   'delete-codex-model',
   'add-claude-model',
   'add-codex-model',
+  'set-claude-model-default-credential',
+  'set-codex-model-default-credential',
   'set-claude-model-default-card',
   'set-codex-model-default-card',
   'toggle-claude-model-active',
@@ -170,6 +172,27 @@ const sortedCodexAccounts = computed(() => {
   const accounts = Array.isArray(props.codexConfig?.accounts) ? props.codexConfig.accounts : []
   return sortSelectedFirst(accounts, props.codexConfig?.selectedAccountId || null)
 })
+
+function getModelCredentials(model) {
+  const credentials = Array.isArray(model?.credentials) ? model.credentials : []
+  if (credentials.length > 0) {
+    return credentials
+  }
+
+  if (model?.authToken) {
+    return [{
+      id: model.defaultCredentialId || 'default',
+      name: '默认令牌',
+      token: model.authToken
+    }]
+  }
+
+  return []
+}
+
+function getModelCredentialVisibilityKey(modelId, credentialId) {
+  return `${modelId}:${credentialId || 'default'}`
+}
 
 watch(
   () => props.codexConfig?.proxyUrl,
@@ -424,7 +447,6 @@ function toggleSectionCollapse(section) {
           :key="model.id"
           class="model-card"
           :class="{ selected: selectedClaudeModelId === model.id, inactive: model.isActive === false, collapsed: claudeModelsCollapsed }"
-          @click="emit('select-claude-model', model.id)"
         >
           <div class="model-header">
             <h4 class="model-name">
@@ -438,6 +460,21 @@ function toggleSectionCollapse(section) {
                 {{ model.isActive !== false ? '启用' : '停用' }}
               </button>
             </h4>
+            <div
+              v-if="claudeModelsCollapsed && getModelCredentials(model).length > 0"
+              class="collapsed-token-strip"
+            >
+              <button
+                v-for="credential in getModelCredentials(model)"
+                :key="credential.id"
+                type="button"
+                class="token-name-badge collapsed-token-badge"
+                :class="{ active: credential.id === model.defaultCredentialId }"
+                @click.stop="emit('set-claude-model-default-credential', { modelId: model.id, credentialId: credential.id })"
+              >
+                {{ credential.name || '未命名令牌' }}
+              </button>
+            </div>
             <div class="model-actions">
               <IconButton @click.stop="emit('apply-claude-model', model)" title="应用">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -483,42 +520,57 @@ function toggleSectionCollapse(section) {
             </DetailRow>
 
             <DetailRow label="认证令牌">
-              <div class="token-value">
-                <button
-                  v-if="model.authToken"
-                  type="button"
-                  class="token-toggle-btn"
-                  @click.stop="toggleClaudeModelToken(model.id)"
-                  :title="visibleClaudeModelTokens.has(model.id) ? '隐藏' : '显示'"
+              <div v-if="getModelCredentials(model).length > 0" class="token-list">
+                <div
+                  v-for="credential in getModelCredentials(model)"
+                  :key="credential.id"
+                  class="token-value"
                 >
-                  <svg v-if="visibleClaudeModelTokens.has(model.id)" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                    <line x1="1" y1="1" x2="23" y2="23"/>
-                  </svg>
-                  <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                    <circle cx="12" cy="12" r="3"/>
-                  </svg>
-                </button>
-                <span class="token-text" :class="{ 'has-toggle': model.authToken }">
-                  {{ visibleClaudeModelTokens.has(model.id) && model.authToken ? model.authToken : (model.authToken ? '••••••••' : '未配置') }}
-                </span>
-                <button
-                  v-if="model.authToken"
-                  type="button"
-                  class="copy-btn"
-                  :class="{ copied: copiedKeys.has('claude-token-' + model.id) }"
-                  @click.stop="copyToClipboard(model.authToken, 'claude-token-' + model.id)"
-                  :title="copiedKeys.has('claude-token-' + model.id) ? '已复制' : '复制'"
-                >
-                  <svg v-if="copiedKeys.has('claude-token-' + model.id)" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                  <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                  </svg>
-                </button>
+                  <button
+                    type="button"
+                    class="token-name-badge"
+                    :class="{ active: credential.id === model.defaultCredentialId }"
+                    @click.stop="emit('set-claude-model-default-credential', { modelId: model.id, credentialId: credential.id })"
+                  >
+                    {{ credential.name || '未命名令牌' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="token-toggle-btn"
+                    @click.stop="toggleClaudeModelToken(getModelCredentialVisibilityKey(model.id, credential.id))"
+                    :title="visibleClaudeModelTokens.has(getModelCredentialVisibilityKey(model.id, credential.id)) ? '隐藏' : '显示'"
+                  >
+                    <svg v-if="visibleClaudeModelTokens.has(getModelCredentialVisibilityKey(model.id, credential.id))" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  </button>
+                  <span class="token-text has-toggle">
+                    {{ visibleClaudeModelTokens.has(getModelCredentialVisibilityKey(model.id, credential.id)) ? credential.token : '••••••••' }}
+                  </span>
+                  <button
+                    type="button"
+                    class="copy-btn"
+                    :class="{ copied: copiedKeys.has('claude-token-' + model.id + '-' + credential.id) }"
+                    @click.stop="copyToClipboard(credential.token, 'claude-token-' + model.id + '-' + credential.id)"
+                    :title="copiedKeys.has('claude-token-' + model.id + '-' + credential.id) ? '已复制' : '复制'"
+                  >
+                    <svg v-if="copiedKeys.has('claude-token-' + model.id + '-' + credential.id)" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div v-else class="token-value">
+                <span class="token-text">未配置</span>
               </div>
             </DetailRow>
 
@@ -936,7 +988,6 @@ function toggleSectionCollapse(section) {
           :key="model.id"
           class="model-card"
           :class="{ selected: selectedCodexModelId === model.id, inactive: model.isActive === false, collapsed: codexModelsCollapsed }"
-          @click="emit('select-codex-model', model.id)"
         >
           <div class="model-header">
             <h4 class="model-name">
@@ -950,6 +1001,21 @@ function toggleSectionCollapse(section) {
                 {{ model.isActive !== false ? '启用' : '停用' }}
               </button>
             </h4>
+            <div
+              v-if="codexModelsCollapsed && getModelCredentials(model).length > 0"
+              class="collapsed-token-strip"
+            >
+              <button
+                v-for="credential in getModelCredentials(model)"
+                :key="credential.id"
+                type="button"
+                class="token-name-badge collapsed-token-badge"
+                :class="{ active: credential.id === model.defaultCredentialId }"
+                @click.stop="emit('set-codex-model-default-credential', { modelId: model.id, credentialId: credential.id })"
+              >
+                {{ credential.name || '未命名令牌' }}
+              </button>
+            </div>
             <div class="model-actions">
               <IconButton @click.stop="emit('apply-codex-model', model)" title="应用">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -995,42 +1061,57 @@ function toggleSectionCollapse(section) {
             </DetailRow>
 
             <DetailRow label="认证令牌">
-              <div class="token-value">
-                <button
-                  v-if="model.authToken"
-                  type="button"
-                  class="token-toggle-btn"
-                  @click.stop="toggleCodexModelToken(model.id)"
-                  :title="visibleCodexModelTokens.has(model.id) ? '隐藏' : '显示'"
+              <div v-if="getModelCredentials(model).length > 0" class="token-list">
+                <div
+                  v-for="credential in getModelCredentials(model)"
+                  :key="credential.id"
+                  class="token-value"
                 >
-                  <svg v-if="visibleCodexModelTokens.has(model.id)" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                    <line x1="1" y1="1" x2="23" y2="23"/>
-                  </svg>
-                  <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                    <circle cx="12" cy="12" r="3"/>
-                  </svg>
-                </button>
-                <span class="token-text" :class="{ 'has-toggle': model.authToken }">
-                  {{ visibleCodexModelTokens.has(model.id) && model.authToken ? model.authToken : (model.authToken ? '••••••••' : '未配置') }}
-                </span>
-                <button
-                  v-if="model.authToken"
-                  type="button"
-                  class="copy-btn"
-                  :class="{ copied: copiedKeys.has('codex-token-' + model.id) }"
-                  @click.stop="copyToClipboard(model.authToken, 'codex-token-' + model.id)"
-                  :title="copiedKeys.has('codex-token-' + model.id) ? '已复制' : '复制'"
-                >
-                  <svg v-if="copiedKeys.has('codex-token-' + model.id)" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                  <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                  </svg>
-                </button>
+                  <button
+                    type="button"
+                    class="token-name-badge"
+                    :class="{ active: credential.id === model.defaultCredentialId }"
+                    @click.stop="emit('set-codex-model-default-credential', { modelId: model.id, credentialId: credential.id })"
+                  >
+                    {{ credential.name || '未命名令牌' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="token-toggle-btn"
+                    @click.stop="toggleCodexModelToken(getModelCredentialVisibilityKey(model.id, credential.id))"
+                    :title="visibleCodexModelTokens.has(getModelCredentialVisibilityKey(model.id, credential.id)) ? '隐藏' : '显示'"
+                  >
+                    <svg v-if="visibleCodexModelTokens.has(getModelCredentialVisibilityKey(model.id, credential.id))" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  </button>
+                  <span class="token-text has-toggle">
+                    {{ visibleCodexModelTokens.has(getModelCredentialVisibilityKey(model.id, credential.id)) ? credential.token : '••••••••' }}
+                  </span>
+                  <button
+                    type="button"
+                    class="copy-btn"
+                    :class="{ copied: copiedKeys.has('codex-token-' + model.id + '-' + credential.id) }"
+                    @click.stop="copyToClipboard(credential.token, 'codex-token-' + model.id + '-' + credential.id)"
+                    :title="copiedKeys.has('codex-token-' + model.id + '-' + credential.id) ? '已复制' : '复制'"
+                  >
+                    <svg v-if="copiedKeys.has('codex-token-' + model.id + '-' + credential.id)" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div v-else class="token-value">
+                <span class="token-text">未配置</span>
               </div>
             </DetailRow>
 
@@ -1264,6 +1345,7 @@ function toggleSectionCollapse(section) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 12px;
 }
 
@@ -1271,8 +1353,25 @@ function toggleSectionCollapse(section) {
   margin-bottom: 0;
 }
 
+.collapsed-token-strip {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 0 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+}
+
+.collapsed-token-badge {
+  flex: 0 0 auto;
+}
+
 .model-name {
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 0;
   margin: 0;
   font-size: 16px;
   font-weight: 600;
@@ -1337,6 +1436,36 @@ function toggleSectionCollapse(section) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.token-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.token-name-badge {
+  border: 1px solid #3F3F46;
+  background: transparent;
+  color: #A1A1AA;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  flex-shrink: 0;
+}
+
+.token-name-badge:hover {
+  border-color: #71717A;
+  color: #E4E4E7;
+}
+
+.token-name-badge.active {
+  color: #F97316;
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(249, 115, 22, 0.32);
 }
 
 .value-with-copy {

@@ -58,6 +58,8 @@ function getDefaultConfig() {
       codexModels: [],
       selectedClaudeModelId: null,
       selectedCodexModelId: null,
+      selectedClaudeCredentialId: null,
+      selectedCodexCredentialId: null,
       codexAccounts: [],
       selectedCodexAccountId: null,
       codexProxy: '',
@@ -128,6 +130,54 @@ function migrateModelSettings(config) {
 
   delete settings.models
   delete settings.selectedModelId
+
+  const normalizeModelEntry = (model = {}) => {
+    const rawCredentials = Array.isArray(model.credentials) ? model.credentials : []
+    const migratedCredentials = rawCredentials.length > 0
+      ? rawCredentials
+          .map((credential, index) => {
+            const token = typeof credential?.token === 'string'
+              ? credential.token
+              : (typeof credential?.authToken === 'string' ? credential.authToken : '')
+            if (!token) return null
+            return {
+              id: credential?.id || `credential-${index + 1}`,
+              name: credential?.name || `令牌 ${index + 1}`,
+              token
+            }
+          })
+          .filter(Boolean)
+      : (
+          typeof model.authToken === 'string' && model.authToken.trim()
+            ? [{
+                id: model.defaultCredentialId || 'default',
+                name: '默认令牌',
+                token: model.authToken
+              }]
+            : []
+        )
+
+    const defaultCredentialId = (
+      typeof model.defaultCredentialId === 'string' && model.defaultCredentialId.trim()
+        ? model.defaultCredentialId.trim()
+        : migratedCredentials[0]?.id || null
+    )
+    const defaultCredential = migratedCredentials.find(credential => credential.id === defaultCredentialId) || migratedCredentials[0] || null
+
+    return {
+      ...model,
+      credentials: migratedCredentials,
+      defaultCredentialId: defaultCredential?.id || null,
+      authToken: defaultCredential?.token || ''
+    }
+  }
+
+  settings.claudeModels = Array.isArray(settings.claudeModels)
+    ? settings.claudeModels.map(normalizeModelEntry)
+    : []
+  settings.codexModels = Array.isArray(settings.codexModels)
+    ? settings.codexModels.map(normalizeModelEntry)
+    : []
 
   return config
 }

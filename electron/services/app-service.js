@@ -5,7 +5,8 @@ const logger = require('../logger')
 const { appConfigManager } = require('../storage')
 const {
   buildCodexModelProviderId,
-  findProviderModel
+  findProviderModel,
+  getDefaultCredential
 } = require('../adapters/shared/model-config')
 const {
   listClaudeModels: loadClaudeModels
@@ -154,7 +155,8 @@ function buildManagedCodexProviderEntries() {
           `[model_providers.${providerId}]`,
           `name = ${stringifyTomlString(model.friendlyName || 'ccgui')}`,
           `base_url = ${stringifyTomlString(model.apiUrl || '')}`,
-          `wire_api = ${stringifyTomlString('responses')}`
+          `wire_api = ${stringifyTomlString('responses')}`,
+          `env_key = ${stringifyTomlString('CCGUI_AUTH_KEY')}`
         ]
       }
     })
@@ -255,7 +257,8 @@ function writeCodexConfigFile(updates = {}) {
   const legacyCcguiEntries = [
     `name = ${stringifyTomlString('ccgui')}`,
     `base_url = ${stringifyTomlString(nextApiUrl || '')}`,
-    `wire_api = ${stringifyTomlString('responses')}`
+    `wire_api = ${stringifyTomlString('responses')}`,
+    `env_key = ${stringifyTomlString('CCGUI_AUTH_KEY')}`
   ]
 
   let currentSection = null
@@ -465,7 +468,7 @@ function updateAppConfig(updates) {
   return appConfigManager.updateConfig(updates)
 }
 
-function resolveCodexModelRuntime(modelId = null, modelCardId = null) {
+function resolveCodexModelRuntime(modelId = null, modelCardId = null, credentialId = null) {
   if (!modelId) {
     return null
   }
@@ -486,12 +489,17 @@ function resolveCodexModelRuntime(modelId = null, modelCardId = null) {
     targetCard = cards.find(card => card.id === defaultCardId) || cards[0] || null
   }
 
+  const credential = getDefaultCredential(model, credentialId)
+
   return {
     modelId: model.id,
     modelName: targetCard?.modelName || model.model || '',
-    authToken: model.authToken || '',
+    credentialId: credential?.id || null,
+    credentialName: credential?.name || '',
+    authToken: credential?.token || '',
     apiUrl: model.apiUrl || '',
-    providerId: buildCodexModelProviderId(model.id)
+    providerId: buildCodexModelProviderId(model.id),
+    envKey: 'CCGUI_AUTH_KEY'
   }
 }
 

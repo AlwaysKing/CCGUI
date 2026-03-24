@@ -1217,6 +1217,16 @@ ipcMain.handle('list-session-submodels', async (event, { projectId, sessionId, w
   }
 })
 
+ipcMain.handle('list-session-targets', async (event, { projectId, sessionId }) => {
+  try {
+    const result = await projectService.listSessionTargets(projectId, sessionId)
+    return { success: true, ...result }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to list session targets', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 ipcMain.handle('list-session-effort-options', async (event, { projectId, sessionId, workingDirectory, model }) => {
   try {
     const result = await projectService.listSessionReasoningCapabilities(projectId, sessionId, {
@@ -1295,6 +1305,44 @@ ipcMain.handle('set-session-model', async (event, {
     }
   } catch (error) {
     logger.error('[SessionConfig] Failed to set session model', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('set-session-target', async (event, {
+  projectId,
+  sessionId,
+  targetId,
+  targetKind,
+  modelId,
+  credentialId,
+  workingDirectory
+}) => {
+  try {
+    if (!sessionId) {
+      throw new Error('Missing sessionId')
+    }
+
+    const session = await sessionManager.getOrCreateSession(
+      sessionId,
+      workingDirectory || decodeProjectPath(projectId),
+      event.sender,
+      true
+    )
+
+    const result = await session.setSessionTarget({
+      targetId,
+      targetKind,
+      modelId,
+      credentialId
+    })
+
+    return {
+      success: true,
+      ...result
+    }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to set session target', { projectId, sessionId, error: error.message })
     return { success: false, error: error.message }
   }
 })

@@ -68,6 +68,8 @@ const {
   handleSaveModel,
   handleSelectClaudeModel,
   handleSelectCodexModel,
+  handleSetClaudeModelDefaultCredential,
+  handleSetCodexModelDefaultCredential,
   handleSetClaudeModelDefaultCard,
   handleSetCodexModelDefaultCard,
   handleToggleClaudeModelActive,
@@ -199,6 +201,8 @@ useDialogStack(computed(() => true), handleClose)
               @delete-codex-model="handleDeleteCodexModel"
               @add-claude-model="handleAddClaudeModel"
               @add-codex-model="handleAddCodexModel"
+              @set-claude-model-default-credential="handleSetClaudeModelDefaultCredential"
+              @set-codex-model-default-credential="handleSetCodexModelDefaultCredential"
               @set-claude-model-default-card="handleSetClaudeModelDefaultCard"
               @set-codex-model-default-card="handleSetCodexModelDefaultCard"
               @toggle-claude-model-active="handleToggleClaudeModelActive"

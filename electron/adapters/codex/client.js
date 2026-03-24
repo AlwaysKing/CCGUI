@@ -7,7 +7,8 @@ const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
 const {
   buildCodexModelProviderId,
-  findProviderModel
+  findProviderModel,
+  getDefaultCredential
 } = require('../shared/model-config')
 const { buildDeveloperInstructions } = require('../shared/developer-instructions')
 const {
@@ -512,16 +513,27 @@ class CodexClient {
         const defaultCardId = modelConfig.defaultCardId || cards[0]?.id
         targetCard = cards.find(card => card.id === defaultCardId) || cards[0]
       }
+      const credential = getDefaultCredential(modelConfig, this.projectSettings.credentialId)
 
       return {
         modelName: targetCard?.modelName || null,
         modelProvider: buildCodexModelProviderId(modelConfig.id),
-        authToken: modelConfig.authToken || null
+        authToken: credential?.token || null,
+        credentialId: credential?.id || null,
+        envKey: 'CCGUI_AUTH_KEY'
       }
     } catch (error) {
       logger.warn('[CodexClient] Failed to resolve model runtime', { error: error.message })
       return null
     }
+  }
+
+  getPreferredDefaultModelProvider() {
+    if (this.projectSettings?.targetKind === 'openai') {
+      return 'openai'
+    }
+
+    return readCodexDefaultModelProvider() || 'openai'
   }
 
   getCurrentModelSelection() {
@@ -566,7 +578,7 @@ class CodexClient {
         : (currentSelection?.model || null),
       modelProvider: Object.prototype.hasOwnProperty.call(overrides, 'modelProvider')
         ? overrides.modelProvider
-        : (currentSelection?.modelProvider || readCodexDefaultModelProvider() || 'openai'),
+        : (currentSelection?.modelProvider || this.getPreferredDefaultModelProvider() || 'openai'),
       persistExtendedHistory: true,
       developerInstructions: developerInstructions || null
     }
@@ -595,14 +607,14 @@ class CodexClient {
             fallbackSelection?.modelProvider ||
             response?.modelProvider ||
             this.getCurrentModelSelection()?.modelProvider ||
-            readCodexDefaultModelProvider() ||
+            this.getPreferredDefaultModelProvider() ||
             'openai'
           )
         : (
             response?.modelProvider ||
             fallbackSelection?.modelProvider ||
             this.getCurrentModelSelection()?.modelProvider ||
-            readCodexDefaultModelProvider() ||
+            this.getPreferredDefaultModelProvider() ||
             'openai'
           )
     const resolvedReasoningEffort =
@@ -689,7 +701,7 @@ class CodexClient {
     const currentSelection = this.getCurrentModelSelection()
     return this.applyThreadModelSelection({
       model: normalizedModel,
-      modelProvider: currentSelection?.modelProvider || readCodexDefaultModelProvider() || 'openai',
+      modelProvider: currentSelection?.modelProvider || this.getPreferredDefaultModelProvider() || 'openai',
       reasoningEffort: reasoningEffort || currentSelection?.reasoningEffort || 'medium'
     })
   }
@@ -707,7 +719,7 @@ class CodexClient {
 
     return this.applyThreadModelSelection({
       model: currentSelection.model,
-      modelProvider: currentSelection.modelProvider || readCodexDefaultModelProvider() || 'openai',
+      modelProvider: currentSelection.modelProvider || this.getPreferredDefaultModelProvider() || 'openai',
       reasoningEffort: normalizedEffort
     })
   }
@@ -756,7 +768,7 @@ class CodexClient {
       cwd: this.workingDirectory,
       approvalPolicy: this.mapPermissionModeToApprovalPolicy(),
       sandbox: 'workspace-write',
-      modelProvider: readCodexDefaultModelProvider() || 'openai',
+      modelProvider: this.getPreferredDefaultModelProvider() || 'openai',
       experimentalRawEvents: false,
       persistExtendedHistory: true,
       ephemeral: false
@@ -874,7 +886,7 @@ class CodexClient {
     }
 
     if (modelRuntime?.authToken) {
-      codexEnv.OPENAI_API_KEY = modelRuntime.authToken
+      codexEnv[modelRuntime.envKey || 'CCGUI_AUTH_KEY'] = modelRuntime.authToken
     }
 
     this.process = spawn(this.codexPath, ['app-server', '--listen', 'stdio://'], {

@@ -174,6 +174,10 @@ function normalizeProjectSettings(settings = {}) {
     modelMode,
     modelId: modelMode === 'custom' ? settings.modelId || null : null,
     modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null,
+    credentialId: modelMode === 'custom' ? settings.credentialId || null : null,
+    targetKind: typeof settings.targetKind === 'string' && settings.targetKind.trim()
+      ? settings.targetKind.trim()
+      : null,
     effort: normalizeEffortValue(settings.effort),
     debug: settings.debug === true,
     promptMode,
@@ -196,6 +200,10 @@ function normalizeSessionSettings(settings = {}) {
     modelMode,
     modelId: modelMode === 'custom' ? settings.modelId || null : null,
     modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null,
+    credentialId: modelMode === 'custom' ? settings.credentialId || null : null,
+    targetKind: typeof settings.targetKind === 'string' && settings.targetKind.trim()
+      ? settings.targetKind.trim()
+      : null,
     effort: normalizeEffortValue(settings.effort),
     debug: settings.debug === true,
     promptMode,
@@ -213,6 +221,8 @@ function resolveProjectSettings(appConfig, projectSettings = {}) {
   return {
     modelId: normalized.modelMode === 'custom' ? normalized.modelId : null,
     modelCardId: normalized.modelMode === 'custom' ? normalized.modelCardId : null,
+    credentialId: normalized.modelMode === 'custom' ? normalized.credentialId : null,
+    targetKind: normalized.targetKind,
     effort: normalized.effort,
     promptIds: normalized.promptMode === 'custom'
       ? normalized.promptIds
@@ -248,6 +258,10 @@ function resolveSessionSettings(appConfig, projectSettings = {}, sessionSettings
     modelCardId: normalizedSession.modelMode === 'custom'
       ? normalizedSession.modelCardId
       : (normalizedSession.modelMode === 'project' ? projectResolved.modelCardId : null),
+    credentialId: normalizedSession.modelMode === 'custom'
+      ? normalizedSession.credentialId
+      : (normalizedSession.modelMode === 'project' ? projectResolved.credentialId : null),
+    targetKind: normalizedSession.targetKind || (normalizedSession.modelMode === 'project' ? projectResolved.targetKind : null),
     effort: normalizedSession.effort !== null
       ? normalizedSession.effort
       : projectResolved.effort,

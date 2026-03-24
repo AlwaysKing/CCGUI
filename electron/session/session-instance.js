@@ -770,7 +770,7 @@ class SessionInstance {
     const { settings } = projectService.resolveRuntimeConfig(this.projectId, this.id)
     const provider = this.provider || this.envInfo?.provider || 'claude'
     const selectedSystemModelId = provider === 'codex'
-      ? (appConfig?.settings?.selectedCodexModelId || null)
+      ? ((settings?.targetKind === 'openai') ? null : (appConfig?.settings?.selectedCodexModelId || null))
       : (appConfig?.settings?.selectedClaudeModelId || null)
     const effectiveModelId = settings?.modelId || selectedSystemModelId || null
     const configuredModel = effectiveModelId
@@ -2014,6 +2014,81 @@ class SessionInstance {
       postStartNotification: {
         type: 'session-config-applied',
         changeType: 'model',
+        applyMode: 'restart'
+      }
+    })
+
+    return {
+      success: true,
+      config: updatedConfig || null,
+      restarted: true
+    }
+  }
+
+  async setSessionTarget(target = {}) {
+    const nextTargetKind = typeof target?.targetKind === 'string' && target.targetKind.trim()
+      ? target.targetKind.trim()
+      : 'provider'
+    const nextModelId = nextTargetKind === 'provider'
+      ? (typeof target?.modelId === 'string' && target.modelId.trim() ? target.modelId.trim() : null)
+      : null
+    const nextCredentialId = nextTargetKind === 'provider'
+      ? (typeof target?.credentialId === 'string' && target.credentialId.trim() ? target.credentialId.trim() : null)
+      : null
+
+    const sessionConfig = projectService.getSessionConfig(this.projectId, this.id)
+    const currentSettings = (sessionConfig?.settings && typeof sessionConfig.settings === 'object')
+      ? sessionConfig.settings
+      : {}
+
+    const nextSettings = {
+      ...currentSettings,
+      modelMode: nextTargetKind === 'provider' ? 'custom' : 'system',
+      modelId: nextModelId,
+      modelCardId: nextTargetKind === 'provider' && currentSettings.modelId === nextModelId
+        ? (currentSettings.modelCardId || null)
+        : null,
+      credentialId: nextCredentialId,
+      targetKind: nextTargetKind
+    }
+
+    const updatedConfig = await projectService.updateSessionConfig(this.projectId, this.id, {
+      name: sessionConfig?.name || '新会话',
+      settings: nextSettings
+    })
+
+    if (updatedConfig?.settings) {
+      this.applySessionSettings(updatedConfig.settings)
+    }
+
+    const runtimeStarted = Boolean(this.runtimeManager?.isReady?.())
+    if (!runtimeStarted) {
+      this.emitConfigAppliedNotification('target', 'saved')
+      return {
+        success: true,
+        config: updatedConfig || null,
+        restarted: false
+      }
+    }
+
+    if (this.envInfo) {
+      this.envInfo.model = null
+      historyManager.updateSessionEnvInfo(this.projectId, this.id, this.envInfo)
+      this.emit('env-info', this.envInfo)
+    }
+
+    this.pendingLifecycleOperation = {
+      changeType: 'target'
+    }
+    this.stop('restart-for-config')
+    await this.start({
+      reason: 'restart-for-config',
+      lifecycleContext: {
+        changeType: 'target'
+      },
+      postStartNotification: {
+        type: 'session-config-applied',
+        changeType: 'target',
         applyMode: 'restart'
       }
     })

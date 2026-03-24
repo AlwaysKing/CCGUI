@@ -26,13 +26,14 @@ const emit = defineEmits(['update:visible', 'save', 'close'])
 const formData = ref({
   friendlyName: '',
   apiUrl: '',
-  authToken: '',
+  credentials: [],
+  defaultCredentialId: null,
   defaultCardId: null,
   modelCards: []
 })
 
 // 状态
-const showAuthToken = ref(false)
+const visibleCredentialIds = ref(new Set())
 const hoveredCardId = ref(null)
 const loading = ref(false)
 
@@ -49,6 +50,10 @@ const dialogTitle = computed(() => {
 // 生成卡片 ID
 function generateCardId() {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9)
+}
+
+function generateCredentialId() {
+  return `credential-${Date.now().toString()}${Math.random().toString(36).slice(2, 8)}`
 }
 
 // 监听 model 变化，初始化表单
@@ -79,23 +84,71 @@ watch(() => props.model, (model) => {
     formData.value = {
       friendlyName: model.friendlyName || '',
       apiUrl: model.apiUrl || model.baseUrl || '',
-      authToken: model.authToken || '',
+      credentials: Array.isArray(model.credentials) && model.credentials.length > 0
+        ? model.credentials.map((credential, index) => ({
+            id: credential.id || generateCredentialId(),
+            name: credential.name || `令牌 ${index + 1}`,
+            token: credential.token || credential.authToken || ''
+          }))
+        : [{
+            id: model.defaultCredentialId || 'default',
+            name: '默认令牌',
+            token: model.authToken || ''
+          }],
+      defaultCredentialId: model.defaultCredentialId || model.credentials?.[0]?.id || 'default',
       defaultCardId: model.defaultCardId || modelCards[0]?.id || null,
       modelCards
     }
   } else {
     // 添加模式
     const firstCardId = generateCardId()
+    const firstCredentialId = generateCredentialId()
     formData.value = {
       friendlyName: '',
       apiUrl: '',
-      authToken: '',
+      credentials: [{ id: firstCredentialId, name: '默认令牌', token: '' }],
+      defaultCredentialId: firstCredentialId,
       defaultCardId: firstCardId,
       modelCards: [{ id: firstCardId, modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '' }]
     }
   }
-  showAuthToken.value = false
+  visibleCredentialIds.value = new Set()
 }, { immediate: true })
+
+function addCredential() {
+  const credentialId = generateCredentialId()
+  formData.value.credentials.push({
+    id: credentialId,
+    name: `令牌 ${formData.value.credentials.length + 1}`,
+    token: ''
+  })
+  if (!formData.value.defaultCredentialId) {
+    formData.value.defaultCredentialId = credentialId
+  }
+}
+
+function removeCredential(credentialId) {
+  if (formData.value.credentials.length <= 1) return
+  formData.value.credentials = formData.value.credentials.filter(credential => credential.id !== credentialId)
+  visibleCredentialIds.value.delete(credentialId)
+  if (formData.value.defaultCredentialId === credentialId) {
+    formData.value.defaultCredentialId = formData.value.credentials[0]?.id || null
+  }
+}
+
+function setDefaultCredential(credentialId) {
+  formData.value.defaultCredentialId = credentialId
+}
+
+function toggleCredentialVisibility(credentialId) {
+  const next = new Set(visibleCredentialIds.value)
+  if (next.has(credentialId)) {
+    next.delete(credentialId)
+  } else {
+    next.add(credentialId)
+  }
+  visibleCredentialIds.value = next
+}
 
 // 添加模型卡片
 function addCard() {
@@ -133,13 +186,21 @@ useDialogStack(computed(() => props.visible), handleClose)
 
 // 保存
 function handleSave() {
-  if (!formData.value.friendlyName || !formData.value.apiUrl || !formData.value.authToken) {
-    alert('请填写必填项：友好名称、API地址和认证令牌')
+  const validCredentials = formData.value.credentials.filter(credential =>
+    (credential.name || '').trim() && (credential.token || '').trim()
+  )
+  const defaultCredential = validCredentials.find(credential => credential.id === formData.value.defaultCredentialId) || validCredentials[0] || null
+
+  if (!formData.value.friendlyName || !formData.value.apiUrl || !defaultCredential) {
+    alert('请填写必填项：友好名称、API地址和至少一个认证令牌')
     return
   }
 
   emit('save', {
     ...formData.value,
+    credentials: validCredentials,
+    defaultCredentialId: defaultCredential.id,
+    authToken: defaultCredential.token,
     id: props.model?.id || Date.now().toString()
   })
   handleClose()
@@ -190,32 +251,72 @@ function handleSave() {
 
         <!-- 认证令牌 -->
         <div class="form-item">
-          <label class="form-label">
-            认证令牌 <span class="required">*</span>
-            <span class="label-hint">API 认证密钥</span>
-          </label>
-          <div class="input-with-action">
-            <input
-              :type="showAuthToken ? 'text' : 'password'"
-              v-model="formData.authToken"
-              class="form-input"
-              placeholder="例如: sk-ant-..."
-            >
-            <button
-              type="button"
-              class="input-action-btn"
-              @click="showAuthToken = !showAuthToken"
-              :title="showAuthToken ? '隐藏' : '显示'"
-            >
-              <svg v-if="showAuthToken" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                <line x1="1" y1="1" x2="23" y2="23"/>
-              </svg>
-              <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                <circle cx="12" cy="12" r="3"/>
+          <div class="section-header-inline">
+            <label class="form-label">
+              认证令牌 <span class="required">*</span>
+              <span class="label-hint">一个供应商可配置多个具名令牌</span>
+            </label>
+            <button type="button" class="btn-add-card-small" @click="addCredential" title="添加令牌">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
             </button>
+          </div>
+
+          <div class="credential-list">
+            <div v-for="(credential, index) in formData.credentials" :key="credential.id" class="credential-item">
+              <div class="credential-item-header">
+                <button
+                  type="button"
+                  class="btn-set-default"
+                  :class="{ active: formData.defaultCredentialId === credential.id }"
+                  @click="setDefaultCredential(credential.id)"
+                >
+                  {{ formData.defaultCredentialId === credential.id ? '默认令牌' : '设为默认' }}
+                </button>
+                <button
+                  v-if="formData.credentials.length > 1"
+                  type="button"
+                  class="btn-remove-card"
+                  @click="removeCredential(credential.id)"
+                >
+                  删除
+                </button>
+              </div>
+
+              <div class="credential-fields">
+                <input
+                  type="text"
+                  v-model="credential.name"
+                  class="form-input"
+                  :placeholder="`令牌名称 ${index + 1}`"
+                >
+                <div class="input-with-action">
+                  <input
+                    :type="visibleCredentialIds.has(credential.id) ? 'text' : 'password'"
+                    v-model="credential.token"
+                    class="form-input"
+                    placeholder="例如: sk-ant-..."
+                  >
+                  <button
+                    type="button"
+                    class="input-action-btn"
+                    @click="toggleCredentialVisibility(credential.id)"
+                    :title="visibleCredentialIds.has(credential.id) ? '隐藏' : '显示'"
+                  >
+                    <svg v-if="visibleCredentialIds.has(credential.id)" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                    <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -476,6 +577,36 @@ function handleSave() {
 
 .btn-add-card-small:hover {
   border-color: #F97316;
+  color: #F97316;
+}
+
+.credential-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.credential-item {
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.credential-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.credential-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.btn-set-default.active {
   color: #F97316;
 }
 

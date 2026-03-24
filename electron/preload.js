@@ -224,6 +224,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   refreshCodexAuthToken: () => ipcRenderer.invoke('refresh-codex-auth-token'),
 
   // ============================================
+  // Session target API
+  // ============================================
+  listSessionTargets: (options) => ipcRenderer.invoke('list-session-targets', options),
+  setSessionTarget: (options) => ipcRenderer.invoke('set-session-target', options),
+
+  // ============================================
   // Docs API (规范文档)
   // ============================================
   listDocs: () => ipcRenderer.invoke('list-docs'),

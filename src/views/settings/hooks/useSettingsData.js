@@ -28,6 +28,53 @@ function normalizeCodexAccounts(accounts = []) {
   return { accounts: normalized, changed }
 }
 
+function normalizeModelEntry(model = {}) {
+  const rawCredentials = Array.isArray(model.credentials) ? model.credentials : []
+  const credentials = rawCredentials.length > 0
+    ? rawCredentials
+        .map((credential, index) => ({
+          id: credential?.id || `credential-${index + 1}`,
+          name: credential?.name || `令牌 ${index + 1}`,
+          token: credential?.token || credential?.authToken || ''
+        }))
+        .filter(credential => credential.token)
+    : (
+        typeof model.authToken === 'string' && model.authToken.trim()
+          ? [{
+              id: model.defaultCredentialId || 'default',
+              name: '默认令牌',
+              token: model.authToken
+            }]
+          : []
+      )
+
+  const defaultCredentialId = model.defaultCredentialId || credentials[0]?.id || null
+  const defaultCredential = credentials.find(credential => credential.id === defaultCredentialId) || credentials[0] || null
+
+  return {
+    ...model,
+    credentials,
+    defaultCredentialId: defaultCredential?.id || null,
+    authToken: defaultCredential?.token || ''
+  }
+}
+
+function getDefaultCredential(model = null, preferredCredentialId = null) {
+  const credentials = Array.isArray(model?.credentials) ? model.credentials : []
+  if (!credentials.length) {
+    return null
+  }
+
+  if (preferredCredentialId) {
+    const preferred = credentials.find(credential => credential.id === preferredCredentialId)
+    if (preferred) {
+      return preferred
+    }
+  }
+
+  return credentials.find(credential => credential.id === model?.defaultCredentialId) || credentials[0] || null
+}
+
 function buildCodexProviderId(modelId = '') {
   const suffix = String(modelId || '')
     .trim()
@@ -78,6 +125,8 @@ export function useSettingsData(emit) {
   const codexModels = ref([])
   const selectedClaudeModelId = ref(null)
   const selectedCodexModelId = ref(null)
+  const selectedClaudeCredentialId = ref(null)
+  const selectedCodexCredentialId = ref(null)
   const prompts = ref([])
   const documents = ref([])
 
@@ -111,16 +160,29 @@ export function useSettingsData(emit) {
         const config = result.config
         if (config.settings) {
           settings.value = { ...settings.value, ...config.settings }
-          claudeModels.value = config.settings.claudeModels || []
-          codexModels.value = config.settings.codexModels || []
+          claudeModels.value = (config.settings.claudeModels || []).map(normalizeModelEntry)
+          codexModels.value = (config.settings.codexModels || []).map(normalizeModelEntry)
           prompts.value = config.settings.prompts || []
           selectedClaudeModelId.value = config.settings.selectedClaudeModelId || null
           selectedCodexModelId.value = config.settings.selectedCodexModelId || null
+          selectedClaudeCredentialId.value = config.settings.selectedClaudeCredentialId || null
+          selectedCodexCredentialId.value = config.settings.selectedCodexCredentialId || null
           const normalizedCodexAccounts = normalizeCodexAccounts(config.settings.codexAccounts || [])
           codexConfig.value.accounts = normalizedCodexAccounts.accounts
           codexConfig.value.selectedAccountId = config.settings.selectedCodexAccountId || null
           if (normalizedCodexAccounts.changed) {
             await saveAppConfig()
+          }
+
+          if (!selectedClaudeCredentialId.value && selectedClaudeModelId.value) {
+            selectedClaudeCredentialId.value = getDefaultCredential(
+              claudeModels.value.find(model => model.id === selectedClaudeModelId.value)
+            )?.id || null
+          }
+          if (!selectedCodexCredentialId.value && selectedCodexModelId.value) {
+            selectedCodexCredentialId.value = getDefaultCredential(
+              codexModels.value.find(model => model.id === selectedCodexModelId.value)
+            )?.id || null
           }
         }
         if (config.documents) {
@@ -156,9 +218,11 @@ export function useSettingsData(emit) {
 
         if (codexConfig.value.authMode === 'chatgpt') {
           selectedCodexModelId.value = null
+          selectedCodexCredentialId.value = null
         } else {
           const matchedModel = codexModels.value.find(model => buildCodexProviderId(model.id) === codexConfig.value.modelProvider)
           selectedCodexModelId.value = matchedModel?.id || null
+          selectedCodexCredentialId.value = getDefaultCredential(matchedModel)?.id || null
         }
       }
     } catch (error) {
@@ -176,6 +240,8 @@ export function useSettingsData(emit) {
           prompts: toDeepPlain(prompts.value),
           selectedClaudeModelId: selectedClaudeModelId.value,
           selectedCodexModelId: selectedCodexModelId.value,
+          selectedClaudeCredentialId: selectedClaudeCredentialId.value,
+          selectedCodexCredentialId: selectedCodexCredentialId.value,
           codexAccounts: toDeepPlain(codexConfig.value.accounts || []),
           selectedCodexAccountId: codexConfig.value.selectedAccountId || null
         },
@@ -239,6 +305,7 @@ export function useSettingsData(emit) {
     claudeModels.value = claudeModels.value.filter(model => model.id !== modelId)
     if (selectedClaudeModelId.value === modelId) {
       selectedClaudeModelId.value = claudeModels.value[0]?.id || null
+      selectedClaudeCredentialId.value = getDefaultCredential(claudeModels.value[0])?.id || null
     }
     await saveAppConfig()
   }
@@ -249,6 +316,7 @@ export function useSettingsData(emit) {
     codexModels.value = codexModels.value.filter(model => model.id !== modelId)
     if (selectedCodexModelId.value === modelId) {
       selectedCodexModelId.value = codexModels.value[0]?.id || null
+      selectedCodexCredentialId.value = getDefaultCredential(codexModels.value[0])?.id || null
     }
     await saveAppConfig()
     await window.electronAPI.syncCodexModelProviders()
@@ -267,7 +335,9 @@ export function useSettingsData(emit) {
     const modelData = {
       friendlyName: formData.friendlyName,
       apiUrl: formData.apiUrl,
-      authToken: formData.authToken,
+      credentials: toDeepPlain(formData.credentials || []),
+      defaultCredentialId: formData.defaultCredentialId || formData.credentials?.[0]?.id || null,
+      authToken: formData.authToken || '',
       defaultCardId,
       modelCards: finalCards
     }
@@ -279,22 +349,31 @@ export function useSettingsData(emit) {
     if (editingModel.value) {
       const index = models.value.findIndex(model => model.id === editingModel.value.id)
       if (index !== -1) {
-        models.value[index] = {
+        const nextModel = normalizeModelEntry({
           ...models.value[index],
           ...modelData
+        })
+        models.value[index] = nextModel
+        if (modelType === 'claude' && selectedClaudeModelId.value === nextModel.id) {
+          selectedClaudeCredentialId.value = getDefaultCredential(nextModel, selectedClaudeCredentialId.value)?.id || null
+        }
+        if (modelType === 'codex' && selectedCodexModelId.value === nextModel.id) {
+          selectedCodexCredentialId.value = getDefaultCredential(nextModel, selectedCodexCredentialId.value)?.id || null
         }
       }
     } else {
-      const newModel = {
+      const newModel = normalizeModelEntry({
         id: formData.id || Date.now().toString(),
         ...modelData
-      }
+      })
       models.value.push(newModel)
       if (models.value.length === 1) {
         if (modelType === 'claude') {
           selectedClaudeModelId.value = newModel.id
+          selectedClaudeCredentialId.value = getDefaultCredential(newModel)?.id || null
         } else {
           selectedCodexModelId.value = newModel.id
+          selectedCodexCredentialId.value = getDefaultCredential(newModel)?.id || null
         }
       }
     }
@@ -308,10 +387,12 @@ export function useSettingsData(emit) {
 
   function handleSelectClaudeModel(modelId) {
     selectedClaudeModelId.value = modelId
+    selectedClaudeCredentialId.value = getDefaultCredential(claudeModels.value.find(model => model.id === modelId))?.id || null
   }
 
   function handleSelectCodexModel(modelId) {
     selectedCodexModelId.value = modelId
+    selectedCodexCredentialId.value = getDefaultCredential(codexModels.value.find(model => model.id === modelId))?.id || null
   }
 
   async function handleSetClaudeModelDefaultCard({ modelId, cardId }) {
@@ -322,11 +403,37 @@ export function useSettingsData(emit) {
     await saveAppConfig()
   }
 
+  async function handleSetClaudeModelDefaultCredential({ modelId, credentialId }) {
+    const model = claudeModels.value.find(item => item.id === modelId)
+    if (!model) return
+
+    model.defaultCredentialId = credentialId
+    const credential = getDefaultCredential(model, credentialId)
+    model.authToken = credential?.token || ''
+    if (selectedClaudeModelId.value === modelId) {
+      selectedClaudeCredentialId.value = credentialId
+    }
+    await saveAppConfig()
+  }
+
   async function handleSetCodexModelDefaultCard({ modelId, cardId }) {
     const model = codexModels.value.find(item => item.id === modelId)
     if (!model) return
 
     model.defaultCardId = cardId
+    await saveAppConfig()
+  }
+
+  async function handleSetCodexModelDefaultCredential({ modelId, credentialId }) {
+    const model = codexModels.value.find(item => item.id === modelId)
+    if (!model) return
+
+    model.defaultCredentialId = credentialId
+    const credential = getDefaultCredential(model, credentialId)
+    model.authToken = credential?.token || ''
+    if (selectedCodexModelId.value === modelId) {
+      selectedCodexCredentialId.value = credentialId
+    }
     await saveAppConfig()
   }
 
@@ -367,10 +474,11 @@ export function useSettingsData(emit) {
     if (!model) return
 
     try {
+      const credential = getDefaultCredential(model, selectedCodexCredentialId.value)
       const result = await window.electronAPI.updateCodexSettings({
         updates: {
           apiUrl: model.apiUrl || '',
-          authToken: model.authToken || '',
+          authToken: credential?.token || '',
           model: model.modelCards?.[0]?.modelName || model.model || '',
           modelProvider: buildCodexProviderId(model.id)
         }
@@ -382,11 +490,12 @@ export function useSettingsData(emit) {
       }
 
       codexConfig.value.apiUrl = model.apiUrl || ''
-      codexConfig.value.authToken = model.authToken || ''
+      codexConfig.value.authToken = credential?.token || ''
       codexConfig.value.model = model.modelCards?.[0]?.modelName || ''
       codexConfig.value.authMode = 'provider'
       codexConfig.value.modelProvider = buildCodexProviderId(model.id)
       selectedCodexModelId.value = model.id
+      selectedCodexCredentialId.value = credential?.id || null
 
       await saveAppConfig()
       alert('Codex 模型供应商配置已应用')
@@ -409,9 +518,10 @@ export function useSettingsData(emit) {
 
   async function applyClaudeModelWithMappings(model, mappings, clearMappings = false) {
     try {
+      const credential = getDefaultCredential(model, selectedClaudeCredentialId.value)
       const env = {
         ANTHROPIC_BASE_URL: model.apiUrl || '',
-        ANTHROPIC_AUTH_TOKEN: model.authToken || ''
+        ANTHROPIC_AUTH_TOKEN: credential?.token || ''
       }
 
       if (mappings.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = mappings.ANTHROPIC_MODEL
@@ -433,7 +543,7 @@ export function useSettingsData(emit) {
       }
 
       defaultConfig.value.apiUrl = model.apiUrl || ''
-      defaultConfig.value.authToken = model.authToken || ''
+      defaultConfig.value.authToken = credential?.token || ''
       defaultConfig.value.anthropicModel = mappings.ANTHROPIC_MODEL || ''
       defaultConfig.value.anthropicDefaultSonnetModel = mappings.ANTHROPIC_DEFAULT_SONNET_MODEL || ''
       defaultConfig.value.anthropicDefaultOpusModel = mappings.ANTHROPIC_DEFAULT_OPUS_MODEL || ''
@@ -497,9 +607,11 @@ export function useSettingsData(emit) {
 
       if (codexConfig.value.authMode === 'chatgpt') {
         selectedCodexModelId.value = null
+        selectedCodexCredentialId.value = null
       } else {
         const matchedModel = codexModels.value.find(model => buildCodexProviderId(model.id) === codexConfig.value.modelProvider)
         selectedCodexModelId.value = matchedModel?.id || null
+        selectedCodexCredentialId.value = getDefaultCredential(matchedModel)?.id || null
       }
 
       showCodexConfigDialog.value = false
@@ -589,6 +701,7 @@ export function useSettingsData(emit) {
     codexConfig.value.authMode = 'chatgpt'
     codexConfig.value.modelProvider = ''
     selectedCodexModelId.value = null
+    selectedCodexCredentialId.value = null
     await saveAppConfig()
   }
 
@@ -772,6 +885,8 @@ export function useSettingsData(emit) {
     codexModels,
     selectedClaudeModelId,
     selectedCodexModelId,
+    selectedClaudeCredentialId,
+    selectedCodexCredentialId,
     prompts,
     documents,
     showModelDialog,
@@ -798,7 +913,9 @@ export function useSettingsData(emit) {
     handleSelectClaudeModel,
     handleSelectCodexModel,
     handleSetClaudeModelDefaultCard,
+    handleSetClaudeModelDefaultCredential,
     handleSetCodexModelDefaultCard,
+    handleSetCodexModelDefaultCredential,
     handleToggleClaudeModelActive,
     handleToggleCodexModelActive,
     handleApplyClaudeModel,

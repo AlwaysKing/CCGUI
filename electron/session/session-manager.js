@@ -168,6 +168,15 @@ class SessionManager {
     return session.setSessionModel(selection)
   }
 
+  async setSessionTarget(sessionId, target = {}) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return session.setSessionTarget(target)
+  }
+
   async setSessionSubmodel(sessionId, model, reasoningEffort = 'medium') {
     const session = this.sessions.get(sessionId)
     if (!session) {

@@ -9,6 +9,33 @@ const questionActiveTabs = ref({})
 const openActionMenuIndex = ref(-1)
 
 export function useMessageList() {
+  function isSkippableMessageBetweenUserAndAssistant(message) {
+    if (!message) return false
+    if (message.role === 'system_notification') return true
+    if (message.role === 'status') return true
+    return false
+  }
+
+  function findAssistantResponse(messages, userMessageIndex) {
+    if (!Array.isArray(messages) || userMessageIndex < 0) return null
+    const userMessage = messages[userMessageIndex]
+    if (!userMessage || userMessage.role !== 'user') return null
+
+    for (let i = userMessageIndex + 1; i < messages.length; i += 1) {
+      const message = messages[i]
+      if (!message) continue
+      if (message.role === 'assistant') {
+        return { message, index: i }
+      }
+      if (isSkippableMessageBetweenUserAndAssistant(message)) {
+        continue
+      }
+      break
+    }
+
+    return null
+  }
+
   function toggleRewindCollapse(messageId) {
     rewindCollapseStates.value[messageId] = !rewindCollapseStates.value[messageId]
   }
@@ -87,6 +114,7 @@ export function useMessageList() {
   }
 
   return {
+    findAssistantResponse,
     toggleRewindCollapse,
     isRewindCollapsed,
     getQuestionActiveTab,

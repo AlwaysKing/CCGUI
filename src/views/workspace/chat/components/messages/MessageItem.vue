@@ -64,6 +64,7 @@ const emit = defineEmits([
 
 // 使用 composables
 const {
+  findAssistantResponse,
   toggleRewindCollapse,
   isRewindCollapsed,
   getQuestionActiveTab,
@@ -85,11 +86,10 @@ const sessionStore = useSessionStore()
 
 // ============ 计算属性 ============
 
-// 是否有回答（检查下一条消息是否是 assistant）
+// 是否有回答（允许中间穿插 session 级通知）
 const hasAssistantResponse = computed(() => {
   if (props.message.role !== 'user') return false
-  const nextMessage = props.allMessages[props.messageIndex + 1]
-  return nextMessage?.role === 'assistant'
+  return !!findAssistantResponse(props.allMessages, props.messageIndex)
 })
 
 // 是否显示折叠按钮（有回答就显示）
@@ -305,8 +305,7 @@ function onToggleQuestionCollapse(messageIndex) {
 function setAllResponseCollapsed(nextCollapsed, { excludeIndex = null } = {}) {
   props.allMessages.forEach((message, index) => {
     if (message?.role !== 'user') return
-    const nextMessage = props.allMessages[index + 1]
-    if (nextMessage?.role !== 'assistant') return
+    if (!findAssistantResponse(props.allMessages, index)) return
     if (excludeIndex !== null && index === excludeIndex) return
     message.responseCollapsed = nextCollapsed
   })

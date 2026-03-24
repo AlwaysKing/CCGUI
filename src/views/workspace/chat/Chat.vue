@@ -25,10 +25,12 @@ import TaskFloatingWindow from './components/TaskFloatingWindow.vue'
 // useScroll 和 useHistory composables 已创建，可在未来需要时使用
 // import { useScroll } from './composables/useScroll'
 // import { useHistory } from './composables/useHistory'
+import { useMessageList } from './composables/useMessageList'
 
 const sessionStore = useSessionStore()
 const appStore = useAppStore()
 const attrs = useAttrs()
+const { findAssistantResponse } = useMessageList()
 
 // 使用 composables
 // useMessage composable 的功能已移至 MessageList 组件
@@ -191,6 +193,129 @@ const showConversationWave = computed(() => {
   return messages.value.some(message => message?.isStreaming || message?.isExecuting)
 })
 
+const queuedMessagesBySession = ref({})
+const isFlushingQueuedMessage = ref(false)
+const activeQueueSessionId = computed(() => sessionStore.currentSessionId || appStore.currentSession?.id || '__global__')
+const queuePanelVisible = ref(true)
+
+const queuedMessages = computed(() => {
+  const sessionId = activeQueueSessionId.value
+  return queuedMessagesBySession.value[sessionId] || []
+})
+
+const displayedQueuedMessages = computed(() => {
+  return queuedMessages.value
+})
+
+const queuedMessageCount = computed(() => {
+  const queue = displayedQueuedMessages.value
+  return Array.isArray(queue) ? queue.length : 0
+})
+
+const shouldShowQueuePanel = computed(() => queuedMessageCount.value > 0 && queuePanelVisible.value)
+
+function normalizeQueuedContent(content) {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (!content || typeof content !== 'object') {
+    return ''
+  }
+
+  return {
+    text: String(content.text || ''),
+    attachments: Array.isArray(content.attachments) ? content.attachments.map(item => ({ ...item })) : []
+  }
+}
+
+function buildQueuedMessageLabel(content) {
+  const normalized = normalizeQueuedContent(content)
+  if (typeof normalized === 'string') {
+    const text = normalized.trim().replace(/\s+/g, ' ')
+    return {
+      text: text || '空消息',
+      attachmentBadges: []
+    }
+  }
+
+  const text = String(normalized.text || '').trim().replace(/\s+/g, ' ')
+  const attachmentBadges = Array.isArray(normalized.attachments)
+    ? normalized.attachments.map((attachment, index) => ({
+        id: attachment.id || `queued-attachment-${index}`,
+        label: String(attachment.name || attachment.path || attachment.kind || '附件').split('/').pop()
+      }))
+    : []
+
+  return {
+    text: text || '',
+    attachmentBadges,
+    fallbackText: attachmentBadges.length > 0 ? '' : '空消息'
+  }
+}
+
+function enqueueMessage(content) {
+  const sessionId = activeQueueSessionId.value
+  const queue = queuedMessagesBySession.value[sessionId] || []
+  queue.push({
+    id: `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    content: normalizeQueuedContent(content),
+    ...buildQueuedMessageLabel(content),
+    createdAt: Date.now()
+  })
+  queuedMessagesBySession.value = {
+    ...queuedMessagesBySession.value,
+    [sessionId]: queue
+  }
+}
+
+function removeQueuedMessage(queueId) {
+  if (!queuedMessages.value.length) return
+  const sessionId = activeQueueSessionId.value
+  const queue = queuedMessagesBySession.value[sessionId] || []
+  const index = queue.findIndex(item => item.id === queueId)
+  if (index >= 0) {
+    queue.splice(index, 1)
+    queuedMessagesBySession.value = {
+      ...queuedMessagesBySession.value,
+      [sessionId]: queue
+    }
+  }
+}
+
+async function flushQueuedMessages() {
+  if (isFlushingQueuedMessage.value) return
+  if (isProcessing.value || pendingPermission.value || pendingControlRequest.value) return
+  if (!queuedMessageCount.value) return
+
+  isFlushingQueuedMessage.value = true
+  const nextItem = queuedMessages.value[0]
+  const sessionId = activeQueueSessionId.value
+
+  try {
+    await sessionStore.sendMessage(nextItem.content)
+    const queue = queuedMessagesBySession.value[sessionId] || []
+    queue.shift()
+    queuedMessagesBySession.value = {
+      ...queuedMessagesBySession.value,
+      [sessionId]: queue
+    }
+  } catch (error) {
+    logger.warn('[Chat] Failed to flush queued message', { error: error?.message || String(error) })
+  } finally {
+    isFlushingQueuedMessage.value = false
+  }
+}
+
+watch(
+  () => [isProcessing.value, !!pendingPermission.value, !!pendingControlRequest.value, queuedMessageCount.value],
+  () => {
+    if (!isProcessing.value && !pendingPermission.value && !pendingControlRequest.value && queuedMessageCount.value > 0) {
+      void flushQueuedMessages()
+    }
+  }
+)
+
 function formatCenterTimer(ms) {
   const safeMs = Number(ms)
   if (!Number.isFinite(safeMs) || safeMs <= 0) return ''
@@ -224,8 +349,7 @@ const collapsibleStats = computed(() => {
     if (!message) continue
 
     if (message.role === 'user') {
-      const nextMessage = messages.value[index + 1]
-      if (nextMessage?.role === 'assistant') {
+      if (findAssistantResponse(messages.value, index)) {
         total += 1
         if (message.responseCollapsed) collapsed += 1
       }
@@ -252,8 +376,7 @@ function toggleAllMessageCollapse() {
     if (!message) continue
 
     if (message.role === 'user') {
-      const nextMessage = messages.value[index + 1]
-      if (nextMessage?.role === 'assistant') {
+      if (findAssistantResponse(messages.value, index)) {
         message.responseCollapsed = shouldCollapse
       }
     }
@@ -695,6 +818,13 @@ function addRawMessage(displayMessage, rawMessage) {
 
 // 处理发送消息（从 ChatInput 组件调用）
 async function handleSendMessage(userText) {
+  if (isProcessing.value || pendingPermission.value || pendingControlRequest.value || isFlushingQueuedMessage.value) {
+    enqueueMessage(userText)
+    inputMessage.value = ''
+    scrollToBottom(true)
+    return
+  }
+
   // 折叠之前所有用户消息的回答
   messages.value.forEach(msg => {
     if (msg.role === 'user') {
@@ -1514,7 +1644,7 @@ async function handleQuestionAnswer(requestId, answers) {
       @mousedown="startResize"
     >
       <div
-        v-if="centerResizeTimerLabel"
+        v-if="centerResizeTimerLabel && queuedMessageCount === 0"
         class="resize-handle-timer"
         aria-hidden="true"
       >
@@ -1522,42 +1652,96 @@ async function handleQuestionAnswer(requestId, answers) {
       </div>
     </div>
 
-    <!-- Input Area -->
-    <ChatInput
-      ref="chatInputRef"
+    <div
+      class="input-stack"
       :class="{ 'resizable-expanded': !!messagesHeight }"
-      v-model="inputMessage"
-      v-model:attachments="inputAttachments"
-      :is-processing="isProcessing"
-      :has-permission="pendingPermission !== null || pendingControlRequest !== null"
-      :permission-mode="permissionMode"
-      :permission-modes="permissionModes"
-      :current-model-label="currentModelLabel"
-      :current-model-key="currentModelSelectionKey"
-      :model-options="availableModelOptions"
-      :can-switch-model="canQuickSwitchModel"
-      :current-sub-model-label="currentSubModelLabel"
-      :current-sub-model-key="currentSubModelKey"
-      :sub-model-options="providerSubModelOptions"
-      :can-switch-sub-model="canQuickSwitchSubModel"
-      :sub-model-loading="providerSubModelLoading"
-      :current-notification-channels="currentNotificationChannels"
-      :notification-options="notificationOptions"
-      :can-configure-notifications="canConfigureNotifications"
-      :effort="currentEffortValue"
-      :effort-key="currentEffortKey"
-      :effort-options="availableEffortOptions"
-      :effort-loading="providerEffortLoading"
-      :can-switch-effort="canQuickSwitchEffort"
-      :input-history="inputHistory"
-      @send="handleSendMessage"
-      @interrupt="handleInterrupt"
-      @model-change="handleQuickModelChange"
-      @sub-model-change="handleQuickSubModelChange"
-      @notification-toggle="handleNotificationToggle"
-      @permission-mode-change="selectPermissionMode"
-      @effort-change="handleQuickEffortChange"
-    />
+    >
+      <div
+      v-if="shouldShowQueuePanel"
+      class="queued-message-strip"
+    >
+        <div
+          v-if="centerResizeTimerLabel"
+          class="queued-message-timer"
+          aria-hidden="true"
+        >
+          <span class="queued-message-timer-pill">
+            {{ centerResizeTimerLabel }}
+          </span>
+        </div>
+      <div class="queued-message-list">
+        <div
+          v-for="item in displayedQueuedMessages"
+          :key="item.id"
+            class="queued-message-item"
+          >
+            <div class="queued-message-content">
+              <span
+                v-for="badge in item.attachmentBadges || []"
+                :key="badge.id"
+                class="queued-message-badge"
+                :title="badge.label"
+              >
+                {{ badge.label }}
+              </span>
+              <div
+                class="queued-message-label"
+                :title="item.text || item.fallbackText || ''"
+              >
+                {{ item.text || item.fallbackText || '空消息' }}
+              </div>
+            </div>
+            <button
+              class="queued-message-remove"
+              type="button"
+              @click="removeQueuedMessage(item.id)"
+            >
+              删除
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input Area -->
+      <ChatInput
+        ref="chatInputRef"
+        :class="{ 'resizable-expanded': !!messagesHeight }"
+        v-model="inputMessage"
+        v-model:attachments="inputAttachments"
+        :is-processing="isProcessing"
+        :has-permission="pendingPermission !== null || pendingControlRequest !== null"
+        :permission-mode="permissionMode"
+        :permission-modes="permissionModes"
+        :current-model-label="currentModelLabel"
+        :current-model-key="currentModelSelectionKey"
+        :model-options="availableModelOptions"
+        :can-switch-model="canQuickSwitchModel"
+        :current-sub-model-label="currentSubModelLabel"
+        :current-sub-model-key="currentSubModelKey"
+        :sub-model-options="providerSubModelOptions"
+        :can-switch-sub-model="canQuickSwitchSubModel"
+        :sub-model-loading="providerSubModelLoading"
+        :current-notification-channels="currentNotificationChannels"
+        :queue-count="queuedMessageCount"
+        :queue-visible="shouldShowQueuePanel"
+        :notification-options="notificationOptions"
+        :can-configure-notifications="canConfigureNotifications"
+        :effort="currentEffortValue"
+        :effort-key="currentEffortKey"
+        :effort-options="availableEffortOptions"
+        :effort-loading="providerEffortLoading"
+        :can-switch-effort="canQuickSwitchEffort"
+        :input-history="inputHistory"
+        @send="handleSendMessage"
+        @interrupt="handleInterrupt"
+        @model-change="handleQuickModelChange"
+        @sub-model-change="handleQuickSubModelChange"
+        @notification-toggle="handleNotificationToggle"
+        @toggle-queue-visibility="queuePanelVisible = !queuePanelVisible"
+        @permission-mode-change="selectPermissionMode"
+        @effort-change="handleQuickEffortChange"
+      />
+    </div>
 
     <!-- Ask User Question Dialog - 在聊天窗口内部 -->
     <AskUserQuestionDialog
@@ -2315,9 +2499,9 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .resize-handle-timer {
   position: absolute;
-  top: 50%;
+  top: 0;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -100%);
   padding: 2px 8px;
   border-radius: 999px;
   background: #18181B;
@@ -2331,7 +2515,141 @@ async function handleQuestionAnswer(requestId, answers) {
   letter-spacing: 0.02em;
   white-space: nowrap;
   pointer-events: none;
+  z-index: 9;
+}
+
+.input-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.input-stack.resizable-expanded {
+  flex: 1 1 auto;
+  min-height: 165px;
+}
+
+.queued-message-strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% - 20px);
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  -webkit-app-region: no-drag;
   z-index: 7;
+  pointer-events: none;
+}
+
+.queued-message-list {
+  position: relative;
+  margin: 0 56px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(31, 31, 35, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.queued-message-timer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 0;
+  padding: 0 12px 6px;
+  background: transparent;
+}
+
+.queued-message-timer-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #18181B;
+  border: 1px solid rgba(249, 115, 22, 0.28);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  color: #F97316;
+  font-size: 10px;
+  line-height: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.queued-message-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+  padding: 0 12px;
+  background: transparent;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.queued-message-item:last-child {
+  border-bottom: none;
+}
+
+.queued-message-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.queued-message-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  max-width: 140px;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #D4D4D8;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queued-message-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #E4E4E7;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queued-message-remove {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: #71717A;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 0;
+  cursor: pointer;
+  transition: color 0.18s ease;
+}
+
+.queued-message-remove:hover {
+  color: #D4D4D8;
 }
 
 .input-area {
@@ -2568,19 +2886,19 @@ async function handleQuestionAnswer(requestId, answers) {
 
 /* Modern scrollbar styles for Webkit browsers */
 .messages::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 4px;
+  height: 4px;
 }
 
 .messages::-webkit-scrollbar-track {
   background: transparent;
-  border-radius: 4px;
+  border-radius: 999px;
 }
 
 .messages::-webkit-scrollbar-thumb {
   background: #52525B;
-  border-radius: 4px;
-  border: 2px solid transparent;
+  border-radius: 999px;
+  border: none;
 }
 
 .messages::-webkit-scrollbar-thumb:hover {

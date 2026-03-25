@@ -575,6 +575,9 @@ function applyLayoutState(layout = {}) {
 }
 
 function handleSelect(session) {
+  if (session?.sessionAvailable === false) {
+    return
+  }
   emit('select', session.id)
 }
 
@@ -709,6 +712,29 @@ function getSessionBindingClass(session) {
   return ''
 }
 
+function getSessionAvailabilityLabel(session) {
+  return session?.sessionAvailable === false ? '不可用' : ''
+}
+
+function getProviderDisplayName(providerId) {
+  if (!providerId || providerId === '未知') return '未知'
+  if (providerId === 'openai') return 'OpenAI'
+  // 尝试从 codex 模型中查找
+  const codexModel = getModelInfo('codex', providerId)
+  if (codexModel) return codexModel.friendlyName || codexModel.id
+  // 尝试从 claude 模型中查找
+  const claudeModel = getModelInfo('claude', providerId)
+  if (claudeModel) return claudeModel.friendlyName || claudeModel.id
+  return providerId
+}
+
+function getSessionAvailabilityTitle(session) {
+  if (session?.sessionAvailable !== false) return ''
+  const initProvider = getProviderDisplayName(session?.initProvider)
+  const currentProvider = getProviderDisplayName(session?.currentProvider)
+  return `创建时供应商: ${initProvider}；当前供应商: ${currentProvider}`
+}
+
 function isSessionDebugEnabled(sessionId) {
   return resolveSessionSettingsForDisplay(sessionId).sessionMeta?.debug === true
 }
@@ -829,19 +855,6 @@ watch([showConfigPanel, fileSectionHeight], () => {
       <IconButton
         class="file-toggle-btn"
         size="sm"
-        :class="{ active: showConfigPanel }"
-        @click="toggleConfigPanel"
-        :title="showConfigPanel ? '隐藏项目看板' : '显示项目看板'"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="4" width="18" height="16" rx="2"/>
-          <path d="M9 4v16"/>
-          <path d="M15 10v10"/>
-        </svg>
-      </IconButton>
-      <IconButton
-        class="file-toggle-btn"
-        size="sm"
         :class="{ active: previewPanelVisible }"
         @click="emit('togglePreviewPanel')"
         :title="previewPanelVisible ? '隐藏预览区' : '显示预览区'"
@@ -886,45 +899,6 @@ watch([showConfigPanel, fileSectionHeight], () => {
           {{ terminalRunningCount > 9 ? '9+' : terminalRunningCount }}
         </span>
       </IconButton>
-    </div>
-
-    <!-- 第三行：项目配置摘要 -->
-    <div v-if="showConfigPanel" class="sidebar-header-row3">
-      <div class="config-panel-header">
-        <span class="config-panel-title">项目看板</span>
-      </div>
-      <div class="config-details" v-if="!loadingConfig">
-        <div class="detail-section">
-          <div class="detail-title">模型</div>
-          <div class="detail-list">
-            <div class="detail-item">
-              <span class="item-name">{{ configSummary.configName }}<span v-if="configSummary.cardName" class="card-name">({{ configSummary.cardName }})</span></span>
-            </div>
-          </div>
-        </div>
-        <div class="detail-section" v-if="configSummary.prompts.length > 0">
-          <div class="detail-title">提示词</div>
-          <div class="detail-list">
-            <div class="detail-item" v-for="prompt in configSummary.prompts" :key="prompt.id">
-              <span class="item-name">{{ prompt.name }}</span>
-              <span class="item-badge base" v-if="prompt.isBase">基础</span>
-            </div>
-          </div>
-        </div>
-        <div class="detail-section" v-if="configSummary.documents.length > 0">
-          <div class="detail-title">文档</div>
-          <div class="detail-list">
-            <div class="detail-item" v-for="doc in configSummary.documents" :key="doc.id">
-              <span class="item-name">{{ doc.name }}</span>
-              <span class="item-badge base" v-if="doc.isBase">基础</span>
-            </div>
-          </div>
-        </div>
-        <div class="detail-empty" v-if="configSummary.prompts.length === 0 && configSummary.documents.length === 0">
-          未配置提示词和文档
-        </div>
-      </div>
-      <div v-else class="config-loading-panel">加载中...</div>
     </div>
 
     <div class="sidebar-body">
@@ -996,12 +970,25 @@ watch([showConfigPanel, fileSectionHeight], () => {
             :key="session.id"
             :data-session-id="session.id"
             class="session-item"
-            :class="{ active: currentSession?.id === session.id }"
+            :class="{ active: currentSession?.id === session.id, unavailable: session.sessionAvailable === false }"
             @click="handleSelect(session)"
             @contextmenu="handleContextMenu($event, session)"
           >
             <div class="session-status-column">
-              <div class="session-status" :class="getSessionStatus(session.id)" />
+              <template v-if="session.sessionAvailable === false">
+                <div
+                  class="session-unavailable-icon"
+                  :title="getSessionAvailabilityTitle(session)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                  </svg>
+                </div>
+              </template>
+              <template v-else>
+                <div class="session-status" :class="getSessionStatus(session.id)" />
+              </template>
               <div
                 v-if="isSessionDebugEnabled(session.id)"
                 class="session-debug-badge"
@@ -1015,7 +1002,8 @@ watch([showConfigPanel, fileSectionHeight], () => {
               <div class="session-row1">
                 <span class="session-name">
                   <span class="session-name-text">{{ getSessionName(session) }}</span>
-                  <span class="session-id"> - {{ session.id.slice(0, 8) }}</span>
+                  <template v-if="getSessionBindingLabel(session)"> - <span class="session-binding-label">{{ getSessionBindingLabel(session) }}</span></template>
+                  <span v-else class="session-id"> - {{ session.id.slice(0, 8) }}</span>
                 </span>
               </div>
               <div v-if="hasSessionSecondaryInfo(session)" class="session-row2" :data-session-id="session.id">
@@ -1043,11 +1031,18 @@ watch([showConfigPanel, fileSectionHeight], () => {
               <div class="session-row4">
                 <span>{{ session.messageCount || 0 }} 条消息, {{ formatTime(session.updatedAt) }}</span>
                 <span
-                  v-if="getSessionBindingLabel(session)"
+                  v-if="false"
                   class="session-binding-badge"
                   :class="getSessionBindingClass(session)"
                 >
                   {{ getSessionBindingLabel(session) }}
+                </span>
+                <span
+                  v-if="false"
+                  class="session-binding-badge unavailable"
+                  :title="getSessionAvailabilityTitle(session)"
+                >
+                  {{ getSessionAvailabilityLabel(session) }}
                 </span>
                 <span
                   class="session-tool-badge"
@@ -1523,6 +1518,21 @@ watch([showConfigPanel, fileSectionHeight], () => {
   box-shadow: 0 0 8px rgba(245, 158, 11, 0.45);
 }
 
+.session-unavailable-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: #EF4444;
+  flex-shrink: 0;
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: default;
+}
+
 .session-debug-badge {
   display: inline-flex;
   align-items: center;
@@ -1669,6 +1679,17 @@ watch([showConfigPanel, fileSectionHeight], () => {
   flex-shrink: 0;
 }
 
+.session-name .session-binding-label {
+  font-size: 10px;
+  color: #FCD34D;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.34);
+  border-radius: 999px;
+  padding: 0 6px;
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
 .config-badge {
   font-size: 10px;
   color: #F97316;
@@ -1740,6 +1761,14 @@ watch([showConfigPanel, fileSectionHeight], () => {
   flex-shrink: 0;
 }
 
+.session-item.unavailable {
+  opacity: 0.56;
+}
+
+.session-item.unavailable.active {
+  opacity: 0.72;
+}
+
 .session-counts-measure {
   position: absolute;
   visibility: hidden;
@@ -1802,6 +1831,12 @@ watch([showConfigPanel, fileSectionHeight], () => {
 
 .menu-item.warning:hover {
   background: rgba(245, 158, 11, 0.1);
+}
+
+.session-binding-badge.unavailable {
+  color: #FCA5A5;
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.28);
 }
 
 .menu-item.success {

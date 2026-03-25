@@ -328,9 +328,9 @@ async function flushQueuedMessages() {
 }
 
 watch(
-  () => [isProcessing.value, !!pendingPermission.value, !!pendingControlRequest.value, queuedMessageCount.value],
+  () => [isProcessing.value, !!pendingPermission.value, !!pendingControlRequest.value, queuedMessageCount.value, runtimeActive.value],
   () => {
-    if (!isProcessing.value && !pendingPermission.value && !pendingControlRequest.value && queuedMessageCount.value > 0) {
+    if (!isProcessing.value && !pendingPermission.value && !pendingControlRequest.value && queuedMessageCount.value > 0 && runtimeActive.value) {
       void flushQueuedMessages()
     }
   }
@@ -953,6 +953,15 @@ async function handleSendMessage(userText) {
       content: sessionUnavailableMessage.value || '当前会话不可用',
       timestamp: new Date()
     })
+    return
+  }
+
+  // 如果实例未启动，先入队并启动实例
+  if (!runtimeActive.value) {
+    enqueueMessage(userText)
+    inputMessage.value = ''
+    scrollToBottom(true)
+    emit('startSession', { id: currentSession.value.id })
     return
   }
 

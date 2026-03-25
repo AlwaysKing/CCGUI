@@ -796,6 +796,12 @@ watch(() => sessionStore.currentSessionId, async (newSessionId, oldSessionId) =>
   if (newSessionId && newSessionId !== oldSessionId) {
     // 等待 DOM 更新
     await nextTick()
+    // 切换 session 时同步权限模式
+    if (sessionStore.currentSession?.permissionMode) {
+      permissionMode.value = sessionStore.currentSession.permissionMode
+    } else {
+      permissionMode.value = 'default'
+    }
     // 切换 session 时强制滚动到底部
     setTimeout(() => {
       scrollToBottom(true)

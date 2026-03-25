@@ -351,7 +351,7 @@ class ClaudeClient {
           clearTimeout(timeout)
           timeout = null
         }
-        this.off('control_response', responseHandler)
+        this.off('control-response', responseHandler)
       }
 
       // Set up one-time handler for the response
@@ -378,7 +378,7 @@ class ClaudeClient {
         }
       }
 
-      this.on('control_response', responseHandler)
+      this.on('control-response', responseHandler)
 
       // Send initialize request
       const initRequest = {

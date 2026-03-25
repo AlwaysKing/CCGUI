@@ -961,7 +961,7 @@ async function handleSendMessage(userText) {
     enqueueMessage(userText)
     inputMessage.value = ''
     scrollToBottom(true)
-    emit('startSession', { id: currentSession.value.id })
+    emit('startSession', { id: sessionStore.currentSession?.id })
     return
   }
 

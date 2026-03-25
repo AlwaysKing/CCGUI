@@ -554,6 +554,56 @@ class SessionInstance {
     }
   }
 
+  resolveConfiguredRuntimeSubModel(settings = null, provider = null) {
+    const resolvedProvider = provider || this.provider || this.envInfo?.provider || 'claude'
+    const appConfig = appConfigManager.loadConfig()
+    const effectiveSettings = settings || projectService.resolveRuntimeConfig(this.projectId, this.id).settings
+    const selectedSystemModelId = resolvedProvider === 'codex'
+      ? ((effectiveSettings?.targetKind === 'openai') ? null : (appConfig?.settings?.selectedCodexModelId || null))
+      : (appConfig?.settings?.selectedClaudeModelId || null)
+    const effectiveModelId = effectiveSettings?.modelId || selectedSystemModelId || null
+
+    if (!effectiveModelId) {
+      return ''
+    }
+
+    const configuredModel = findProviderModel(appConfig, resolvedProvider, effectiveModelId)
+    if (!configuredModel) {
+      return ''
+    }
+
+    const cards = Array.isArray(configuredModel.modelCards) ? configuredModel.modelCards : []
+    const targetCard = effectiveSettings?.modelCardId
+      ? cards.find(card => card.id === effectiveSettings.modelCardId)
+      : (cards.find(card => card.id === configuredModel.defaultCardId) || cards[0] || null)
+
+    return typeof targetCard?.modelName === 'string' ? targetCard.modelName.trim() : ''
+  }
+
+  async applyConfiguredClaudeStartupModel(settings = null) {
+    if (this.provider !== 'claude' || typeof this.runtimeManager?.sendControlRequest !== 'function') {
+      return
+    }
+
+    const configuredSubModel = this.resolveConfiguredRuntimeSubModel(settings, 'claude')
+    if (!configuredSubModel) {
+      return
+    }
+
+    const currentRuntimeModel = typeof this.envInfo?.model === 'string' ? this.envInfo.model.trim() : ''
+    if (currentRuntimeModel === configuredSubModel) {
+      return
+    }
+
+    logger.info(`[SessionInstance] Applying configured Claude startup model for session ${this.id}: ${configuredSubModel}`)
+    await this.runtimeManager.sendControlRequest({
+      subtype: 'set_session_submodel',
+      model: configuredSubModel,
+      reasoningEffort: (typeof settings?.effort === 'string' && settings.effort.trim()) || 'medium',
+      silent: true
+    })
+  }
+
   /**
    * 启动运行时实例（懒加载）
    */
@@ -658,15 +708,6 @@ class SessionInstance {
         this.emit('env-info', this.envInfo)
       }
 
-      const runtimeSessionIdentifier = this.runtimeManager.getSessionIdentifier?.()
-      if (runtimeSessionIdentifier && this.envInfo.session_id !== runtimeSessionIdentifier) {
-        this.envInfo.session_id = runtimeSessionIdentifier
-        historyManager.updateSessionEnvInfo(this.projectId, this.id, this.envInfo)
-        this.emit('env-info', this.envInfo)
-      }
-
-      this.persistRuntimeSessionSettingsPatch()
-
       const readyInfo = this.pendingPostStartNotification
         ? {
             operationId: this.pendingLifecycleOperation?.id || null,
@@ -690,6 +731,21 @@ class SessionInstance {
         })
         this.pendingPostStartNotification = null
       }
+
+      const runtimeSessionIdentifier = this.runtimeManager.getSessionIdentifier?.()
+      if (runtimeSessionIdentifier && this.envInfo.session_id !== runtimeSessionIdentifier) {
+        this.envInfo.session_id = runtimeSessionIdentifier
+        historyManager.updateSessionEnvInfo(this.projectId, this.id, this.envInfo)
+        this.emit('env-info', this.envInfo)
+      }
+
+      try {
+        await this.applyConfiguredClaudeStartupModel(settings)
+      } catch (error) {
+        logger.warn(`[SessionInstance] Failed to apply configured Claude startup model for session ${this.id}: ${error.message}`)
+      }
+
+      this.persistRuntimeSessionSettingsPatch()
 
       this.pendingLifecycleReason = null
       this.pendingLifecycleOperation = null

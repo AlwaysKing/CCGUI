@@ -236,11 +236,13 @@ class ClaudeAdapter extends ClaudeClient {
         providerPid: this.getPid() || null
       }
       this.emit('env-info', this.envInfo)
-      this.emit('system-notification', {
-        type: 'session-model-changed',
-        provider: 'claude',
-        model: String(request.model)
-      })
+      if (request?.silent !== true) {
+        this.emit('system-notification', {
+          type: 'session-model-changed',
+          provider: 'claude',
+          model: String(request.model)
+        })
+      }
       return
     }
 
@@ -254,11 +256,13 @@ class ClaudeAdapter extends ClaudeClient {
         providerPid: this.getPid() || null
       }
       this.emit('env-info', this.envInfo)
-      this.emit('system-notification', {
-        type: 'session-model-changed',
-        provider: 'claude',
-        model: String(request.model)
-      })
+      if (request?.silent !== true) {
+        this.emit('system-notification', {
+          type: 'session-model-changed',
+          provider: 'claude',
+          model: String(request.model)
+        })
+      }
     }
   }
 

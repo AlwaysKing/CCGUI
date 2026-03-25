@@ -96,6 +96,8 @@ const isResizing = ref(false) // 是否正在调整大小
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
 let previousWindowHeight = null // 上一次窗口高度
+let chatPanelHeight = ref(0) // chat-panel 容器的高度
+let chatPanelResizeObserver = null // ResizeObserver 实例
 const inputHistory = computed(() => sessionStore.currentSession?.inputHistory || [])
 // Note: isLoadingHistory removed - history is now loaded by SessionStore/SessionInstance
 
@@ -514,6 +516,7 @@ onMounted(async () => {
 
   // 记录初始窗口高度
   previousWindowHeight = window.innerHeight
+  chatPanelHeight.value = document.querySelector('.chat-panel')?.offsetHeight || 0
 
   // 监听窗口大小变化，将高度变化全部作用到 messages 区域
   window.addEventListener('resize', handleWindowResize)
@@ -526,6 +529,27 @@ onMounted(async () => {
       }
     })
     resizeObserver.observe(messagesContainer.value)
+  }
+
+  // 监听 chat-panel 容器大小变化
+  const chatPanel = document.querySelector('.chat-panel')
+  if (chatPanel) {
+    chatPanelResizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        chatPanelHeight.value = entry.contentRect.height
+        // 如果当前有设置的消息高度，需要重新计算最大高度
+        if (messagesHeight.value) {
+          const inputAreaHeight = 180
+          const maxPossibleHeight = Math.max(200, chatPanelHeight.value - inputAreaHeight)
+          const currentHeight = parseInt(messagesHeight.value)
+          // 如果当前高度超过了新的最大高度，调整它
+          if (currentHeight > maxPossibleHeight) {
+            messagesHeight.value = maxPossibleHeight + 'px'
+          }
+        }
+      }
+    })
+    chatPanelResizeObserver.observe(chatPanel)
   }
 
   // 点击外部关闭操作菜单 - 现在由 MessageList 组件内部处理
@@ -567,6 +591,11 @@ onUnmounted(() => {
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('ccgui-session-complete', handleSessionComplete)
   window.removeEventListener('ccgui-shortcut', handleChatShortcut)
+  // 清理 chat-panel 大小变化监听器
+  if (chatPanelResizeObserver) {
+    chatPanelResizeObserver.disconnect()
+    chatPanelResizeObserver = null
+  }
 })
 
 defineExpose({
@@ -1061,9 +1090,26 @@ function startResize(event) {
     if (!isResizing.value) return
 
     const deltaY = e.clientY - startY
-    // 计算最大高度：窗口高度 - env-header(约50px) - 输入区域最小高度(160px，包含padding)
-    const maxHeight = window.innerHeight - 50 - 160
-    const newHeight = Math.max(200, Math.min(maxHeight, startHeight + deltaY))
+
+    // 向上拖拽压缩 messages 区域
+    // 向下拖拽扩大 messages 区域
+    let newHeight = startHeight + deltaY
+
+    // 使用 chat-panel 的当前高度
+    const currentChatPanelHeight = chatPanelHeight.value
+    if (currentChatPanelHeight <= 0) {
+      // 如果还没有获取到高度，使用 window.innerHeight 作为回退
+      const maxPossibleHeight = window.innerHeight - 180
+      newHeight = Math.max(200, Math.min(maxPossibleHeight, newHeight))
+    } else {
+      // 使用 chat-panel 的高度
+      const inputAreaHeight = 180
+      const maxPossibleHeight = currentChatPanelHeight - inputAreaHeight
+      const minPossibleHeight = 200
+
+      // 限制高度范围
+      newHeight = Math.max(minPossibleHeight, Math.min(maxPossibleHeight, newHeight))
+    }
 
     messagesHeight.value = newHeight + 'px'
   }
@@ -1573,7 +1619,7 @@ async function handleQuestionAnswer(requestId, answers) {
       @toggle-collapse="emit('toggleCollapse')"
       @pid-click="handlePidClick"
     />
-    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight, flex: '0 0 auto' } : {}">
+    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight } : {}">
       <!-- 粘性头部 - 浮动在聊天内容上方 -->
       <StickyHeader
         v-if="stickyMessage"
@@ -2098,7 +2144,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
 .messages {
   flex: 1 1 auto;
-  min-height: 200px;
+  min-height: 80px;
   overflow-y: auto;
   padding: 20px;
   position: relative;
@@ -2106,6 +2152,12 @@ async function handleQuestionAnswer(requestId, answers) {
   /* Modern scrollbar styling */
   scrollbar-width: thin;
   scrollbar-color: #52525B transparent;
+}
+
+/* 当设置了固定高度时 */
+.messages[style*="height"] {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
 }
 
 
@@ -2549,11 +2601,12 @@ async function handleQuestionAnswer(requestId, answers) {
   flex-direction: column;
   flex: 0 0 auto;
   min-height: 0;
+  flex-shrink: 0; /* 防止被压缩 */
 }
 
 .input-stack.resizable-expanded {
   flex: 1 1 auto;
-  min-height: 165px;
+  min-height: 120px;
 }
 
 .queued-message-strip {
@@ -2684,7 +2737,7 @@ async function handleQuestionAnswer(requestId, answers) {
   display: flex;
   -webkit-app-region: no-drag;
   flex: 0 0 auto;
-  min-height: 165px;
+  min-height: 120px;
   background: transparent;
 }
 

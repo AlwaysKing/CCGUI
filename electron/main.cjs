@@ -333,14 +333,14 @@ function createWindow() {
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          "default-src 'self' http://localhost:5173; " +
-          "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5173 ws://localhost:5173; " +
-          "style-src 'self' 'unsafe-inline' http://localhost:5173; " +
-          "connect-src 'self' http://localhost:5173 ws://localhost:5173; " +
-          "img-src 'self' data: http://localhost:5173 ccgui-asset:; " +
-          "font-src 'self' data: http://localhost:5173; " +
-          "worker-src 'self' blob: http://localhost:5173; " +
-          "child-src 'self' blob: http://localhost:5173; " +
+          "default-src 'self' http://127.0.0.1:5173; " +
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:5173 ws://127.0.0.1:5173; " +
+          "style-src 'self' 'unsafe-inline' http://127.0.0.1:5173; " +
+          "connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; " +
+          "img-src 'self' data: http://127.0.0.1:5173 ccgui-asset:; " +
+          "font-src 'self' data: http://127.0.0.1:5173; " +
+          "worker-src 'self' blob: http://127.0.0.1:5173; " +
+          "child-src 'self' blob: http://127.0.0.1:5173; " +
           "object-src 'none';"
         ]
       }
@@ -349,7 +349,7 @@ function createWindow() {
 
   // Load app
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173')
+    mainWindow.loadURL('http://127.0.0.1:5173')
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
@@ -798,6 +798,30 @@ async function openPathInSystemFileManager(targetPath, { reveal = false } = {}) 
   }
 }
 
+async function openFileWithApplication(targetPath, application = 'default') {
+  if (!targetPath || typeof targetPath !== 'string') {
+    throw new Error('缺少目标路径')
+  }
+
+  if (application === 'default') {
+    const openError = await shell.openPath(targetPath)
+    if (openError) {
+      throw new Error(openError)
+    }
+    return
+  }
+
+  if (process.platform === 'darwin') {
+    await execFileAsync('open', ['-a', application, targetPath])
+    return
+  }
+
+  const openError = await shell.openPath(targetPath)
+  if (openError) {
+    throw new Error(openError)
+  }
+}
+
 function stopProjectFileWatcher() {
   if (projectFileWatcher) {
     projectFileWatcher.close()
@@ -1189,6 +1213,26 @@ ipcMain.handle('get-session-config', async (event, { projectId, sessionId }) => 
   }
 })
 
+ipcMain.handle('get-session-available', async (event, { projectId, sessionId }) => {
+  try {
+    const result = projectService.getSessionAvailable(projectId, sessionId)
+    return { success: true, ...result }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to get session availability', { projectId, sessionId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('get-model-config-summary', async (event, options = {}) => {
+  try {
+    const result = projectService.getModelConfigSummary(options || {})
+    return { success: true, ...result }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to get model config summary', { options, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 // Update session config
 ipcMain.handle('update-session-config', async (event, { projectId, sessionId, updates }) => {
   try {
@@ -1477,13 +1521,17 @@ ipcMain.handle('delete-session', async (event, { sessionId, projectId }) => {
   // Also close the session instance if it's open
   sessionManager.closeSession(sessionId)
   try {
-    await projectService.deleteSession(projectId, sessionId)
-    logger.info('[Sessions] Deleted session', { sessionId, projectId })
+    const result = await projectService.deleteSession(projectId, sessionId)
+    logger.info('[Sessions] Deleted session', {
+      sessionId,
+      projectId,
+      providerDeleted: result?.providerDeleted !== false
+    })
+    return { success: true, ...result }
   } catch (e) {
-    logger.info('[Sessions] Failed to delete session cleanly', { sessionId, projectId, error: e.message })
+    logger.error('[Sessions] Failed to delete session cleanly', { sessionId, projectId, error: e.message })
+    return { success: false, error: e.message }
   }
-
-  return { success: true }
 })
 
 // Open a session (returns session info for compatibility)
@@ -1518,6 +1566,30 @@ ipcMain.handle('rename-session', async (event, { sessionId, projectId, name }) =
 // Open project in new window
 ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
   try {
+    // Debug: log all windows and their projectIds
+    const allWindows = BrowserWindow.getAllWindows()
+    logger.info('[Window] Checking for existing project window', {
+      requestedProjectId: projectId,
+      totalWindows: allWindows.length,
+      windowProjectIds: allWindows.map(win => ({
+        id: win.id,
+        projectId: win.projectId,
+        title: win.getTitle()
+      }))
+    })
+
+    // Check if project is already open in another window
+    const existingWindow = allWindows.find(win => win.projectId === projectId)
+    if (existingWindow) {
+      // Focus the existing window instead of creating a new one
+      if (existingWindow.isMinimized()) {
+        existingWindow.restore()
+      }
+      existingWindow.focus()
+      logger.info('[Window] Project already open, focused existing window', { projectId, windowId: existingWindow.id })
+      return { success: true, windowId: existingWindow.id, reused: true }
+    }
+
     // Get project info
     const projects = await projectService.scanProjects()
     const project = projects.find(p => p.id === projectId)
@@ -1548,7 +1620,7 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
 
     // Load app with project ID
     if (isDev) {
-      const url = `http://localhost:5173/?projectId=${encodeURIComponent(projectId)}`
+      const url = `http://127.0.0.1:5173/?projectId=${encodeURIComponent(projectId)}`
       logger.info('[Window] Loading URL in new window', { url })
       newWindow.loadURL(url)
     } else {
@@ -1568,6 +1640,42 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
   } catch (error) {
     logger.error('[Window] Failed to create new window', { error: error.message })
     throw error
+  }
+})
+
+// Focus project window if already open, returns { focused: true } or { focused: false }
+ipcMain.handle('focus-project-window', async (event, { projectId }) => {
+  try {
+    const allWindows = BrowserWindow.getAllWindows()
+    logger.info('[Window] Checking for existing project window to focus', {
+      requestedProjectId: projectId,
+      totalWindows: allWindows.length,
+      windowProjectIds: allWindows.map(win => ({
+        id: win.id,
+        projectId: win.projectId,
+        title: win.getTitle()
+      }))
+    })
+
+    // Find window with this project (exclude current window)
+    const currentWindow = BrowserWindow.fromWebContents(event.sender)
+    const existingWindow = allWindows.find(win => win !== currentWindow && win.projectId === projectId)
+
+    if (existingWindow) {
+      // Focus the existing window
+      if (existingWindow.isMinimized()) {
+        existingWindow.restore()
+      }
+      existingWindow.focus()
+      logger.info('[Window] Project already open in another window, focused it', { projectId, windowId: existingWindow.id })
+      return { focused: true, windowId: existingWindow.id }
+    }
+
+    logger.info('[Window] Project not open in another window', { projectId })
+    return { focused: false }
+  } catch (error) {
+    logger.error('[Window] Failed to focus project window', { error: error.message })
+    return { focused: false }
   }
 })
 
@@ -1591,12 +1699,16 @@ ipcMain.handle('select-directory', async () => {
   return result
 })
 
-// Update window title
-ipcMain.handle('update-window-title', async (event, { title }) => {
+// Update window title and projectId
+ipcMain.handle('update-window-title', async (event, { title, projectId }) => {
   const window = BrowserWindow.fromWebContents(event.sender)
   if (window) {
     window.setTitle(title)
-    logger.info('[Window] Updated window title:', title)
+    // Update projectId for tracking which project is open in this window
+    if (projectId !== undefined) {
+      window.projectId = projectId || null
+    }
+    logger.info('[Window] Updated window title:', title, { projectId })
     return { success: true }
   }
   return { success: false, error: 'Window not found' }
@@ -1649,6 +1761,12 @@ ipcMain.handle('watch-project-files', async (event, { projectPath }) => {
       (eventType, filename) => {
         const relativePath = normalizePathSlashes(filename || '')
         if (shouldIgnoreWatchedPath(relativePath)) {
+          return
+        }
+
+        // 检查 webContents 是否已被销毁
+        if (event.sender.isDestroyed()) {
+          stopProjectFileWatcher()
           return
         }
 
@@ -2068,6 +2186,49 @@ ipcMain.handle('open-project-entry-in-finder', async (event, { projectPath, targ
   } catch (error) {
     logger.error('[Files] Failed to open project entry in finder', { projectPath, targetPath, mode, error: error.message })
     return { success: false, error: error.message || '打开失败' }
+  }
+})
+
+ipcMain.handle('open-path-in-finder', async (event, { targetPath, mode = 'reveal' }) => {
+  try {
+    if (!targetPath) {
+      throw new Error('缺少目标路径')
+    }
+
+    if (!['reveal', 'open'].includes(mode)) {
+      throw new Error('无效的打开模式')
+    }
+
+    const absoluteTargetPath = path.resolve(targetPath)
+    if (!fs.existsSync(absoluteTargetPath)) {
+      throw new Error('目标不存在')
+    }
+
+    const stat = fs.statSync(absoluteTargetPath)
+    if (!stat.isDirectory() || mode === 'reveal') {
+      await openPathInSystemFileManager(absoluteTargetPath, { reveal: true })
+    } else {
+      await openPathInSystemFileManager(absoluteTargetPath)
+    }
+
+    return { success: true }
+  } catch (error) {
+    logger.error('[Files] Failed to open absolute path in finder', { targetPath, mode, error: error.message })
+    return { success: false, error: error.message || '打开失败' }
+  }
+})
+
+ipcMain.handle('open-file-with-application', async (event, { targetPath, application = 'default' }) => {
+  try {
+    await openFileWithApplication(targetPath, application)
+    return { success: true }
+  } catch (error) {
+    logger.error('[Files] Failed to open file with application', {
+      targetPath,
+      application,
+      error: error.message
+    })
+    return { success: false, error: error.message || '打开文件失败' }
   }
 })
 
@@ -2761,6 +2922,18 @@ function findWindowByProjectPath(projectPath) {
  * @param {string} projectPath - Original project path (for window lookup)
  */
 function openProjectWindow(projectId, projectName, projectPath) {
+  // Check if project is already open in another window
+  const existingWindow = BrowserWindow.getAllWindows().find(win => win.projectId === projectId)
+  if (existingWindow) {
+    // Focus the existing window instead of creating a new one
+    if (existingWindow.isMinimized()) {
+      existingWindow.restore()
+    }
+    existingWindow.focus()
+    logger.info('[Window] Project already open, focused existing window', { projectId, windowId: existingWindow.id })
+    return existingWindow
+  }
+
   // Create new BrowserWindow
   const newWindow = new BrowserWindow({
     width: 1200,
@@ -2786,7 +2959,7 @@ function openProjectWindow(projectId, projectName, projectPath) {
 
   // Load app with project ID
   if (isDev) {
-    const url = `http://localhost:5173/?projectId=${encodeURIComponent(projectId)}`
+    const url = `http://127.0.0.1:5173/?projectId=${encodeURIComponent(projectId)}`
     logger.info('[Window] Loading URL in new window', { url })
     newWindow.loadURL(url)
   } else {
@@ -2892,7 +3065,7 @@ function createNewWindow() {
 
   // Load app without project ID (shows hello page)
   if (isDev) {
-    newWindow.loadURL('http://localhost:5173')
+    newWindow.loadURL('http://127.0.0.1:5173')
   } else {
     const indexPath = path.join(__dirname, '../dist/index.html')
     newWindow.loadURL(`file://${indexPath}`)

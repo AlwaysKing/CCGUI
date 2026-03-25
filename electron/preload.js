@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Get session state
   getSessionState: (options) => ipcRenderer.invoke('get-session-state', options),
+  getSessionAvailable: (options) => ipcRenderer.invoke('get-session-available', options),
   listSessionSubmodels: (options) => ipcRenderer.invoke('list-session-submodels', options),
   setSessionModel: (options) => ipcRenderer.invoke('set-session-model', options),
   setSessionSubmodel: (options) => ipcRenderer.invoke('set-session-submodel', options),
@@ -124,7 +125,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   getRuntimeInfo: (options) => ipcRenderer.invoke('get-runtime-info', options),
-  getRuntimeInitInfo: () => ipcRenderer.invoke('get-runtime-init-info'),
+  getRuntimeInitInfo: (options) => ipcRenderer.invoke('get-runtime-init-info', options),
   isRuntimeReady: (options) => ipcRenderer.invoke('is-runtime-ready', options),
   sendRuntimeToolResult: (options) => ipcRenderer.invoke('send-runtime-tool-result', options),
 
@@ -144,9 +145,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSessionMessages: (options) => ipcRenderer.invoke('get-session-messages', options),
   getRunningSessions: () => ipcRenderer.invoke('get-running-sessions'),
   openProjectInNewWindow: (options) => ipcRenderer.invoke('open-project-in-new-window', options),
+  focusProjectWindow: (options) => ipcRenderer.invoke('focus-project-window', options),
   checkProjectExists: (options) => ipcRenderer.invoke('check-project-exists', options),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   updateWindowTitle: (options) => ipcRenderer.invoke('update-window-title', options),
+  focusProjectWindow: (options) => ipcRenderer.invoke('focus-project-window', options),
   listProjectFiles: (options) => ipcRenderer.invoke('list-project-files', options),
   getProjectGitStatus: (options) => ipcRenderer.invoke('get-project-git-status', options),
   watchProjectFiles: (options) => ipcRenderer.invoke('watch-project-files', options),
@@ -160,6 +163,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   renameProjectEntry: (options) => ipcRenderer.invoke('rename-project-entry', options),
   deleteProjectEntry: (options) => ipcRenderer.invoke('delete-project-entry', options),
   openProjectEntryInFinder: (options) => ipcRenderer.invoke('open-project-entry-in-finder', options),
+  openPathInFinder: (options) => ipcRenderer.invoke('open-path-in-finder', options),
+  openFileWithApplication: (options) => ipcRenderer.invoke('open-file-with-application', options),
   openExternalUrl: (options) => ipcRenderer.invoke('open-external-url', options),
   createTerminal: (options) => ipcRenderer.invoke('create-terminal', options),
   writeTerminal: (options) => ipcRenderer.invoke('write-terminal', options),
@@ -176,6 +181,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Session Config API
   // ============================================
   getSessionConfig: (options) => ipcRenderer.invoke('get-session-config', options),
+  getModelConfigSummary: (options) => ipcRenderer.invoke('get-model-config-summary', options),
   updateSessionConfig: (options) => ipcRenderer.invoke('update-session-config', options),
   deleteSessionConfig: (options) => ipcRenderer.invoke('delete-session-config', options),
   copySession: (options) => ipcRenderer.invoke('copy-session', options),

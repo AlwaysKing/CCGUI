@@ -81,9 +81,13 @@ export const useAppStore = defineStore('app', () => {
     })
   })
 
-  // 检查是否有正在处理的 session
+  // 检查当前项目是否有正在处理的 session
   const hasProcessingSessions = computed(() => {
-    return Object.values(sessionStatuses.value).some(s => s.processing || s.streaming)
+    if (!currentProject.value) return false
+    return currentProjectSessions.value.some(session => {
+      const status = sessionStatuses.value[session.id]
+      return status?.processing || status?.streaming
+    })
   })
 
   function ensureSessionStatus(sessionId) {
@@ -420,7 +424,11 @@ export const useAppStore = defineStore('app', () => {
       await sessionStore.closeSession(sessionId)
 
       // 删除文件系统中的会话
-      await window.electronAPI.deleteSession({ sessionId, projectId: currentProject.value?.id })
+      const result = await window.electronAPI.deleteSession({ sessionId, projectId: currentProject.value?.id })
+      if (!result?.success) {
+        throw new Error(result?.error || '删除会话失败')
+      }
+
       sessions.value = sessions.value.filter(s => s.id !== sessionId)
 
       if (currentSession.value?.id === sessionId) {
@@ -447,6 +455,19 @@ export const useAppStore = defineStore('app', () => {
     try {
       isLoading.value = true
       error.value = null
+
+      const availabilityResult = await window.electronAPI.getSessionAvailable({
+        projectId: currentProject.value.id,
+        sessionId: session.id
+      })
+      if (!availabilityResult?.success) {
+        throw new Error(availabilityResult?.error || '获取会话可用性失败')
+      }
+      if (availabilityResult.available === false) {
+        const initProvider = availabilityResult.initProvider || '未知'
+        const currentProvider = availabilityResult.currentProvider || '未知'
+        throw new Error(`当前会话不可用：创建时供应商为 ${initProvider}，当前供应商为 ${currentProvider}`)
+      }
 
       clearSessionUnseenCompleted(session.id)
 

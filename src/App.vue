@@ -105,8 +105,9 @@ async function updateWindowTitle() {
       ? '首页'
       : store.currentProject?.name || '未知项目'
 
-    await window.electronAPI?.updateWindowTitle({ title })
-    logger.info('Window title updated', { title, view: currentView.value })
+    const projectId = currentView.value === 'welcome' ? null : store.currentProject?.id
+    await window.electronAPI?.updateWindowTitle({ title, projectId })
+    logger.info('Window title updated', { title, view: currentView.value, projectId })
   } catch (error) {
     logger.error('Failed to update window title', { error: error.message })
   }

@@ -44,7 +44,15 @@ export function useWelcomeProjects(store) {
     missing: categorizedProjects.value.missing.length
   }))
 
-  function selectProject(project) {
+  async function selectProject(project) {
+    // Check if project is already open in another window
+    const result = await window.electronAPI?.focusProjectWindow({ projectId: project.id })
+    if (result?.focused) {
+      // Project was already open in another window, that window is now focused
+      // Don't open it in current window
+      return
+    }
+    // Not open elsewhere, open in current window
     store.selectProject(project)
   }
 

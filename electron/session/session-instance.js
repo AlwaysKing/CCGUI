@@ -415,6 +415,11 @@ class SessionInstance {
    */
   async initialize() {
     await this.loadHistory()
+    const sessionConfig = projectService.getSessionConfig(this.projectId, this.id)
+    if (sessionConfig?.settings) {
+      this.applySessionSettings(sessionConfig.settings)
+    }
+    this.reconcilePersistedRuntimeState()
   }
 
   /**
@@ -501,7 +506,8 @@ class SessionInstance {
       envInfo: this.envInfo,
       silentMessages: this.silentMessages,
       runtimeReady: this.runtimeManager?.isReady() || false,
-      provider: this.provider
+      provider: this.provider,
+      permissionMode: this.permissionMode
     }
   }
 
@@ -769,6 +775,75 @@ class SessionInstance {
     }
 
     return this.appendSystemNotificationMessage(notificationType, data)
+  }
+
+  finalizePendingLifecycleNotification(notificationType = 'runtime-stopped', data = {}) {
+    const pendingMessage = [...this.messages].reverse().find(message =>
+      message.role === 'system_notification' &&
+      (message.notificationType === 'session-runtime-starting' || message.notificationType === 'session-runtime-restarting') &&
+      !message.data?.completedAt
+    )
+
+    if (!pendingMessage) {
+      return null
+    }
+
+    const startedAt = Number(pendingMessage.data?.startedAt || pendingMessage.timestamp?.getTime?.() || Date.now())
+    const durationMs = Math.max(0, Date.now() - startedAt)
+    pendingMessage.notificationType = notificationType
+    pendingMessage.scope = this.resolveNotificationScope(notificationType, data)
+    pendingMessage.data = {
+      ...pendingMessage.data,
+      ...data,
+      completedAt: Date.now(),
+      durationMs
+    }
+    pendingMessage.timestamp = new Date()
+    historyManager.updateMessage(this.projectId, this.id, pendingMessage.id, {
+      notificationType: pendingMessage.notificationType,
+      scope: pendingMessage.scope,
+      data: pendingMessage.data,
+      timestamp: pendingMessage.timestamp
+    })
+
+    return pendingMessage
+  }
+
+  finalizeActiveMessages() {
+    const now = Date.now()
+
+    for (const item of this.messages) {
+      const updates = {}
+
+      if (item.isStreaming) {
+        item.isStreaming = false
+        updates.isStreaming = false
+      }
+
+      if (item.isExecuting) {
+        item.isExecuting = false
+        updates.isExecuting = false
+      }
+
+      if (!item.duration && item.startTime) {
+        item.duration = now - item.startTime
+        updates.duration = item.duration
+      }
+
+      if (Object.keys(updates).length > 0 && item.id) {
+        historyManager.updateMessage(this.projectId, this.id, item.id, updates)
+      }
+    }
+  }
+
+  reconcilePersistedRuntimeState() {
+    this.finalizePendingLifecycleNotification('runtime-stopped', {
+      provider: this.provider,
+      reason: 'session-restored',
+      message: `${this.getProviderDisplayName()} 上次启动未完成，已重置为停止状态`
+    })
+    this.finalizeActiveMessages()
+    this.isProcessing = false
   }
 
   createLifecycleOperation(type, metadata = {}) {
@@ -1349,7 +1424,14 @@ class SessionInstance {
     this.emit('state-update', { isProcessing: true, inputMessage: '', inputAttachments: [] })
 
     // 发送到运行时 provider
-    await this.runtimeManager.sendMessage(userMessage)
+    try {
+      await this.runtimeManager.sendMessage(userMessage)
+    } catch (error) {
+      logger.error(`[SessionInstance] Failed to send message:`, error)
+      this.isProcessing = false
+      this.emit('state-update', { isProcessing: false })
+      throw error
+    }
   }
 
   /**
@@ -1866,20 +1948,50 @@ class SessionInstance {
   async setPermissionMode(mode) {
     logger.info(`[SessionInstance] Setting permission mode to: ${mode}`)
 
-    // 保存权限模式
-    this.permissionMode = mode
+    const normalizedMode = typeof mode === 'string' && mode.trim()
+      ? mode.trim()
+      : 'default'
+    const previousMode = this.permissionMode
+    const previousSettings = { ...(this.sessionSettings || {}) }
 
-    // 如果 provider 已启动，发送 control_request
-    if (this.runtimeManager && this.runtimeManager.isReady()) {
-      if (typeof this.runtimeManager.setPermissionMode === 'function') {
-        await this.runtimeManager.setPermissionMode(mode)
-        logger.info(`[SessionInstance] Applied permission mode via adapter: ${mode}`)
-        return
+    this.permissionMode = normalizedMode
+    this.sessionSettings = {
+      ...previousSettings,
+      permissionMode: normalizedMode
+    }
+
+    try {
+      await projectService.updateSessionConfig(this.projectId, this.id, {
+        name: projectService.getSessionConfig(this.projectId, this.id)?.name || '新会话',
+        settings: this.sessionSettings
+      })
+    } catch (error) {
+      this.permissionMode = previousMode
+      this.sessionSettings = previousSettings
+      throw error
+    }
+
+    try {
+      // 如果 provider 已启动，发送 control_request
+      if (this.runtimeManager && this.runtimeManager.isReady()) {
+        if (typeof this.runtimeManager.setPermissionMode === 'function') {
+          await this.runtimeManager.setPermissionMode(normalizedMode)
+          logger.info(`[SessionInstance] Applied permission mode via adapter: ${normalizedMode}`)
+          return
+        }
+
+        logger.info(`[SessionInstance] Provider has no live permission mode handler, will apply on next turn: ${normalizedMode}`)
+      } else {
+        logger.info(`[SessionInstance] Provider not ready, will apply permission mode on start: ${normalizedMode}`)
       }
-
-      logger.info(`[SessionInstance] Provider has no live permission mode handler, will apply on next turn: ${mode}`)
-    } else {
-      logger.info(`[SessionInstance] Provider not ready, will apply permission mode on start: ${mode}`)
+    } catch (error) {
+      this.permissionMode = previousMode
+      this.sessionSettings = previousSettings
+      await projectService.updateSessionConfig(this.projectId, this.id, {
+        name: projectService.getSessionConfig(this.projectId, this.id)?.name || '新会话',
+        settings: previousSettings
+      })
+      throw error
     }
   }
 
@@ -2193,6 +2305,10 @@ class SessionInstance {
 
   applySessionSettings(settings = null) {
     this.sessionSettings = settings && typeof settings === 'object' ? { ...settings } : {}
+    const persistedPermissionMode = typeof this.sessionSettings.permissionMode === 'string'
+      ? this.sessionSettings.permissionMode.trim()
+      : ''
+    this.permissionMode = persistedPermissionMode || 'default'
 
     if (this.runtimeManager && typeof this.runtimeManager.setDebugEnabled === 'function') {
       this.runtimeManager.setDebugEnabled(this.sessionSettings.debug === true)
@@ -2275,6 +2391,16 @@ class SessionInstance {
         }
       }
       this.currentStreamingAssistantId = null
+      if (reason !== 'restart-for-config') {
+        this.finalizePendingLifecycleNotification('runtime-stopped', {
+          provider: this.provider,
+          reason,
+          message: reason === 'project-close'
+            ? `${this.getProviderDisplayName()} 已随项目关闭停止`
+            : `${this.getProviderDisplayName()} 已停止运行`
+        })
+      }
+      this.finalizeActiveMessages()
       this.isProcessing = false
       this.emit('state-update', { isProcessing: false })
 

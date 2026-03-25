@@ -50,6 +50,10 @@ const codexProviderTargets = ref([])
 const systemPrompts = ref([])
 const systemDocuments = ref([])
 const appConfig = ref(null)
+const modelSummary = ref({
+  claude: null,
+  codex: null
+})
 const codexRuntimeSettings = ref({
   authMode: 'provider',
   model: '',
@@ -130,6 +134,15 @@ async function loadSystemConfig() {
         activeAccountId: codexSettingsResult.settings.activeAccountId || null,
         activeAccountName: codexSettingsResult.settings.activeAccountName || ''
       }
+    }
+
+    const [claudeSummaryResult, codexSummaryResult] = await Promise.all([
+      window.electronAPI.getModelConfigSummary({ provider: 'claude' }),
+      window.electronAPI.getModelConfigSummary({ provider: 'codex' })
+    ])
+    modelSummary.value = {
+      claude: claudeSummaryResult?.success ? (claudeSummaryResult.systemSummary || null) : null,
+      codex: codexSummaryResult?.success ? (codexSummaryResult.systemSummary || null) : null
     }
   } catch (e) {
     console.error('Failed to load system config:', e)
@@ -235,26 +248,7 @@ function getDefaultModelCardName(provider) {
 }
 
 function getSystemModelSummary(provider) {
-  if (provider === 'codex' && codexRuntimeSettings.value.authMode === 'chatgpt') {
-    const parts = ['账号模式']
-    if (codexRuntimeSettings.value.activeAccountName) parts.push(codexRuntimeSettings.value.activeAccountName)
-    if (codexRuntimeSettings.value.model) parts.push(codexRuntimeSettings.value.model)
-    return parts.join(' · ')
-  }
-
-  const settings = appConfig.value?.settings || {}
-  const models = provider === 'codex' ? codexSystemModels.value : claudeSystemModels.value
-  const modelId = provider === 'codex' ? settings.selectedCodexModelId : settings.selectedClaudeModelId
-  const credentialId = provider === 'codex' ? settings.selectedCodexCredentialId : settings.selectedClaudeCredentialId
-  const model = models.find(item => item.id === modelId) || null
-  if (!model) return '当前系统未设置默认模型'
-
-  const credential = getDefaultCredential(model, credentialId)
-  const defaultCard = model.modelCards?.find(item => item.id === model.defaultCardId) || model.modelCards?.[0] || null
-  const parts = [model.friendlyName || model.name || model.id]
-  if (credential?.name) parts.push(credential.name)
-  if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
-  return parts.join(' · ')
+  return modelSummary.value[provider === 'codex' ? 'codex' : 'claude'] || ''
 }
 
 function summarizeNames(items = [], fallback = '未配置') {

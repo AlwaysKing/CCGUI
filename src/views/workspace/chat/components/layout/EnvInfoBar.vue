@@ -341,6 +341,23 @@ function hideUsageTooltip(type) {
   }
 }
 
+function resolveUsageStrokeColor(percent, palette = 'default') {
+  const value = Number(percent)
+  if (!Number.isFinite(value)) {
+    return palette === 'codex' ? 'rgba(148, 163, 184, 0.72)' : 'rgba(255, 255, 255, 0.72)'
+  }
+
+  if (value >= 90) {
+    return '#EF4444'
+  }
+
+  if (value >= 80) {
+    return '#F59E0B'
+  }
+
+  return palette === 'codex' ? 'rgba(148, 163, 184, 0.72)' : 'rgba(255, 255, 255, 0.72)'
+}
+
 function toggleSilentPanel() {
   showSilentPanel.value = !showSilentPanel.value
 }
@@ -436,6 +453,7 @@ function toggleSilentPanel() {
                   cx="10"
                   cy="10"
                   r="7"
+                  :style="{ stroke: resolveUsageStrokeColor(sessionUsageSummary.progress, 'default') }"
                   :stroke-dasharray="2 * Math.PI * 7"
                   :stroke-dashoffset="2 * Math.PI * 7 * (1 - (sessionUsageSummary.progress || 0) / 100)"
                 ></circle>
@@ -474,6 +492,7 @@ function toggleSilentPanel() {
                   cx="10"
                   cy="10"
                   r="7"
+                  :style="{ stroke: resolveUsageStrokeColor(codexUsageSummary.dominant.used, 'codex') }"
                   :stroke-dasharray="2 * Math.PI * 7"
                   :stroke-dashoffset="2 * Math.PI * 7 * (1 - codexUsageSummary.dominant.used / 100)"
                 ></circle>
@@ -675,6 +694,7 @@ function toggleSilentPanel() {
   padding: 4px;
   background: transparent;
   -webkit-app-region: no-drag;
+  cursor: default;
 }
 
 .env-item-codex-usage {
@@ -716,12 +736,16 @@ function toggleSilentPanel() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  cursor: default;
+  pointer-events: none;
 }
 
 .env-progress-ring svg {
   width: 16px;
   height: 16px;
   transform: rotate(-90deg);
+  cursor: default;
+  pointer-events: none;
 }
 
 .env-progress-track,

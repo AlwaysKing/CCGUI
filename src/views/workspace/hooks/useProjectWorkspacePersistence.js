@@ -15,6 +15,33 @@ function normalizeSidebarPanelLayout(layout = {}) {
   }
 }
 
+function toSerializable(value) {
+  if (value === null || value === undefined) {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(item => toSerializable(item))
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString()
+  }
+
+  if (typeof value === 'object') {
+    const result = {}
+    for (const [key, nestedValue] of Object.entries(value)) {
+      if (typeof nestedValue === 'function') {
+        continue
+      }
+      result[key] = toSerializable(nestedValue)
+    }
+    return result
+  }
+
+  return value
+}
+
 export function useProjectWorkspacePersistence({
   store,
   fileBrowserStore,
@@ -136,11 +163,11 @@ export function useProjectWorkspacePersistence({
       return
     }
 
-    const nextSettings = {
+    const nextSettings = toSerializable({
       ...latestProjectSettings.value,
       workspaceLayout: buildWorkspaceLayoutSnapshot(),
       filePreviewState: fileBrowserStore.exportWorkspaceState()
-    }
+    })
 
     latestProjectSettings.value = nextSettings
     await window.electronAPI.updateProjectConfig({

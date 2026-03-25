@@ -101,6 +101,19 @@ export function useWorkspaceDialogs({
 
   async function handleStartSession(session) {
     try {
+      const availabilityResult = await window.electronAPI.getSessionAvailable({
+        projectId: store.currentProject?.id,
+        sessionId: session.id
+      })
+      if (!availabilityResult?.success) {
+        throw new Error(availabilityResult?.error || '获取会话可用性失败')
+      }
+      if (availabilityResult.available === false) {
+        const initProvider = availabilityResult.initProvider || '未知'
+        const currentProvider = availabilityResult.currentProvider || '未知'
+        throw new Error(`当前会话不可用：创建时供应商为 ${initProvider}，当前供应商为 ${currentProvider}`)
+      }
+
       await window.electronAPI.startSession({
         sessionId: session.id,
         projectPath: store.currentProject?.path

@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { logger } from '../../../../../utils/logger'
 
 const props = defineProps({
   request: {
@@ -119,7 +120,10 @@ function handleSubmit() {
 
   // 支持多种字段名：request_id, tool_use_id
   const requestId = props.request.request_id || props.request.tool_use_id
-  log('[AskUserQuestionDialog] Submitting answers, requestId:', requestId, 'answers:', answersMap)
+  logger.info('[AskUserQuestionDialog] Submitting answers', {
+    requestId,
+    answers: answersMap
+  })
 
   emit('answer', requestId, answersMap)
 }

@@ -493,35 +493,55 @@ class CodexClient {
   }
 
   resolveModelRuntime() {
-    if (this.projectSettings?.modelMode !== 'custom' || !this.projectSettings?.modelId) {
+    // resolveSessionSettings 已经处理好了优先级：
+    // - session.modelMode === 'custom' -> 使用 session.modelId
+    // - session.modelMode === 'project' -> 使用 project.modelId
+    // - session.modelMode === 'system' -> null
+    // 所以直接使用顶层的已解析字段即可
+    const modelId = this.projectSettings?.modelId
+    const modelCardId = this.projectSettings?.modelCardId
+    const credentialId = this.projectSettings?.credentialId
+
+    if (!modelId) {
+      logger.debug('[CodexClient] No custom model configured')
       return null
     }
 
     try {
       const appConfig = appConfigManager.loadConfig()
-      const modelConfig = findProviderModel(appConfig, 'codex', this.projectSettings.modelId)
+      const modelConfig = findProviderModel(appConfig, 'codex', modelId)
       if (!modelConfig) {
+        logger.warn('[CodexClient] Model config not found for id:', modelId)
         return null
       }
 
       const cards = modelConfig.modelCards || []
       let targetCard = null
-      if (this.projectSettings.modelCardId) {
-        targetCard = cards.find(card => card.id === this.projectSettings.modelCardId)
+      if (modelCardId) {
+        targetCard = cards.find(card => card.id === modelCardId)
       }
       if (!targetCard) {
         const defaultCardId = modelConfig.defaultCardId || cards[0]?.id
         targetCard = cards.find(card => card.id === defaultCardId) || cards[0]
       }
-      const credential = getDefaultCredential(modelConfig, this.projectSettings.credentialId)
+      const credential = getDefaultCredential(modelConfig, credentialId)
 
-      return {
+      const result = {
         modelName: targetCard?.modelName || null,
         modelProvider: buildCodexModelProviderId(modelConfig.id),
         authToken: credential?.token || null,
         credentialId: credential?.id || null,
         envKey: 'CCGUI_AUTH_KEY'
       }
+
+      logger.info('[CodexClient] Resolved model runtime:', {
+        modelId,
+        modelName: result.modelName,
+        modelProvider: result.modelProvider,
+        hasAuthToken: !!result.authToken
+      })
+
+      return result
     } catch (error) {
       logger.warn('[CodexClient] Failed to resolve model runtime', { error: error.message })
       return null
@@ -775,7 +795,7 @@ class CodexClient {
     }
 
     const modelRuntime = this.resolveModelRuntime()
-    if (this.projectSettings?.modelMode === 'custom' && modelRuntime) {
+    if (modelRuntime) {
       if (modelRuntime.modelName) {
         threadParams.model = modelRuntime.modelName
       }

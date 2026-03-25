@@ -168,8 +168,21 @@ async function handleCreateTerminal(requestId, payload = {}) {
 
   const terminalId = `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
   const resolvedCwd = payload.cwd && fs.existsSync(payload.cwd) ? payload.cwd : os.homedir()
+
+  // 过滤掉 Electron 特定的环境变量，避免影响子进程中的 require('electron')
+  const electronEnvKeys = [
+    'ELECTRON_RUN_AS_NODE',
+    'ATOM_SHELL_INTERNAL_RUN_AS_NODE',
+    'ELECTRON_NO_ATTACH_CONSOLE',
+    'GOOGLE_API_KEY'
+  ]
+  const cleanEnv = { ...process.env }
+  for (const key of electronEnvKeys) {
+    delete cleanEnv[key]
+  }
+
   const env = {
-    ...process.env,
+    ...cleanEnv,
     TERM: process.env.TERM || 'xterm-256color',
     COLORTERM: 'truecolor'
   }

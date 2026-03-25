@@ -562,13 +562,31 @@ onUnmounted(() => {
 
       <!-- Status/System 消息 -->
       <template v-else>
-        <div class="message-content" :class="{ 'status-content': message.role === 'status' }">
+        <div
+          class="message-content"
+          :class="{
+            'status-content': message.role === 'status',
+            'status-error': message.role === 'status' && message.isError
+          }"
+        >
           <div
             v-if="message.content && !(message.role === 'system' && message.subtype === 'rewind-notice')"
             class="message-text"
-            :class="{ 'status-text': message.role === 'status' }"
+            :class="{
+              'status-text': message.role === 'status',
+              'status-error-text': message.role === 'status' && message.isError
+            }"
           >
-            <div v-if="message.role !== 'assistant'">{{ message.content }}</div>
+            <div v-if="message.role !== 'assistant'">
+              <span class="status-icon" v-if="message.role === 'status' && message.isError">⚠️</span>
+              {{ message.content }}
+            </div>
+            <div v-if="message.role === 'status' && message.details" class="status-details">
+              {{ message.details }}
+            </div>
+            <div v-if="message.role === 'status' && message.suggestion" class="status-suggestion">
+              💡 {{ message.suggestion }}
+            </div>
           </div>
           <div class="message-time" v-if="message.role !== 'status' && message.role !== 'assistant' && message.role !== 'user' && message.role !== 'system'">
             {{ new Date(message.timestamp).toLocaleTimeString() }}
@@ -1131,6 +1149,41 @@ onUnmounted(() => {
   font-size: 11px;
   color: #71717A;
   background: transparent;
+}
+
+.message-content.status-error {
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 6px;
+  margin: 4px 0;
+}
+
+.message-text.status-error-text {
+  color: #ef4444;
+  font-weight: 500;
+}
+
+.status-icon {
+  margin-right: 4px;
+}
+
+.status-details {
+  font-size: 10px;
+  color: #a1a1aa;
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  text-align: left;
+}
+
+.status-suggestion {
+  font-size: 10px;
+  color: #fbbf24;
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: rgba(251, 191, 36, 0.1);
+  border-radius: 4px;
+  text-align: left;
 }
 
 .message-time {

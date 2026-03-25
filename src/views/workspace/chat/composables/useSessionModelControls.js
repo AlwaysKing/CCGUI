@@ -65,12 +65,12 @@ function resetEffortStateRefs({
   lastLoadedEffortKey.value = ''
 }
 
-function buildSubModelCacheKey(projectId, provider, modelSelectionKey) {
-  return [projectId || '', provider || '', modelSelectionKey || ''].join(':')
+function buildSubModelCacheKey(projectId, sessionId, provider, modelSelectionKey) {
+  return [projectId || '', sessionId || '', provider || '', modelSelectionKey || ''].join(':')
 }
 
-function buildEffortCacheKey(projectId, provider, model) {
-  return [projectId || '', provider || '', model || 'default'].join(':')
+function buildEffortCacheKey(projectId, sessionId, provider, model) {
+  return [projectId || '', sessionId || '', provider || '', model || 'default'].join(':')
 }
 
 export function useSessionModelControls({
@@ -118,7 +118,14 @@ export function useSessionModelControls({
   })
 
   const currentModelProvider = computed(() => {
-    return sessionConfig.value?.settings?.tool || sessionConfig.value?.settings?.provider || envInfo.value?.provider || currentSessionMeta.value?.tool || 'claude'
+    return (
+      sessionConfig.value?.settings?.toolBinding?.tool ||
+      sessionConfig.value?.settings?.tool ||
+      sessionConfig.value?.settings?.provider ||
+      envInfo.value?.provider ||
+      currentSessionMeta.value?.tool ||
+      'claude'
+    )
   })
 
   const availableModelOptions = computed(() => {
@@ -239,10 +246,11 @@ export function useSessionModelControls({
   async function loadProviderSubModels(options = {}) {
     const provider = currentModelProvider.value
     const projectId = appStore.currentProject?.id || ''
+    const sessionId = appStore.currentSession?.id || ''
     const modelSelectionKey = currentModelSelectionKey.value || ''
-    const cacheKey = buildSubModelCacheKey(projectId, provider, modelSelectionKey)
+    const cacheKey = buildSubModelCacheKey(projectId, sessionId, provider, modelSelectionKey)
 
-    if (!options.force && lastLoadedSubModelProvider.value === provider && providerSubModelOptions.value.length > 0) {
+    if (!options.force && lastLoadedSubModelProvider.value === cacheKey && providerSubModelOptions.value.length > 0) {
       return
     }
 
@@ -250,7 +258,7 @@ export function useSessionModelControls({
       const cached = subModelCache.get(cacheKey)
       providerSubModelOptions.value = Array.isArray(cached?.options) ? cached.options : []
       providerSubModelDefaultValue.value = cached?.defaultValue || ''
-      lastLoadedSubModelProvider.value = cached?.provider || provider
+      lastLoadedSubModelProvider.value = cacheKey
       return
     }
 
@@ -267,11 +275,11 @@ export function useSessionModelControls({
 
       providerSubModelOptions.value = Array.isArray(result.options) ? result.options : []
       providerSubModelDefaultValue.value = result.defaultValue || ''
-      lastLoadedSubModelProvider.value = result.provider || provider
+      lastLoadedSubModelProvider.value = cacheKey
       subModelCache.set(cacheKey, {
         options: providerSubModelOptions.value,
         defaultValue: providerSubModelDefaultValue.value,
-        provider: lastLoadedSubModelProvider.value
+        provider: result.provider || provider
       })
     } catch (error) {
       providerSubModelOptions.value = []
@@ -287,8 +295,9 @@ export function useSessionModelControls({
 
   async function loadSessionEffortCapabilities(options = {}) {
     const projectId = appStore.currentProject?.id || ''
+    const sessionId = appStore.currentSession?.id || ''
     const model = currentSubModelValue.value || (typeof envInfo.value?.model === 'string' ? envInfo.value.model.trim() : '')
-    const cacheKey = buildEffortCacheKey(projectId, currentModelProvider.value, model || 'default')
+    const cacheKey = buildEffortCacheKey(projectId, sessionId, currentModelProvider.value, model || 'default')
 
     if (!options.force && lastLoadedEffortKey.value === cacheKey && providerEffortOptions.value.length > 0) {
       return
@@ -473,8 +482,11 @@ export function useSessionModelControls({
   }
 
   function resetModelState() {
+    appConfig.value = null
     projectConfig.value = null
     sessionConfig.value = null
+    sessionTargetOptions.value = []
+    currentSessionTargetId.value = ''
     resetSubModelStateRefs({
       providerSubModelOptions,
         providerSubModelDefaultValue,

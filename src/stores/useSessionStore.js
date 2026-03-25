@@ -14,6 +14,10 @@ function log(...args) {
   logger.info(`[SessionStore] ${message}`)
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 /**
  * SessionData
  * 每个会话的完整状态（包含 UI 状态和消息）
@@ -179,6 +183,72 @@ export const useSessionStore = defineStore('session', () => {
   // 事件取消订阅函数
   let eventUnsubscribe = null
 
+  function shouldHydrateEnvInfo(session) {
+    if (!session) {
+      return false
+    }
+
+    const provider = session.envInfo?.provider
+    if (provider && provider !== 'codex') {
+      return false
+    }
+
+    return !session.envInfo?.rate_limits || !session.envInfo?.session_usage
+  }
+
+  function mergeSessionEnvInfo(session, envInfo) {
+    if (!session || !envInfo || typeof envInfo !== 'object') {
+      return
+    }
+
+    session.envInfo = {
+      ...(session.envInfo || {}),
+      ...envInfo
+    }
+
+    if (typeof envInfo.providerPid !== 'undefined') {
+      session.runtimeReady = Boolean(envInfo.providerPid)
+    }
+  }
+
+  async function hydrateSessionEnvInfo(sessionId) {
+    const session = sessions.value.get(sessionId)
+    if (!shouldHydrateEnvInfo(session)) {
+      return
+    }
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const currentSession = sessions.value.get(sessionId)
+      if (!shouldHydrateEnvInfo(currentSession)) {
+        return
+      }
+
+      try {
+        const runtimeEnvInfo = await window.electronAPI.getRuntimeInitInfo({ sessionId })
+        if (runtimeEnvInfo?.provider || runtimeEnvInfo?.rate_limits || runtimeEnvInfo?.session_usage) {
+          mergeSessionEnvInfo(currentSession, runtimeEnvInfo)
+          if (!shouldHydrateEnvInfo(currentSession)) {
+            return
+          }
+        }
+
+        const latestState = await window.electronAPI.getSessionState({ sessionId })
+        if (latestState?.envInfo) {
+          mergeSessionEnvInfo(currentSession, latestState.envInfo)
+          if (!shouldHydrateEnvInfo(currentSession)) {
+            return
+          }
+        }
+      } catch (error) {
+        log('[SessionStore] Failed to hydrate env info:', { sessionId, attempt, error: error?.message || String(error) })
+      }
+
+      if (attempt < 3) {
+        await sleep(350)
+      }
+    }
+  }
+
   /**
    * 初始化会话
    */
@@ -209,9 +279,25 @@ export const useSessionStore = defineStore('session', () => {
         sessionData.envInfo = result.state.envInfo || null
         sessionData.silentMessages = (result.state.silentMessages || []).map(msg => reactive(msg))
         sessionData.runtimeReady = result.state.runtimeReady || false
+        // 恢复权限模式
+        if (result.state.permissionMode) {
+          sessionData.permissionMode = result.state.permissionMode
+          console.log('[SessionStore] Restored permission mode:', result.state.permissionMode, 'for session:', sessionId)
+          console.log('[SessionStore] Full result state for permission mode:', {
+            sessionId,
+            hasPermissionMode: !!result.state.permissionMode,
+            permissionMode: result.state.permissionMode,
+            previousSessionPermissionMode: sessionData.permissionMode
+          })
+        } else {
+          console.log('[SessionStore] No permission mode in result.state for session:', sessionId)
+          console.log('[SessionStore] Session state keys:', Object.keys(result.state))
+        }
         if (result.state.pendingPermission) {
           sessionData.pendingPermissions = [reactive(result.state.pendingPermission)]
         }
+      } else {
+        console.log('[SessionStore] No result.state for session:', sessionId, 'result:', result)
       }
 
       // 存储到 Map
@@ -219,6 +305,8 @@ export const useSessionStore = defineStore('session', () => {
 
       // 设置为当前会话
       currentSessionId.value = sessionId
+
+      hydrateSessionEnvInfo(sessionId)
 
       log('[SessionStore] Session initialized:', sessionId)
       return sessionData
@@ -232,10 +320,20 @@ export const useSessionStore = defineStore('session', () => {
    * 切换到指定会话
    */
   async function switchToSession(sessionId, projectPath) {
+    const existingSession = sessions.value.get(sessionId)
+    console.log('[SessionStore] Switching to session:', {
+      sessionId,
+      projectPath,
+      sessionExists: !!existingSession,
+      permissionMode: existingSession?.permissionMode
+    })
+
     // 如果会话已存在，直接切换
-    if (sessions.value.has(sessionId)) {
+    if (existingSession) {
       currentSessionId.value = sessionId
-      return sessions.value.get(sessionId)
+      hydrateSessionEnvInfo(sessionId)
+      console.log('[SessionStore] Switched to existing session with permission mode:', existingSession.permissionMode)
+      return existingSession
     }
 
     // 否则初始化新会话
@@ -504,12 +602,41 @@ export const useSessionStore = defineStore('session', () => {
    */
   async function setPermissionMode(mode) {
     const session = currentSession.value
-    if (!session) return
+    if (!session) {
+      console.log('[SessionStore] Cannot set permission mode: no current session')
+      return
+    }
 
-    await window.electronAPI.setPermissionMode({
+    const previousMode = session.permissionMode
+    // 立即更新前端的 session 对象
+    session.permissionMode = mode
+    console.log('[SessionStore] Setting permission mode:', {
       sessionId: session.id,
-      mode
+      previousMode,
+      newMode: mode,
+      modesEqual: previousMode === mode
     })
+
+    try {
+      // 调用后端保存
+      const result = await window.electronAPI.setPermissionMode({
+        sessionId: session.id,
+        mode
+      })
+
+      if (result?.success === false) {
+        console.error('[SessionStore] Failed to set permission mode:', result.error)
+        // 恢复之前的模式
+        session.permissionMode = previousMode
+      } else {
+        console.log('[SessionStore] Successfully set permission mode for session:', session.id)
+      }
+    } catch (error) {
+      console.error('[SessionStore] Error setting permission mode:', error)
+      // 恢复之前的模式
+      session.permissionMode = previousMode
+      throw error
+    }
   }
 
   /**
@@ -597,7 +724,10 @@ export const useSessionStore = defineStore('session', () => {
       case 'permission-mode-change':
         // Runtime 主动切换权限模式
         log('[SessionStore] Permission mode changed:', data)
+        console.log('[SessionStore] Runtime setting permission mode to:', data, 'for session:', session.id)
+        console.log('[SessionStore] Previous permission mode:', session.permissionMode)
         session.permissionMode = data
+        console.log('[SessionStore] New permission mode:', session.permissionMode)
         break
 
       case 'fast-mode-change':
@@ -1569,12 +1699,46 @@ export const useSessionStore = defineStore('session', () => {
       session.messages.splice(existingStatusIndex, 1)
     }
 
+    // 构建更详细的错误消息
+    let displayMessage = data.message || ''
+    if (data.type === 'error') {
+      // 尝试提取更多有用的错误信息
+      const parts = [data.message]
+
+      if (data.errorType && data.errorType !== data.message) {
+        parts.push(`类型: ${data.errorType}`)
+      }
+      if (data.details && data.details !== data.message) {
+        parts.push(`详情: ${data.details}`)
+      }
+      if (data.suggestion) {
+        parts.push(`建议: ${data.suggestion}`)
+      }
+
+      // 如果有额外信息，组合成更完整的消息
+      if (parts.length > 1) {
+        displayMessage = parts.filter(Boolean).join(' | ')
+      }
+
+      // 如果原始消息太简短，尝试从 raw 数据中提取更多信息
+      if (displayMessage === 'Codex error' && data.raw) {
+        const rawInfo = data.raw.error?.message || data.raw.error?.type || data.raw.details
+        if (rawInfo) {
+          displayMessage = `Codex 错误: ${rawInfo}`
+        }
+      }
+    }
+
     // 添加新的 status 消息
-    if (data.message) {
+    if (displayMessage) {
       session.messages.push({
         id: `status-${Date.now()}`,
         role: 'status',
-        content: data.message,
+        content: displayMessage,
+        isError: data.type === 'error',
+        errorType: data.errorType || null,
+        details: data.details || null,
+        suggestion: data.suggestion || null,
         timestamp: new Date()
       })
     }

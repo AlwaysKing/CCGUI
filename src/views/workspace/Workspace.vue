@@ -356,11 +356,6 @@ function handleShortcutEvent(event) {
     return
   }
 
-  if (action === 'toggle-project-board') {
-    sessionSidebarRef.value?.toggleConfigPanel?.()
-    return
-  }
-
   if (action === 'toggle-terminal') {
     toggleTerminalPanel()
     return
@@ -460,6 +455,7 @@ function handleShortcutEvent(event) {
           <FilePreviewPanel
             :visible="fileBrowserStore.shouldShowPreviewPanel"
             :style="previewPanelStyle"
+            :project-path="store.currentProject?.path || ''"
             :tabs="fileBrowserStore.tabs"
             :active-tab="fileBrowserStore.activeTab"
             :active-git-status="fileBrowserStore.activeFileGitStatus"

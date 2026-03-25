@@ -283,10 +283,19 @@ class CodexAdapter extends CodexClient {
         break
 
       case 'error':
-        this.emit('cli-status', {
+        // 提取更详细的错误信息
+        const errorMessage = params?.message || params?.error?.message || params?.details || 'Codex error'
+        const errorDetails = {
           type: 'error',
-          message: params?.message || 'Codex error'
-        })
+          message: errorMessage,
+          // 附加更多上下文信息
+          errorType: params?.type || params?.errorType || params?.codexErrorInfo || null,
+          details: params?.details || params?.error?.details || null,
+          suggestion: params?.suggestion || params?.hint || null,
+          raw: params
+        }
+        logger.error('[CodexAdapter] CLI error notification', errorDetails)
+        this.emit('cli-status', errorDetails)
         break
 
       default:

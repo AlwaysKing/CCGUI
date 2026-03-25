@@ -35,6 +35,10 @@ const systemPrompts = ref([])
 const systemDocuments = ref([])
 const appConfig = ref(null)
 const projectConfig = ref(null)
+const modelSummary = ref({
+  systemSummary: null,
+  projectSummary: null
+})
 const codexRuntimeSettings = ref({
   authMode: 'provider',
   model: '',
@@ -112,7 +116,7 @@ const projectThemeSummary = computed(() => {
   return getChatMessageThemePresetLabel(preset)
 })
 
-async function loadSystemConfig() {
+async function loadSystemConfig(provider = selectedTool.value) {
   try {
     const result = await window.electronAPI.getAppConfig()
     if (result?.success) {
@@ -120,20 +124,29 @@ async function loadSystemConfig() {
       appConfig.value = config
       systemPrompts.value = config.settings?.prompts || []
       systemDocuments.value = config.documents || []
-      systemModels.value = getProviderModels(config, selectedTool.value)
+      if (provider === selectedTool.value) {
+        systemModels.value = getProviderModels(config, provider)
+      }
+    }
+
+    modelSummary.value = {
+      systemSummary: null,
+      projectSummary: null
     }
 
     const [targetResult, projectConfigResult, codexSettingsResult] = await Promise.all([
       window.electronAPI.getAvailableTargets({
         projectId: props.projectId,
-        provider: selectedTool.value
+        provider
       }),
       window.electronAPI.getProjectConfig({ projectId: props.projectId }),
       window.electronAPI.getCodexSettings()
     ])
-    providerTargets.value = targetResult?.success
-      ? (Array.isArray(targetResult.options) ? targetResult.options : [])
-      : []
+    if (provider === selectedTool.value) {
+      providerTargets.value = targetResult?.success
+        ? (Array.isArray(targetResult.options) ? targetResult.options : [])
+        : []
+    }
     projectConfig.value = projectConfigResult?.config || null
     if (codexSettingsResult?.success && codexSettingsResult.settings) {
       codexRuntimeSettings.value = {
@@ -142,6 +155,17 @@ async function loadSystemConfig() {
         modelProvider: codexSettingsResult.settings.modelProvider || '',
         activeAccountId: codexSettingsResult.settings.activeAccountId || null,
         activeAccountName: codexSettingsResult.settings.activeAccountName || ''
+      }
+    }
+
+    const summaryResult = await window.electronAPI.getModelConfigSummary({
+      provider,
+      projectId: props.projectId
+    })
+    if (provider === selectedTool.value && summaryResult?.success) {
+      modelSummary.value = {
+        systemSummary: summaryResult.systemSummary || null,
+        projectSummary: summaryResult.projectSummary || null
       }
     }
   } catch (e) {
@@ -222,42 +246,11 @@ function getDefaultModelCardName() {
 }
 
 function getSystemModelSummary() {
-  if (selectedTool.value === 'codex' && codexRuntimeSettings.value.authMode === 'chatgpt') {
-    const parts = ['账号模式']
-    if (codexRuntimeSettings.value.activeAccountName) parts.push(codexRuntimeSettings.value.activeAccountName)
-    if (codexRuntimeSettings.value.model) parts.push(codexRuntimeSettings.value.model)
-    return parts.join(' · ')
-  }
-
-  const settings = appConfig.value?.settings || {}
-  const modelId = selectedTool.value === 'codex' ? settings.selectedCodexModelId : settings.selectedClaudeModelId
-  const credentialId = selectedTool.value === 'codex' ? settings.selectedCodexCredentialId : settings.selectedClaudeCredentialId
-  const model = systemModels.value.find(item => item.id === modelId) || null
-  if (!model) return '当前系统未设置默认模型'
-  const credential = getDefaultCredential(model, credentialId)
-  const defaultCard = model.modelCards?.find(item => item.id === model.defaultCardId) || model.modelCards?.[0] || null
-  const parts = [model.friendlyName || model.name || model.id]
-  if (credential?.name) parts.push(credential.name)
-  if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
-  return parts.join(' · ')
+  return modelSummary.value.systemSummary || ''
 }
 
 function getProjectModelSummary() {
-  const providerSettings = selectedTool.value === 'codex'
-    ? (projectConfig.value?.settings?.providerModelSettings?.codex || projectConfig.value?.settings?.codexModelConfig || projectConfig.value?.settings || {})
-    : (projectConfig.value?.settings?.providerModelSettings?.claude || projectConfig.value?.settings?.claudeModelConfig || projectConfig.value?.settings || {})
-
-  const savedModelMode = providerSettings.modelMode || (providerSettings.modelId ? 'custom' : 'system')
-  if (savedModelMode !== 'custom' || !providerSettings.modelId) return getSystemModelSummary()
-
-  const model = systemModels.value.find(item => item.id === providerSettings.modelId) || null
-  if (!model) return '当前项目未设置默认模型'
-  const credential = getDefaultCredential(model, providerSettings.credentialId)
-  const defaultCard = model.modelCards?.find(item => item.id === (providerSettings.modelCardId || model.defaultCardId)) || model.modelCards?.[0] || null
-  const parts = [model.friendlyName || model.name || model.id]
-  if (credential?.name) parts.push(credential.name)
-  if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
-  return parts.join(' · ')
+  return modelSummary.value.projectSummary || ''
 }
 
 function togglePrompt(promptId) {

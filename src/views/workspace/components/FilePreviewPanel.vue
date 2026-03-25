@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import CodeEditor from './CodeEditor.vue'
 
 const props = defineProps({
@@ -26,15 +26,54 @@ const props = defineProps({
   showSidebarToggle: {
     type: Boolean,
     default: false
+  },
+  projectPath: {
+    type: String,
+    default: ''
   }
 })
 
 const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel', 'toggle-sidebar', 'toggle-diff'])
 
+const contextMenuRef = ref(null)
+const contextMenu = reactive({
+  show: false,
+  x: 0,
+  y: 0,
+  tab: null
+})
+
 const titleText = computed(() => {
   if (!props.activeTab) return '文件预览'
   return props.activeTab.path
 })
+
+function normalizePath(value = '') {
+  return String(value || '').replace(/\\/g, '/')
+}
+
+function isAbsolutePath(targetPath = '') {
+  const normalizedPath = normalizePath(targetPath)
+  return normalizedPath.startsWith('/') || /^[A-Za-z]:\//.test(normalizedPath)
+}
+
+function resolveTabAbsolutePath(tab) {
+  const targetPath = tab?.path || ''
+  if (!targetPath) {
+    return ''
+  }
+
+  if (isAbsolutePath(targetPath)) {
+    return normalizePath(targetPath)
+  }
+
+  const projectPath = normalizePath(props.projectPath)
+  if (!projectPath) {
+    return normalizePath(targetPath)
+  }
+
+  return normalizePath(`${projectPath.replace(/\/$/, '')}/${targetPath.replace(/^\//, '')}`)
+}
 
 function handleTabClose(event, tabPath) {
   event.preventDefault()
@@ -45,6 +84,40 @@ function handleTabClose(event, tabPath) {
 function handleCloseOthers(event, tabPath) {
   event.preventDefault()
   emit('close-others', tabPath)
+}
+
+function closeContextMenu() {
+  contextMenu.show = false
+  contextMenu.tab = null
+}
+
+function handleContextMenu(event, tab) {
+  event.preventDefault()
+  event.stopPropagation()
+  contextMenu.show = true
+  contextMenu.x = event.clientX
+  contextMenu.y = event.clientY
+  contextMenu.tab = tab
+}
+
+function handleGlobalPointerDown(event) {
+  if (!contextMenu.show) return
+  if (contextMenuRef.value?.contains(event.target)) return
+  closeContextMenu()
+}
+
+function handleGlobalContextMenu(event) {
+  if (!contextMenu.show) return
+  if (contextMenuRef.value?.contains(event.target)) return
+  closeContextMenu()
+}
+
+function handleWindowBlur() {
+  closeContextMenu()
+}
+
+function handleViewportChange() {
+  closeContextMenu()
 }
 
 function handleClosePanel(event) {
@@ -64,6 +137,75 @@ function handleToggleChatPanel(event) {
   event.stopPropagation()
   emit('toggle-chat-panel')
 }
+
+function ensureActionSucceeded(result, fallbackMessage) {
+  if (result?.success) {
+    return true
+  }
+
+  const message = result?.error || fallbackMessage
+  window.alert(message)
+  return false
+}
+
+async function handleOpenInFinder(mode = 'reveal') {
+  const targetPath = resolveTabAbsolutePath(contextMenu.tab)
+  if (!targetPath) {
+    closeContextMenu()
+    return
+  }
+
+  const result = await window.electronAPI.openPathInFinder({
+    targetPath,
+    mode
+  })
+  if (!ensureActionSucceeded(result, '在 Finder 中打开失败')) {
+    return
+  }
+  closeContextMenu()
+}
+
+async function handleOpenWithApplication(application = 'default') {
+  const targetPath = resolveTabAbsolutePath(contextMenu.tab)
+  if (!targetPath) {
+    closeContextMenu()
+    return
+  }
+
+  const result = await window.electronAPI.openFileWithApplication({
+    targetPath,
+    application
+  })
+  if (!ensureActionSucceeded(result, '打开文件失败')) {
+    return
+  }
+  closeContextMenu()
+}
+
+function handleCloseOthersFromMenu() {
+  const targetPath = contextMenu.tab?.path
+  if (!targetPath) {
+    closeContextMenu()
+    return
+  }
+
+  emit('close-others', targetPath)
+  closeContextMenu()
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', handleGlobalPointerDown, true)
+  window.addEventListener('contextmenu', handleGlobalContextMenu, true)
+  window.addEventListener('blur', handleWindowBlur)
+  window.addEventListener('resize', handleViewportChange)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', handleGlobalPointerDown, true)
+  window.removeEventListener('contextmenu', handleGlobalContextMenu, true)
+  window.removeEventListener('blur', handleWindowBlur)
+  window.removeEventListener('resize', handleViewportChange)
+})
 </script>
 
 <template>
@@ -87,7 +229,7 @@ function handleToggleChatPanel(event) {
           :title="tab.path"
           @click="handleActivateTab($event, tab.path)"
           @mousedown.stop
-          @contextmenu="handleCloseOthers($event, tab.path)"
+          @contextmenu="handleContextMenu($event, tab)"
         >
           <span v-if="tab.isDirty" class="tab-dirty-prefix">*</span>
           <span class="tab-name">{{ tab.name }}</span>
@@ -116,6 +258,21 @@ function handleToggleChatPanel(event) {
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
         </svg>
       </button>
+    </div>
+
+    <div
+      v-if="contextMenu.show"
+      ref="contextMenuRef"
+      class="context-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @click.stop
+    >
+      <button class="menu-item" @click="handleOpenInFinder('reveal')">在 Finder 中选中</button>
+      <button class="menu-item" @click="handleOpenWithApplication('Visual Studio Code')">使用 VSCode 打开</button>
+      <button class="menu-item" @click="handleOpenWithApplication('Sublime Text')">使用 Sublime 打开</button>
+      <button class="menu-item" @click="handleOpenWithApplication('default')">使用外部编辑器打开</button>
+      <div class="menu-divider"></div>
+      <button class="menu-item" @click="handleCloseOthersFromMenu">关闭其他标签</button>
     </div>
 
     <div v-if="activeTab" class="preview-body">
@@ -416,6 +573,43 @@ function handleToggleChatPanel(event) {
 
 .statusbar-btn:hover {
   background: rgba(255, 255, 255, 0.05);
+}
+
+.context-menu {
+  position: fixed;
+  min-width: 178px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(24, 24, 27, 0.98);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.42);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 220;
+  -webkit-app-region: no-drag;
+}
+
+.menu-item {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #E4E4E7;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.menu-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .statusbar-btn-text {

@@ -206,6 +206,17 @@ function updateAttachments(nextAttachments) {
   emit('update:attachments', nextAttachments)
 }
 
+async function handleAttachmentChipClick(attachment) {
+  if (props.disabled) {
+    return
+  }
+
+  insertNodeAtSelection(buildTokenNode(attachment))
+  insertTextAtCursor(' ')
+  await nextTick()
+  editorRef.value?.focus()
+}
+
 function createAttachmentFromFile(file, source = 'picker') {
   const fileName = String(file.name || file.path || '')
   const isImageFile = Boolean(
@@ -425,7 +436,10 @@ defineExpose({
 })
 
 watch(() => props.modelValue, async () => {
-  if (props.modelValue === getSerializedDomValue()) {
+  // 使用与 syncModelFromDom 相同的规范化逻辑进行比较
+  const serialized = getSerializedDomValue()
+  const normalized = serialized.replace(/\u00a0/g, ' ').replace(/\n+$/, '')
+  if (props.modelValue === normalized) {
     return
   }
   await nextTick()
@@ -461,9 +475,14 @@ onMounted(() => {
         :class="{ image: isImageAttachment(attachment) }"
         :title="attachment.path"
         type="button"
-        @click="isImageAttachment(attachment) ? openImagePreview(attachment) : null"
+        @mousedown.prevent
+        @click="handleAttachmentChipClick(attachment)"
       >
-        <span v-if="isImageAttachment(attachment)" class="attachment-thumb">
+        <span
+          v-if="isImageAttachment(attachment)"
+          class="attachment-thumb"
+          @click.stop="openImagePreview(attachment)"
+        >
           <img :src="toAttachmentUrl(attachment.path)" :alt="attachment.name">
         </span>
         <span v-else class="attachment-icon">{{ getAttachmentIcon(attachment) }}</span>
@@ -522,6 +541,7 @@ onMounted(() => {
   flex-direction: column;
   min-height: 0;
   flex: 1;
+  overflow: hidden;
 }
 
 .attachment-strip {
@@ -529,6 +549,7 @@ onMounted(() => {
   gap: 8px;
   padding: 10px 10px 6px;
   overflow-x: auto;
+  flex-shrink: 0;
 }
 
 .attachment-chip {
@@ -542,7 +563,7 @@ onMounted(() => {
   border: 1px solid rgba(255, 255, 255, 0.13);
   background: rgba(255, 255, 255, 0.024);
   color: #E4E4E7;
-  cursor: default;
+  cursor: pointer;
 }
 
 .attachment-chip.image {
@@ -602,20 +623,56 @@ onMounted(() => {
 }
 
 .composer-shell {
-  flex: 1;
+  display: flex;
+  flex: 1 1 0;
   min-height: 0;
-  padding: 8px 12px 12px;
+  padding: 8px 0 12px 12px;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .composer-editor {
+  display: block;
+  flex: 1 1 auto;
   width: 100%;
-  min-height: 84px;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  padding: 0 12px 0 0;
   outline: none;
   color: #F4F4F5;
   font-size: 14px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #52525B transparent;
+}
+
+.composer-editor::-webkit-scrollbar {
+  width: 5px;
+}
+
+.composer-editor::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.composer-editor::-webkit-scrollbar-thumb {
+  background: #52525B;
+  border-radius: 999px;
+  border: none;
+}
+
+.composer-editor::-webkit-scrollbar-thumb:hover {
+  background: #71717A;
+}
+
+.composer-editor::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .composer-editor:empty::before {

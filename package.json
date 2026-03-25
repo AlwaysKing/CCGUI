@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && npx electron .\" --kill-others",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://127.0.0.1:5173 && npx electron .\" --kill-others",
     "electron": "npx electron .",
     "electron:build": "npm run build && electron-builder",
     "rebuild": "./scripts/rebuild.sh",

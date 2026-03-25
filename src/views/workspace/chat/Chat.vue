@@ -117,6 +117,23 @@ const currentSessionMeta = computed(() => {
   return appStore.currentProjectSessions.find(session => session.id === sessionId) || appStore.currentSession || null
 })
 
+const sessionAvailability = ref({
+  available: true,
+  reason: '',
+  initProvider: null,
+  currentProvider: null
+})
+
+const sessionUnavailableMessage = computed(() => {
+  if (sessionAvailability.value.available !== false) {
+    return ''
+  }
+
+  const initProvider = sessionAvailability.value.initProvider || '未知'
+  const currentProvider = sessionAvailability.value.currentProvider || '未知'
+  return `当前会话不可用：创建时供应商为 ${initProvider}，当前供应商为 ${currentProvider}`
+})
+
 const isSessionRuntimeStarted = computed(() => {
   return Boolean(
     sessionStore.currentSession?.runtimeReady ||
@@ -363,7 +380,7 @@ const isRuntimeTransitioning = computed(() => {
 })
 
 const toolbarLocked = computed(() => {
-  return isRuntimeTransitioning.value || isSwitchingSessionControls.value
+  return isRuntimeTransitioning.value || isSwitchingSessionControls.value || sessionAvailability.value.available === false
 })
 
 const collapsibleStats = computed(() => {
@@ -607,14 +624,38 @@ watch(
   () => [appStore.currentProject?.id, appStore.currentSession?.id],
   async ([projectId, sessionId]) => {
     if (projectId && sessionId) {
+      const availabilityResult = await window.electronAPI.getSessionAvailable({
+        projectId,
+        sessionId
+      })
+      sessionAvailability.value = availabilityResult?.success
+        ? {
+            available: availabilityResult.available !== false,
+            reason: availabilityResult.reason || '',
+            initProvider: availabilityResult.initProvider || null,
+            currentProvider: availabilityResult.currentProvider || null
+          }
+        : {
+            available: true,
+            reason: '',
+            initProvider: null,
+            currentProvider: null
+          }
+      resetModelState()
       await loadModelConfigContext()
-      await loadProviderSubModels()
-      await loadSessionEffortCapabilities()
+      await loadProviderSubModels({ force: true })
+      await loadSessionEffortCapabilities({ force: true })
     } else {
+      sessionAvailability.value = {
+        available: true,
+        reason: '',
+        initProvider: null,
+        currentProvider: null
+      }
       resetModelState()
     }
   },
-  { immediate: false }
+  { immediate: true }
 )
 
 watch(
@@ -624,8 +665,8 @@ watch(
       await loadModelConfigContext()
       resetSubModelState()
       resetEffortState()
-      await loadProviderSubModels()
-      await loadSessionEffortCapabilities()
+      await loadProviderSubModels({ force: true })
+      await loadSessionEffortCapabilities({ force: true })
     }
   }
 )
@@ -635,7 +676,7 @@ watch(
   async (subModel, previousSubModel) => {
     if (subModel && subModel !== previousSubModel) {
       resetEffortState()
-      await loadSessionEffortCapabilities()
+      await loadSessionEffortCapabilities({ force: true })
     }
   }
 )
@@ -791,21 +832,50 @@ watch(() => {
   scrollToBottom(true)
 }, { deep: false })
 
-// 监听 session 切换，自动滚动到底部
+// 监听 session 切换，同步权限模式
 watch(() => sessionStore.currentSessionId, async (newSessionId, oldSessionId) => {
   if (newSessionId && newSessionId !== oldSessionId) {
-    // 等待 DOM 更新
+    console.log('[Chat] Session switch started:', {
+      newSessionId,
+      oldSessionId,
+      currentPermissionMode: permissionMode.value
+    })
+
+    // 等待 DOM 更新和 session 数据初始化完成
     await nextTick()
-    // 切换 session 时同步权限模式
-    if (sessionStore.currentSession?.permissionMode) {
-      permissionMode.value = sessionStore.currentSession.permissionMode
+
+    // 获取当前会话
+    const currentSession = sessionStore.currentSession
+    console.log('[Chat] Session switch details:', {
+      newSessionId,
+      oldSessionId,
+      sessionExists: !!currentSession,
+      sessionPermissionMode: currentSession?.permissionMode,
+      currentPermissionMode: permissionMode.value,
+      sessionRuntimeReady: currentSession?.runtimeReady,
+      sessionEnvInfo: currentSession?.envInfo ? 'exists' : 'null'
+    })
+
+    if (currentSession) {
+      permissionMode.value = currentSession.permissionMode || 'default'
+      console.log('[Chat] ✅ Synced permission mode from session:', permissionMode.value)
     } else {
       permissionMode.value = 'default'
+      console.log('[Chat] ❌ No current session, using default permission mode')
     }
+
+    console.log('[Chat] 🎯 Final permission mode after sync:', permissionMode.value)
+
     // 切换 session 时强制滚动到底部
     setTimeout(() => {
       scrollToBottom(true)
     }, 100)
+  } else {
+    console.log('[Chat] Session unchanged:', {
+      newSessionId,
+      oldSessionId,
+      sameSession: newSessionId === oldSessionId
+    })
   }
 })
 
@@ -877,6 +947,15 @@ function addRawMessage(displayMessage, rawMessage) {
 
 // 处理发送消息（从 ChatInput 组件调用）
 async function handleSendMessage(userText) {
+  if (sessionAvailability.value.available === false) {
+    messages.value.push({
+      role: 'system',
+      content: sessionUnavailableMessage.value || '当前会话不可用',
+      timestamp: new Date()
+    })
+    return
+  }
+
   if (isProcessing.value || pendingPermission.value || pendingControlRequest.value || isFlushingQueuedMessage.value) {
     enqueueMessage(userText)
     inputMessage.value = ''
@@ -1504,7 +1583,18 @@ async function handleRewindAndFork({ messageId, messageIndex }) {
 
 // 处理权限模式切换
 async function handlePermissionModeChange(mode) {
-  if (mode === permissionMode.value) return
+  console.log('[Chat] handlePermissionModeChange called:', {
+    newMode: mode,
+    currentMode: permissionMode.value,
+    modesEqual: mode === permissionMode.value,
+    currentSessionId: sessionStore.currentSessionId,
+    runtimeActive: runtimeActive.value
+  })
+
+  if (mode === permissionMode.value) {
+    console.log('[Chat] Permission mode unchanged, skipping')
+    return
+  }
 
   const previousMode = permissionMode.value
   permissionMode.value = mode
@@ -1514,7 +1604,14 @@ async function handlePermissionModeChange(mode) {
   try {
     // 调用 sessionStore 的 setPermissionMode
     // 后端会自动判断运行时是否已启动，并在适当时机应用新模式
+    console.log('[Chat] Calling sessionStore.setPermissionMode:', mode)
     await sessionStore.setPermissionMode(mode)
+
+    console.log('[Chat] Permission mode changed successfully:', {
+      previousMode,
+      newMode: mode,
+      sessionCurrentMode: sessionStore.currentSession?.permissionMode
+    })
 
     // 添加系统通知消息（使用统一的 system_notification 类型）
     messages.value.push({
@@ -1818,6 +1915,9 @@ async function handleQuestionAnswer(requestId, answers) {
         @permission-mode-change="selectPermissionMode"
         @effort-change="handleQuickEffortChange"
       />
+      <div v-if="sessionUnavailableMessage" class="session-unavailable-banner">
+        {{ sessionUnavailableMessage }}
+      </div>
     </div>
 
     <!-- Ask User Question Dialog - 在聊天窗口内部 -->

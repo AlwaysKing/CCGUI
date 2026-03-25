@@ -66,7 +66,14 @@
       "Bash(curl -sI google.com)",
       "Read(//private/tmp/**)",
       "Bash(git push:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(curl -s --connect-timeout 5 http://127.0.0.1:7890)",
+      "Bash(find /Users/alwaysking/AKProject/CCGUI -name *.ccgui -o -name project.json)",
+      "mcp__mcpServers__list_pages",
+      "mcp__mcpServers__new_page",
+      "mcp__mcpServers__take_snapshot",
+      "Read(//Users/alwaysking/Library/Logs/CCGUI-dev/**)",
+      "Read(//Users/alwaysking/Library/Logs/CCGUI/**)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

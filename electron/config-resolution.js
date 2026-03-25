@@ -1,6 +1,7 @@
 const BASE_DOCUMENT_ENABLED = (doc) => doc?.isBase !== false
 const BASE_PROMPT_ENABLED = (prompt) => prompt?.isBase === true
 const SUPPORTED_EFFORT_LEVELS = new Set(['low', 'medium', 'high'])
+const { readCodexAuthFile } = require('./services/app-service')
 const CHAT_THEME_PRESETS = {
   classic: {
     avatarMode: 'large',
@@ -227,16 +228,48 @@ function normalizeSessionSettings(settings = {}) {
   }
 }
 
+function resolveSystemModelSettings(appConfig, provider = 'claude') {
+  const settings = appConfig?.settings || {}
+  const isCodex = provider === 'codex'
+  const codexAuthMode = isCodex ? readCodexAuthFile()?.authMode : null
+
+  if (isCodex && codexAuthMode === 'chatgpt') {
+    return {
+      modelId: null,
+      modelCardId: null,
+      credentialId: null,
+      targetKind: 'openai',
+      effort: null
+    }
+  }
+
+  const modelId = isCodex
+    ? (settings.selectedCodexModelId || null)
+    : (settings.selectedClaudeModelId || null)
+  const credentialId = isCodex
+    ? (settings.selectedCodexCredentialId || null)
+    : (settings.selectedClaudeCredentialId || null)
+
+  return {
+    modelId,
+    modelCardId: null,
+    credentialId,
+    targetKind: modelId ? 'provider' : (isCodex ? 'openai' : null),
+    effort: null
+  }
+}
+
 function resolveProjectSettings(appConfig, projectSettings = {}, provider = 'claude') {
   const normalized = normalizeProjectSettings(projectSettings, provider)
   const basePromptIds = getBasePromptIds(appConfig)
   const baseDocumentIds = getBaseDocumentIds(appConfig)
+  const systemResolved = resolveSystemModelSettings(appConfig, provider)
 
   return {
-    modelId: normalized.modelMode === 'custom' ? normalized.modelId : null,
-    modelCardId: normalized.modelMode === 'custom' ? normalized.modelCardId : null,
-    credentialId: normalized.modelMode === 'custom' ? normalized.credentialId : null,
-    targetKind: normalized.targetKind,
+    modelId: normalized.modelMode === 'custom' ? normalized.modelId : systemResolved.modelId,
+    modelCardId: normalized.modelMode === 'custom' ? normalized.modelCardId : systemResolved.modelCardId,
+    credentialId: normalized.modelMode === 'custom' ? normalized.credentialId : systemResolved.credentialId,
+    targetKind: normalized.modelMode === 'custom' ? normalized.targetKind : systemResolved.targetKind,
     effort: normalized.effort,
     promptIds: normalized.promptMode === 'custom'
       ? normalized.promptIds

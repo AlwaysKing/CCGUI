@@ -24,7 +24,8 @@ const {
   projectConfigManager,
   sessionConfigManager
 } = require('../storage')
-const { resolveSessionSettings } = require('../config-resolution')
+const { readCodexAuthFile, readCodexConfigFile } = require('./app-service')
+const { resolveProjectSettings, resolveSessionSettings } = require('../config-resolution')
 const pendingHistoryImports = new Map()
 const pendingHistoryRetries = new Map()
 const HISTORY_RETRY_DELAY_MS = 5000
@@ -109,6 +110,17 @@ function resolveSystemSelectedModel(appConfig, provider = 'claude') {
   return models.find(model => model.id === selectedId) || models[0] || null
 }
 
+function resolveActiveCodexAccount(appConfig, authState = null) {
+  const auth = authState || readCodexAuthFile()
+  const accounts = Array.isArray(appConfig?.settings?.codexAccounts) ? appConfig.settings.codexAccounts : []
+  const tokenAccountId = auth?.tokens?.accountId || auth?.accountId || ''
+  return (
+    accounts.find(account => account?.accountId && account.accountId === tokenAccountId) ||
+    accounts.find(account => account?.id && account.id === appConfig?.settings?.selectedCodexAccountId) ||
+    null
+  )
+}
+
 function resolveConfiguredDefaultCard(model = null, preferredCardId = null) {
   const cards = Array.isArray(model?.modelCards) ? model.modelCards : []
   if (!cards.length) return null
@@ -167,6 +179,29 @@ function summarizeModelTarget(model = null, credential = null, preferredCardId =
   if (credential?.name) parts.push(credential.name)
   if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
   return parts.join(' · ')
+}
+
+function summarizeResolvedTarget(appConfig, provider = 'claude', resolvedSettings = {}, fallback = '未设置默认模型') {
+  if (provider === 'codex' && resolvedSettings?.targetKind === 'openai') {
+    const auth = readCodexAuthFile()
+    const codexSettings = readCodexConfigFile()
+    const activeAccount = resolveActiveCodexAccount(appConfig, auth)
+    const parts = ['账号模式']
+    if (activeAccount?.name) parts.push(activeAccount.name)
+    if (codexSettings?.model) parts.push(codexSettings.model)
+    return parts.join(' · ')
+  }
+
+  const model = resolvedSettings?.modelId
+    ? findProviderModel(appConfig, provider, resolvedSettings.modelId)
+    : resolveSystemSelectedModel(appConfig, provider)
+
+  if (!model) {
+    return fallback
+  }
+
+  const credential = getDefaultCredential(model, resolvedSettings?.credentialId || null)
+  return summarizeModelTarget(model, credential, resolvedSettings?.modelCardId || model?.defaultCardId, fallback)
 }
 
 function buildOpenAiTargetOption(currentTargetId = null) {
@@ -308,6 +343,64 @@ function resolveCurrentSessionTarget(provider, resolvedSettings = {}) {
   }
 
   return null
+}
+
+function resolveInitProvider(provider, resolvedSettings = {}) {
+  if (provider === 'codex') {
+    if (resolvedSettings.targetKind === 'openai' || !resolvedSettings.modelId) {
+      return 'openai'
+    }
+
+    return resolvedSettings.modelId || null
+  }
+
+  if (resolvedSettings.targetKind && resolvedSettings.targetKind !== 'provider') {
+    return resolvedSettings.targetKind
+  }
+
+  return resolvedSettings.modelId || provider || null
+}
+
+function buildSessionAvailability(appConfig, projectSettings = {}, sessionSettings = null) {
+  const provider = resolveProvider(projectSettings, sessionSettings)
+  const resolvedSettings = resolveSessionSettings(
+    appConfig,
+    projectSettings || {},
+    sessionSettings || null,
+    provider
+  )
+  const currentProvider = resolveInitProvider(provider, resolvedSettings)
+  const initProvider = typeof sessionSettings?.initProvider === 'string'
+    ? sessionSettings.initProvider.trim()
+    : ''
+
+  if (provider === 'claude') {
+    return {
+      available: true,
+      provider,
+      currentProvider,
+      initProvider: initProvider || currentProvider || null,
+      reason: 'claude-session-always-available'
+    }
+  }
+
+  if (!initProvider) {
+    return {
+      available: true,
+      provider,
+      currentProvider,
+      initProvider: null,
+      reason: 'missing-init-provider'
+    }
+  }
+
+  return {
+    available: currentProvider === initProvider,
+    provider,
+    currentProvider,
+    initProvider,
+    reason: currentProvider === initProvider ? 'provider-matched' : 'provider-mismatch'
+  }
 }
 
 function applyCodexTargetAvailability(options = [], currentTarget = null) {
@@ -994,7 +1087,10 @@ async function scanProjects() {
 }
 
 async function getProjectSessions(projectId) {
+  const appConfig = appConfigManager.loadConfig()
   const projectPath = decodeProjectPath(projectId)
+  const projectConfig = projectConfigManager.loadProjectConfig(projectId)
+  const projectSettings = projectConfig?.settings || {}
 
   let ccguiSessions = []
   try {
@@ -1073,6 +1169,11 @@ async function getProjectSessions(projectId) {
     }
 
     const bindingMeta = resolveSessionBindingMeta(ccguiSession, providerData)
+    const mergedSettings = {
+      ...(providerData?.settings || {}),
+      ...(ccguiSession.settings || {})
+    }
+    const availability = buildSessionAvailability(appConfig, projectSettings, mergedSettings)
 
     mergedSessions.push({
       id: ccguiSession.id,
@@ -1086,16 +1187,18 @@ async function getProjectSessions(projectId) {
       bindingState: bindingMeta.bindingState,
       bindingLabel: bindingMeta.bindingLabel,
       bindingMissing: bindingMeta.bindingMissing,
-      settings: {
-        ...(providerData?.settings || {}),
-        ...(ccguiSession.settings || {})
-      }
+      sessionAvailable: availability.available,
+      sessionAvailableReason: availability.reason,
+      initProvider: availability.initProvider,
+      currentProvider: availability.currentProvider,
+      settings: mergedSettings
     })
   }
 
   for (const entry of providerSessionResults) {
     for (const providerSession of entry.sessions) {
       if (processedIds.has(providerSession.id)) continue
+      const availability = buildSessionAvailability(appConfig, projectSettings, providerSession.settings || {})
       mergedSessions.push({
         id: providerSession.id,
         projectId,
@@ -1108,6 +1211,10 @@ async function getProjectSessions(projectId) {
         bindingState: 'linked',
         bindingLabel: '',
         bindingMissing: false,
+        sessionAvailable: availability.available,
+        sessionAvailableReason: availability.reason,
+        initProvider: availability.initProvider,
+        currentProvider: availability.currentProvider,
         settings: providerSession.settings || {}
       })
     }
@@ -1208,12 +1315,25 @@ function copySession(projectId, sessionId) {
 }
 
 async function createSession(projectId, name, settings) {
+  const appConfig = appConfigManager.loadConfig()
+  const projectConfig = projectConfigManager.loadProjectConfig(projectId)
+  const tool = resolveProvider(projectConfig?.settings || {}, settings || {})
+  const resolvedSettings = resolveSessionSettings(
+    appConfig,
+    projectConfig?.settings || {},
+    settings || null,
+    tool
+  )
+  const nextSettings = {
+    ...(settings || {}),
+    initProvider: resolveInitProvider(tool, resolvedSettings)
+  }
+
   const sessionConfig = sessionConfigManager.createSession(projectId, {
     name: name || '新会话',
-    settings: settings || {}
+    settings: nextSettings
   })
 
-  const tool = resolveProvider({}, settings || {})
   const source = providerSessionSourcesById[tool]
   if (!source?.createSession) {
     return sessionConfig
@@ -1259,20 +1379,38 @@ async function deleteSession(projectId, sessionId) {
   const existingSessions = await getProjectSessions(projectId)
   const existingSession = existingSessions.find(session => session.id === sessionId) || null
   const provider = resolveLinkedSessionProvider(existingSession)
+  let providerDeleteError = null
 
   if (provider) {
     const source = providerSessionSourcesById[provider]
     if (source?.deleteSession) {
-      await source.deleteSession({
-        projectId,
-        sessionId,
-        session: existingSession
-      })
+      try {
+        await source.deleteSession({
+          projectId,
+          sessionId,
+          session: existingSession
+        })
+      } catch (error) {
+        providerDeleteError = error
+        logger.warn('[ProjectService] Failed to delete provider-native session', {
+          projectId,
+          sessionId,
+          provider,
+          error: error.message
+        })
+      }
     }
   }
 
   sessionConfigManager.deleteSession(projectId, sessionId)
-  return { success: true, session: existingSession }
+  historyManager.deleteHistory(projectId, sessionId)
+
+  return {
+    success: true,
+    session: existingSession,
+    providerDeleted: !providerDeleteError,
+    providerDeleteError: providerDeleteError?.message || null
+  }
 }
 
 async function openSession(sessionId) {
@@ -1339,6 +1477,52 @@ function resolveRuntimeConfig(projectId, sessionId) {
     appConfig,
     projectConfig,
     sessionConfig
+  }
+}
+
+function getSessionAvailable(projectId, sessionId) {
+  const appConfig = appConfigManager.loadConfig()
+  const projectConfig = projectConfigManager.loadProjectConfig(projectId)
+  const sessionConfig = sessionConfigManager.getSession(projectId, sessionId)
+
+  if (!sessionConfig) {
+    return {
+      available: false,
+      provider: null,
+      currentProvider: null,
+      initProvider: null,
+      reason: 'session-not-found'
+    }
+  }
+
+  return buildSessionAvailability(appConfig, projectConfig?.settings || {}, sessionConfig?.settings || null)
+}
+
+function getModelConfigSummary({ provider = 'claude', projectId = null, sessionId = null } = {}) {
+  const appConfig = appConfigManager.loadConfig()
+  const normalizedProvider = provider === 'codex' ? 'codex' : 'claude'
+  const projectConfig = projectId ? projectConfigManager.loadProjectConfig(projectId) : null
+  const sessionConfig = projectId && sessionId ? sessionConfigManager.getSession(projectId, sessionId) : null
+  const resolvedProvider = sessionConfig
+    ? resolveProvider(projectConfig?.settings || {}, sessionConfig?.settings || null)
+    : normalizedProvider
+  const providerToUse = resolvedProvider || normalizedProvider
+
+  const systemResolved = resolveProjectSettings(appConfig, {}, providerToUse)
+  const projectResolved = resolveProjectSettings(appConfig, projectConfig?.settings || {}, providerToUse)
+  const sessionResolved = sessionConfig
+    ? resolveSessionSettings(appConfig, projectConfig?.settings || {}, sessionConfig?.settings || null, providerToUse)
+    : null
+
+  return {
+    provider: providerToUse,
+    systemSummary: summarizeResolvedTarget(appConfig, providerToUse, systemResolved, '当前系统未设置默认模型'),
+    projectSummary: projectId
+      ? summarizeResolvedTarget(appConfig, providerToUse, projectResolved, '当前项目未设置默认模型')
+      : null,
+    sessionSummary: sessionConfig
+      ? summarizeResolvedTarget(appConfig, providerToUse, sessionResolved, '当前会话未设置默认模型')
+      : null
   }
 }
 
@@ -1449,7 +1633,9 @@ module.exports = {
   getProjectConfig,
   getProjectSessions,
   getSessionConfig,
+  getSessionAvailable,
   getSessionMessages,
+  getModelConfigSummary,
   getAvailableTargets,
   validateSessionTarget,
   openSession,

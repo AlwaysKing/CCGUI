@@ -52,6 +52,17 @@ const systemPrompts = ref([])
 const systemDocuments = ref([])
 const appConfig = ref(null)
 const projectConfig = ref(null)
+const modelSummary = ref({
+  systemSummary: null,
+  projectSummary: null
+})
+const codexRuntimeSettings = ref({
+  authMode: 'provider',
+  model: '',
+  modelProvider: '',
+  activeAccountId: null,
+  activeAccountName: ''
+})
 
 // 状态
 const loading = ref(false)
@@ -108,7 +119,7 @@ const projectThemeSummary = computed(() => {
 })
 
 // 加载系统配置
-async function loadSystemConfig() {
+async function loadSystemConfig(provider = sessionTool.value) {
   try {
     const result = await window.electronAPI.getAppConfig()
     if (result && result.success) {
@@ -116,23 +127,54 @@ async function loadSystemConfig() {
       appConfig.value = config
       if (config.settings) {
         systemPrompts.value = config.settings.prompts || []
-        systemModels.value = getProviderModels(config, sessionTool.value)
+        if (provider === sessionTool.value) {
+          systemModels.value = getProviderModels(config, provider)
+        }
       }
       if (config.documents) {
         systemDocuments.value = config.documents
       }
     }
 
-    const [targetResult, projectConfigResult] = await Promise.all([
+    modelSummary.value = {
+      systemSummary: null,
+      projectSummary: null
+    }
+
+    const [targetResult, projectConfigResult, codexSettingsResult] = await Promise.all([
       window.electronAPI.getAvailableTargets({
         projectId: props.projectId,
-        provider: sessionTool.value,
+        provider,
         sessionId: props.sessionId || null
       }),
-      window.electronAPI.getProjectConfig({ projectId: props.projectId })
+      window.electronAPI.getProjectConfig({ projectId: props.projectId }),
+      window.electronAPI.getCodexSettings()
     ])
-    providerTargets.value = targetResult?.success ? (Array.isArray(targetResult.options) ? targetResult.options : []) : []
+    if (provider === sessionTool.value) {
+      providerTargets.value = targetResult?.success ? (Array.isArray(targetResult.options) ? targetResult.options : []) : []
+    }
     projectConfig.value = projectConfigResult?.config || null
+    if (codexSettingsResult?.success && codexSettingsResult.settings) {
+      codexRuntimeSettings.value = {
+        authMode: codexSettingsResult.settings.authMode || 'provider',
+        model: codexSettingsResult.settings.model || '',
+        modelProvider: codexSettingsResult.settings.modelProvider || '',
+        activeAccountId: codexSettingsResult.settings.activeAccountId || null,
+        activeAccountName: codexSettingsResult.settings.activeAccountName || ''
+      }
+    }
+
+    const summaryResult = await window.electronAPI.getModelConfigSummary({
+      provider,
+      projectId: props.projectId,
+      sessionId: props.sessionId || null
+    })
+    if (provider === sessionTool.value && summaryResult?.success) {
+      modelSummary.value = {
+        systemSummary: summaryResult.systemSummary || null,
+        projectSummary: summaryResult.projectSummary || null
+      }
+    }
   } catch (e) {
     console.error('Failed to load system config:', e)
   }
@@ -150,7 +192,7 @@ async function loadSessionConfig() {
     })
     if (result && result.config && result.config.settings) {
       const settings = result.config.settings
-      sessionTool.value = settings.tool || settings.provider || 'claude'
+      sessionTool.value = settings.toolBinding?.tool || settings.tool || settings.provider || 'claude'
       debugEnabled.value = settings.debug === true
 
       // 模型配置
@@ -340,33 +382,11 @@ function summarizeDocumentSummary(settings = {}, mode = 'project') {
 }
 
 function getSystemModelSummary() {
-  const settings = appConfig.value?.settings || {}
-  const modelId = sessionTool.value === 'codex' ? settings.selectedCodexModelId : settings.selectedClaudeModelId
-  const credentialId = sessionTool.value === 'codex' ? settings.selectedCodexCredentialId : settings.selectedClaudeCredentialId
-  const model = systemModels.value.find(item => item.id === modelId) || null
-  if (!model) return '当前系统未设置默认模型'
-  const credential = getDefaultCredential(model, credentialId)
-  const defaultCard = model.modelCards?.find(item => item.id === model.defaultCardId) || model.modelCards?.[0] || null
-  const parts = [model.friendlyName || model.name || model.id]
-  if (credential?.name) parts.push(credential.name)
-  if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
-  return parts.join(' · ')
+  return modelSummary.value.systemSummary || ''
 }
 
 function getProjectModelSummary() {
-  const providerSettings = sessionTool.value === 'codex'
-    ? (projectConfig.value?.settings?.providerModelSettings?.codex || projectConfig.value?.settings?.codexModelConfig || projectConfig.value?.settings || {})
-    : (projectConfig.value?.settings?.providerModelSettings?.claude || projectConfig.value?.settings?.claudeModelConfig || projectConfig.value?.settings || {})
-  const savedModelMode = providerSettings.modelMode || (providerSettings.modelId ? 'custom' : 'system')
-  if (savedModelMode !== 'custom' || !providerSettings.modelId) return getSystemModelSummary()
-  const model = systemModels.value.find(item => item.id === providerSettings.modelId) || null
-  if (!model) return '当前项目未设置默认模型'
-  const credential = getDefaultCredential(model, providerSettings.credentialId)
-  const defaultCard = model.modelCards?.find(item => item.id === (providerSettings.modelCardId || model.defaultCardId)) || model.modelCards?.[0] || null
-  const parts = [model.friendlyName || model.name || model.id]
-  if (credential?.name) parts.push(credential.name)
-  if (defaultCard?.modelName || defaultCard?.id) parts.push(defaultCard.modelName || defaultCard.id)
-  return parts.join(' · ')
+  return modelSummary.value.projectSummary || ''
 }
 
 // 保存配置

@@ -232,11 +232,11 @@ const disablePermissionModeControl = computed(() => {
 })
 
 const disableAttachmentControl = computed(() => {
-  return props.toolbarLocked || props.hasPermission || props.isProcessing
+  return props.toolbarLocked
 })
 
 const disableNotificationControl = computed(() => {
-  return props.toolbarLocked || !props.canConfigureNotifications
+  return props.toolbarLocked
 })
 
 const disableQueueControl = computed(() => {
@@ -244,7 +244,7 @@ const disableQueueControl = computed(() => {
 })
 
 const disableEnterModeControl = computed(() => {
-  return props.toolbarLocked || props.isProcessing
+  return props.toolbarLocked
 })
 
 const disableSendControl = computed(() => {
@@ -774,12 +774,14 @@ defineExpose({
   border-top: 1px solid #3F3F46;
   display: flex;
   flex: 0 0 auto;
-  min-height: 165px;
+  height: 184px;
+  min-height: 136px;
 }
 
 .input-area.resizable-expanded {
   flex: 1 1 auto;
-  min-height: 165px;
+  height: 184px;
+  min-height: 136px;
 }
 
 /* 输入框容器 */
@@ -1601,7 +1603,7 @@ defineExpose({
   font-size: 14px;
   resize: none;
   font-family: inherit;
-  min-height: 60px;
+  min-height: 76px;
   max-height: 400px;
   border-radius: 0 0 8px 8px;
   line-height: 1.5;

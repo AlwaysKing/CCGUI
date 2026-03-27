@@ -62,6 +62,7 @@ class SessionData {
     this.permissionMode = 'default' // 当前权限模式
     this.fastModeState = 'off' // 快速模式状态: 'off' | 'auto' | 'on'
     this.activeTasks = new Map() // 活跃的子任务 Map<taskId, taskData>
+    this.currentTurnUsageSources = {}
     this.mainAgentId = 'master'
     this.agentRegistry = new Map()
     this.agentBuckets = new Map()
@@ -311,6 +312,50 @@ function formatExecutionAgentResult(value) {
   }
 
   return String(value)
+}
+
+function normalizeTokenUsage(usage) {
+  if (!usage || typeof usage !== 'object') {
+    return null
+  }
+
+  const normalized = {
+    input_tokens: Number.isFinite(usage.input_tokens) ? usage.input_tokens : 0,
+    cache_read_input_tokens: Number.isFinite(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : 0,
+    output_tokens: Number.isFinite(usage.output_tokens) ? usage.output_tokens : 0
+  }
+
+  if (
+    normalized.input_tokens === 0 &&
+    normalized.cache_read_input_tokens === 0 &&
+    normalized.output_tokens === 0
+  ) {
+    return null
+  }
+
+  return normalized
+}
+
+function sumTokenUsages(usages = []) {
+  const total = {
+    input_tokens: 0,
+    cache_read_input_tokens: 0,
+    output_tokens: 0
+  }
+
+  let hasAnyUsage = false
+  for (const usage of usages) {
+    const normalized = normalizeTokenUsage(usage)
+    if (!normalized) {
+      continue
+    }
+    hasAnyUsage = true
+    total.input_tokens += normalized.input_tokens
+    total.cache_read_input_tokens += normalized.cache_read_input_tokens
+    total.output_tokens += normalized.output_tokens
+  }
+
+  return hasAnyUsage ? total : null
 }
 
 function resolveAgentIdFromCcguiPayload(ccgui = null) {
@@ -1355,6 +1400,7 @@ export const useSessionStore = defineStore('session', () => {
     session.inputMessage = ''
     session.inputAttachments = []
     session.isProcessing = true
+    session.currentTurnUsageSources = {}
 
     // 清理悬浮框中的任务（发起新提问时清理上一轮的任务）
     session.activeTasks.clear()
@@ -1895,10 +1941,14 @@ export const useSessionStore = defineStore('session', () => {
       latestUserMessage?.numTurns ??
       1
 
+    if (latestUserMessage) {
+      clearUserUsageSourcesByPrefix(session, 'main:', latestUserMessage)
+      setUserUsageSource(session, 'main:result', result.usage)
+    }
+
     const usage =
-      result.usage ??
       latestUserMessage?.usage ??
-      latestAssistantMessage?.usage ??
+      normalizeTokenUsage(result.usage) ??
       null
 
     log('[SessionStore] Extracted: durationMs=', durationMs, 'numTurns=', numTurns, 'usage=', usage)
@@ -1931,10 +1981,7 @@ export const useSessionStore = defineStore('session', () => {
         const assistantMsg = session.messages[i]
         log('[SessionStore] Found assistant message at index', i)
 
-        // 只更新usage，保留duration（因为每个turn应该有自己的duration）
-        // 只有当result中有durationMs时才更新（通常只有最终result才有）
         const updates = {
-          usage: usage,
           isStreaming: false
         }
         if (durationMs !== null && durationMs !== undefined) {
@@ -1973,6 +2020,59 @@ export const useSessionStore = defineStore('session', () => {
     return null
   }
 
+  function getCurrentTurnUsageSources(session) {
+    if (!session) {
+      return null
+    }
+    if (!session.currentTurnUsageSources || typeof session.currentTurnUsageSources !== 'object') {
+      session.currentTurnUsageSources = {}
+    }
+    return session.currentTurnUsageSources
+  }
+
+  function syncUserUsageFromSources(session, userMsg = getLatestUserMessage(session)) {
+    if (!userMsg) {
+      return
+    }
+
+    const usageSources = getCurrentTurnUsageSources(session)
+    const nextUsage = sumTokenUsages(Object.values(usageSources))
+    userMsg.usage = nextUsage
+  }
+
+  function setUserUsageSource(session, sourceKey, usage) {
+    const userMsg = getLatestUserMessage(session)
+    if (!userMsg || !sourceKey) {
+      return
+    }
+
+    const usageSources = getCurrentTurnUsageSources(session)
+    const normalizedUsage = normalizeTokenUsage(usage)
+
+    if (normalizedUsage) {
+      usageSources[sourceKey] = normalizedUsage
+    } else {
+      delete usageSources[sourceKey]
+    }
+
+    syncUserUsageFromSources(session, userMsg)
+  }
+
+  function clearUserUsageSourcesByPrefix(session, prefix, userMsg = getLatestUserMessage(session)) {
+    if (!userMsg || !prefix) {
+      return
+    }
+
+    const usageSources = getCurrentTurnUsageSources(session)
+    for (const key of Object.keys(usageSources)) {
+      if (key.startsWith(prefix)) {
+        delete usageSources[key]
+      }
+    }
+
+    syncUserUsageFromSources(session, userMsg)
+  }
+
   function syncUserRealtimeStats(session, updates = {}) {
     const userMsg = getLatestUserMessage(session)
     if (!userMsg) return
@@ -1984,7 +2084,8 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     if (updates.usage !== undefined && updates.usage !== null) {
-      nextStats.usage = updates.usage
+      const usageSourceKey = updates.usageSourceKey || 'main'
+      setUserUsageSource(session, usageSourceKey, updates.usage)
     }
 
     if (Object.keys(nextStats).length > 0) {
@@ -2030,7 +2131,8 @@ export const useSessionStore = defineStore('session', () => {
       if (nextMessage.role === 'assistant') {
         syncUserRealtimeStats(session, {
           turnNumber: nextMessage.turnNumber,
-          usage: nextMessage.usage
+          usage: nextMessage.usage,
+          usageSourceKey: `main:${nextMessage.id}`
         })
       }
       log('[SessionStore] handleMessageStart: reused existing message', nextMessage.id)
@@ -2046,7 +2148,8 @@ export const useSessionStore = defineStore('session', () => {
       session.currentAssistantMessageIndex = session.messages.length - 1
       syncUserRealtimeStats(session, {
         turnNumber: nextMessage.turnNumber,
-        usage: nextMessage.usage
+        usage: nextMessage.usage,
+        usageSourceKey: `main:${nextMessage.id}`
       })
     } else if (nextMessage.role === 'tool_use' || nextMessage.role === 'diff') {
       // 记录 tool_use 的索引
@@ -2148,7 +2251,8 @@ export const useSessionStore = defineStore('session', () => {
     if (msg.role === 'assistant') {
       syncUserRealtimeStats(session, {
         turnNumber: mergedUpdates.turnNumber ?? msg.turnNumber,
-        usage: mergedUpdates.usage ?? msg.usage
+        usage: mergedUpdates.usage ?? msg.usage,
+        usageSourceKey: `main:${msg.id}`
       })
     }
 
@@ -2184,8 +2288,14 @@ export const useSessionStore = defineStore('session', () => {
         msg.isExecuting = false
         msg.isError = !!data.isError
         msg.result = data.content || '(无输出)'
+        if (data.usage) {
+          msg.usage = data.usage
+        }
         if (!msg.duration && msg.startTime) {
           msg.duration = Date.now() - msg.startTime
+        }
+        if (msg.role === 'tool_use' && msg.toolName === 'Agent') {
+          setUserUsageSource(session, `execution:${toolUseId}`, data.usage)
         }
         return
       }

@@ -1501,7 +1501,12 @@ ipcMain.handle('get-running-sessions', async () => {
 
 // Create a new session
 ipcMain.handle('create-session', async (event, { projectId, name, settings }) => {
-  const sessionConfig = await projectService.createSession(projectId, name, settings)
+  const nextSettings = {
+    ...(settings || {}),
+    ...(settings?.debug === undefined ? { debug: isDev === true } : {})
+  }
+
+  const sessionConfig = await projectService.createSession(projectId, name, nextSettings)
 
   return {
     id: sessionConfig.id,

@@ -30,7 +30,7 @@ const modelMode = ref('project')
 const modelCardMode = ref('default')
 const promptsMode = ref('project')
 const documentsMode = ref('project')
-const debugEnabled = ref(false)
+const debugEnabled = ref(import.meta.env.DEV)
 const chatMessageThemeMode = ref('project')
 const chatMessageThemePreset = ref('classic')
 const chatMessageTheme = ref(buildChatMessageThemeFromPreset('classic'))
@@ -251,7 +251,7 @@ async function loadSessionConfig() {
       modelMode.value = 'project'
       promptsMode.value = 'project'
       documentsMode.value = 'project'
-      debugEnabled.value = false
+      debugEnabled.value = import.meta.env.DEV
       chatMessageThemeMode.value = 'project'
       chatMessageThemePreset.value = 'classic'
       chatMessageTheme.value = buildChatMessageThemeFromPreset('classic')

@@ -39,14 +39,20 @@ const formattedTime = computed(() => {
 // 根据通知类型返回样式类
 const notificationTypeClass = computed(() => {
   const { notificationType } = props.message
-  if (notificationType === 'runtime-exit' || notificationType === 'turn-error') {
+  if (
+    notificationType === 'runtime-exit' ||
+    notificationType === 'turn-error' ||
+    (notificationType === 'account-login-completed' && props.message.data?.success === false) ||
+    (notificationType === 'hook-event' && props.message.data?.errorMessage)
+  ) {
     return 'notification-error'
   }
   if (
     notificationType === 'runtime-stopped' ||
     notificationType === 'session-runtime-ready' ||
     notificationType === 'session-config-applied' ||
-    notificationType === 'session-effort-changed'
+    notificationType === 'session-effort-changed' ||
+    (notificationType === 'account-login-completed' && props.message.data?.success === true)
   ) {
     return 'notification-success'
   }
@@ -149,6 +155,112 @@ const notificationContent = computed(() => {
       icon: '🔀',
       title: '模型已切换',
       description: `${from} -> ${to}`
+    }
+  }
+
+  if (notificationType === 'thread-event') {
+    const event = data.event || 'updated'
+    const name = data.threadName ? `“${data.threadName}”` : '当前线程'
+    const descriptions = {
+      'name-updated': `${name}名称已更新`,
+      'archived': `${name}已归档`,
+      'unarchived': `${name}已恢复`,
+      'rolled-back': '线程已回滚到较早状态',
+      'undo-completed': '最近一次撤销已完成'
+    }
+
+    return {
+      icon: '🧵',
+      title: '会话线程更新',
+      description: descriptions[event] || `线程事件: ${event}`
+    }
+  }
+
+  if (notificationType === 'turn-plan-updated') {
+    const steps = Array.isArray(data.plan) ? data.plan : []
+    const completed = steps.filter(step => step?.status === 'completed').length
+    const total = steps.length
+    const explanation = typeof data.explanation === 'string' ? data.explanation.trim() : ''
+    let description = total > 0
+      ? `计划已更新: ${completed}/${total} 步完成`
+      : '计划已更新'
+    if (explanation) {
+      description += `\n${explanation}`
+    }
+
+    return {
+      icon: '🗂',
+      title: '执行计划已更新',
+      description
+    }
+  }
+
+  if (notificationType === 'provider-config-warning') {
+    const title = data.title || '配置警告'
+    const path = data.path ? `\n位置: ${data.path}` : ''
+    return {
+      icon: '⚙️',
+      title,
+      description: `${data.message || '检测到配置问题'}${path}`
+    }
+  }
+
+  if (notificationType === 'provider-deprecation') {
+    return {
+      icon: '🕰️',
+      title: data.title || '配置项已弃用',
+      description: data.message || '当前配置项即将不再支持'
+    }
+  }
+
+  if (notificationType === 'account-login-completed') {
+    if (data.success) {
+      return {
+        icon: '🔓',
+        title: `${providerLabel} 登录完成`,
+        description: '账号状态已更新'
+      }
+    }
+
+    const errorText = data.error?.message || data.error || '登录失败'
+    return {
+      icon: '🔒',
+      title: `${providerLabel} 登录失败`,
+      description: String(errorText)
+    }
+  }
+
+  if (notificationType === 'hook-event') {
+    const hookName = data.hookName || 'Hook'
+    if (data.event === 'started') {
+      return {
+        icon: '🪝',
+        title: `${hookName} 已启动`,
+        description: '后台钩子正在运行'
+      }
+    }
+
+    if (data.errorMessage) {
+      return {
+        icon: '🪝',
+        title: `${hookName} 执行失败`,
+        description: data.errorMessage
+      }
+    }
+
+    return {
+      icon: '🪝',
+      title: `${hookName} 已完成`,
+      description: data.status || '后台钩子已完成'
+    }
+  }
+
+  if (notificationType === 'provider-message' || notificationType === 'provider-system-message') {
+    const label = data.subtype || data.messageType || 'unknown'
+    return {
+      icon: '🔔',
+      title: `${providerLabel} 兼容消息`,
+      description: `收到尚未单独建模的 provider 事件: ${label}`
     }
   }
 

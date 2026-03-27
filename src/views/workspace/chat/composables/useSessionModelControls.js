@@ -25,6 +25,22 @@ function formatModelLabel(appConfig, provider, modelId, fallback = '系统') {
   return model.friendlyName || model.id
 }
 
+function formatTargetLabel(appConfig, provider, settings = {}, fallback = '系统') {
+  const targetKind = typeof settings?.targetKind === 'string' ? settings.targetKind.trim() : ''
+  if (provider === 'codex' && targetKind === 'openai') {
+    return 'OpenAI'
+  }
+
+  if (targetKind && targetKind !== 'provider' && targetKind !== 'project' && targetKind !== 'system') {
+    return targetKind
+  }
+
+  const modelId = typeof settings?.modelId === 'string' && settings.modelId.trim()
+    ? settings.modelId.trim()
+    : null
+  return formatModelLabel(appConfig, provider, modelId, fallback)
+}
+
 function toPlainObject(value) {
   return value ? JSON.parse(JSON.stringify(value)) : {}
 }
@@ -146,9 +162,11 @@ export function useSessionModelControls({
       return currentTarget.label
     }
     const normalizedSession = normalizeSessionModelSettings(sessionConfig.value?.settings || {})
-    return normalizedSession.modelMode === 'custom'
-      ? formatModelLabel(appConfig.value, currentModelProvider.value, normalizedSession.modelId)
-      : '系统'
+    const rawSettings = sessionConfig.value?.settings || {}
+    if (normalizedSession.modelMode === 'custom') {
+      return formatTargetLabel(appConfig.value, currentModelProvider.value, rawSettings)
+    }
+    return formatTargetLabel(appConfig.value, currentModelProvider.value, rawSettings, '系统')
   })
 
   const currentModelSelectionKey = computed(() => {

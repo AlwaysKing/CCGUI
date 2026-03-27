@@ -22,6 +22,150 @@ function pickFirstDefined(...values) {
   return null
 }
 
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeAgentRegistry(entry = null) {
+  if (!isPlainObject(entry)) {
+    return null
+  }
+
+  const agentId = pickFirstDefined(entry.agentId, entry.agent_id)
+  if (!agentId) {
+    return null
+  }
+
+  return Object.fromEntries(Object.entries({
+    agentId,
+    agentKind: pickFirstDefined(entry.agentKind, entry.agent_kind),
+    agentType: pickFirstDefined(entry.agentType, entry.agent_type),
+    name: pickFirstDefined(entry.name, entry.title),
+    prompt: pickFirstDefined(entry.prompt, entry.description),
+    model: pickFirstDefined(entry.model, entry.subModel, entry.sub_model),
+    teamId: pickFirstDefined(entry.teamId, entry.team_id),
+    parentAgentId: pickFirstDefined(entry.parentAgentId, entry.parent_agent_id),
+    status: pickFirstDefined(entry.status)
+  }).filter(([, value]) => value !== null))
+}
+
+function normalizeOrchestrationEvent(event = null) {
+  if (!isPlainObject(event)) {
+    return null
+  }
+
+  const eventType = pickFirstDefined(event.eventType, event.event_type)
+  const agentId = pickFirstDefined(event.agentId, event.agent_id)
+  if (!eventType || !agentId) {
+    return null
+  }
+
+  return Object.fromEntries(Object.entries({
+    eventType,
+    agentId,
+    agentKind: pickFirstDefined(event.agentKind, event.agent_kind),
+    agentType: pickFirstDefined(event.agentType, event.agent_type),
+    name: pickFirstDefined(event.name),
+    prompt: pickFirstDefined(event.prompt, event.description),
+    model: pickFirstDefined(event.model),
+    teamId: pickFirstDefined(event.teamId, event.team_id),
+    parentAgentId: pickFirstDefined(event.parentAgentId, event.parent_agent_id),
+    actorId: pickFirstDefined(event.actorId, event.actor_id),
+    targetId: pickFirstDefined(event.targetId, event.target_id),
+    source: pickFirstDefined(event.source),
+    reason: pickFirstDefined(event.reason),
+    result: pickFirstDefined(event.result),
+    status: pickFirstDefined(event.status),
+    targetKind: pickFirstDefined(event.targetKind, event.target_kind),
+    timestamp: pickFirstDefined(event.timestamp)
+  }).filter(([, value]) => value !== null))
+}
+
+function normalizeAttribution(attribution = null) {
+  if (!isPlainObject(attribution)) {
+    return null
+  }
+
+  const agentId = pickFirstDefined(attribution.agentId, attribution.agent_id)
+  const actorId = pickFirstDefined(attribution.actorId, attribution.actor_id, agentId)
+  const targetId = pickFirstDefined(attribution.targetId, attribution.target_id)
+
+  if (!agentId && !actorId && !targetId) {
+    return null
+  }
+
+  return Object.fromEntries(Object.entries({
+    agentId: agentId || actorId || null,
+    actorId: actorId || agentId || null,
+    targetId
+  }).filter(([, value]) => value !== null))
+}
+
+function mergePlain(base = null, patch = null) {
+  if (!base && !patch) {
+    return null
+  }
+
+  return {
+    ...(base || {}),
+    ...(patch || {})
+  }
+}
+
+function mergeCcguiSemantics(base = null, patch = null) {
+  if (!isPlainObject(base) && !isPlainObject(patch)) {
+    return null
+  }
+
+  const safeBase = isPlainObject(base) ? base : {}
+  const safePatch = isPlainObject(patch) ? patch : {}
+  const registry = mergePlain(
+    normalizeAgentRegistry(safeBase.registry),
+    normalizeAgentRegistry(safePatch.registry)
+  )
+  const orchestration = mergePlain(
+    normalizeOrchestrationEvent(safeBase.orchestration),
+    normalizeOrchestrationEvent(safePatch.orchestration)
+  )
+  const attribution = mergePlain(
+    normalizeAttribution(safeBase.attribution),
+    normalizeAttribution(safePatch.attribution)
+  )
+  const legacy = {
+    subagentId: pickFirstDefined(safePatch.subagentId, safeBase.subagentId, registry?.agentId, attribution?.agentId),
+    subagentType: pickFirstDefined(safePatch.subagentType, safeBase.subagentType, registry?.agentType),
+    isSubagent: Boolean(
+      safePatch.isSubagent ||
+      safeBase.isSubagent ||
+      registry?.agentId ||
+      attribution?.agentId
+    )
+  }
+
+  return {
+    ...(registry ? { registry } : {}),
+    ...(orchestration ? { orchestration } : {}),
+    ...(attribution ? { attribution } : {}),
+    ...(legacy.subagentId || legacy.subagentType || legacy.isSubagent ? legacy : {})
+  }
+}
+
+function attachExistingCcgui(payload = {}, extra = null) {
+  const merged = mergeCcguiSemantics(
+    isPlainObject(payload.ccgui) ? payload.ccgui : null,
+    isPlainObject(extra?.ccgui) ? extra.ccgui : (isPlainObject(extra) ? extra : null)
+  )
+
+  if (!merged) {
+    return payload
+  }
+
+  return {
+    ...payload,
+    ccgui: merged
+  }
+}
+
 function normalizeToolBinding(binding = null, fallbackTool = null, fallbackNativeSessionId = null) {
   const tool = typeof binding?.tool === 'string' && binding.tool.trim()
     ? binding.tool.trim()
@@ -72,7 +216,7 @@ function normalizeSessionControlRequest(message = {}) {
     message.request_id
   )
 
-  return {
+  return attachExistingCcgui({
     ...request,
     ...message,
     request,
@@ -84,7 +228,7 @@ function normalizeSessionControlRequest(message = {}) {
     tool_input: toolInput,
     toolInput,
     input: toolInput
-  }
+  })
 }
 
 function isComposedAttachmentMessage(content) {
@@ -111,6 +255,118 @@ function applySessionEnvInfoPatch(envInfo = {}, options = {}) {
     provider,
     providerPid
   }
+}
+
+function isUuidLike(value) {
+  if (typeof value !== 'string') {
+    return false
+  }
+
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim())
+}
+
+const SESSION_NOTIFICATION_TYPES = new Set([
+  'runtime-exit',
+  'runtime-stopped',
+  'session-runtime-starting',
+  'session-runtime-restarting',
+  'session-runtime-ready',
+  'session-config-applied',
+  'session-effort-changed',
+  'permission-mode-change',
+  'fast-mode-change',
+  'compact-boundary',
+  'context_compacted',
+  'model-rerouted',
+  'turn-error',
+  'thread-event',
+  'turn-plan-updated',
+  'provider-deprecation',
+  'provider-config-warning',
+  'account-login-completed',
+  'hook-event',
+  'provider-message',
+  'provider-system-message'
+])
+
+function normalizeLegacyManagerEvent(message = {}, provider = 'unknown') {
+  if (!message || typeof message !== 'object') {
+    return null
+  }
+
+  const normalizedProvider = message.provider || provider || 'unknown'
+  const notificationType = typeof message.type === 'string' ? message.type.trim() : ''
+  if (notificationType && SESSION_NOTIFICATION_TYPES.has(notificationType)) {
+    return {
+      eventType: 'system-notification',
+      data: {
+        provider: normalizedProvider,
+        ...message,
+        type: notificationType
+      }
+    }
+  }
+
+  const subtype = typeof message.subtype === 'string' ? message.subtype.trim() : ''
+  if (subtype === 'task_started') {
+    return {
+      eventType: 'task-event',
+      data: {
+        eventType: 'started',
+        taskId: message.task_id || message.taskId || null,
+        taskType: message.task_type || message.taskType || null,
+        description: message.description || null,
+        prompt: message.prompt || null,
+        provider: normalizedProvider,
+        ccgui: attachExistingCcgui(message).ccgui || null,
+        rawMessage: message
+      }
+    }
+  }
+
+  if (subtype === 'task_progress') {
+    return {
+      eventType: 'task-event',
+      data: {
+        eventType: 'progress',
+        taskId: message.task_id || message.taskId || null,
+        usage: message.usage || null,
+        summary: message.summary || null,
+        description: message.description || null,
+        provider: normalizedProvider,
+        ccgui: attachExistingCcgui(message).ccgui || null,
+        rawMessage: message
+      }
+    }
+  }
+
+  if (subtype === 'task_notification') {
+    return {
+      eventType: 'task-event',
+      data: {
+        eventType: 'notification',
+        taskId: message.task_id || message.taskId || null,
+        provider: normalizedProvider,
+        ccgui: attachExistingCcgui(message).ccgui || null,
+        rawMessage: message
+      }
+    }
+  }
+
+  if (subtype === 'compact_boundary') {
+    return {
+      eventType: 'system-notification',
+      data: {
+        type: 'compact-boundary',
+        provider: normalizedProvider,
+        compactMetadata: message.compact_metadata || message.compactMetadata || null,
+        compactSummary: message.compactSummary || message.compact_summary || null,
+        rawMessage: message
+      }
+    }
+  }
+
+  return null
 }
 
 function extractUserInputText(message) {
@@ -649,9 +905,10 @@ class SessionInstance {
         }
       )
     } else {
+      const nativeClaudeSessionId = this.resolveClaudeRuntimeSessionId()
       this.runtimeManager = new ClaudeAdapter(
         this.projectPath,
-        this.id,
+        nativeClaudeSessionId,
         isNewSession,
         this.permissionMode,
         settings,
@@ -757,6 +1014,26 @@ class SessionInstance {
       this.runtimeManager = null
       throw e
     }
+  }
+
+  resolveClaudeRuntimeSessionId() {
+    const boundNativeSessionId = typeof this.sessionSettings?.toolBinding?.nativeSessionId === 'string'
+      ? this.sessionSettings.toolBinding.nativeSessionId.trim()
+      : ''
+    if (boundNativeSessionId) {
+      return boundNativeSessionId
+    }
+
+    if (isUuidLike(this.id)) {
+      return this.id
+    }
+
+    const generatedSessionId = crypto.randomUUID()
+    logger.info('[SessionInstance] Generated Claude native session id for non-UUID CCGUI session id', {
+      sessionId: this.id,
+      nativeSessionId: generatedSessionId
+    })
+    return generatedSessionId
   }
 
   getProviderDisplayName() {
@@ -1194,9 +1471,10 @@ class SessionInstance {
     const manager = this.runtimeManager
 
     manager.on('message-start', (message) => {
-      this.messages.push(message)
-      this.registerChangedFilesFromToolMessage(message)
-      this.emit('message-start', message)
+      const normalizedMessage = attachExistingCcgui(message)
+      this.messages.push(normalizedMessage)
+      this.registerChangedFilesFromToolMessage(normalizedMessage)
+      this.emit('message-start', normalizedMessage)
     })
 
     manager.on('message-delta', ({ messageId, field, delta }) => {
@@ -1217,18 +1495,31 @@ class SessionInstance {
 
     manager.on('message-update', ({ messageId, updates }) => {
       const msg = this.messages.find(item => item.id === messageId)
+      const normalizedUpdates = attachExistingCcgui({
+        ...(updates || {}),
+        id: messageId,
+        rawMessages: updates?.rawMessages,
+        rawMessage: updates?.rawMessage,
+        toolInput: updates?.toolInput,
+        tool_use_id: updates?.tool_use_id || updates?.toolUseId || msg?.request_id || msg?.id,
+        ccgui: mergeCcguiSemantics(msg?.ccgui || null, updates?.ccgui || null)
+      })
       if (msg) {
-        Object.assign(msg, updates)
+        Object.assign(msg, normalizedUpdates)
+        if (normalizedUpdates.ccgui) {
+          msg.ccgui = normalizedUpdates.ccgui
+        }
         this.registerChangedFilesFromToolMessage(msg)
-        if ((updates.isStreaming === false || updates.isExecuting === false) && !msg.duration && msg.startTime) {
+        if ((normalizedUpdates.isStreaming === false || normalizedUpdates.isExecuting === false) && !msg.duration && msg.startTime) {
           msg.duration = Date.now() - msg.startTime
         }
       }
-      this.emit('message-update', { messageId, updates })
+      this.emit('message-update', { messageId, updates: normalizedUpdates })
     })
 
     manager.on('tool-result', (payload) => {
-      this.emit('tool-result', payload)
+      const normalizedPayload = attachExistingCcgui(payload)
+      this.emit('tool-result', normalizedPayload)
     })
 
     manager.on('message-complete', ({ messageId, updates }) => {
@@ -1286,7 +1577,7 @@ class SessionInstance {
     manager.on('silent-message', (message) => {
       const silentMessage = {
         id: `silent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        ...message,
+        ...attachExistingCcgui(message),
         timestamp: message.timestamp || new Date().toISOString()
       }
       this.silentMessages.push(silentMessage)
@@ -1317,11 +1608,23 @@ class SessionInstance {
     })
 
     manager.on('task-event', (message) => {
-      this.emit('task-event', message)
+      const normalizedTaskEvent = attachExistingCcgui(message)
+      this.emit('task-event', normalizedTaskEvent)
     })
 
     manager.on('system-message', (message) => {
-      this.emit('system-message', message)
+      const normalizedEvent = normalizeLegacyManagerEvent(message, this.provider)
+      if (normalizedEvent) {
+        this.emit(normalizedEvent.eventType, normalizedEvent.data)
+        return
+      }
+
+      this.emit('unknown-message', {
+        type: 'legacy-system-message',
+        provider: this.provider,
+        rawMessage: message,
+        timestamp: new Date().toISOString()
+      })
     })
 
     manager.on('permission-mode-change', (mode) => {
@@ -1339,7 +1642,18 @@ class SessionInstance {
 
     // Unknown message
     manager.on('unknown_message', (message) => {
-      this.emit('unknown-message', message)
+      const normalizedEvent = normalizeLegacyManagerEvent(message, this.provider)
+      if (normalizedEvent) {
+        this.emit(normalizedEvent.eventType, normalizedEvent.data)
+        return
+      }
+
+      this.emit('unknown-message', {
+        type: 'provider-unknown-message',
+        provider: this.provider,
+        rawMessage: message,
+        timestamp: new Date().toISOString()
+      })
     })
 
     manager.on('exit', ({ code, signal }) => {
@@ -1357,6 +1671,9 @@ class SessionInstance {
     let textContent
     let structuredAttachments = []
     let serializedText = ''
+    let outgoingCcgui = (content && typeof content === 'object' && !Array.isArray(content) && content.ccgui)
+      ? JSON.parse(JSON.stringify(content.ccgui))
+      : null
 
     // 生成真实的 UUID（用于 Claude 创建文件快照）
     const messageUuid = crypto.randomUUID()
@@ -1459,7 +1776,8 @@ class SessionInstance {
       attachments: structuredAttachments,
       timestamp: new Date(),
       startTime: Date.now(),
-      rawMessage: userMessage
+      rawMessage: userMessage,
+      ...(outgoingCcgui ? { ccgui: outgoingCcgui } : {})
     }
     this.messages.push(displayMessage)
     this.rawMessages.push(userMessage)

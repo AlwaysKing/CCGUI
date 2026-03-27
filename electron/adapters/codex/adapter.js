@@ -8,6 +8,7 @@ const {
   createEmptyTurnUsage,
   mergeTurnUsage
 } = require('./client')
+const logger = require('../../logger')
 
 /**
  * CodexAdapter
@@ -19,6 +20,202 @@ class CodexAdapter extends CodexClient {
   constructor(...args) {
     super(...args)
     this.turnDiffMessageMap = new Map()
+    this.agentRegistry = new Map()
+    this.threadIdToAgentId = new Map()
+    this.pendingSpawnItems = new Map()
+  }
+
+  sanitizeSemanticId(value, fallback = 'agent') {
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+    return normalized || fallback
+  }
+
+  buildCcguiPatch({ registry = null, orchestration = null, attribution = null } = {}) {
+    const ccgui = {}
+    if (registry?.agentId) {
+      ccgui.registry = registry
+      ccgui.subagentId = registry.agentId
+      ccgui.subagentType = registry.agentType || null
+      ccgui.isSubagent = true
+    }
+    if (orchestration?.agentId && orchestration?.eventType) {
+      ccgui.orchestration = orchestration
+    }
+    if (attribution?.agentId || attribution?.actorId || attribution?.targetId) {
+      ccgui.attribution = {
+        agentId: attribution.agentId || attribution.actorId || null,
+        actorId: attribution.actorId || attribution.agentId || null,
+        ...(attribution.targetId ? { targetId: attribution.targetId } : {})
+      }
+      if (!ccgui.subagentId && ccgui.attribution.agentId) {
+        ccgui.subagentId = ccgui.attribution.agentId
+        ccgui.isSubagent = true
+      }
+    }
+    if (!ccgui.registry && !ccgui.orchestration && !ccgui.attribution) {
+      ccgui.attribution = {
+        agentId: 'master',
+        actorId: 'master'
+      }
+    }
+    return Object.keys(ccgui).length > 0 ? ccgui : null
+  }
+
+  mergeRegistry(entry = {}) {
+    if (!entry?.agentId) {
+      return null
+    }
+
+    const nextEntry = {
+      ...(this.agentRegistry.get(entry.agentId) || {}),
+      ...Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== null && value !== undefined))
+    }
+    this.agentRegistry.set(entry.agentId, nextEntry)
+    return nextEntry
+  }
+
+  emitAgentSilent(ccgui, rawMessage = null, extra = {}) {
+    if (!ccgui) {
+      return
+    }
+
+    this.emit('silent-message', {
+      messageType: 'agent-orchestration',
+      provider: 'codex',
+      ...(rawMessage ? { rawMessage } : {}),
+      ...extra,
+      ccgui,
+      timestamp: new Date().toISOString()
+    })
+  }
+
+  buildLifecycleCcgui(entry = {}, orchestration = {}) {
+    const mergedRegistry = this.mergeRegistry(entry)
+    return this.buildCcguiPatch({
+      registry: mergedRegistry,
+      orchestration: {
+        timestamp: new Date().toISOString(),
+        ...orchestration,
+        agentId: orchestration.agentId || mergedRegistry?.agentId
+      }
+    })
+  }
+
+  resolveAgentIdFromThreadId(threadId) {
+    if (!threadId || threadId === this.currentThreadId) {
+      return null
+    }
+    return this.threadIdToAgentId.get(threadId) || null
+  }
+
+  resolveAttributionFromThreadId(threadId) {
+    const agentId = this.resolveAgentIdFromThreadId(threadId)
+    if (!agentId) {
+      return null
+    }
+
+    return {
+      agentId,
+      actorId: agentId
+    }
+  }
+
+  isSpawnAgentItem(item = {}) {
+    const tool = String(item.tool || item.name || '').trim().toLowerCase()
+    return item.type === 'collabAgentToolCall' && (tool === 'spawnagent' || tool === 'agent' || tool === 'spawn_agent')
+  }
+
+  rememberSpawnItem(item = {}, params = {}) {
+    if (!item?.id || !this.isSpawnAgentItem(item)) {
+      return
+    }
+
+    const input = item.arguments || item.input || {}
+    this.pendingSpawnItems.set(item.id, {
+      itemId: item.id,
+      name: input.name || item.name || null,
+      prompt: input.prompt || input.task || input.description || null,
+      model: input.model || null,
+      agentType: input.agentType || input.agent_type || input.template || input.role || null,
+      parentAgentId: this.resolveAgentIdFromThreadId(params.threadId) || null
+    })
+  }
+
+  parseReceiverThreadIds(item = {}) {
+    const rawResult = item.result || {}
+    const candidates = [
+      item.receiverThreadIds,
+      rawResult.receiverThreadIds,
+      rawResult.receiver_thread_ids,
+      item.threadIds,
+      rawResult.threadIds
+    ]
+
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate) && candidate.length > 0) {
+        return candidate.filter(Boolean)
+      }
+    }
+
+    return []
+  }
+
+  registerSpawnedAgents(item = {}, params = {}) {
+    const pending = this.pendingSpawnItems.get(item.id) || null
+    const receiverThreadIds = this.parseReceiverThreadIds(item)
+    if (receiverThreadIds.length === 0) {
+      return
+    }
+
+    for (const receiverThreadId of receiverThreadIds) {
+      const agentId = `codex-agent:${this.sanitizeSemanticId(receiverThreadId)}`
+      this.threadIdToAgentId.set(receiverThreadId, agentId)
+      const ccgui = this.buildLifecycleCcgui({
+        agentId,
+        agentKind: 'collaborative',
+        agentType: pending?.agentType || 'subagent',
+        name: pending?.name || pending?.agentType || 'Codex Agent',
+        prompt: pending?.prompt || null,
+        model: pending?.model || null,
+        parentAgentId: pending?.parentAgentId || null,
+        status: 'starting'
+      }, {
+        eventType: 'start',
+        agentId,
+        agentKind: 'collaborative',
+        agentType: pending?.agentType || 'subagent',
+        name: pending?.name || pending?.agentType || 'Codex Agent',
+        prompt: pending?.prompt || null,
+        model: pending?.model || null,
+        parentAgentId: pending?.parentAgentId || null,
+        source: 'spawned_thread',
+        status: 'starting',
+        actorId: pending?.parentAgentId || null
+      })
+      this.emitAgentSilent(ccgui, { item, params })
+    }
+  }
+
+  emitCodexSystemNotification(type, payload = {}) {
+    this.emit('system-notification', {
+      type,
+      provider: 'codex',
+      ...payload
+    })
+  }
+
+  emitCodexSilentEvent(eventType, payload = {}) {
+    this.emit('silent-message', {
+      messageType: 'provider-event',
+      eventType,
+      provider: 'codex',
+      params: payload,
+      timestamp: new Date().toISOString()
+    })
   }
 
   buildControlResponse(requestId, response = {}, options = {}) {
@@ -83,6 +280,15 @@ class CodexAdapter extends CodexClient {
         this.emit('env-info', this.envInfo)
         break
 
+      case 'thread/name/updated':
+        this.handleThreadNameUpdated(params)
+        break
+
+      case 'thread/archived':
+      case 'thread/unarchived':
+        this.handleThreadLifecycleEvent(method, params)
+        break
+
       case 'turn/started':
         this.currentTurnId = params.turn.id
         this.currentAssistantMessageId = null
@@ -92,6 +298,22 @@ class CodexAdapter extends CodexClient {
           numTurns: 0,
           usage: createEmptyTurnUsage()
         })
+        {
+          const agentId = this.resolveAgentIdFromThreadId(params.threadId)
+          if (agentId && this.agentRegistry.get(agentId)?.status !== 'running') {
+            const ccgui = this.buildLifecycleCcgui({
+              agentId,
+              status: 'running'
+            }, {
+              eventType: 'start',
+              agentId,
+              agentKind: 'collaborative',
+              source: 'spawned_thread',
+              status: 'running'
+            })
+            this.emitAgentSilent(ccgui, { method, params })
+          }
+        }
         break
 
       case 'turn/completed': {
@@ -115,6 +337,22 @@ class CodexAdapter extends CodexClient {
         })
         this.turnStats.delete(params.turn.id)
         this.turnAssistantState.delete(params.turn.id)
+        {
+          const agentId = this.resolveAgentIdFromThreadId(params.threadId)
+          if (agentId) {
+            const ccgui = this.buildLifecycleCcgui({
+              agentId,
+              status: 'ended'
+            }, {
+              eventType: 'end',
+              agentId,
+              reason: params.turn?.status === 'failed' ? 'failed' : 'completed',
+              result: params.turn?.result || null,
+              status: 'ended'
+            })
+            this.emitAgentSilent(ccgui, { method, params })
+          }
+        }
 
         // 处理 turn 失败错误
         if (params.turn?.status === 'failed' && params.turn?.error) {
@@ -143,16 +381,16 @@ class CodexAdapter extends CodexClient {
         break
 
       case 'item/agentMessage/delta':
-        this.emitAssistantDelta(params.turnId, params.itemId, 'content', params.delta)
+        this.emitAssistantDelta(params.turnId, params.itemId, 'content', params.delta, params.threadId)
         break
 
       case 'item/reasoning/textDelta':
       case 'item/reasoning/summaryTextDelta':
-        this.emitAssistantDelta(params.turnId, params.itemId, 'thinking', params.delta)
+        this.emitAssistantDelta(params.turnId, params.itemId, 'thinking', params.delta, params.threadId)
         break
 
       case 'item/plan/delta':
-        this.emitAssistantDelta(params.turnId, params.itemId, 'thinking', `${params.delta}`)
+        this.emitAssistantDelta(params.turnId, params.itemId, 'thinking', `${params.delta}`, params.threadId)
         break
 
       case 'item/commandExecution/outputDelta':
@@ -163,6 +401,24 @@ class CodexAdapter extends CodexClient {
 
       case 'turn/diff/updated':
         this.handleTurnDiffUpdated(params)
+        break
+
+      case 'turn/plan/updated':
+        this.handleTurnPlanUpdated(params)
+        break
+
+      case 'hook/started':
+      case 'hook/completed':
+        this.handleHookEvent(method, params)
+        break
+
+      case 'item/autoApprovalReview/started':
+      case 'item/autoApprovalReview/completed':
+        this.handleAutoApprovalReviewEvent(method, params)
+        break
+
+      case 'item/mcpToolCall/progress':
+        this.handleMcpToolProgress(params)
         break
 
       case 'thread/status/changed':
@@ -220,17 +476,15 @@ class CodexAdapter extends CodexClient {
         break
 
       case 'thread/rolled_back':
-        this.emit('system-notification', {
-          type: 'thread-rolled-back',
-          provider: 'codex',
+        this.emitCodexSystemNotification('thread-event', {
+          event: 'rolled-back',
           metadata: params || {}
         })
         break
 
       case 'undo/completed':
-        this.emit('system-notification', {
-          type: 'undo-completed',
-          provider: 'codex',
+        this.emitCodexSystemNotification('thread-event', {
+          event: 'undo-completed',
           metadata: params || {}
         })
         break
@@ -243,9 +497,7 @@ class CodexAdapter extends CodexClient {
           model: params.reroutedModel || params.to || params.model || this.envInfo.model
         }
         this.emit('env-info', this.envInfo)
-        this.emit('system-notification', {
-          type: 'model-rerouted',
-          provider: 'codex',
+        this.emitCodexSystemNotification('model-rerouted', {
           requestedModel: params.requestedModel || params.from || null,
           reroutedModel: params.reroutedModel || params.to || params.model || null,
           metadata: params
@@ -254,11 +506,12 @@ class CodexAdapter extends CodexClient {
 
       case 'rawResponseItem/completed':
       case 'serverRequest/resolved':
-        this.emit('silent-message', {
-          messageType: method,
-          params,
-          timestamp: new Date().toISOString()
-        })
+        this.emitCodexSilentEvent(
+          method === 'serverRequest/resolved'
+            ? 'server-request-resolved'
+            : 'raw-response-item-completed',
+          params || {}
+        )
         break
 
       case 'account/rateLimits/updated':
@@ -272,14 +525,32 @@ class CodexAdapter extends CodexClient {
         this.emit('env-info', this.envInfo)
         break
 
+      case 'account/updated':
+        this.handleAccountUpdated(params)
+        break
+
+      case 'account/login/completed':
+        this.handleAccountLoginCompleted(params)
+        break
+
+      case 'app/list/updated':
+        this.handleAppListUpdated(params)
+        break
+
+      case 'skills/changed':
+        this.handleSkillsChanged(params)
+        break
+
       case 'deprecationNotice':
-        this.emit('system-notification', {
-          type: 'provider-deprecation',
-          provider: 'codex',
+        this.emitCodexSystemNotification('provider-deprecation', {
           title: params?.summary || '配置项已弃用',
           message: params?.details || '',
           metadata: params || {}
         })
+        break
+
+      case 'configWarning':
+        this.handleConfigWarning(params)
         break
 
       case 'error':
@@ -302,6 +573,198 @@ class CodexAdapter extends CodexClient {
         this.emit('unknown_message', message)
         break
     }
+  }
+
+  handleThreadNameUpdated(params = {}) {
+    const threadId = params.threadId || params.thread?.id || this.currentThreadId || null
+    const threadName = String(params.threadName || params.name || params.title || '').trim()
+
+    this.envInfo = applyCodexEnvInfoPatch({
+      ...this.envInfo,
+      thread_id: threadId || this.envInfo.thread_id || null,
+      thread_title: threadName || this.envInfo.thread_title || null
+    }, {
+      provider: 'codex',
+      providerPid: this.getPid()
+    })
+    this.emit('env-info', this.envInfo)
+
+    this.emitCodexSystemNotification('thread-event', {
+      event: 'name-updated',
+      threadId,
+      threadName: threadName || null,
+      metadata: params
+    })
+  }
+
+  handleThreadLifecycleEvent(method, params = {}) {
+    const threadId = params.threadId || params.thread?.id || this.currentThreadId || null
+    const event = method === 'thread/archived' ? 'archived' : 'unarchived'
+    const threadStatus = event === 'archived' ? 'archived' : 'active'
+
+    this.envInfo = applyCodexEnvInfoPatch({
+      ...this.envInfo,
+      thread_status: threadStatus
+    }, {
+      provider: 'codex',
+      providerPid: this.getPid()
+    })
+    this.emit('env-info', this.envInfo)
+
+    this.emitCodexSystemNotification('thread-event', {
+      event,
+      threadId,
+      metadata: params
+    })
+  }
+
+  handleTurnPlanUpdated(params = {}) {
+    this.emitCodexSystemNotification('turn-plan-updated', {
+      threadId: params.threadId || this.currentThreadId || null,
+      turnId: params.turnId || this.currentTurnId || null,
+      explanation: params.explanation || null,
+      plan: Array.isArray(params.plan) ? params.plan : [],
+      metadata: params
+    })
+  }
+
+  handleHookEvent(method, params = {}) {
+    const event = method === 'hook/started' ? 'started' : 'completed'
+    const run = params.run || {}
+    const errorMessage = params.error?.message || run.error?.message || null
+    const payload = {
+      event,
+      threadId: params.threadId || this.currentThreadId || null,
+      turnId: params.turnId || this.currentTurnId || null,
+      hookId: run.id || params.hookId || null,
+      hookName: run.hookName || run.name || params.hookName || null,
+      status: run.status || null,
+      errorMessage,
+      metadata: params
+    }
+
+    this.emitCodexSilentEvent('hook-event', payload)
+    if (event === 'completed' && errorMessage) {
+      this.emitCodexSystemNotification('hook-event', {
+        ...payload,
+        message: errorMessage
+      })
+    }
+  }
+
+  handleAutoApprovalReviewEvent(method, params = {}) {
+    const event = method === 'item/autoApprovalReview/started' ? 'started' : 'completed'
+    const payload = {
+      event,
+      threadId: params.threadId || this.currentThreadId || null,
+      turnId: params.turnId || this.currentTurnId || null,
+      itemId: params.itemId || params.item?.id || null,
+      targetItemId: params.targetItemId || params.item?.targetItemId || null,
+      status: params.status || params.item?.status || null,
+      riskLevel: params.riskLevel || params.item?.riskLevel || null,
+      riskScore: params.riskScore || params.item?.riskScore || null,
+      metadata: params
+    }
+
+    this.emitCodexSilentEvent('auto-approval-review-event', payload)
+  }
+
+  handleMcpToolProgress(params = {}) {
+    const messageId = this.itemToMessageMap.get(params.itemId)
+    const progressMessage = typeof params.message === 'string' ? params.message.trim() : ''
+
+    if (messageId && progressMessage) {
+      this.emit('message-delta', {
+        messageId,
+        field: 'result',
+        delta: `\n[progress] ${progressMessage}`
+      })
+    }
+
+    if (messageId) {
+      this.emit('message-update', {
+        messageId,
+        updates: {
+          progressMessage: progressMessage || null,
+          progressUpdatedAt: Date.now()
+        }
+      })
+    }
+
+    this.emitCodexSilentEvent('tool-progress', {
+      toolType: 'mcpToolCall',
+      threadId: params.threadId || this.currentThreadId || null,
+      turnId: params.turnId || this.currentTurnId || null,
+      itemId: params.itemId || null,
+      message: progressMessage || null,
+      metadata: params
+    })
+  }
+
+  handleSkillsChanged(params = {}) {
+    const changedSkills = Array.isArray(params.skills)
+      ? params.skills
+      : (Array.isArray(params.data) ? params.data : [])
+
+    this.emitCodexSilentEvent('inventory-changed', {
+      domain: 'skills',
+      action: 'updated',
+      count: changedSkills.length,
+      metadata: params
+    })
+  }
+
+  handleAppListUpdated(params = {}) {
+    const apps = Array.isArray(params.apps) ? params.apps : []
+    this.emitCodexSilentEvent('inventory-changed', {
+      domain: 'apps',
+      action: 'updated',
+      count: apps.length,
+      metadata: params
+    })
+  }
+
+  handleAccountUpdated(params = {}) {
+    const authMode = params.authMode || params.auth_mode || null
+    const account = params.account || params.accountInfo || null
+
+    this.envInfo = applyCodexEnvInfoPatch({
+      ...this.envInfo,
+      auth_mode: authMode || this.envInfo.auth_mode || null,
+      account: account || this.envInfo.account || null
+    }, {
+      provider: 'codex',
+      providerPid: this.getPid()
+    })
+    this.emit('env-info', this.envInfo)
+
+    this.emitCodexSilentEvent('account-updated', {
+      authMode,
+      account,
+      metadata: params
+    })
+  }
+
+  handleAccountLoginCompleted(params = {}) {
+    const success = typeof params.success === 'boolean'
+      ? params.success
+      : !params.error
+    this.emitCodexSystemNotification('account-login-completed', {
+      loginId: params.loginId || params.login_id || null,
+      success,
+      error: params.error || null,
+      metadata: params
+    })
+  }
+
+  handleConfigWarning(params = {}) {
+    this.emitCodexSystemNotification('provider-config-warning', {
+      title: params.summary || '配置警告',
+      message: params.details || '',
+      path: params.path || null,
+      range: params.range || null,
+      metadata: params
+    })
   }
 
   handleTurnDiffUpdated(params = {}) {
@@ -350,6 +813,7 @@ class CodexAdapter extends CodexClient {
     }
 
     this.itemState.set(item.id, item)
+    this.rememberSpawnItem(item, params)
 
     if (item.type === 'fileChange') {
       return
@@ -357,7 +821,7 @@ class CodexAdapter extends CodexClient {
 
     if (item.type === 'agentMessage' || item.type === 'reasoning' || item.type === 'plan') {
       if (item.type === 'agentMessage' && item.text) {
-        const messageId = this.ensureAssistantMessage(params.turnId, item.id)
+        const messageId = this.ensureAssistantMessage(params.turnId, item.id, params.threadId)
         this.emit('message-delta', {
           messageId,
           field: 'content',
@@ -365,7 +829,7 @@ class CodexAdapter extends CodexClient {
         })
       }
       if (item.type === 'reasoning' && Array.isArray(item.content) && item.content.length > 0) {
-        const messageId = this.ensureAssistantMessage(params.turnId, item.id)
+        const messageId = this.ensureAssistantMessage(params.turnId, item.id, params.threadId)
         const thinkingText = item.content.join('\n')
         this.emit('message-delta', {
           messageId,
@@ -374,7 +838,7 @@ class CodexAdapter extends CodexClient {
         })
       }
       if (item.type === 'plan' && item.text) {
-        const messageId = this.ensureAssistantMessage(params.turnId, item.id)
+        const messageId = this.ensureAssistantMessage(params.turnId, item.id, params.threadId)
         this.emit('message-delta', {
           messageId,
           field: 'thinking',
@@ -411,6 +875,9 @@ class CodexAdapter extends CodexClient {
         this.turnAssistantState.set(params.turnId, assistantState)
       }
       const message = this.buildToolMessage(item)
+      message.ccgui = this.buildCcguiPatch({
+        attribution: this.resolveAttributionFromThreadId(params.threadId)
+      })
       this.itemToMessageMap.set(item.id, message.id)
       this.emit('message-start', message)
     }
@@ -464,13 +931,22 @@ class CodexAdapter extends CodexClient {
     }
 
     const updates = this.buildToolCompletionUpdates(item)
+    if (this.isSpawnAgentItem(item)) {
+      this.registerSpawnedAgents(item, params)
+      this.pendingSpawnItems.delete(item.id)
+    }
     this.emit('message-update', {
       messageId,
-      updates
+      updates: {
+        ...updates,
+        ccgui: this.buildCcguiPatch({
+          attribution: this.resolveAttributionFromThreadId(params.threadId)
+        })
+      }
     })
   }
 
-  ensureAssistantMessage(turnId, itemId) {
+  ensureAssistantMessage(turnId, itemId, threadId = null) {
     const currentState = this.turnAssistantState.get(turnId)
     if (currentState?.messageId && currentState.itemId === itemId) {
       this.itemToMessageMap.set(itemId, currentState.messageId)
@@ -506,14 +982,17 @@ class CodexAdapter extends CodexClient {
       isStreaming: true,
       startTime: Date.now(),
       timestamp: new Date(),
+      ccgui: this.buildCcguiPatch({
+        attribution: this.resolveAttributionFromThreadId(threadId)
+      }),
       rawMessages: []
     })
 
     return messageId
   }
 
-  emitAssistantDelta(turnId, itemId, field, delta) {
-    const messageId = this.ensureAssistantMessage(turnId, itemId)
+  emitAssistantDelta(turnId, itemId, field, delta, threadId = null) {
+    const messageId = this.ensureAssistantMessage(turnId, itemId, threadId)
     this.emit('message-delta', {
       messageId,
       field,
@@ -787,14 +1266,42 @@ class CodexAdapter extends CodexClient {
 
   handleServerRequest(message) {
     const { id, method, params } = message
+    const requestParams = params || {}
+
+    if (method === 'account/chatgptAuthTokens/refresh') {
+      this.sendResponse(id, {})
+      this.pendingServerRequests.delete(String(id))
+      this.emitCodexSilentEvent('account-token-refresh-request', {
+        requestId: id,
+        metadata: requestParams
+      })
+      return
+    }
+
+    if (method === 'item/plan/requestImplementation') {
+      const normalized = normalizeControlRequest({
+        request_id: id,
+        tool_use_id: requestParams.itemId || requestParams.callId || id,
+        requestMethod: method,
+        questions: Array.isArray(requestParams.questions) && requestParams.questions.length > 0
+          ? requestParams.questions
+          : [{
+              id: 'planImplementation',
+              question: requestParams.planContent || requestParams.description || '是否执行当前计划实现？'
+            }],
+        ...requestParams
+      })
+      this.emit('control-request', normalized)
+      return
+    }
 
     if (method === 'item/tool/requestUserInput' || method === 'mcpServer/elicitation/request') {
       const normalized = normalizeControlRequest({
         request_id: id,
-        tool_use_id: params.itemId || params.callId || id,
-        questions: params.questions || [],
+        tool_use_id: requestParams.itemId || requestParams.callId || id,
+        questions: requestParams.questions || [],
         requestMethod: method,
-        ...params
+        ...requestParams
       })
       this.emit('control-request', normalized)
       return
@@ -802,11 +1309,11 @@ class CodexAdapter extends CodexClient {
 
     const controlRequest = normalizeControlRequest({
       request_id: id,
-      tool_use_id: params.itemId || params.callId || id,
+      tool_use_id: requestParams.itemId || requestParams.callId || id,
       requestMethod: method,
       tool_name: this.mapRequestMethodToToolName(method),
-      tool_input: this.buildControlToolInput(method, params),
-      ...params
+      tool_input: this.buildControlToolInput(method, requestParams),
+      ...requestParams
     })
 
     this.emit('control-request', controlRequest)
@@ -824,6 +1331,8 @@ class CodexAdapter extends CodexClient {
         return normalizeToolName('request_permissions')
       case 'item/tool/requestUserInput':
       case 'mcpServer/elicitation/request':
+        return normalizeToolName('request_user_input')
+      case 'item/plan/requestImplementation':
         return normalizeToolName('request_user_input')
       case 'item/tool/call':
         return normalizeToolName('client_tool_call')
@@ -874,6 +1383,14 @@ class CodexAdapter extends CodexClient {
       }
     }
 
+    if (method === 'item/plan/requestImplementation') {
+      return {
+        description: params.description || 'Codex 请求确认执行计划实现',
+        planContent: params.planContent || '',
+        questions: Array.isArray(params.questions) ? params.questions : []
+      }
+    }
+
     return params
   }
 
@@ -915,6 +1432,8 @@ class CodexAdapter extends CodexClient {
       result = approved
         ? (options?.updatedInput?.result || options?.result || {})
         : { error: 'Rejected by user' }
+    } else if (method === 'item/plan/requestImplementation') {
+      result = { decision: approved ? 'accept' : 'decline' }
     } else if (method === 'execCommandApproval') {
       result = { decision: approved ? 'approved' : 'denied' }
     } else if (method === 'applyPatchApproval') {

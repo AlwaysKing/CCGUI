@@ -115,8 +115,8 @@ const agentData = computed(() => {
 
   return {
     subagentType: input.subagent_type || input.subagentType || '',
-    description: input.description || '',
-    prompt: input.prompt || ''
+    description: input.description || input.task || input.instructions || input.message || '',
+    prompt: input.prompt || input.task || input.instructions || input.message || ''
   }
 })
 
@@ -203,6 +203,26 @@ const props = defineProps({
   chatTheme: {
     type: Object,
     default: () => ({})
+  },
+  textStyleLabelOverride: {
+    type: String,
+    default: null
+  },
+  textStyleSummaryOverride: {
+    type: String,
+    default: null
+  },
+  textStyleStatusOverride: {
+    type: String,
+    default: null
+  },
+  hideTextStyleToggle: {
+    type: Boolean,
+    default: false
+  },
+  nonInteractive: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -370,7 +390,7 @@ const primaryContent = computed(() => {
       return {
         label: '代理任务',
         value: input.subagent_type || input.subagentType || '通用代理',
-        description: input.description || null
+        description: input.description || input.prompt || input.task || input.instructions || input.message || null
       }
     case 'ViewImage':
       return {
@@ -585,10 +605,16 @@ const displayCollapsedSummary = computed(() => {
 })
 
 const textStyleLabel = computed(() => {
+  if (props.textStyleLabelOverride !== null) {
+    return props.textStyleLabelOverride
+  }
   return primaryContent.value?.label || props.toolName
 })
 
 const textStyleSummary = computed(() => {
+  if (props.textStyleSummaryOverride !== null) {
+    return props.textStyleSummaryOverride
+  }
   const input = mergedToolInput.value || {}
 
   switch (props.toolName) {
@@ -669,6 +695,9 @@ const showTextStyleSummary = computed(() => {
 })
 
 const textStyleStatus = computed(() => {
+  if (props.textStyleStatusOverride !== null) {
+    return props.textStyleStatusOverride
+  }
   if (props.isExecuting) return 'executing'
   if (props.isError) return 'error'
   if (props.toolName === 'Diff' && unifiedDiffData.value?.diff) return 'success'
@@ -683,6 +712,9 @@ const formattedResult = computed(() => {
 })
 
 function toggleExpand() {
+  if (props.nonInteractive) {
+    return
+  }
   emit('toggle-collapse')
 }
 
@@ -764,7 +796,7 @@ async function handlePreviewFile(event) {
       <div class="tool-info">
         <template v-if="isTextStyle">
           <span class="tool-name text-style-label">{{ textStyleLabel }}</span>
-          <CollapseToggle :collapsed="!isExpanded" @toggle="toggleExpand" />
+          <CollapseToggle v-if="!hideTextStyleToggle" :collapsed="!isExpanded" @toggle="toggleExpand" />
           <button
             v-if="showTextStyleSummary && previewFileName"
             class="text-style-summary text-style-file"
@@ -1149,6 +1181,10 @@ async function handlePreviewFile(event) {
   background: transparent;
   justify-content: flex-start;
   gap: 6px;
+}
+
+.tool-use-card.text-style.non-interactive .tool-header {
+  cursor: default;
 }
 
 .tool-header:hover {

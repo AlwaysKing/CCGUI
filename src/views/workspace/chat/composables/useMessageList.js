@@ -78,9 +78,16 @@ export function useMessageList() {
   }
 
   function getResponseCollapseState(messages, messageIndex) {
+    if (!Array.isArray(messages) || messageIndex <= 0) {
+      return { collapsed: false, byUserIndex: null }
+    }
     for (let i = messageIndex - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
-        if (messages[i].responseCollapsed) {
+      const message = messages[i]
+      if (!message) {
+        continue
+      }
+      if (message.role === 'user') {
+        if (message.responseCollapsed) {
           return { collapsed: true, byUserIndex: i }
         }
         break

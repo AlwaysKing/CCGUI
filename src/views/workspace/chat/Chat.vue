@@ -17,7 +17,7 @@ import MessageDetailDialog from './components/dialogs/MessageDetailDialog.vue'
 import EnvInfoBar from './components/layout/EnvInfoBar.vue'
 import ChatInput from './components/layout/ChatInput.vue'
 import StickyHeader from './components/layout/StickyHeader.vue'
-import MessageList from './components/messages/MessageList.vue'
+import AgentWorkspace from './components/AgentWorkspace.vue'
 import TaskFloatingWindow from './components/TaskFloatingWindow.vue'
 
 // 引入 composables
@@ -64,6 +64,24 @@ const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'startSession', 'cl
 
 // 使用 SessionStore 的状态（只读 computed）
 const messages = computed(() => sessionStore.currentMessages)
+const mainAgentId = computed(() => sessionStore.currentMainAgentId)
+const executionAgentCards = computed(() => sessionStore.executionAgentCards)
+const collaborativeAgentSessions = computed(() => sessionStore.collaborativeAgentSessions)
+const agentWorkspaceAgents = computed(() => sessionStore.agentWorkspaceAgents)
+const activeCollaborativeSession = computed(() => sessionStore.activeCollaborativeSession)
+const splitCollaborativeSessions = computed(() => sessionStore.splitCollaborativeSessions)
+const agentWorkspaceState = computed(() => sessionStore.currentAgentWorkspaceState)
+const currentInputTargetAgent = computed(() => sessionStore.currentInputTargetAgent)
+const childCollaborativeSessions = computed(() => collaborativeAgentSessions.value.filter(session => !session.isMain))
+const hasCollaborativeChildren = computed(() => childCollaborativeSessions.value.length > 0)
+const splitSideSessions = computed(() => {
+  if (agentWorkspaceState.value.collaborativeViewMode !== 'split') {
+    return []
+  }
+
+  const activeAgentId = activeCollaborativeSession.value?.agentId || null
+  return splitCollaborativeSessions.value.filter(session => session.agentId !== activeAgentId)
+})
 
 // UI 状态
 const pendingPermission = computed(() => sessionStore.pendingPermission)
@@ -100,6 +118,77 @@ let chatPanelHeight = ref(0) // chat-panel 容器的高度
 let chatPanelResizeObserver = null // ResizeObserver 实例
 const inputHistory = computed(() => sessionStore.currentSession?.inputHistory || [])
 // Note: isLoadingHistory removed - history is now loaded by SessionStore/SessionInstance
+
+const executionAgentCardMap = computed(() => {
+  return new Map(executionAgentCards.value.map(card => [card.agentId, card]))
+})
+
+const mainTimelineMessages = computed(() => {
+  return messages.value.filter(message => {
+    const agentId = sessionStore.getMessageAgentId(message)
+    const registryEntry = sessionStore.currentAgentRegistry.get(agentId)
+
+    if (agentId !== mainAgentId.value && registryEntry?.agentKind === 'collaborative') {
+      return false
+    }
+
+    if (agentId !== mainAgentId.value && registryEntry?.agentKind === 'execution') {
+      return false
+    }
+
+    return true
+  })
+})
+
+const mainTimelineBlocks = computed(() => {
+  const blocks = []
+  const insertedExecutionAgentIds = new Set()
+
+  messages.value.forEach((message, index) => {
+    const agentId = sessionStore.getMessageAgentId(message)
+    const registryEntry = sessionStore.currentAgentRegistry.get(agentId)
+
+    if (agentId !== mainAgentId.value && registryEntry?.agentKind === 'collaborative') {
+      return
+    }
+
+    if (agentId !== mainAgentId.value && registryEntry?.agentKind === 'execution') {
+      if (!insertedExecutionAgentIds.has(agentId)) {
+        const card = executionAgentCardMap.value.get(agentId)
+        if (card) {
+          blocks.push({
+            type: 'execution-card',
+            key: `execution-${agentId}`,
+            card
+          })
+          insertedExecutionAgentIds.add(agentId)
+        }
+      }
+      return
+    }
+
+    blocks.push({
+      type: 'message',
+      key: `message-${message.id || index}`,
+      message,
+      messageIndex: mainTimelineMessages.value.indexOf(message),
+      totalMessages: mainTimelineMessages.value.length,
+      allMessages: mainTimelineMessages.value
+    })
+  })
+
+  executionAgentCards.value.forEach(card => {
+    if (!insertedExecutionAgentIds.has(card.agentId)) {
+      blocks.push({
+        type: 'execution-card',
+        key: `execution-${card.agentId}`,
+        card
+      })
+    }
+  })
+
+  return blocks
+})
 
 // 权限模式
 const permissionMode = ref('default') // 当前权限模式
@@ -1714,6 +1803,23 @@ async function handleQuestionAnswer(requestId, answers) {
     console.warn('[ChatWindow] handleQuestionAnswer: question is null, cannot send response')
   }
 }
+
+function handleSelectAgent(agentId) {
+  if (agentWorkspaceState.value.collaborativeViewMode === 'split') {
+    sessionStore.replaceSplitPaneAgent(agentId)
+    return
+  }
+
+  sessionStore.setActiveAgent(agentId)
+}
+
+function handleFocusAgent(agentId) {
+  sessionStore.setFocusedPaneAgentId(agentId)
+}
+
+function handleToggleAgentViewMode(mode) {
+  sessionStore.setCollaborativeViewMode(mode)
+}
 </script>
 
 <template>
@@ -1734,7 +1840,7 @@ async function handleQuestionAnswer(requestId, answers) {
     <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight } : {}">
       <!-- 粘性头部 - 浮动在聊天内容上方 -->
       <StickyHeader
-        v-if="stickyMessage"
+        v-if="stickyMessage && activeCollaborativeSession?.isMain"
         :message="stickyMessage"
         :is-processing="isStickyMessageProcessing"
         :current-time="currentTime"
@@ -1743,19 +1849,28 @@ async function handleQuestionAnswer(requestId, answers) {
         @copy="copyStickyMessage"
         @scroll-to-user="scrollToStickyMessage"
       />
-      <!-- 消息列表 -->
-      <MessageList
-        :messages="messages"
+      <AgentWorkspace
+        :timeline-blocks="mainTimelineBlocks"
+        :has-collaborative-children="hasCollaborativeChildren"
+        :agent-entries="agentWorkspaceAgents"
+        :collaborative-sessions="collaborativeAgentSessions"
+        :active-session="activeCollaborativeSession"
+        :split-sessions="splitSideSessions"
+        :view-mode="agentWorkspaceState.collaborativeViewMode"
+        :focused-pane-agent-id="agentWorkspaceState.focusedPaneAgentId"
+        :input-target-agent-id="agentWorkspaceState.inputTargetAgentId"
         :working-directory="workingDirectory"
         :current-time="currentTime"
         :chat-theme="resolvedChatMessageTheme"
+        @select-agent="handleSelectAgent"
+        @focus-agent="handleFocusAgent"
+        @toggle-view-mode="handleToggleAgentViewMode"
         @message-click="handleMessageClick"
         @rewind="handleRewind"
         @fork="handleFork"
         @rewind-and-fork="handleRewindAndFork"
         @jump-to-message="handleRewindNoticeClick"
       />
-
     </div>
 
     <div v-if="showConversationWave" class="conversation-wave-rail" aria-hidden="true">
@@ -1909,6 +2024,8 @@ async function handleQuestionAnswer(requestId, answers) {
         :queue-visible="shouldShowQueuePanel"
         :notification-options="notificationOptions"
         :can-configure-notifications="canConfigureNotifications"
+        :input-target-label="hasCollaborativeChildren ? (currentInputTargetAgent?.title || currentInputTargetAgent?.name || activeCollaborativeSession?.title || '') : ''"
+        :input-target-subtitle="hasCollaborativeChildren ? (currentInputTargetAgent?.subtitle || (agentWorkspaceState.collaborativeViewMode === 'split' ? '跟随当前焦点分屏视图' : (currentInputTargetAgent?.isMain ? '主会话' : '当前激活子会话'))) : ''"
         :effort="currentEffortValue"
         :effort-key="currentEffortKey"
         :effort-options="availableEffortOptions"

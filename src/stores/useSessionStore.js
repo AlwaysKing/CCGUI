@@ -62,6 +62,72 @@ class SessionData {
     this.permissionMode = 'default' // 当前权限模式
     this.fastModeState = 'off' // 快速模式状态: 'off' | 'auto' | 'on'
     this.activeTasks = new Map() // 活跃的子任务 Map<taskId, taskData>
+    this.mainAgentId = 'master'
+    this.agentRegistry = new Map()
+    this.agentBuckets = new Map()
+    this.agentToolUseBindings = new Map()
+    this.agentWorkspaceState = {
+      activeAgentId: this.mainAgentId,
+      collaborativeViewMode: 'single',
+      splitAgentIds: [],
+      focusedPaneAgentId: this.mainAgentId,
+      inputTargetAgentId: this.mainAgentId
+    }
+  }
+}
+
+function normalizeAgentRegistryEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null
+  }
+
+  const agentId = entry.agentId || entry.agent_id
+  if (!agentId) {
+    return null
+  }
+
+  return {
+    agentId,
+    agentKind: entry.agentKind || entry.agent_kind || null,
+    agentType: entry.agentType || entry.agent_type || null,
+    name: entry.name || null,
+    prompt: entry.prompt || null,
+    model: entry.model || null,
+    teamId: entry.teamId || entry.team_id || null,
+    parentAgentId: entry.parentAgentId || entry.parent_agent_id || null,
+    status: entry.status || null
+  }
+}
+
+function normalizeOrchestrationEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null
+  }
+
+  const eventType = entry.eventType || entry.event_type
+  const agentId = entry.agentId || entry.agent_id
+  if (!eventType || !agentId) {
+    return null
+  }
+
+  return {
+    eventType,
+    agentId,
+    agentKind: entry.agentKind || entry.agent_kind || null,
+    agentType: entry.agentType || entry.agent_type || null,
+    name: entry.name || null,
+    prompt: entry.prompt || null,
+    model: entry.model || null,
+    teamId: entry.teamId || entry.team_id || null,
+    parentAgentId: entry.parentAgentId || entry.parent_agent_id || null,
+    actorId: entry.actorId || entry.actor_id || null,
+    targetId: entry.targetId || entry.target_id || null,
+    source: entry.source || null,
+    reason: entry.reason || null,
+    result: entry.result || null,
+    status: entry.status || null,
+    targetKind: entry.targetKind || entry.target_kind || null,
+    timestamp: entry.timestamp || null
   }
 }
 
@@ -95,11 +161,324 @@ function normalizeOutgoingContent(content) {
   if (typeof content.text === 'string' && Array.isArray(content.attachments)) {
     return {
       text: content.text,
-      attachments: content.attachments.map(toPlainAttachment)
+      attachments: content.attachments.map(toPlainAttachment),
+      ...(content.ccgui ? { ccgui: JSON.parse(JSON.stringify(content.ccgui)) } : {})
     }
   }
 
   return JSON.parse(JSON.stringify(content))
+}
+
+function pickFirstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') {
+      return value
+    }
+  }
+  return null
+}
+
+function isGenericAgentLabel(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  return normalized === 'agent' || normalized === 'subagent'
+}
+
+function normalizeExecutionTaskTitle(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text) {
+    return null
+  }
+  if (text.length <= 48) {
+    return text
+  }
+  return `${text.slice(0, 48)}...`
+}
+
+function pickExecutionAgentDisplayTitle(items = [], entry = null) {
+  const candidates = []
+  const taskTitleCandidates = []
+
+  for (const message of items) {
+    const input = message?.toolInput || {}
+    candidates.push(
+      input.name,
+      input.subagent_type,
+      input.subagentType,
+      message?.name
+    )
+    taskTitleCandidates.push(
+      message?.description,
+      message?.summary,
+      input.task,
+      input.instructions,
+      input.description,
+      input.prompt
+    )
+  }
+
+  candidates.push(
+    entry?.name,
+    entry?.agentType
+  )
+
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null || candidate === '') {
+      continue
+    }
+    if (isGenericAgentLabel(candidate)) {
+      continue
+    }
+    return candidate
+  }
+
+  for (const candidate of taskTitleCandidates) {
+    const title = normalizeExecutionTaskTitle(candidate)
+    if (title) {
+      return title
+    }
+  }
+
+  return pickFirstDefined(entry?.name, entry?.agentType) || 'Agent'
+}
+
+function aggregateExecutionAgentUsage(items = [], entry = null) {
+  const latestWithUsage = [...items].reverse().find(message =>
+    message?.usage &&
+    typeof message.usage === 'object' &&
+    (
+      Number.isFinite(message.usage.input_tokens) ||
+      Number.isFinite(message.usage.output_tokens) ||
+      Number.isFinite(message.usage.cache_read_input_tokens)
+    )
+  )
+  return latestWithUsage?.usage || entry?.usage || null
+}
+
+function aggregateExecutionAgentDuration(items = [], entry = null, status = null) {
+  const latestTaskComplete = [...items].reverse().find(message => message?.role === 'task_complete' && typeof message?.duration === 'number')
+  if (latestTaskComplete?.duration !== undefined) {
+    return latestTaskComplete.duration
+  }
+
+  if (typeof entry?.duration === 'number') {
+    return entry.duration
+  }
+
+  const startMs = entry?.startTime ? Date.parse(entry.startTime) : NaN
+  const endMs = entry?.endTime ? Date.parse(entry.endTime) : NaN
+  if (
+    status &&
+    status !== 'running' &&
+    Number.isFinite(startMs) &&
+    Number.isFinite(endMs) &&
+    endMs >= startMs
+  ) {
+    return endMs - startMs
+  }
+
+  return null
+}
+
+function formatExecutionAgentResult(value) {
+  if (value === undefined || value === null) {
+    return null
+  }
+
+  if (typeof value === 'string') {
+    const text = value.trim()
+    return text || null
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+
+  if (typeof value === 'object') {
+    if (typeof value.result === 'string' && value.result.trim()) {
+      return value.result.trim()
+    }
+    if (typeof value.text === 'string' && value.text.trim()) {
+      return value.text.trim()
+    }
+    if (typeof value.content === 'string' && value.content.trim()) {
+      return value.content.trim()
+    }
+    try {
+      return JSON.stringify(value, null, 2)
+    } catch {
+      return String(value)
+    }
+  }
+
+  return String(value)
+}
+
+function resolveAgentIdFromCcguiPayload(ccgui = null) {
+  if (!ccgui || typeof ccgui !== 'object') {
+    return null
+  }
+
+  return pickFirstDefined(
+    ccgui?.attribution?.agentId,
+    ccgui?.orchestration?.agentId,
+    ccgui?.registry?.agentId
+  )
+}
+
+function toIsoTimestamp(value) {
+  if (!value) return null
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'number') return new Date(value).toISOString()
+  if (typeof value === 'string') return value
+  return null
+}
+
+function createAgentBucket(agentId) {
+  return {
+    agentId,
+    messages: [],
+    orchestrationEvents: [],
+    firstTimestamp: null,
+    lastTimestamp: null
+  }
+}
+
+function getMessageTimestamp(message) {
+  if (!message || typeof message !== 'object') {
+    return null
+  }
+
+  const rawTimestamp = pickFirstDefined(
+    message.timestamp,
+    message.createdAt,
+    message.created_at,
+    message.startTime,
+    message.start_time,
+    message.ccgui?.orchestration?.timestamp
+  )
+
+  return toIsoTimestamp(rawTimestamp)
+}
+
+function getToolUseIdFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+
+  return pickFirstDefined(
+    payload.tool_use_id,
+    payload.toolUseId,
+    payload.request_id,
+    payload.requestId,
+    payload.id
+  )
+}
+
+function getMessageToolUseId(message) {
+  if (!message || typeof message !== 'object') {
+    return null
+  }
+
+  return pickFirstDefined(
+    message.tool_use_id,
+    message.toolUseId,
+    message.request_id,
+    message.requestId,
+    (message.role === 'tool_use' || message.role === 'diff') ? message.id : null
+  )
+}
+
+function normalizeWorkspaceState(state, mainAgentId) {
+  const activeAgentId = pickFirstDefined(state?.activeAgentId, mainAgentId)
+  const focusedPaneAgentId = pickFirstDefined(state?.focusedPaneAgentId, activeAgentId, mainAgentId)
+  const inputTargetAgentId = pickFirstDefined(state?.inputTargetAgentId, focusedPaneAgentId, activeAgentId, mainAgentId)
+
+  return {
+    activeAgentId,
+    collaborativeViewMode: state?.collaborativeViewMode === 'split' ? 'split' : 'single',
+    splitAgentIds: Array.isArray(state?.splitAgentIds) ? state.splitAgentIds.filter(Boolean) : [],
+    focusedPaneAgentId,
+    inputTargetAgentId
+  }
+}
+
+function createMainAgentRegistryEntry(session) {
+  const provider = session?.envInfo?.provider === 'codex' ? 'Codex' : 'Claude'
+
+  return {
+    agentId: session.mainAgentId,
+    agentKind: 'collaborative',
+    agentType: 'main',
+    name: 'Master',
+    title: `${provider} Master`,
+    description: '当前主代理会话',
+    prompt: null,
+    model: session?.envInfo?.model || null,
+    teamId: null,
+    parentAgentId: null,
+    status: 'running',
+    startTime: null,
+    endTime: null,
+    deleteTime: null
+  }
+}
+
+function mergeAgentRegistryEntry(currentEntry, patch) {
+  const normalizedPatch = normalizeAgentRegistryEntry(patch) || patch
+  if (!normalizedPatch?.agentId) {
+    return currentEntry || null
+  }
+
+  return {
+    agentId: normalizedPatch.agentId,
+    agentKind: pickFirstDefined(normalizedPatch.agentKind, currentEntry?.agentKind),
+    agentType: pickFirstDefined(normalizedPatch.agentType, currentEntry?.agentType),
+    name: pickFirstDefined(normalizedPatch.name, currentEntry?.name),
+    title: pickFirstDefined(normalizedPatch.title, normalizedPatch.name, currentEntry?.title, currentEntry?.name),
+    description: pickFirstDefined(normalizedPatch.description, normalizedPatch.prompt, currentEntry?.description, currentEntry?.prompt),
+    prompt: pickFirstDefined(normalizedPatch.prompt, currentEntry?.prompt),
+    model: pickFirstDefined(normalizedPatch.model, currentEntry?.model),
+    teamId: pickFirstDefined(normalizedPatch.teamId, currentEntry?.teamId),
+    parentAgentId: pickFirstDefined(normalizedPatch.parentAgentId, currentEntry?.parentAgentId),
+    status: pickFirstDefined(normalizedPatch.status, currentEntry?.status),
+    startTime: pickFirstDefined(normalizedPatch.startTime, currentEntry?.startTime),
+    endTime: pickFirstDefined(normalizedPatch.endTime, currentEntry?.endTime),
+    deleteTime: pickFirstDefined(normalizedPatch.deleteTime, currentEntry?.deleteTime)
+  }
+}
+
+function mergeRegistryEntryFromEvent(currentEntry, event) {
+  const normalizedEvent = normalizeOrchestrationEntry(event)
+  if (!normalizedEvent?.agentId) {
+    return currentEntry || null
+  }
+
+  const timestamp = toIsoTimestamp(normalizedEvent.timestamp)
+  const eventPatch = {
+    agentId: normalizedEvent.agentId,
+    agentKind: normalizedEvent.agentKind,
+    agentType: normalizedEvent.agentType,
+    name: normalizedEvent.name,
+    title: normalizedEvent.title || normalizedEvent.name,
+    description: normalizedEvent.description || normalizedEvent.prompt,
+    prompt: normalizedEvent.prompt,
+    model: normalizedEvent.model,
+    teamId: normalizedEvent.teamId,
+    parentAgentId: normalizedEvent.parentAgentId
+  }
+
+  if (normalizedEvent.eventType === 'start') {
+    eventPatch.status = normalizedEvent.status || 'running'
+    eventPatch.startTime = timestamp
+  } else if (normalizedEvent.eventType === 'end') {
+    eventPatch.status = normalizedEvent.status || 'ended'
+    eventPatch.endTime = timestamp
+  } else if (normalizedEvent.eventType === 'delete') {
+    eventPatch.status = 'deleted'
+    eventPatch.deleteTime = timestamp
+  }
+
+  return mergeAgentRegistryEntry(currentEntry, eventPatch)
 }
 
 /**
@@ -107,17 +486,23 @@ function normalizeOutgoingContent(content) {
  * 管理所有会话的状态
  */
 export const useSessionStore = defineStore('session', () => {
+  const SESSION_SCOPED_NOTIFICATION_TYPES = new Set([
+    'runtime-exit',
+    'runtime-stopped',
+    'session-runtime-starting',
+    'session-runtime-restarting',
+    'session-runtime-ready',
+    'session-config-applied',
+    'session-effort-changed',
+    'thread-event',
+    'provider-deprecation',
+    'provider-config-warning',
+    'account-login-completed'
+  ])
+
   function resolveNotificationScope(notificationType, data = {}) {
     const type = notificationType || data?.type || ''
-    if (
-      type === 'runtime-exit' ||
-      type === 'runtime-stopped' ||
-      type === 'session-runtime-starting' ||
-      type === 'session-runtime-restarting' ||
-      type === 'session-runtime-ready' ||
-      type === 'session-config-applied' ||
-      type === 'session-effort-changed'
-    ) {
+    if (SESSION_SCOPED_NOTIFICATION_TYPES.has(type)) {
       return 'session'
     }
 
@@ -136,9 +521,413 @@ export const useSessionStore = defineStore('session', () => {
     return sessions.value.get(currentSessionId.value) || null
   })
 
+  function getMainAgentId(session) {
+    return session?.mainAgentId || 'master'
+  }
+
+  function getMessageAgentId(message, session = currentSession.value) {
+    const mainAgentId = getMainAgentId(session)
+    if (!message || !session) {
+      return mainAgentId
+    }
+
+    const linkedToolUseId = getMessageToolUseId(message)
+    if (linkedToolUseId && session.agentToolUseBindings?.has(linkedToolUseId)) {
+      return session.agentToolUseBindings.get(linkedToolUseId)
+    }
+
+    const ccgui = message.ccgui || null
+    const attribution = ccgui?.attribution || null
+    const registry = ccgui?.registry || null
+    const orchestration = ccgui?.orchestration || null
+
+    return pickFirstDefined(
+      attribution?.agentId,
+      registry?.agentId,
+      orchestration?.agentId,
+      mainAgentId
+    )
+  }
+
+  function syncAgentWorkspaceState(session) {
+    if (!session) {
+      return
+    }
+
+    const mainAgentId = getMainAgentId(session)
+    const validCollaborativeAgentIds = Array.from(session.agentRegistry.values())
+      .filter(entry => entry?.agentKind === 'collaborative')
+      .map(entry => entry.agentId)
+
+    const preferredActiveAgentId = pickFirstDefined(
+      session.agentWorkspaceState?.activeAgentId,
+      mainAgentId
+    )
+
+    const activeAgentId = preferredActiveAgentId === mainAgentId
+      ? mainAgentId
+      : (validCollaborativeAgentIds.includes(preferredActiveAgentId) ? preferredActiveAgentId : mainAgentId)
+
+    const sanitizedSplitAgentIds = Array.from(new Set(
+      (Array.isArray(session.agentWorkspaceState?.splitAgentIds) ? session.agentWorkspaceState.splitAgentIds : [])
+        .filter(agentId => validCollaborativeAgentIds.includes(agentId))
+    )).slice(0, 2)
+
+    let splitAgentIds = sanitizedSplitAgentIds
+    if ((session.agentWorkspaceState?.collaborativeViewMode || 'single') === 'split') {
+      if (splitAgentIds.length === 0) {
+        splitAgentIds = [activeAgentId]
+      }
+      if (!splitAgentIds.includes(activeAgentId)) {
+        splitAgentIds = [splitAgentIds[0], activeAgentId].filter(Boolean).slice(0, 2)
+      }
+      if (splitAgentIds.length === 1) {
+        const fallbackSplitAgentId = validCollaborativeAgentIds.find(agentId => agentId !== splitAgentIds[0]) || null
+        if (fallbackSplitAgentId) {
+          splitAgentIds = [splitAgentIds[0], fallbackSplitAgentId]
+        }
+      }
+    }
+
+    const isSplitMode = (session.agentWorkspaceState?.collaborativeViewMode || 'single') === 'split'
+    const focusCandidates = isSplitMode && splitAgentIds.length > 0
+      ? splitAgentIds
+      : [activeAgentId]
+
+    const focusedPaneAgentId = focusCandidates.includes(session.agentWorkspaceState?.focusedPaneAgentId)
+      ? session.agentWorkspaceState.focusedPaneAgentId
+      : activeAgentId
+
+    const inputTargetAgentId = focusCandidates.includes(session.agentWorkspaceState?.inputTargetAgentId)
+      ? session.agentWorkspaceState.inputTargetAgentId
+      : activeAgentId
+
+    session.agentWorkspaceState = normalizeWorkspaceState({
+      ...session.agentWorkspaceState,
+      activeAgentId,
+      splitAgentIds,
+      focusedPaneAgentId,
+      inputTargetAgentId
+    }, mainAgentId)
+  }
+
+  function rebuildAgentSemanticState(session) {
+    if (!session) {
+      return
+    }
+
+    const mainAgentId = getMainAgentId(session)
+    const nextRegistry = new Map(
+      Array.from(session.agentRegistry.entries()).map(([agentId, entry]) => [
+        agentId,
+        mergeAgentRegistryEntry(null, entry)
+      ])
+    )
+    const nextBuckets = new Map()
+    const eventKeys = new Set()
+
+    const ensureBucket = (agentId) => {
+      if (!nextBuckets.has(agentId)) {
+        nextBuckets.set(agentId, createAgentBucket(agentId))
+      }
+      return nextBuckets.get(agentId)
+    }
+
+    const recordEvent = (event) => {
+      const normalizedEvent = normalizeOrchestrationEntry(event)
+      if (!normalizedEvent?.agentId || !normalizedEvent?.eventType) {
+        return
+      }
+
+      const dedupeKey = [
+        normalizedEvent.eventType,
+        normalizedEvent.agentId,
+        normalizedEvent.timestamp || '',
+        normalizedEvent.reason || '',
+        normalizedEvent.status || ''
+      ].join('::')
+
+      if (eventKeys.has(dedupeKey)) {
+        return
+      }
+
+      eventKeys.add(dedupeKey)
+      ensureBucket(normalizedEvent.agentId).orchestrationEvents.push(normalizedEvent)
+      nextRegistry.set(
+        normalizedEvent.agentId,
+        mergeRegistryEntryFromEvent(nextRegistry.get(normalizedEvent.agentId), normalizedEvent)
+      )
+    }
+
+    nextRegistry.set(mainAgentId, mergeAgentRegistryEntry(nextRegistry.get(mainAgentId), createMainAgentRegistryEntry(session)))
+
+    for (const message of session.messages) {
+      const messageAgentId = getMessageAgentId(message, session) || mainAgentId
+      const bucket = ensureBucket(messageAgentId)
+      bucket.messages.push(message)
+      const timestamp = getMessageTimestamp(message)
+      if (timestamp && !bucket.firstTimestamp) {
+        bucket.firstTimestamp = timestamp
+      }
+      if (timestamp) {
+        bucket.lastTimestamp = timestamp
+      }
+
+      const registryEntry = normalizeAgentRegistryEntry(message?.ccgui?.registry)
+      if (registryEntry?.agentId) {
+        nextRegistry.set(registryEntry.agentId, mergeAgentRegistryEntry(nextRegistry.get(registryEntry.agentId), registryEntry))
+      } else if (!nextRegistry.has(messageAgentId)) {
+        nextRegistry.set(messageAgentId, mergeAgentRegistryEntry(nextRegistry.get(messageAgentId), {
+          agentId: messageAgentId,
+          status: messageAgentId === mainAgentId ? 'running' : null
+        }))
+      }
+
+      recordEvent(message?.ccgui?.orchestration)
+    }
+    if (!nextBuckets.has(mainAgentId)) {
+      nextBuckets.set(mainAgentId, createAgentBucket(mainAgentId))
+    }
+
+    session.agentRegistry = nextRegistry
+    session.agentBuckets = nextBuckets
+    syncAgentWorkspaceState(session)
+  }
+
+  function recordAgentSemantics(session, payload = {}) {
+    if (!session || !payload || typeof payload !== 'object') {
+      return
+    }
+
+    const registryEntry = normalizeAgentRegistryEntry(payload?.ccgui?.registry)
+    if (registryEntry?.agentId) {
+      session.agentRegistry.set(
+        registryEntry.agentId,
+        mergeAgentRegistryEntry(session.agentRegistry.get(registryEntry.agentId), registryEntry)
+      )
+    }
+
+    const orchestrationEntry = normalizeOrchestrationEntry(payload?.ccgui?.orchestration)
+    if (orchestrationEntry?.agentId) {
+      session.agentRegistry.set(
+        orchestrationEntry.agentId,
+        mergeRegistryEntryFromEvent(session.agentRegistry.get(orchestrationEntry.agentId), orchestrationEntry)
+      )
+    }
+
+    const semanticAgentId = pickFirstDefined(
+      orchestrationEntry?.agentId,
+      registryEntry?.agentId,
+      payload?.ccgui?.attribution?.agentId
+    )
+    const semanticAgentKind = pickFirstDefined(
+      orchestrationEntry?.agentKind,
+      registryEntry?.agentKind,
+      session.agentRegistry.get(semanticAgentId || '')?.agentKind
+    )
+    const toolUseId = getToolUseIdFromPayload(payload)
+    if (toolUseId && semanticAgentId && semanticAgentKind === 'execution') {
+      session.agentToolUseBindings.set(toolUseId, semanticAgentId)
+    }
+
+    syncAgentWorkspaceState(session)
+  }
+
   // 当前会话的消息（便捷访问）
   const currentMessages = computed(() => {
     return currentSession.value?.messages || []
+  })
+
+  const currentMainAgentId = computed(() => getMainAgentId(currentSession.value))
+
+  const currentAgentRegistry = computed(() => {
+    return currentSession.value?.agentRegistry || new Map()
+  })
+
+  const currentAgentBuckets = computed(() => {
+    return currentSession.value?.agentBuckets || new Map()
+  })
+
+  const currentAgentWorkspaceState = computed(() => {
+    const session = currentSession.value
+    return session?.agentWorkspaceState || normalizeWorkspaceState(null, getMainAgentId(session))
+  })
+
+  const executionAgentCards = computed(() => {
+    const registryEntries = Array.from(currentAgentRegistry.value.values())
+    const buckets = currentAgentBuckets.value
+
+    return registryEntries
+      .filter(entry => entry?.agentKind === 'execution')
+      .map(entry => {
+        const bucket = buckets.get(entry.agentId) || createAgentBucket(entry.agentId)
+        const items = bucket.messages || []
+        const spawnRequest = items.find(message => message?.role === 'tool_use' && message?.toolName === 'Agent')
+        const latestTaskComplete = [...items].reverse().find(message => message?.role === 'task_complete')
+        const displayTitle = pickExecutionAgentDisplayTitle(items, entry)
+        const promptText = pickFirstDefined(
+          spawnRequest?.toolInput?.prompt,
+          spawnRequest?.toolInput?.task,
+          spawnRequest?.toolInput?.instructions,
+          spawnRequest?.toolInput?.description,
+          entry.prompt
+        )
+        const latestResult = formatExecutionAgentResult(
+          entry.status === 'running' || entry.status === 'starting'
+            ? null
+            : pickFirstDefined(
+                spawnRequest?.result,
+                latestTaskComplete?.summary,
+                latestTaskComplete?.description,
+                entry.summary,
+                entry.description
+              )
+        )
+        const toolCalls = items
+          .filter(message => (message?.role === 'tool_use' || message?.role === 'diff') && message?.toolName !== 'Agent')
+          .map(message => ({
+            id: message.id || message.request_id || null,
+            toolName: message.toolName || (message.role === 'diff' ? 'Diff' : 'Tool'),
+            description: pickFirstDefined(
+              message.toolInput?.description,
+              message.toolInput?.command,
+              message.toolInput?.file_path,
+              message.toolInput?.path,
+              message.result
+            ),
+            status: message.isExecuting ? 'running' : (message.isError ? 'error' : 'completed')
+          }))
+        const timelineItems = items.filter(message =>
+          (message?.role === 'tool_use' || message?.role === 'diff') &&
+          message?.toolName !== 'Agent'
+        )
+        const completedToolCount = toolCalls.filter(toolCall => toolCall.status === 'completed').length
+        const errorToolCount = toolCalls.filter(toolCall => toolCall.status === 'error').length
+        const activeTimelineItems = timelineItems.filter(message => message?.isExecuting)
+        const displayTimelineItems = activeTimelineItems.length
+          ? activeTimelineItems
+          : (timelineItems.length ? [timelineItems[timelineItems.length - 1]] : [])
+        const aggregatedUsage = aggregateExecutionAgentUsage(items, entry)
+        const aggregatedDuration = aggregateExecutionAgentDuration(items, entry, entry.status)
+
+        return {
+          agentId: entry.agentId,
+          title: displayTitle,
+          subtitle: entry.agentType || entry.model || null,
+          status: entry.status || 'running',
+          summary: promptText || latestResult,
+          promptText,
+          latestResult,
+          toolCalls,
+          timelineItems,
+          activeTimelineItems,
+          displayTimelineItems,
+          itemCount: items.length,
+          toolCount: toolCalls.length,
+          completedToolCount,
+          errorToolCount,
+          usage: aggregatedUsage,
+          duration: aggregatedDuration,
+          collapsed: true,
+          items,
+          bucket,
+          registry: entry
+        }
+      })
+      .sort((left, right) => {
+        const leftTime = left.bucket.firstTimestamp || left.registry.startTime || ''
+        const rightTime = right.bucket.firstTimestamp || right.registry.startTime || ''
+        return leftTime.localeCompare(rightTime)
+      })
+  })
+
+  const collaborativeAgentSessions = computed(() => {
+    const mainAgentId = currentMainAgentId.value
+    const registryEntries = Array.from(currentAgentRegistry.value.values())
+    const buckets = currentAgentBuckets.value
+
+    return registryEntries
+      .filter(entry => entry?.agentKind === 'collaborative')
+      .map(entry => {
+        const bucket = buckets.get(entry.agentId) || createAgentBucket(entry.agentId)
+        return {
+          agentId: entry.agentId,
+          title: entry.title || entry.name || (entry.agentId === mainAgentId ? 'Master' : '协作型代理'),
+          subtitle: entry.agentId === mainAgentId ? '主会话' : (entry.agentType || entry.model || null),
+          status: entry.status || 'running',
+          canInput: entry.status !== 'deleted',
+          messages: bucket.messages || [],
+          bucket,
+          registry: entry,
+          isMain: entry.agentId === mainAgentId
+        }
+      })
+      .sort((left, right) => {
+        if (left.isMain) return -1
+        if (right.isMain) return 1
+        const leftTime = left.bucket.firstTimestamp || left.registry.startTime || ''
+        const rightTime = right.bucket.firstTimestamp || right.registry.startTime || ''
+        return leftTime.localeCompare(rightTime)
+      })
+  })
+
+  const agentWorkspaceAgents = computed(() => {
+    const registryEntries = Array.from(currentAgentRegistry.value.values())
+    const buckets = currentAgentBuckets.value
+    const mainAgentId = currentMainAgentId.value
+
+    return registryEntries
+      .filter(entry => entry?.agentId === mainAgentId || entry?.agentKind === 'collaborative')
+      .map(entry => {
+        const bucket = buckets.get(entry.agentId) || createAgentBucket(entry.agentId)
+        const isMain = entry.agentId === mainAgentId
+        const isCollaborative = entry.agentKind === 'collaborative'
+
+        return {
+          agentId: entry.agentId,
+          agentKind: entry.agentKind || null,
+          agentType: entry.agentType || null,
+          title: entry.title || entry.name || (isMain ? 'Master' : 'Agent'),
+          subtitle: isMain
+            ? '主代理'
+            : (entry.agentKind === 'execution'
+                ? (entry.agentType || '执行型代理')
+                : (entry.agentType || entry.model || '协作型代理')),
+          status: entry.status || 'running',
+          isMain,
+          isCollaborative,
+          canActivate: isCollaborative,
+          messageCount: bucket.messages.length
+        }
+      })
+      .sort((left, right) => {
+        if (left.isMain) return -1
+        if (right.isMain) return 1
+        if (left.isCollaborative && !right.isCollaborative) return -1
+        if (!left.isCollaborative && right.isCollaborative) return 1
+        return left.title.localeCompare(right.title)
+      })
+  })
+
+  const activeCollaborativeSession = computed(() => {
+    const sessions = collaborativeAgentSessions.value
+    const activeAgentId = currentAgentWorkspaceState.value.activeAgentId
+    return sessions.find(entry => entry.agentId === activeAgentId) || sessions[0] || null
+  })
+
+  const splitCollaborativeSessions = computed(() => {
+    const splitAgentIds = currentAgentWorkspaceState.value.splitAgentIds || []
+    const sessionsById = new Map(collaborativeAgentSessions.value.map(entry => [entry.agentId, entry]))
+    return splitAgentIds
+      .map(agentId => sessionsById.get(agentId))
+      .filter(Boolean)
+  })
+
+  const currentInputTargetAgent = computed(() => {
+    const targetId = currentAgentWorkspaceState.value.inputTargetAgentId
+    return collaborativeAgentSessions.value.find(entry => entry.agentId === targetId)
+      || Array.from(currentAgentRegistry.value.values()).find(entry => entry.agentId === targetId)
+      || null
   })
 
   // 当前会话是否正在处理
@@ -209,6 +998,8 @@ export const useSessionStore = defineStore('session', () => {
     if (typeof envInfo.providerPid !== 'undefined') {
       session.runtimeReady = Boolean(envInfo.providerPid)
     }
+
+    rebuildAgentSemanticState(session)
   }
 
   async function hydrateSessionEnvInfo(sessionId) {
@@ -296,11 +1087,13 @@ export const useSessionStore = defineStore('session', () => {
         if (result.state.pendingPermission) {
           sessionData.pendingPermissions = [reactive(result.state.pendingPermission)]
         }
+
       } else {
         console.log('[SessionStore] No result.state for session:', sessionId, 'result:', result)
       }
 
       // 存储到 Map
+      rebuildAgentSemanticState(sessionData)
       sessions.value.set(sessionId, sessionData)
 
       // 设置为当前会话
@@ -340,6 +1133,140 @@ export const useSessionStore = defineStore('session', () => {
     return initSession(sessionId, projectPath)
   }
 
+  function setActiveAgent(agentId, options = {}) {
+    const session = currentSession.value
+    if (!session || !agentId) {
+      return
+    }
+
+    const syncInputTarget = options.syncInputTarget !== false
+    const nextState = normalizeWorkspaceState({
+      ...session.agentWorkspaceState,
+      activeAgentId: agentId,
+      focusedPaneAgentId: options.syncFocus === false
+        ? session.agentWorkspaceState.focusedPaneAgentId
+        : agentId,
+      inputTargetAgentId: syncInputTarget ? agentId : session.agentWorkspaceState.inputTargetAgentId
+    }, getMainAgentId(session))
+
+    session.agentWorkspaceState = nextState
+    syncAgentWorkspaceState(session)
+  }
+
+  function setFocusedPaneAgentId(agentId, options = {}) {
+    const session = currentSession.value
+    if (!session || !agentId) {
+      return
+    }
+
+    session.agentWorkspaceState = normalizeWorkspaceState({
+      ...session.agentWorkspaceState,
+      activeAgentId: agentId,
+      focusedPaneAgentId: agentId,
+      inputTargetAgentId: options.syncInputTarget === false
+        ? session.agentWorkspaceState.inputTargetAgentId
+        : agentId
+    }, getMainAgentId(session))
+
+    syncAgentWorkspaceState(session)
+  }
+
+  function setInputTargetAgentId(agentId) {
+    const session = currentSession.value
+    if (!session || !agentId) {
+      return
+    }
+
+    session.agentWorkspaceState = normalizeWorkspaceState({
+      ...session.agentWorkspaceState,
+      inputTargetAgentId: agentId
+    }, getMainAgentId(session))
+
+    syncAgentWorkspaceState(session)
+  }
+
+  function setCollaborativeViewMode(mode) {
+    const session = currentSession.value
+    if (!session) {
+      return
+    }
+
+    const nextMode = mode === 'split' ? 'split' : 'single'
+    const activeAgentId = pickFirstDefined(
+      session.agentWorkspaceState?.focusedPaneAgentId,
+      session.agentWorkspaceState?.activeAgentId,
+      getMainAgentId(session)
+    )
+
+    session.agentWorkspaceState = normalizeWorkspaceState({
+      ...session.agentWorkspaceState,
+      collaborativeViewMode: nextMode,
+      splitAgentIds: nextMode === 'split'
+        ? Array.from(new Set([
+            ...(session.agentWorkspaceState?.splitAgentIds || []),
+            activeAgentId
+          ].filter(Boolean))).slice(0, 2)
+        : session.agentWorkspaceState?.splitAgentIds || []
+    }, getMainAgentId(session))
+
+    syncAgentWorkspaceState(session)
+  }
+
+  function setSplitAgentIds(agentIds = []) {
+    const session = currentSession.value
+    if (!session) {
+      return
+    }
+
+    session.agentWorkspaceState = normalizeWorkspaceState({
+      ...session.agentWorkspaceState,
+      splitAgentIds: Array.isArray(agentIds) ? agentIds.filter(Boolean) : []
+    }, getMainAgentId(session))
+
+    syncAgentWorkspaceState(session)
+  }
+
+  function replaceSplitPaneAgent(agentId, options = {}) {
+    const session = currentSession.value
+    if (!session || !agentId) {
+      return
+    }
+
+    const currentSplitAgentIds = Array.isArray(session.agentWorkspaceState?.splitAgentIds)
+      ? session.agentWorkspaceState.splitAgentIds.filter(Boolean)
+      : []
+
+    if (currentSplitAgentIds.includes(agentId)) {
+      setFocusedPaneAgentId(agentId)
+      return
+    }
+
+    let paneIndex = Number.isInteger(options.paneIndex) ? options.paneIndex : currentSplitAgentIds.indexOf(session.agentWorkspaceState?.focusedPaneAgentId)
+    if (paneIndex < 0) {
+      paneIndex = Math.min(currentSplitAgentIds.length, 1)
+    }
+
+    const nextSplitAgentIds = currentSplitAgentIds.slice(0, 2)
+    if (nextSplitAgentIds.length === 0) {
+      nextSplitAgentIds.push(agentId)
+    } else if (paneIndex >= nextSplitAgentIds.length) {
+      nextSplitAgentIds.push(agentId)
+    } else {
+      nextSplitAgentIds[paneIndex] = agentId
+    }
+
+    session.agentWorkspaceState = normalizeWorkspaceState({
+      ...session.agentWorkspaceState,
+      collaborativeViewMode: 'split',
+      activeAgentId: agentId,
+      splitAgentIds: Array.from(new Set(nextSplitAgentIds)).slice(0, 2),
+      focusedPaneAgentId: agentId,
+      inputTargetAgentId: agentId
+    }, getMainAgentId(session))
+
+    syncAgentWorkspaceState(session)
+  }
+
   /**
    * 关闭会话
    */
@@ -370,7 +1297,45 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     const sessionId = session.id
-    const outgoingContent = normalizeOutgoingContent(content)
+    let outgoingContent = normalizeOutgoingContent(content)
+    const inputTargetAgentId = pickFirstDefined(
+      session.agentWorkspaceState?.inputTargetAgentId,
+      session.agentWorkspaceState?.activeAgentId,
+      getMainAgentId(session)
+    )
+    const shouldAttachAgentAttribution = Boolean(
+      inputTargetAgentId &&
+      inputTargetAgentId !== getMainAgentId(session)
+    )
+
+    if (shouldAttachAgentAttribution) {
+      const nextCcgui = {
+        attribution: {
+          agentId: inputTargetAgentId,
+          actorId: inputTargetAgentId
+        }
+      }
+
+      if (typeof outgoingContent === 'string') {
+        outgoingContent = {
+          text: outgoingContent,
+          attachments: [],
+          ccgui: nextCcgui
+        }
+      } else if (outgoingContent && typeof outgoingContent === 'object') {
+        outgoingContent = {
+          ...outgoingContent,
+          ccgui: {
+            ...(outgoingContent.ccgui || {}),
+            ...nextCcgui,
+            attribution: {
+              ...(outgoingContent.ccgui?.attribution || {}),
+              ...nextCcgui.attribution
+            }
+          }
+        }
+      }
+    }
 
     // 保存输入历史
     const historyText = typeof outgoingContent === 'string'
@@ -655,11 +1620,13 @@ export const useSessionStore = defineStore('session', () => {
     // 根据事件类型处理
     switch (eventType) {
       case 'message':
+        recordAgentSemantics(session, data)
         handleAddMessage(session, data)
         break
 
       case 'message-start':
         // 后端发送的消息创建事件
+        recordAgentSemantics(session, data)
         handleMessageStart(session, data)
         break
 
@@ -670,11 +1637,13 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'message-complete':
         // 后端发送的消息完成事件
+        recordAgentSemantics(session, data?.updates || data)
         handleMessageComplete(session, data)
         break
 
       case 'message-update':
         // 后端发送的字段更新事件
+        recordAgentSemantics(session, data?.updates || data)
         handleMessageUpdate(session, data)
         break
 
@@ -683,6 +1652,7 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'tool-result':
+        recordAgentSemantics(session, data)
         handleToolResult(session, data)
         break
 
@@ -691,6 +1661,7 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'control-request':
+        recordAgentSemantics(session, data)
         handleControlRequest(session, data)
         break
 
@@ -708,6 +1679,7 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'silent-message':
+        recordAgentSemantics(session, data)
         session.silentMessages.push(reactive(data))
         break
 
@@ -739,25 +1711,25 @@ export const useSessionStore = defineStore('session', () => {
       case 'system-notification':
         // 系统通知（权限模式切换、压缩边界等）
         log('[SessionStore] System notification:', data)
+        recordAgentSemantics(session, data)
         handleSystemNotification(session, data)
         break
 
       case 'task-event':
         // 子任务事件（started/progress/notification）
         log('[SessionStore] Task event:', data)
+        recordAgentSemantics(session, data)
         handleTaskEvent(session, data)
         break
 
       case 'system-message':
-        // 未处理的 system 消息，显示为 unknown 消息
         log('[SessionStore] System message:', data)
-        handleUnknownMessage(session, data)
+        handleResidualManagerEvent(session, data)
         break
 
       case 'unknown-message':
-        // 未知消息类型，显示为 unknown 消息
         log('[SessionStore] Unknown message:', data)
-        handleUnknownMessage(session, data)
+        handleResidualManagerEvent(session, data)
         break
 
       case 'abnormal-exit':
@@ -774,6 +1746,24 @@ export const useSessionStore = defineStore('session', () => {
 
       default:
         log('[SessionStore] Unknown event type:', eventType)
+    }
+
+    if ([
+      'message',
+      'message-start',
+      'message-complete',
+      'message-update',
+      'messages-reset',
+      'tool-result',
+      'result',
+      'env-info',
+      'silent-message',
+      'system-message',
+      'unknown-message',
+      'abnormal-exit',
+      'normal-exit'
+    ].includes(eventType)) {
+      rebuildAgentSemanticState(session)
     }
   }
 
@@ -846,6 +1836,7 @@ export const useSessionStore = defineStore('session', () => {
   function handleMessagesReset(session, data) {
     const nextMessages = Array.isArray(data?.messages) ? data.messages.map(message => reactive(message)) : []
     session.messages = nextMessages
+    rebuildAgentSemanticState(session)
     session.currentAssistantMessageIndex = -1
     session.currentStreamingAssistantId = null
     session.currentContentBlockType = null
@@ -1007,45 +1998,60 @@ export const useSessionStore = defineStore('session', () => {
   function handleMessageStart(session, message) {
     log('[SessionStore] handleMessageStart:', message.role, message.id)
 
-    const existingIndex = session.messages.findIndex(item => item.id === message.id)
+    const nextMessage = {
+      ...message
+    }
+
+    if ((nextMessage.role === 'tool_use' || nextMessage.role === 'diff') && !nextMessage.manuallyExpanded) {
+      nextMessage.collapsed = true
+    }
+
+    const existingIndex = session.messages.findIndex(item => item.id === nextMessage.id)
     if (existingIndex >= 0) {
       const existingMessage = session.messages[existingIndex]
+      const mergedToolInput = nextMessage.toolInput && typeof nextMessage.toolInput === 'object'
+        ? {
+            ...(existingMessage.toolInput || {}),
+            ...nextMessage.toolInput
+          }
+        : existingMessage.toolInput
       Object.assign(existingMessage, {
-        ...message,
-        content: existingMessage.content || message.content || '',
-        thinking: existingMessage.thinking || message.thinking || '',
-        hasThinking: existingMessage.hasThinking || message.hasThinking || false
+        ...nextMessage,
+        ...(mergedToolInput ? { toolInput: mergedToolInput } : {}),
+        content: existingMessage.content || nextMessage.content || '',
+        thinking: existingMessage.thinking || nextMessage.thinking || '',
+        hasThinking: existingMessage.hasThinking || nextMessage.hasThinking || false
       })
 
-      if (message.role === 'assistant') {
+      if (nextMessage.role === 'assistant') {
         session.currentAssistantMessageIndex = existingIndex
       }
-      session.currentStreamingAssistantId = message.id
-      if (message.role === 'assistant') {
+      session.currentStreamingAssistantId = nextMessage.id
+      if (nextMessage.role === 'assistant') {
         syncUserRealtimeStats(session, {
-          turnNumber: message.turnNumber,
-          usage: message.usage
+          turnNumber: nextMessage.turnNumber,
+          usage: nextMessage.usage
         })
       }
-      log('[SessionStore] handleMessageStart: reused existing message', message.id)
+      log('[SessionStore] handleMessageStart: reused existing message', nextMessage.id)
       return
     }
 
     // 添加消息到列表
-    session.messages.push(reactive(message))
-    session.currentStreamingAssistantId = message.id
+    session.messages.push(reactive(nextMessage))
+    session.currentStreamingAssistantId = nextMessage.id
 
     // 根据角色设置初始状态
-    if (message.role === 'assistant') {
+    if (nextMessage.role === 'assistant') {
       session.currentAssistantMessageIndex = session.messages.length - 1
       syncUserRealtimeStats(session, {
-        turnNumber: message.turnNumber,
-        usage: message.usage
+        turnNumber: nextMessage.turnNumber,
+        usage: nextMessage.usage
       })
-    } else if (message.role === 'tool_use' || message.role === 'diff') {
+    } else if (nextMessage.role === 'tool_use' || nextMessage.role === 'diff') {
       // 记录 tool_use 的索引
-      if (typeof message.request_id === 'number') {
-        session.contentBlockIndexToId.set(message.request_id, message.id)
+      if (typeof nextMessage.request_id === 'number') {
+        session.contentBlockIndexToId.set(nextMessage.request_id, nextMessage.id)
       }
     }
   }
@@ -1071,6 +2077,8 @@ export const useSessionStore = defineStore('session', () => {
     } else if (field === 'thinking') {
       msg.thinking = (msg.thinking || '') + delta
       msg.hasThinking = true
+    } else if (field === 'result') {
+      msg.result = (msg.result || '') + delta
     }
 
     log('[SessionStore] handleMessageDelta:', field, 'delta length:', delta.length)
@@ -1094,15 +2102,6 @@ export const useSessionStore = defineStore('session', () => {
     Object.assign(msg, updates)
     if (!msg.duration && msg.startTime) {
       msg.duration = Date.now() - msg.startTime
-    }
-
-    if (
-      msg.role === 'diff' &&
-      !msg.isError &&
-      !msg.isExecuting &&
-      !msg.manuallyExpanded
-    ) {
-      msg.collapsed = true
     }
 
     // 清除流式标记
@@ -1129,36 +2128,39 @@ export const useSessionStore = defineStore('session', () => {
 
     // 应用更新
     const msg = session.messages[msgIndex]
-    Object.assign(msg, updates)
-    if ((updates.isStreaming === false || updates.isExecuting === false) && !msg.duration && msg.startTime) {
-      msg.duration = Date.now() - msg.startTime
+    const mergedUpdates = {
+      ...updates
     }
-
-    if (
-      msg.role === 'diff' &&
-      updates.isExecuting === false &&
-      !msg.isError &&
-      !msg.manuallyExpanded
-    ) {
-      msg.collapsed = true
+    if (mergedUpdates.toolInput == null) {
+      delete mergedUpdates.toolInput
+    }
+    if (updates.toolInput && typeof updates.toolInput === 'object') {
+      mergedUpdates.toolInput = {
+        ...(msg.toolInput || {}),
+        ...updates.toolInput
+      }
+    }
+    Object.assign(msg, mergedUpdates)
+    if ((mergedUpdates.isStreaming === false || mergedUpdates.isExecuting === false) && !msg.duration && msg.startTime) {
+      msg.duration = Date.now() - msg.startTime
     }
 
     if (msg.role === 'assistant') {
       syncUserRealtimeStats(session, {
-        turnNumber: updates.turnNumber ?? msg.turnNumber,
-        usage: updates.usage ?? msg.usage
+        turnNumber: mergedUpdates.turnNumber ?? msg.turnNumber,
+        usage: mergedUpdates.usage ?? msg.usage
       })
     }
 
-    log('[SessionStore] handleMessageUpdate:', messageId, 'updates:', Object.keys(updates))
+    log('[SessionStore] handleMessageUpdate:', messageId, 'updates:', Object.keys(mergedUpdates))
 
     // 处理 TodoWrite 工具：显示在悬浮窗中
-    if (msg.role === 'tool_use' && msg.toolName === 'TodoWrite' && updates.toolInput?.todos) {
+    if (msg.role === 'tool_use' && msg.toolName === 'TodoWrite' && mergedUpdates.toolInput?.todos) {
       log('[SessionStore] TodoWrite detected in handleMessageUpdate:', {
         toolUseId: messageId,
-        todosCount: updates.toolInput.todos.length
+        todosCount: mergedUpdates.toolInput.todos.length
       })
-      handleTodoWrite(session, messageId, updates.toolInput.todos)
+      handleTodoWrite(session, messageId, mergedUpdates.toolInput.todos)
     }
   }
 
@@ -1233,7 +2235,8 @@ export const useSessionStore = defineStore('session', () => {
       ...requestData,
       request_id: outerRequestId || requestData.request_id,
       tool_use_id: toolUseId, // 确保 tool_use_id 被保留
-      input: toolInput // 使用解析后的 input
+      input: toolInput, // 使用解析后的 input
+      ccgui: data.ccgui || requestData.ccgui || null
     }
 
     log('[SessionStore] mergedRequestData:', JSON.stringify(mergedRequestData, null, 2))
@@ -1432,6 +2435,26 @@ export const useSessionStore = defineStore('session', () => {
     session.messages.push(unknownMsg)
   }
 
+  function handleResidualManagerEvent(session, data) {
+    const payload = data?.rawMessage && typeof data.rawMessage === 'object'
+      ? data.rawMessage
+      : data
+
+    if (payload && typeof payload === 'object') {
+      if (typeof payload.type === 'string' && payload.type.trim()) {
+        handleSystemNotification(session, payload)
+        return
+      }
+
+      if (payload.eventType && payload.taskId) {
+        handleTaskEvent(session, payload)
+        return
+      }
+    }
+
+    handleUnknownMessage(session, data)
+  }
+
   /**
    * 处理运行时进程异常退出
    */
@@ -1597,6 +2620,7 @@ export const useSessionStore = defineStore('session', () => {
     const { eventType, taskId } = data
 
     if (eventType === 'started') {
+      const agentId = resolveAgentIdFromCcguiPayload(data.ccgui)
       // 任务开始：添加到活跃任务列表
       const taskData = {
         id: taskId,
@@ -1606,7 +2630,9 @@ export const useSessionStore = defineStore('session', () => {
         status: 'running',
         startTime: Date.now(),
         usage: null,
-        summary: null
+        summary: null,
+        agentId,
+        ccgui: data.ccgui || null
       }
       session.activeTasks.set(taskId, taskData)
       log('[SessionStore] Task started:', taskId, data.description)
@@ -1617,6 +2643,8 @@ export const useSessionStore = defineStore('session', () => {
         task.usage = data.usage || task.usage
         task.summary = data.summary || task.summary
         task.description = data.description || task.description
+        task.agentId = task.agentId || resolveAgentIdFromCcguiPayload(data.ccgui)
+        task.ccgui = data.ccgui || task.ccgui || null
         log('[SessionStore] Task progress:', taskId, data.summary)
       }
     } else if (eventType === 'notification') {
@@ -1624,6 +2652,17 @@ export const useSessionStore = defineStore('session', () => {
       const task = session.activeTasks.get(taskId)
       if (task) {
         task.status = 'completed'
+        const resolvedAgentId = task.agentId || resolveAgentIdFromCcguiPayload(data.ccgui)
+        const taskCcgui = resolvedAgentId
+          ? {
+              ...(task.ccgui || data.ccgui || {}),
+              attribution: {
+                ...((task.ccgui || data.ccgui || {}).attribution || {}),
+                agentId: resolvedAgentId,
+                actorId: resolvedAgentId
+              }
+            }
+          : (task.ccgui || data.ccgui || null)
         // 添加任务完成消息到聊天
         session.messages.push({
           id: `task-complete-${taskId}`,
@@ -1633,11 +2672,13 @@ export const useSessionStore = defineStore('session', () => {
           description: task.description,
           summary: task.summary,
           usage: task.usage,
+          ccgui: taskCcgui,
           duration: Date.now() - task.startTime,
           timestamp: new Date()
         })
         // 从活跃列表移除
         session.activeTasks.delete(taskId)
+        rebuildAgentSemanticState(session)
         log('[SessionStore] Task completed:', taskId)
       }
     }
@@ -1782,6 +2823,7 @@ export const useSessionStore = defineStore('session', () => {
     const session = currentSession.value
     if (session) {
       session.messages.push(message)
+      rebuildAgentSemanticState(session)
     }
   }
 
@@ -1795,6 +2837,7 @@ export const useSessionStore = defineStore('session', () => {
     const index = session.messages.findIndex(predicate)
     if (index !== -1) {
       session.messages[index] = { ...session.messages[index], ...updates }
+      rebuildAgentSemanticState(session)
       return true
     }
     return false
@@ -1881,6 +2924,16 @@ export const useSessionStore = defineStore('session', () => {
     currentSessionId,
     currentSession,
     currentMessages,
+    currentMainAgentId,
+    currentAgentRegistry,
+    currentAgentBuckets,
+    currentAgentWorkspaceState,
+    executionAgentCards,
+    collaborativeAgentSessions,
+    agentWorkspaceAgents,
+    activeCollaborativeSession,
+    splitCollaborativeSessions,
+    currentInputTargetAgent,
     isProcessing,
     inputMessage,
     inputAttachments,
@@ -1891,6 +2944,12 @@ export const useSessionStore = defineStore('session', () => {
     // Actions
     initSession,
     switchToSession,
+    setActiveAgent,
+    setFocusedPaneAgentId,
+    setInputTargetAgentId,
+    setCollaborativeViewMode,
+    setSplitAgentIds,
+    replaceSplitPaneAgent,
     closeSession,
     sendMessage,
     sendControlResponse,
@@ -1910,6 +2969,7 @@ export const useSessionStore = defineStore('session', () => {
     clearAll,
     addMessage,
     updateMessage,
+    getMessageAgentId,
     setPendingPermission,
     setPendingControlRequest,
     clearPendingPermissions,

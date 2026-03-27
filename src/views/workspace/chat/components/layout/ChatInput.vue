@@ -124,6 +124,14 @@ const props = defineProps({
   canConfigureNotifications: {
     type: Boolean,
     default: false
+  },
+  inputTargetLabel: {
+    type: String,
+    default: ''
+  },
+  inputTargetSubtitle: {
+    type: String,
+    default: ''
   }
 })
 
@@ -732,6 +740,12 @@ defineExpose({
         </div>
       </div>
 
+      <div v-if="inputTargetLabel" class="input-target-banner">
+        <span class="input-target-banner__label">发送到</span>
+        <span class="input-target-banner__value">{{ inputTargetLabel }}</span>
+        <span v-if="inputTargetSubtitle" class="input-target-banner__meta">{{ inputTargetSubtitle }}</span>
+      </div>
+
       <!-- 历史记录选择弹窗 -->
       <div v-if="showHistoryPicker" class="history-picker">
         <div class="history-picker-header">
@@ -822,6 +836,30 @@ defineExpose({
   padding: 4px 8px;
   background: transparent;
   border-bottom: 1px solid #3F3F46;
+}
+
+.input-target-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(63, 63, 70, 0.9);
+  background: rgba(24, 24, 27, 0.56);
+  color: #a1a1aa;
+  font-size: 11px;
+}
+
+.input-target-banner__label {
+  color: #71717a;
+}
+
+.input-target-banner__value {
+  color: #f4f4f5;
+  font-weight: 600;
+}
+
+.input-target-banner__meta {
+  color: #60a5fa;
 }
 
 /* 左侧按钮组 */

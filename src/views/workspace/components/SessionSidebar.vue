@@ -390,6 +390,8 @@ function normalizeSessionSettings(settings = {}) {
     modelMode,
     modelId: modelMode === 'custom' ? settings.modelId || null : null,
     modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null,
+    targetKind: typeof settings.targetKind === 'string' ? settings.targetKind : null,
+    credentialId: typeof settings.credentialId === 'string' ? settings.credentialId : null,
     debug: settings.debug === true,
     promptMode,
     promptIds: promptMode === 'custom' && Array.isArray(settings.promptIds) ? settings.promptIds : [],
@@ -470,6 +472,34 @@ function buildModelDisplay(provider, modelId, modelCardId, fallbackText) {
   }
 }
 
+function buildTargetDisplay(provider, settings = {}, fallbackText = '系统') {
+  const targetKind = typeof settings?.targetKind === 'string' ? settings.targetKind.trim() : ''
+
+  if (provider === 'codex' && targetKind === 'openai') {
+    return {
+      configName: 'OpenAI',
+      cardName: null,
+      text: 'OpenAI'
+    }
+  }
+
+  if (targetKind && targetKind !== 'provider' && targetKind !== 'project' && targetKind !== 'system') {
+    return {
+      configName: targetKind,
+      cardName: null,
+      text: targetKind
+    }
+  }
+
+  const modelId = typeof settings?.modelId === 'string' && settings.modelId.trim()
+    ? settings.modelId.trim()
+    : null
+  const modelCardId = typeof settings?.modelCardId === 'string' && settings.modelCardId.trim()
+    ? settings.modelCardId.trim()
+    : null
+  return buildModelDisplay(provider, modelId, modelCardId, fallbackText)
+}
+
 function resolveProjectSettingsForDisplay() {
   const provider = 'claude'
   const normalized = normalizeProjectSettings(projectConfig.value?.settings || {})
@@ -523,8 +553,8 @@ function resolveSessionSettingsForDisplay(sessionId) {
         ? projectResolved.documents.map(doc => doc.id)
         : (normalized.documentMode === 'none' ? [] : getBaseDocumentIds()))
   const modelDisplay = normalized.modelMode === 'custom'
-    ? buildModelDisplay(provider, normalized.modelId, normalized.modelCardId, '系统')
-    : (normalized.modelMode === 'system' ? { configName: '系统', cardName: null, text: '系统' } : projectResolved.modelDisplay)
+    ? buildTargetDisplay(provider, effectiveSettings, '系统')
+    : (normalized.modelMode === 'system' ? buildTargetDisplay(provider, effectiveSettings, '系统') : projectResolved.modelDisplay)
   const hasSessionOverride = normalized.modelMode !== 'project' || normalized.promptMode !== 'project' || normalized.documentMode !== 'project' || normalized.debug === true
 
   return {
@@ -676,7 +706,7 @@ function getSessionModelInfo(session) {
     return resolved.modelDisplay.text
   }
   if (resolved.sessionMeta?.modelMode === 'system') {
-    return '系统'
+    return resolved.modelDisplay.text
   }
   return null
 }

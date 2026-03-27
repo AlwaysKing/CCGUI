@@ -4,7 +4,7 @@
  * 封装消息的通用结构：头像、统计信息、思考过程、点击处理、折叠占位符
  * 具体内容通过插槽或子组件渲染
  */
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, useSlots } from 'vue'
 import MessageStats from './MessageStats.vue'
 import ToolUseMessage from './ToolUseMessage.vue'
 import DiffMessage from './DiffMessage.vue'
@@ -61,6 +61,8 @@ const emit = defineEmits([
   'copyContent',
   'copyQuestionContent'
 ])
+
+const slots = useSlots()
 
 // 使用 composables
 const {
@@ -134,6 +136,9 @@ const isNewTurn = computed(() => {
 
 // 头像字符
 const avatarChar = computed(() => {
+  if (props.message.subtype === 'execution-card') {
+    return 'A'
+  }
   // rewind-notice 特殊头像
   if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
     return '↩'
@@ -242,6 +247,8 @@ const showFloatingStats = computed(() => showMessageStats.value && isFloatingSta
 const showUserRightColumn = computed(() => {
   return props.message.role === 'user' && (showAvatar.value || showCollapseBtn.value || showRewindBtn.value)
 })
+
+const hasCustomContent = computed(() => Boolean(slots.default))
 
 // ============ 事件处理 ============
 
@@ -414,8 +421,12 @@ onUnmounted(() => {
         />
       </div>
 
+      <template v-if="hasCustomContent">
+        <slot />
+      </template>
+
       <!-- Tool use 消息 -->
-      <template v-if="message.role === 'tool_use'">
+      <template v-else-if="message.role === 'tool_use'">
         <ToolUseMessage
           :tool-name="message.toolName"
           :tool-input="message.toolInput"
@@ -1024,6 +1035,15 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 6px;
   position: relative;
+}
+
+.message.execution-card {
+  align-items: stretch;
+}
+
+.message.execution-card .message-body {
+  width: 100%;
+  max-width: min(70%, 720px);
 }
 
 /* Assistant 内容包装器：thinking 和 message 共享宽度 */

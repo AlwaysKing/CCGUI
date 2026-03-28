@@ -2203,6 +2203,17 @@ class SessionInstance {
     }
 
     const pendingRequest = this.consumePendingControlRequest(requestId)
+    if (pendingRequest) {
+      const toolName = pendingRequest.tool_name || pendingRequest.toolName
+      if (toolName !== 'AskUserQuestion') {
+        const permissionResultMessage = this.buildPermissionResultMessage(pendingRequest, approved, options)
+        if (permissionResultMessage) {
+          this.messages.push(permissionResultMessage)
+          this.saveMessageToHistory(permissionResultMessage)
+          this.emit('message', permissionResultMessage)
+        }
+      }
+    }
     if (approved && pendingRequest) {
       const toolName = pendingRequest.tool_name || pendingRequest.toolName
       if (toolName === 'AskUserQuestion') {
@@ -2747,6 +2758,68 @@ class SessionInstance {
       timestamp: new Date(),
       rawMessages: [controlRequest]
     }
+  }
+
+  buildPermissionResultMessage(controlRequest, approved, options = {}) {
+    if (!controlRequest) return null
+
+    const toolUseId =
+      controlRequest.tool_use_id ||
+      controlRequest.toolUseId ||
+      controlRequest.id ||
+      controlRequest.request_id ||
+      `permission-${Date.now()}`
+
+    const updatedInput = options?.updatedInput || {}
+    const updatedPermissions = Array.isArray(options?.permissionRules) ? options.permissionRules : []
+    const toolName = controlRequest.tool_name || controlRequest.toolName || controlRequest.method || 'Unknown'
+    const isAllowAll = Boolean(approved && updatedPermissions.length > 0)
+
+    let content = ''
+    if (!approved) {
+      content = `❌ 已拒绝: ${toolName}`
+    } else if (isAllowAll) {
+      content = `✅ 已允许 (所有): ${toolName}`
+    } else {
+      content = `✅ 已允许: ${toolName}`
+    }
+
+    if (updatedInput.command) {
+      if (updatedInput.description) {
+        content += `\n说明: ${updatedInput.description}`
+      }
+      content += `\n命令: ${updatedInput.command}`
+    } else if (updatedInput.file_path) {
+      if (updatedInput.description) {
+        content += `\n说明: ${updatedInput.description}`
+      }
+      content += `\n文件: ${updatedInput.file_path}`
+    } else if (updatedInput.pattern) {
+      if (updatedInput.description) {
+        content += `\n说明: ${updatedInput.description}`
+      }
+      content += `\n模式: ${updatedInput.pattern}`
+      if (updatedInput.path) {
+        content += `\n路径: ${updatedInput.path}`
+      }
+    } else if (updatedInput.query) {
+      if (updatedInput.description) {
+        content += `\n说明: ${updatedInput.description}`
+      }
+      content += `\n查询: ${updatedInput.query}`
+    } else if (updatedInput.description) {
+      content += `\n说明: ${updatedInput.description}`
+    }
+
+    return attachExistingCcgui({
+      id: `permission-result-${toolUseId}-${Date.now()}`,
+      role: 'permission_result',
+      tool_use_id: toolUseId,
+      toolUseId,
+      content,
+      timestamp: new Date(),
+      rawMessages: [controlRequest]
+    }, controlRequest)
   }
 
   /**

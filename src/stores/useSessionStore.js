@@ -2396,12 +2396,6 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] handleControlResponse called')
     log('[SessionStore] Response data:', JSON.stringify(data, null, 2))
 
-    // 检查是否是权限确认的响应（包含 behavior 字段）
-    const responseData = data.response?.response || data.response
-    if (responseData?.behavior && session.lastPermissionRequest) {
-      addPermissionResultMessage(session, responseData)
-    }
-
     // 检查是否有待处理的控制请求
     if (session.pendingControlRequestResult) {
       // 解析响应并传递给等待的 Promise
@@ -2424,61 +2418,6 @@ export const useSessionStore = defineStore('session', () => {
       content: '已中断',
       timestamp: new Date()
     })
-  }
-
-  function addPermissionResultMessage(session, responseData = {}) {
-    if (!session?.lastPermissionRequest) return
-
-    const behavior = responseData.behavior
-    const updatedInput = responseData.updatedInput || {}
-    const updatedPermissions = responseData.updatedPermissions || []
-    const toolName = session.lastPermissionRequest.tool_name || session.lastPermissionRequest.toolName || 'Unknown'
-    const isAllowAll = behavior === 'allow' && updatedPermissions.length > 0
-
-    let content = ''
-    if (behavior === 'deny') {
-      content = `❌ 已拒绝: ${toolName}`
-    } else if (isAllowAll) {
-      content = `✅ 已允许 (所有): ${toolName}`
-    } else {
-      content = `✅ 已允许: ${toolName}`
-    }
-
-    if (updatedInput.command) {
-      if (updatedInput.description) {
-        content += `\n说明: ${updatedInput.description}`
-      }
-      content += `\n命令: ${updatedInput.command}`
-    } else if (updatedInput.file_path) {
-      if (updatedInput.description) {
-        content += `\n说明: ${updatedInput.description}`
-      }
-      content += `\n文件: ${updatedInput.file_path}`
-    } else if (updatedInput.pattern) {
-      if (updatedInput.description) {
-        content += `\n说明: ${updatedInput.description}`
-      }
-      content += `\n模式: ${updatedInput.pattern}`
-      if (updatedInput.path) {
-        content += `\n路径: ${updatedInput.path}`
-      }
-    } else if (updatedInput.query) {
-      if (updatedInput.description) {
-        content += `\n说明: ${updatedInput.description}`
-      }
-      content += `\n查询: ${updatedInput.query}`
-    } else if (updatedInput.description) {
-      content += `\n说明: ${updatedInput.description}`
-    }
-
-    session.messages.push({
-      id: `permission-result-${Date.now()}`,
-      role: 'permission_result',
-      content,
-      timestamp: new Date()
-    })
-
-    session.lastPermissionRequest = null
   }
 
   /**

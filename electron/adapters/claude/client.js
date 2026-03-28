@@ -274,6 +274,7 @@ class ClaudeClient {
       ...process.env,
       CLAUDE_CODE_ENABLE_TELEMETRY: '0',
       DISABLE_TELEMETRY: '1',
+      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
       CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: 'true',  // 启用文件历史快照功能
       ...modelEnvVars
     }
@@ -284,6 +285,7 @@ class ClaudeClient {
     logger.info(`[ClaudeClient] 工作目录: ${this.workingDirectory}`)
     logger.info(`[ClaudeClient] 参数: ${JSON.stringify(args, null, 2)}`)
     logger.info(`[ClaudeClient] 环境变量(自定义): ${JSON.stringify(modelEnvVars, null, 2)}`)
+    logger.info(`[ClaudeClient] Agent Teams: ${fullEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS}`)
     if (systemPrompt) {
       logger.info(`[ClaudeClient] 系统提示词内容: ${systemPrompt.substring(0, 500)}${systemPrompt.length > 500 ? '...' : ''}`)
     }

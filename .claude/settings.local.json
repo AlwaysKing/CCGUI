@@ -73,7 +73,14 @@
       "mcp__mcpServers__new_page",
       "mcp__mcpServers__take_snapshot",
       "Read(//Users/alwaysking/Library/Logs/CCGUI-dev/**)",
-      "Read(//Users/alwaysking/Library/Logs/CCGUI/**)"
+      "Read(//Users/alwaysking/Library/Logs/CCGUI/**)",
+      "Bash(echo \"【第一次发言 - 二进制角度】:*)",
+      "Bash(echo \":*)",
+      "Bash(echo \"【第一次发言：从符号系统与定义的相对性出发】:*)",
+      "Bash(echo \"【第二次发言 - 化学/物理角度】:*)",
+      "Bash(echo \"【第二次发言：从本体论与经验世界的裂隙出发】:*)",
+      "Bash(echo \"【第三次发言 - 生物学/社会学角度】:*)",
+      "Bash(echo \"【第三次发言：辩证综合与真理的层次性】:*)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

@@ -394,6 +394,20 @@ function buildSessionAvailability(appConfig, projectSettings = {}, sessionSettin
     }
   }
 
+  if (provider === 'codex' && initProvider === 'openai') {
+    const systemResolved = resolveProjectSettings(appConfig, {}, 'codex')
+    const systemProvider = resolveInitProvider('codex', systemResolved)
+    if (systemProvider !== 'openai') {
+      return {
+        available: false,
+        provider,
+        currentProvider: systemProvider,
+        initProvider,
+        reason: 'system-openai-mismatch'
+      }
+    }
+  }
+
   return {
     available: currentProvider === initProvider,
     provider,

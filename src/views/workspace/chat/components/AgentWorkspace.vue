@@ -127,31 +127,6 @@ const timelineBlocksWithShell = computed(() => {
     }"
   >
     <div class="agent-workspace__content">
-      <div v-if="hasCollaborativeChildren" class="agent-workspace__toolbar">
-        <div class="agent-workspace__toolbar-copy">
-          <span class="agent-workspace__toolbar-title">代理工作区</span>
-          <span class="agent-workspace__toolbar-subtitle">主代理消息流内嵌执行型卡片，协作型代理支持切换与分屏</span>
-        </div>
-        <div class="agent-workspace__toolbar-modes">
-          <button
-            class="agent-workspace__mode-btn"
-            :class="{ active: viewMode === 'single' }"
-            type="button"
-            @click="toggleViewMode('single')"
-          >
-            单视图
-          </button>
-          <button
-            class="agent-workspace__mode-btn"
-            :class="{ active: viewMode === 'split' }"
-            type="button"
-            @click="toggleViewMode('split')"
-          >
-            分屏
-          </button>
-        </div>
-      </div>
-
       <div class="agent-workspace__main-stage">
         <template v-if="activeSession?.isMain">
           <template v-for="(block, index) in timelineBlocksWithShell" :key="block.key || `${block.type}-${index}`">
@@ -285,6 +260,24 @@ const timelineBlocksWithShell = computed(() => {
         <span>代理列表</span>
         <span class="agent-workspace__rail-mode">{{ viewMode }}</span>
       </div>
+      <div v-if="hasCollaborativeChildren" class="agent-workspace__rail-segment">
+        <button
+          class="agent-workspace__mode-btn"
+          :class="{ active: viewMode === 'single' }"
+          type="button"
+          @click="toggleViewMode('single')"
+        >
+          单视图
+        </button>
+        <button
+          class="agent-workspace__mode-btn"
+          :class="{ active: viewMode === 'split' }"
+          type="button"
+          @click="toggleViewMode('split')"
+        >
+          分屏
+        </button>
+      </div>
       <button
         v-for="agentItem in agentEntries"
         :key="agentItem.agentId"
@@ -348,43 +341,11 @@ const timelineBlocksWithShell = computed(() => {
   min-width: 0;
 }
 
-.agent-workspace__toolbar {
-  grid-column: 1 / -1;
-  margin: 4px 0 14px;
-  padding: 12px 14px;
-  border: 1px solid rgba(63, 63, 70, 0.9);
-  border-radius: 16px;
-  background: rgba(24, 24, 27, 0.9);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.agent-workspace__toolbar-title {
-  display: block;
-  color: #f4f4f5;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.agent-workspace__toolbar-subtitle {
-  display: block;
-  margin-top: 4px;
-  color: #a1a1aa;
-  font-size: 11px;
-}
-
-.agent-workspace__toolbar-modes {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .agent-workspace__mode-btn {
-  padding: 6px 12px;
+  flex: 1;
+  padding: 6px 10px;
   border: 1px solid rgba(63, 63, 70, 0.9);
-  border-radius: 999px;
+  border-radius: 10px;
   background: rgba(39, 39, 42, 0.88);
   color: #a1a1aa;
   font-size: 11px;
@@ -491,6 +452,12 @@ const timelineBlocksWithShell = computed(() => {
   color: #71717a;
   text-transform: uppercase;
   font-size: 10px;
+}
+
+.agent-workspace__rail-segment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .agent-workspace__rail-item {

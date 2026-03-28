@@ -21,6 +21,33 @@ import { useMessageList } from '../../composables/useMessageList'
 import { useMessage } from '../../composables/useMessage'
 import { useSessionStore } from '../../../../../stores/useSessionStore'
 
+const TOOL_AVATAR_ICONS = {
+  Bash: '>',
+  Read: '📘',
+  Edit: '✏️',
+  ApplyPatch: '🩹',
+  Diff: '🩹',
+  Write: '📝',
+  Glob: '🔍',
+  Grep: '🔎',
+  Agent: '🤖',
+  TaskOutput: '📋',
+  TaskStop: '⏹️',
+  WebSearch: '🌐',
+  ViewImage: '🖼️',
+  GenerateImage: '🎨',
+  ClientToolCall: '🧩',
+  RequestPermissions: '🔐',
+  SendMessage: '✉️',
+  TeamCreate: '👥',
+  TeamDelete: '👥',
+  AskUserQuestion: '❓',
+  EnterPlanMode: '📋',
+  EnterWorktree: '🌳',
+  TodoWrite: '✅',
+  Skill: '🛠'
+}
+
 const props = defineProps({
   message: {
     type: Object,
@@ -134,6 +161,18 @@ const isNewTurn = computed(() => {
   return props.message.role === 'user' && props.messageIndex > 0
 })
 
+const avatarMode = computed(() => props.chatTheme?.avatarMode || 'large')
+const effectiveAvatarMode = computed(() => {
+  if ((props.chatTheme?.messageSurface || 'bubble') === 'ghost' && avatarMode.value === 'large') {
+    return 'small'
+  }
+  return avatarMode.value
+})
+
+const usesToolAvatarIcon = computed(() => {
+  return props.message.role === 'tool_use' || props.message.role === 'diff'
+})
+
 // 头像字符
 const avatarChar = computed(() => {
   if (props.message.subtype === 'execution-card') {
@@ -156,11 +195,15 @@ const avatarChar = computed(() => {
   if (props.message.role === 'unknown') {
     return '?'
   }
+  if (props.message.role === 'tool_use') {
+    return TOOL_AVATAR_ICONS[props.message.toolName] || '🔧'
+  }
+  if (props.message.role === 'diff') {
+    return TOOL_AVATAR_ICONS.Diff
+  }
   switch (props.message.role) {
     case 'user': return 'U'
     case 'assistant': return 'C'
-    case 'tool_use': return 'T'
-    case 'diff': return 'Δ'
     case 'question': return '?'
     default: return 'S'
   }
@@ -168,7 +211,7 @@ const avatarChar = computed(() => {
 
 // 是否显示头像（统一由 MessageItem 处理）
 const showAvatar = computed(() => {
-  if (avatarMode.value === 'none') {
+  if (effectiveAvatarMode.value === 'none') {
     return false
   }
   // rewind-notice 需要显示头像
@@ -231,7 +274,6 @@ const isThinkingCollapsed = computed(() => {
   return props.message.thinkingCollapsed !== false // 默认折叠
 })
 
-const avatarMode = computed(() => props.chatTheme?.avatarMode || 'large')
 const statusStyle = computed(() => props.chatTheme?.statusStyle || 'full')
 const messageSpacing = computed(() => props.chatTheme?.messageSpacing || 'large')
 const isFloatingStatus = computed(() => statusStyle.value === 'floating')
@@ -386,14 +428,16 @@ onUnmounted(() => {
       message.role,
       message.subtype,
       `spacing-${messageSpacing}`,
-      `avatar-${avatarMode}`,
+      `avatar-${effectiveAvatarMode}`,
       `surface-${chatTheme.messageSurface || 'bubble'}`,
       {
         'new-turn': isNewTurn,
         'denied': isPermissionDenied,
         'no-avatar': !showAvatar,
         'thinking-first': message.role === 'assistant' && showThinking,
-        'tool-text-first': (message.role === 'tool_use' || message.role === 'diff') && (chatTheme.messageSurface || 'bubble') === 'ghost'
+        'tool-text-first': (message.role === 'tool_use' || message.role === 'diff') && (chatTheme.messageSurface || 'bubble') === 'ghost',
+        'tool-avatar-icon': usesToolAvatarIcon,
+        'read-avatar': message.role === 'tool_use' && message.toolName === 'Read'
       }
     ]"
     :data-index="messageIndex"
@@ -908,7 +952,7 @@ onUnmounted(() => {
   font-weight: bold;
   flex-shrink: 0;
   align-self: flex-start;
-  margin-top: 4px;
+  margin-top: 0;
 }
 
 .message.avatar-small .message-avatar {
@@ -920,12 +964,40 @@ onUnmounted(() => {
   margin-top: 8px;
 }
 
+.message.tool-avatar-icon .message-avatar {
+  margin-top: 0;
+}
+
+.message.avatar-small.tool-avatar-icon .message-avatar {
+  width: 10px;
+  height: 16px;
+  min-width: 10px;
+  min-height: 16px;
+  background: transparent;
+  color: #E4E4E7;
+  margin-top: 0;
+  align-self: flex-start;
+  font-size: 14px;
+  line-height: 1;
+}
+
 .message.avatar-small.thinking-first .message-avatar {
   margin-top: 4px;
 }
 
 .message.avatar-small.tool-text-first .message-avatar {
-  margin-top: 5px;
+  margin-top: 0;
+}
+
+.message.avatar-small.tool-text-first.tool-avatar-icon .message-avatar {
+  margin-top: 0;
+  align-self: flex-start;
+}
+
+.message.read-avatar .message-avatar,
+.message.avatar-small.read-avatar .message-avatar,
+.message.avatar-small.tool-text-first.tool-avatar-icon.read-avatar .message-avatar {
+  margin-top: 2px;
 }
 
 .message.user .message-avatar {

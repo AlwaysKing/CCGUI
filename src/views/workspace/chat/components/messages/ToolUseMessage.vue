@@ -163,6 +163,43 @@ const skillData = computed(() => {
   }
 })
 
+const sendMessageData = computed(() => {
+  if (props.toolName !== 'SendMessage') return null
+
+  const input = mergedToolInput.value || {}
+  let parsedResult = null
+
+  try {
+    if (typeof props.result === 'string' && props.result.trim()) {
+      parsedResult = JSON.parse(props.result)
+    } else if (Array.isArray(props.result) && props.result[0]?.text) {
+      parsedResult = JSON.parse(props.result[0].text)
+    }
+  } catch (error) {
+    parsedResult = null
+  }
+
+  const routing = parsedResult?.routing || {}
+  return {
+    sender: routing.sender || input.from || '',
+    target: routing.target || input.to || '',
+    targetColor: routing.targetColor || '',
+    summary: routing.summary || input.summary || '',
+    content: routing.content || input.content || input.message || ''
+  }
+})
+
+const receiveMessageData = computed(() => {
+  if (props.toolName !== 'ReceiveMessage') return null
+
+  const input = mergedToolInput.value || {}
+  return {
+    sender: input.from || input.sender || '',
+    summary: input.summary || '',
+    content: input.content || input.message || ''
+  }
+})
+
 const props = defineProps({
   toolName: {
     type: String,
@@ -265,12 +302,46 @@ const toolIcon = computed(() => {
     GenerateImage: '🎨',
     ClientToolCall: '🧩',
     RequestPermissions: '🔐',
+    SendMessage: '✉️',
+    ReceiveMessage: '📩',
+    TeamCreate: '👥',
     AskUserQuestion: '❓',
     EnterPlanMode: '📋',
     EnterWorktree: '🌳',
     TodoWrite: '✅'
   }
   return icons[props.toolName] || '🔧'
+})
+
+const displayToolName = computed(() => {
+  const labels = {
+    Agent: '代理',
+    ApplyPatch: '补丁',
+    TeamCreate: '创建团队',
+    TeamDelete: '删除团队',
+    SendMessage: '发送消息',
+    ReceiveMessage: '接收消息',
+    Bash: '命令',
+    Glob: '匹配',
+    Grep: '搜索',
+    Read: '读取',
+    Write: '写入',
+    Edit: '编辑',
+    Diff: '差异',
+    WebSearch: '网络搜索',
+    ViewImage: '查看图片',
+    GenerateImage: '生成图片',
+    ClientToolCall: '客户端工具',
+    RequestPermissions: '额外权限',
+    AskUserQuestion: '提问',
+    EnterPlanMode: '进入规划',
+    EnterWorktree: '进入工作树',
+    TodoWrite: '任务清单',
+    Skill: '技能调用',
+    TaskOutput: '任务输出',
+    TaskStop: '停止任务'
+  }
+  return labels[props.toolName] || props.toolName
 })
 
 // 获取主要显示内容（使用合并后的 toolInput）
@@ -367,6 +438,24 @@ const primaryContent = computed(() => {
         label: '技能调用',
         value: input.skill,
         description: input.args || null
+      }
+    case 'SendMessage':
+      return {
+        label: '发送消息',
+        value: input.to || '',
+        description: input.summary || null
+      }
+    case 'ReceiveMessage':
+      return {
+        label: '接收消息',
+        value: input.from || input.sender || '',
+        description: input.summary || null
+      }
+    case 'TeamCreate':
+      return {
+        label: '名称',
+        value: input.team_name || input.teamName || '',
+        description: input.description || null
       }
     case 'TodoWrite':
       // 显示任务列表
@@ -547,6 +636,18 @@ const collapsedSummary = computed(() => {
       const skillArgs = input.args || ''
       const shortArgs = skillArgs.length > 20 ? skillArgs.substring(0, 20) + '...' : skillArgs
       return shortArgs ? `${skillName} ${shortArgs}` : skillName
+    case 'SendMessage':
+      const sendTarget = input.to || ''
+      const sendSummary = input.summary || ''
+      return sendSummary ? `${sendTarget} - ${sendSummary}` : sendTarget
+    case 'ReceiveMessage':
+      const receiveSender = input.from || input.sender || ''
+      const receiveSummary = input.summary || ''
+      return receiveSummary ? `${receiveSender} - ${receiveSummary}` : receiveSender
+    case 'TeamCreate':
+      const teamName = input.team_name || input.teamName || ''
+      const teamDescription = input.description || ''
+      return teamDescription ? `${teamName} - ${teamDescription}` : teamName
     case 'TodoWrite':
       const todos = input.todos || []
       if (todos.length === 0) return '无任务'
@@ -604,11 +705,70 @@ const displayCollapsedSummary = computed(() => {
   return `${label}: ${collapsedSummary.value}`
 })
 
+function collapseHtmlToSingleLine(value = '') {
+  return String(value || '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function truncateFromStart(value = '', maxLength = 56) {
+  const text = String(value || '')
+  if (text.length <= maxLength) {
+    return text
+  }
+  return `...${text.slice(-(maxLength - 3))}`
+}
+
+function truncatePathFromStart(value = '', maxLength = 48) {
+  const text = String(value || '')
+  if (text.length <= maxLength) {
+    return text
+  }
+
+  const normalized = text.replace(/\\/g, '/')
+  const segments = normalized.split('/').filter(Boolean)
+  if (segments.length > 1) {
+    const tailSegments = segments.slice(-4)
+    const compactPath = `.../${tailSegments.join('/')}`
+    if (compactPath.length <= maxLength || tailSegments.length <= 1) {
+      return compactPath
+    }
+  }
+
+  const rawSuffix = text.slice(-(maxLength - 3))
+  const slashIndex = rawSuffix.indexOf('/')
+  if (slashIndex > 0) {
+    return `...${rawSuffix.slice(slashIndex)}`
+  }
+
+  return `...${rawSuffix}`
+}
+
+const headerCollapsedSummary = computed(() => {
+  if (isTextStyle.value || isExpanded.value || !displayCollapsedSummary.value) {
+    return ''
+  }
+  const summary = collapseHtmlToSingleLine(displayCollapsedSummary.value)
+  if (/[\\/]/.test(summary)) {
+    return truncatePathFromStart(summary)
+  }
+  return truncateFromStart(summary, 160)
+})
+
+const headerCollapsedMeta = computed(() => {
+  if (isTextStyle.value || isExpanded.value) {
+    return ''
+  }
+  return textStyleMeta.value || ''
+})
+
 const textStyleLabel = computed(() => {
   if (props.textStyleLabelOverride !== null) {
     return props.textStyleLabelOverride
   }
-  return primaryContent.value?.label || props.toolName
+  return displayToolName.value
 })
 
 const textStyleSummary = computed(() => {
@@ -819,18 +979,38 @@ async function handlePreviewFile(event) {
         </template>
         <template v-else>
           <span class="tool-icon">{{ toolIcon }}</span>
-          <span class="tool-name">{{ toolName }}</span>
+          <span class="tool-name">{{ displayToolName }}</span>
         </template>
         <!-- 部分消息状态指示器 - 只在工具正在执行且没有输入数据时显示 -->
         <span v-if="isPartial && isExecuting" class="partial-status">
           <span>⏳ 等待数据...</span>
         </span>
-        <span v-if="!isTextStyle && isExecuting && !isFloatingStatus" class="status-badge executing">执行中...</span>
-        <span v-else-if="!isTextStyle && isExecuting && isFloatingStatus" class="status-badge inline-spinner" aria-hidden="true">
-          <span class="status-spinner"></span>
+        <span
+          v-if="!isTextStyle && (isExecuting || isError || result || (props.toolName === 'Diff' && unifiedDiffData?.diff))"
+          class="text-style-status"
+          :class="{
+            'is-executing': isExecuting,
+            'is-error': !isExecuting && isError,
+            'is-success': !isExecuting && !isError
+          }"
+          aria-hidden="true"
+        >
+          <svg v-if="!isExecuting && isError" viewBox="0 0 12 12" fill="none">
+            <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+          </svg>
+          <svg v-else-if="!isExecuting" viewBox="0 0 12 12" fill="none">
+            <path d="M2.2 6.2L4.7 8.7L9.8 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span v-else class="status-spinner"></span>
         </span>
-        <span v-else-if="!isTextStyle && isError" class="status-badge error">失败</span>
-        <span v-else-if="!isTextStyle && (result || (props.toolName === 'Diff' && unifiedDiffData?.diff))" class="status-badge success">完成</span>
+        <span
+          v-if="headerCollapsedSummary"
+          class="header-summary-inline"
+        >{{ headerCollapsedSummary }}</span>
+        <span
+          v-if="headerCollapsedMeta"
+          class="header-summary-meta"
+        >{{ headerCollapsedMeta }}</span>
       </div>
       <div class="header-actions">
         <!-- 复制按钮 -->
@@ -846,13 +1026,9 @@ async function handlePreviewFile(event) {
         <CollapseToggle v-if="!isTextStyle" :collapsed="!isExpanded" @toggle="toggleExpand" />
       </div>
     </div>
-    <!-- 折叠时显示精简摘要 -->
-    <div v-if="!isTextStyle && !isExpanded && displayCollapsedSummary" class="collapsed-summary-line" :class="{ 'todo-collapsed': props.toolName === 'TodoWrite' }" @click="toggleExpand" v-html="displayCollapsedSummary">
-    </div>
-
     <div v-if="isExpanded" class="tool-body">
       <!-- 描述 -->
-      <div v-if="primaryContent?.description" class="tool-section has-copy">
+      <div v-if="primaryContent?.description && props.toolName !== 'TeamCreate' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage'" class="tool-section has-copy">
         <div class="section-label">说明</div>
         <div class="section-content description">
           <button class="section-copy-btn" @click.stop="copyDescription" :title="copiedType === 'description' ? '已复制' : '复制'">
@@ -869,7 +1045,7 @@ async function handlePreviewFile(event) {
       </div>
 
       <!-- 主要内容 -->
-      <div v-if="primaryContent" class="tool-section has-copy">
+      <div v-if="primaryContent && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage'" class="tool-section has-copy">
         <div class="section-label" :class="{ 'todo-label': props.toolName === 'TodoWrite' }">{{ primaryContent.label }}</div>
         <!-- TodoWrite 专用样式 -->
         <template v-if="props.toolName === 'TodoWrite'">
@@ -1093,13 +1269,63 @@ async function handlePreviewFile(event) {
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
               </svg>
             </button>
-            <div class="section-content todo-list">{{ primaryContent.value }}</div>
+            <div class="section-content code">{{ primaryContent.value }}</div>
           </div>
         </template>
       </div>
 
+      <div v-if="props.toolName === 'TeamCreate' && primaryContent?.description" class="tool-section has-copy">
+        <div class="section-label">描述</div>
+        <div class="section-content description">
+          <button class="section-copy-btn" @click.stop="copyDescription" :title="copiedType === 'description' ? '已复制' : '复制'">
+            <svg v-if="copiedType === 'description'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+          {{ primaryContent.description }}
+        </div>
+      </div>
+
+      <template v-if="props.toolName === 'SendMessage' && sendMessageData">
+        <div v-if="sendMessageData.sender" class="tool-section">
+          <div class="section-label">发送者</div>
+          <div class="section-content code">{{ sendMessageData.sender }}</div>
+        </div>
+        <div v-if="sendMessageData.target" class="tool-section">
+          <div class="section-label">目标</div>
+          <div class="section-content code">{{ sendMessageData.target }}</div>
+        </div>
+        <div v-if="sendMessageData.summary" class="tool-section has-copy">
+          <div class="section-label">摘要</div>
+          <div class="section-content description">{{ sendMessageData.summary }}</div>
+        </div>
+        <div v-if="sendMessageData.content" class="tool-section has-copy">
+          <div class="section-label">内容</div>
+          <div class="section-content description">{{ sendMessageData.content }}</div>
+        </div>
+      </template>
+
+      <template v-if="props.toolName === 'ReceiveMessage' && receiveMessageData">
+        <div v-if="receiveMessageData.sender" class="tool-section">
+          <div class="section-label">发送者</div>
+          <div class="section-content code">{{ receiveMessageData.sender }}</div>
+        </div>
+        <div v-if="receiveMessageData.summary" class="tool-section has-copy">
+          <div class="section-label">摘要</div>
+          <div class="section-content description">{{ receiveMessageData.summary }}</div>
+        </div>
+        <div v-if="receiveMessageData.content" class="tool-section has-copy">
+          <div class="section-label">内容</div>
+          <div class="section-content description">{{ receiveMessageData.content }}</div>
+        </div>
+      </template>
+
       <!-- 结果 -->
-      <div v-if="formattedResult" class="tool-section result-section">
+      <div v-if="formattedResult && props.toolName !== 'TeamCreate' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage'" class="tool-section result-section">
         <div class="section-label">结果</div>
         <div class="section-content-wrapper">
           <button class="section-copy-btn" @click.stop="copyResult" :title="copiedType === 'result' ? '已复制' : '复制'">
@@ -1174,6 +1400,7 @@ async function handlePreviewFile(event) {
   cursor: pointer;
   user-select: none;
   min-width: 0;
+  position: relative;
 }
 
 .tool-use-card.text-style .tool-header {
@@ -1205,6 +1432,23 @@ async function handlePreviewFile(event) {
 
 .tool-use-card.text-style .tool-info {
   flex: 0 1 auto;
+}
+
+.header-summary-inline {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: #A1A1AA;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  flex: 1 1 auto;
+}
+
+.header-summary-meta {
+  flex: 0 0 auto;
+  color: #8B93A7;
+  font-size: 11px;
+  letter-spacing: 0.01em;
 }
 
 .tool-icon {
@@ -1276,7 +1520,7 @@ async function handlePreviewFile(event) {
 }
 
 .text-style-status.is-success {
-  color: #8B93A7;
+  color: #6EE7B7;
 }
 
 .text-style-status.is-error {
@@ -1429,7 +1673,9 @@ async function handlePreviewFile(event) {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
+  flex: 0 0 auto;
+  margin-left: 10px;
 }
 
 .tool-use-card.text-style .header-actions {
@@ -1442,7 +1688,7 @@ async function handlePreviewFile(event) {
   color: #71717A;
   background: transparent;
   border: none;
-  padding: 4px;
+  padding: 2px;
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.15s;
@@ -1451,6 +1697,13 @@ async function handlePreviewFile(event) {
   align-items: center;
   justify-content: center;
   line-height: 1;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .copy-btn svg {
@@ -1459,6 +1712,7 @@ async function handlePreviewFile(event) {
 
 .tool-header:hover .copy-btn {
   opacity: 0.6;
+  pointer-events: auto;
 }
 
 .copy-btn:hover {
@@ -1575,7 +1829,7 @@ async function handlePreviewFile(event) {
   background: #18181B;
   padding: 8px 12px;
   border-radius: 6px;
-  color: #93C5FD;
+  color: #A1A1AA;
   word-break: break-all;
   white-space: pre-wrap;
 }

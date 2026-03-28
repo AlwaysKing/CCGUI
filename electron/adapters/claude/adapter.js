@@ -40,6 +40,22 @@ class ClaudeAdapter extends ClaudeClient {
     this.teamLeadByTeamId = new Map()
     this.teamMembersByTeamId = new Map()
     this.teammateNameToAgentId = new Map()
+    this.sidechainMessageIds = new Set()
+  }
+
+  getCollaborativeReadOnlyFields() {
+    return {
+      canWrite: false,
+      interactionMode: 'read-only'
+    }
+  }
+
+  resolveAgentColor(value) {
+    if (typeof value !== 'string') {
+      return null
+    }
+    const trimmed = value.trim()
+    return trimmed || null
   }
 
   sanitizeSemanticId(value, fallback = 'agent') {
@@ -297,7 +313,8 @@ class ClaudeAdapter extends ClaudeClient {
       agentType: 'team',
       name: teamName,
       prompt: toolResult.team_file_path || null,
-      status: 'running'
+      status: 'running',
+      ...this.getCollaborativeReadOnlyFields()
     }, {
       eventType: 'start',
       agentId: teamId,
@@ -321,7 +338,8 @@ class ClaudeAdapter extends ClaudeClient {
       agentType: 'team-lead',
       name: 'Team Lead',
       teamId,
-      status: 'running'
+      status: 'running',
+      ...this.getCollaborativeReadOnlyFields()
     }, {
       eventType: 'start',
       agentId: leadProviderId,
@@ -594,6 +612,11 @@ class ClaudeAdapter extends ClaudeClient {
       return
     }
 
+    if (message.type === 'sidechain_entry') {
+      this.handleSidechainEntry(message)
+      return
+    }
+
     if (message.type === 'result') {
       if (this.shouldTreatAsErrorResult(message)) {
         const subtype = message?.subtype || 'error'
@@ -790,7 +813,8 @@ class ClaudeAdapter extends ClaudeClient {
             model: candidate?.model || null,
             teamId,
             parentAgentId: teamId ? (this.teamLeadByTeamId.get(teamId) || null) : null,
-            status: 'running'
+            status: 'running',
+            ...(isTeamMember ? this.getCollaborativeReadOnlyFields() : {})
           }, {
             eventType: 'start',
             agentId,
@@ -805,6 +829,13 @@ class ClaudeAdapter extends ClaudeClient {
             status: 'running'
           })
         : null
+      if (isTeamMember && agentId) {
+        this.watchSidechainAgent({
+          agentId,
+          name: message.name || candidate?.name || agentType,
+          prompt: message.prompt || candidate?.prompt || candidate?.description || null
+        })
+      }
       this.emit('task-event', {
         eventType: 'started',
         taskId: message.task_id,
@@ -1177,17 +1208,20 @@ class ClaudeAdapter extends ClaudeClient {
         agentKind: 'collaborative',
         agentType: candidate?.agentType || toolResult.name || 'team-member',
         name: toolResult.name || candidate?.name || null,
+        color: this.resolveAgentColor(toolResult.color || toolResult.agent_color || candidate?.color || candidate?.agentColor || null),
         prompt: candidate?.prompt || candidate?.description || null,
         model: candidate?.model || null,
         teamId,
         parentAgentId: teamId ? (this.teamLeadByTeamId.get(teamId) || null) : null,
-        status: 'running'
+        status: 'running',
+        ...this.getCollaborativeReadOnlyFields()
       }, {
         eventType: 'start',
         agentId,
         agentKind: 'collaborative',
         agentType: candidate?.agentType || toolResult.name || 'team-member',
         name: toolResult.name || candidate?.name || null,
+        color: this.resolveAgentColor(toolResult.color || toolResult.agent_color || candidate?.color || candidate?.agentColor || null),
         prompt: candidate?.prompt || candidate?.description || null,
         model: candidate?.model || null,
         teamId,
@@ -1196,6 +1230,11 @@ class ClaudeAdapter extends ClaudeClient {
         status: 'running'
       })
       this.emitAgentSilent(startCcgui, message)
+      this.watchSidechainAgent({
+        agentId,
+        name: toolResult.name || candidate?.name || null,
+        prompt: candidate?.prompt || candidate?.description || null
+      })
     }
 
     if (!isTeamCreate && !isTeamDelete && !isTeamMember && isExecutionAgentResult && agentId && !this.agentRegistry.has(agentId)) {
@@ -1283,6 +1322,8 @@ class ClaudeAdapter extends ClaudeClient {
   handleAssistantMessage(message) {
     const assistantMessage = message.message || {}
     const messageId = assistantMessage.id || message.uuid || `assistant-${Date.now()}`
+    const messageTimestamp = message?.timestamp ? new Date(message.timestamp) : new Date()
+    const messageStartTime = message?.timestamp ? Date.parse(message.timestamp) : Date.now()
     const content = Array.isArray(assistantMessage.content) ? assistantMessage.content : []
     const thinkingText = content
       .filter(block => block?.type === 'thinking' && typeof block.thinking === 'string')
@@ -1326,8 +1367,8 @@ class ClaudeAdapter extends ClaudeClient {
           thinking: '',
           hasThinking: false,
           isStreaming: true,
-          startTime: Date.now(),
-          timestamp: new Date(),
+          startTime: Number.isFinite(messageStartTime) ? messageStartTime : Date.now(),
+          timestamp: messageTimestamp,
           usage: assistantMessage.usage || null,
           turnNumber: this.currentTurnNumber || 1,
           ccgui: this.buildCcguiPatch({
@@ -1411,8 +1452,8 @@ class ClaudeAdapter extends ClaudeClient {
         collapsed: false,
         thinking: '',
         hasThinking: false,
-        timestamp: new Date(),
-        startTime: Date.now(),
+        timestamp: messageTimestamp,
+        startTime: Number.isFinite(messageStartTime) ? messageStartTime : Date.now(),
         ccgui: this.buildCcguiPatch({
           attribution: this.getAttributionForClaudeMessage(message)
         }),
@@ -1433,6 +1474,220 @@ class ClaudeAdapter extends ClaudeClient {
         this.currentAssistantMessage = null
       }
     }
+  }
+
+  resolveSidechainAgentId(message = {}) {
+    return message?.agentId || null
+  }
+
+  parseTeammateMessage(text = '') {
+    if (typeof text !== 'string' || !text.trim()) {
+      return null
+    }
+
+    const match = text.match(/^<teammate-message\b([^>]*)>([\s\S]*?)<\/teammate-message>\s*$/)
+    if (!match) {
+      return null
+    }
+
+    const [, rawAttrs = '', rawBody = ''] = match
+    const attrs = {}
+    for (const attrMatch of rawAttrs.matchAll(/([a-zA-Z0-9_:-]+)="([^"]*)"/g)) {
+      attrs[attrMatch[1]] = attrMatch[2]
+    }
+
+    return {
+      sender: attrs.teammate_id || attrs.sender || '',
+      summary: attrs.summary || '',
+      content: rawBody.trim()
+    }
+  }
+
+  handleSidechainEntry(message) {
+    const entry = message?.entry
+    if (!entry || typeof entry !== 'object') {
+      return
+    }
+
+    const stableId = entry.uuid || entry.message?.id || null
+    if (stableId && this.sidechainMessageIds.has(stableId)) {
+      return
+    }
+    if (stableId) {
+      this.sidechainMessageIds.add(stableId)
+    }
+
+    const agentId = this.resolveSidechainAgentId(message)
+    if (!agentId) {
+      return
+    }
+
+    const attribution = {
+      agentId,
+      actorId: agentId
+    }
+
+    const timestamp = entry.timestamp ? new Date(entry.timestamp) : new Date()
+    const startTime = entry.timestamp ? Date.parse(entry.timestamp) : Date.now()
+    const ccgui = this.buildCcguiPatch({
+      attribution
+    })
+    const messageContent = entry.message?.content
+
+    if (entry.type === 'assistant' && entry.message && typeof entry.message === 'object') {
+      const assistantMessage = entry.message
+      const assistantContent = Array.isArray(assistantMessage.content) ? assistantMessage.content : []
+      const textContent = assistantContent
+        .filter(item => item?.type === 'text' && typeof item.text === 'string')
+        .map(item => item.text)
+        .join('\n')
+      const thinkingContent = assistantContent
+        .filter(item => item?.type === 'thinking' && typeof item.thinking === 'string')
+        .map(item => item.thinking)
+        .join('\n')
+      const assistantMessageId = assistantMessage.id || `sidechain-assistant:${agentId}:${entry.uuid || Date.now()}`
+
+      if (textContent || thinkingContent) {
+        this.emit('message-start', {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: textContent,
+          thinking: thinkingContent,
+          hasThinking: Boolean(thinkingContent),
+          isStreaming: false,
+          timestamp,
+          startTime: Number.isFinite(startTime) ? startTime : Date.now(),
+          usage: assistantMessage.usage || null,
+          ccgui,
+          rawMessages: [entry]
+        })
+        this.emit('message-complete', {
+          messageId: assistantMessageId,
+          updates: {
+            isStreaming: false,
+            thinkingCollapsed: Boolean(thinkingContent)
+          }
+        })
+      }
+
+      for (const item of assistantContent) {
+        const toolUse = this.normalizeToolUseBlock(item)
+        if (!toolUse || toolUse.rawName === 'AskUserQuestion') {
+          continue
+        }
+
+        if (['Agent', 'TeamCreate', 'SendMessage', 'TeamDelete'].includes(toolUse.rawName)) {
+          this.rememberAgentToolUse(toolUse, entry)
+        }
+
+        if (this.toolUseMessages.has(toolUse.toolUseId)) {
+          continue
+        }
+
+        this.toolUseMessages.set(toolUse.toolUseId, {
+          toolInputBuffer: ''
+        })
+
+        this.emit('message-start', {
+          id: toolUse.toolUseId,
+          role: this.isDiffToolName(toolUse.rawName) ? 'diff' : 'tool_use',
+          toolName: toolUse.toolName,
+          toolInput: toolUse.toolInput ? { ...toolUse.toolInput } : {},
+          result: '',
+          isError: false,
+          isExecuting: true,
+          request_id: toolUse.toolUseId,
+          collapsed: false,
+          thinking: '',
+          hasThinking: false,
+          timestamp,
+          startTime: Number.isFinite(startTime) ? startTime : Date.now(),
+          ccgui,
+          rawMessages: [entry]
+        })
+      }
+      return
+    }
+
+    if (Array.isArray(messageContent)) {
+      const toolResultContent = messageContent.find(item => item?.type === 'tool_result')
+      if (toolResultContent) {
+        this.handleToolResultMessage({
+          ...entry,
+          type: 'user',
+          agentId: entry.agentId,
+          message: entry.message,
+          tool_use_result: entry.toolUseResult || entry.tool_use_result || {}
+        }, toolResultContent)
+        return
+      }
+    }
+
+    const textContent = typeof messageContent === 'string'
+      ? messageContent
+      : (Array.isArray(messageContent)
+          ? messageContent
+            .filter(item => item?.type === 'text' && typeof item.text === 'string')
+            .map(item => item.text)
+            .join('\n')
+          : '')
+
+    if (!textContent) {
+      return
+    }
+
+    const teammateMessage = this.parseTeammateMessage(textContent)
+    if (teammateMessage) {
+      const messageId = `sidechain-receive:${agentId}:${entry.uuid || entry.parentUuid || Date.now()}`
+      this.emit('message-start', {
+        id: messageId,
+        role: 'tool_use',
+        toolName: 'ReceiveMessage',
+        toolInput: {
+          from: teammateMessage.sender,
+          summary: teammateMessage.summary,
+          content: teammateMessage.content
+        },
+        result: '',
+        isError: false,
+        isExecuting: false,
+        request_id: messageId,
+        collapsed: false,
+        thinking: '',
+        hasThinking: false,
+        timestamp,
+        startTime: Number.isFinite(startTime) ? startTime : Date.now(),
+        ccgui,
+        rawMessages: [entry]
+      })
+      this.emit('message-complete', {
+        messageId,
+        updates: {
+          isStreaming: false
+        }
+      })
+      return
+    }
+
+    const messageId = `sidechain:${agentId}:${entry.uuid || entry.parentUuid || Date.now()}`
+    this.emit('message-start', {
+      id: messageId,
+      role: 'user',
+      content: textContent,
+      thinking: '',
+      hasThinking: false,
+      isStreaming: false,
+      timestamp,
+      startTime: Number.isFinite(startTime) ? startTime : Date.now(),
+      ccgui,
+      rawMessages: [entry]
+    })
+    this.emit('message-complete', {
+      messageId,
+      updates: {
+        isStreaming: false
+      }
+    })
   }
 }
 

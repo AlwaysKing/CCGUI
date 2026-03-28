@@ -129,13 +129,25 @@ const props = defineProps({
     type: String,
     default: ''
   },
+  inputTargetAgentId: {
+    type: String,
+    default: ''
+  },
+  inputTargetOptions: {
+    type: Array,
+    default: () => []
+  },
   inputTargetSubtitle: {
     type: String,
     default: ''
+  },
+  inputTargetReadOnly: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility'])
+const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange'])
 
 // 输入区域 ref
 const inputArea = ref(null)
@@ -145,6 +157,7 @@ const subModelMenuWrapper = ref(null)
 const permissionMenuWrapper = ref(null)
 const effortMenuWrapper = ref(null)
 const notificationMenuWrapper = ref(null)
+const inputTargetMenuWrapper = ref(null)
 
 // 输入框是否聚焦
 const isInputFocused = ref(false)
@@ -159,6 +172,7 @@ const showEffortMenu = ref(false)
 const showModelMenu = ref(false)
 const showSubModelMenu = ref(false)
 const showNotificationMenu = ref(false)
+const showInputTargetMenu = ref(false)
 
 // Enter 键模式锁定 (true = Enter 发送, false = Enter 换行)
 const enterModeLocked = ref(true)
@@ -216,7 +230,7 @@ const currentModeDescription = computed(() => {
 const sendDisabled = computed(() => {
   const textWithoutTokens = String(localValue.value || '').replace(ATTACHMENT_TOKEN_REGEX, '').trim()
   const hasContent = Boolean(textWithoutTokens || props.attachments.length > 0)
-  return !hasContent || props.hasPermission
+  return !hasContent || props.hasPermission || props.inputTargetReadOnly
 })
 
 // 权限模式对应的颜色主题
@@ -240,7 +254,7 @@ const disablePermissionModeControl = computed(() => {
 })
 
 const disableAttachmentControl = computed(() => {
-  return props.toolbarLocked
+  return props.toolbarLocked || props.inputTargetReadOnly
 })
 
 const disableNotificationControl = computed(() => {
@@ -419,6 +433,18 @@ function selectSubModel(option) {
 }
 
 const hasEnabledNotifications = computed(() => props.currentNotificationChannels.length > 0)
+const currentInputTargetOption = computed(() => {
+  return props.inputTargetOptions.find(option => option.agentId === props.inputTargetAgentId)
+    || (props.inputTargetLabel
+      ? {
+          agentId: props.inputTargetAgentId,
+          label: props.inputTargetLabel,
+          color: null,
+          subtitle: props.inputTargetSubtitle,
+          readOnly: props.inputTargetReadOnly
+        }
+      : null)
+})
 
 const notificationButtonTitle = computed(() => {
   if (!props.currentNotificationChannels.length) {
@@ -442,12 +468,24 @@ function toggleNotification(option) {
   emit('notificationToggle', option)
 }
 
+function toggleInputTargetMenu() {
+  const nextState = !showInputTargetMenu.value
+  closeAllMenus()
+  showInputTargetMenu.value = nextState
+}
+
+function selectInputTarget(agentId) {
+  showInputTargetMenu.value = false
+  emit('inputTargetChange', agentId)
+}
+
 function closeAllMenus() {
   showModelMenu.value = false
   showSubModelMenu.value = false
   showPermissionMenu.value = false
   showEffortMenu.value = false
   showNotificationMenu.value = false
+  showInputTargetMenu.value = false
 }
 
 function toggleModelMenu() {
@@ -481,7 +519,8 @@ function handleGlobalClick(event) {
     subModelMenuWrapper.value?.contains(target) ||
     permissionMenuWrapper.value?.contains(target) ||
     effortMenuWrapper.value?.contains(target) ||
-    notificationMenuWrapper.value?.contains(target)
+    notificationMenuWrapper.value?.contains(target) ||
+    inputTargetMenuWrapper.value?.contains(target)
   ) {
     return
   }
@@ -717,6 +756,38 @@ defineExpose({
             </span>
           </button>
 
+          <div v-if="inputTargetLabel" ref="inputTargetMenuWrapper" class="input-target-menu-wrapper">
+            <button
+              class="input-target-menu-btn"
+              :class="{ readonly: inputTargetReadOnly }"
+              :style="currentInputTargetOption?.color ? { color: currentInputTargetOption.color } : null"
+              type="button"
+              :title="inputTargetSubtitle || inputTargetLabel"
+              @click="toggleInputTargetMenu"
+            >
+              <span class="input-target-menu-btn__prefix">@</span>
+              <span class="input-target-menu-btn__label">{{ currentInputTargetOption?.label || inputTargetLabel }}</span>
+            </button>
+
+            <div v-if="showInputTargetMenu && inputTargetOptions.length" class="input-target-menu">
+              <button
+                v-for="option in inputTargetOptions"
+                :key="option.agentId"
+                class="input-target-menu-item"
+                :class="{ active: option.agentId === inputTargetAgentId }"
+                :style="option.color ? { color: option.color } : null"
+                type="button"
+                @click="selectInputTarget(option.agentId)"
+              >
+                <span class="input-target-menu-item__main">
+                  <span class="input-target-menu-item__prefix">@</span>
+                  <span class="input-target-menu-item__label">{{ option.label }}</span>
+                </span>
+                <span v-if="option.subtitle" class="input-target-menu-item__meta">{{ option.subtitle }}</span>
+              </button>
+            </div>
+          </div>
+
           <!-- 发送/打断按钮 -->
           <button
             v-if="!isProcessing"
@@ -738,12 +809,6 @@ defineExpose({
             </svg>
           </button>
         </div>
-      </div>
-
-      <div v-if="inputTargetLabel" class="input-target-banner">
-        <span class="input-target-banner__label">发送到</span>
-        <span class="input-target-banner__value">{{ inputTargetLabel }}</span>
-        <span v-if="inputTargetSubtitle" class="input-target-banner__meta">{{ inputTargetSubtitle }}</span>
       </div>
 
       <!-- 历史记录选择弹窗 -->
@@ -771,7 +836,7 @@ defineExpose({
         placeholder="输入消息... (Enter 发送, Shift+Enter 换行，可拖拽文件或粘贴图片)"
         :enter-to-send="enterModeLocked"
         :history-navigation-active="historyIndex !== -1"
-        :disabled="hasPermission"
+        :disabled="hasPermission || inputTargetReadOnly"
         @submit="sendMessage"
         @history-up="handleHistoryKey"
         @history-down="handleHistoryKey"
@@ -836,30 +901,6 @@ defineExpose({
   padding: 4px 8px;
   background: transparent;
   border-bottom: 1px solid #3F3F46;
-}
-
-.input-target-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid rgba(63, 63, 70, 0.9);
-  background: rgba(24, 24, 27, 0.56);
-  color: #a1a1aa;
-  font-size: 11px;
-}
-
-.input-target-banner__label {
-  color: #71717a;
-}
-
-.input-target-banner__value {
-  color: #f4f4f5;
-  font-weight: 600;
-}
-
-.input-target-banner__meta {
-  color: #60a5fa;
 }
 
 /* 左侧按钮组 */
@@ -1272,6 +1313,110 @@ defineExpose({
   align-items: center;
   gap: 4px;
   margin-right: -4.5px;
+}
+
+.input-target-menu-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.input-target-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: #A1A1AA;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.input-target-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.input-target-menu-btn.readonly {
+  color: #60A5FA;
+}
+
+.input-target-menu-btn__prefix {
+  color: #71717A;
+}
+
+.input-target-menu-btn__label {
+  max-width: 110px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.input-target-menu {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 180px;
+  max-width: 240px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+
+.input-target-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  cursor: pointer;
+  text-align: left;
+}
+
+.input-target-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.input-target-menu-item.active {
+  color: #F97316;
+}
+
+.input-target-menu-item__main {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.input-target-menu-item__prefix {
+  color: #71717A;
+}
+
+.input-target-menu-item__label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.input-target-menu-item__meta {
+  flex-shrink: 0;
+  color: #71717A;
+  font-size: 11px;
 }
 
 .attach-button {

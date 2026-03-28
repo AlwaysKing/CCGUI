@@ -74,6 +74,24 @@ const agentWorkspaceState = computed(() => sessionStore.currentAgentWorkspaceSta
 const currentInputTargetAgent = computed(() => sessionStore.currentInputTargetAgent)
 const childCollaborativeSessions = computed(() => collaborativeAgentSessions.value.filter(session => !session.isMain))
 const hasCollaborativeChildren = computed(() => childCollaborativeSessions.value.length > 0)
+const inputTargetOptions = computed(() => {
+  if (!hasCollaborativeChildren.value) {
+    return []
+  }
+
+  return collaborativeAgentSessions.value
+    .filter(entry => entry.status !== 'deleted')
+    .map(entry => ({
+      agentId: entry.agentId,
+      label: entry.title || entry.name || (entry.isMain ? 'Master' : 'Agent'),
+      color: entry.color || null,
+      subtitle: entry.canWrite === false || entry.interactionMode === 'read-only'
+        ? '只读'
+        : (entry.subtitle || (entry.isMain ? '主会话' : '子会话')),
+      readOnly: entry.canWrite === false || entry.interactionMode === 'read-only',
+      isMain: Boolean(entry.isMain)
+    }))
+})
 const splitSideSessions = computed(() => {
   if (agentWorkspaceState.value.collaborativeViewMode !== 'split') {
     return []
@@ -81,6 +99,18 @@ const splitSideSessions = computed(() => {
 
   const activeAgentId = activeCollaborativeSession.value?.agentId || null
   return splitCollaborativeSessions.value.filter(session => session.agentId !== activeAgentId)
+})
+
+const shouldShowStickyHeader = computed(() => {
+  if (!stickyMessage.value) {
+    return false
+  }
+
+  if (!hasCollaborativeChildren.value) {
+    return true
+  }
+
+  return Boolean(activeCollaborativeSession.value?.isMain)
 })
 
 // UI 状态
@@ -678,6 +708,9 @@ onMounted(async () => {
   document.addEventListener('click', handleClickOutsidePermissionMenu)
   window.addEventListener('ccgui-session-complete', handleSessionComplete)
   window.addEventListener('ccgui-shortcut', handleChatShortcut)
+
+  await nextTick()
+  updateStickyMessage()
 })
 
 // Note: Session history is now loaded by SessionStore/SessionInstance
@@ -882,6 +915,8 @@ watch(() => messages.value, async (newMessages) => {
     }
   }
   previousMessageCount = newLength
+  await nextTick()
+  updateStickyMessage()
 }, { deep: true })
 
 watch(() => {
@@ -1318,6 +1353,11 @@ async function handleInterrupt() {
   } catch (error) {
     console.error('发送打断请求失败:', error)
   }
+}
+
+function handleInputTargetChange(agentId) {
+  if (!agentId) return
+  sessionStore.setInputTargetAgentId(agentId)
 }
 
 async function handlePermissionApprove(requestId, toolName, displayDetail) {
@@ -1840,7 +1880,7 @@ function handleToggleAgentViewMode(mode) {
     <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight } : {}">
       <!-- 粘性头部 - 浮动在聊天内容上方 -->
       <StickyHeader
-        v-if="stickyMessage && activeCollaborativeSession?.isMain"
+        v-if="shouldShowStickyHeader"
         :message="stickyMessage"
         :is-processing="isStickyMessageProcessing"
         :current-time="currentTime"
@@ -2025,7 +2065,12 @@ function handleToggleAgentViewMode(mode) {
         :notification-options="notificationOptions"
         :can-configure-notifications="canConfigureNotifications"
         :input-target-label="hasCollaborativeChildren ? (currentInputTargetAgent?.title || currentInputTargetAgent?.name || activeCollaborativeSession?.title || '') : ''"
-        :input-target-subtitle="hasCollaborativeChildren ? (currentInputTargetAgent?.subtitle || (agentWorkspaceState.collaborativeViewMode === 'split' ? '跟随当前焦点分屏视图' : (currentInputTargetAgent?.isMain ? '主会话' : '当前激活子会话'))) : ''"
+        :input-target-subtitle="hasCollaborativeChildren ? ((currentInputTargetAgent?.canWrite === false || currentInputTargetAgent?.interactionMode === 'read-only')
+          ? '当前代理只读，暂不支持发送消息'
+          : (currentInputTargetAgent?.subtitle || (agentWorkspaceState.collaborativeViewMode === 'split' ? '跟随当前焦点分屏视图' : (currentInputTargetAgent?.isMain ? '主会话' : '当前激活子会话')))) : ''"
+        :input-target-agent-id="agentWorkspaceState.inputTargetAgentId"
+        :input-target-options="inputTargetOptions"
+        :input-target-read-only="Boolean(hasCollaborativeChildren && (currentInputTargetAgent?.canWrite === false || currentInputTargetAgent?.interactionMode === 'read-only'))"
         :effort="currentEffortValue"
         :effort-key="currentEffortKey"
         :effort-options="availableEffortOptions"
@@ -2040,6 +2085,7 @@ function handleToggleAgentViewMode(mode) {
         @toggle-queue-visibility="queuePanelVisible = !queuePanelVisible"
         @permission-mode-change="selectPermissionMode"
         @effort-change="handleQuickEffortChange"
+        @input-target-change="handleInputTargetChange"
       />
       <div v-if="sessionUnavailableMessage" class="session-unavailable-banner">
         {{ sessionUnavailableMessage }}

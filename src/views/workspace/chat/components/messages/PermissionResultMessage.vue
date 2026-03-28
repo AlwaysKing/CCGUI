@@ -127,6 +127,13 @@ const parsedContent = computed(() => {
 const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
 const avatarMode = computed(() => props.chatTheme?.avatarMode || 'large')
 const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.value === 'none')
+const displayToolName = computed(() => {
+  const name = parsedContent.value.toolName
+  if (name === 'Bash') return '命令'
+  if (name === 'Read') return '读取'
+  if (name === 'Write') return '写入'
+  return name
+})
 </script>
 
 <template>
@@ -150,10 +157,16 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
           </template>
           <template v-else>
             <span class="tool-icon">{{ parsedContent.isApproved ? '✓' : '✗' }}</span>
-            <span class="tool-name">{{ parsedContent.toolName }}</span>
-            <span class="status-badge" :class="parsedContent.isDenied ? 'error' : 'success'">
-              {{ parsedContent.statusText }}
+            <span class="tool-name">{{ displayToolName }}</span>
+            <span class="text-style-status" :class="parsedContent.isDenied ? 'is-error' : 'is-success'" aria-hidden="true">
+              <svg v-if="parsedContent.isDenied" viewBox="0 0 12 12" fill="none">
+                <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+              </svg>
+              <svg v-else viewBox="0 0 12 12" fill="none">
+                <path d="M2.2 6.2L4.7 8.7L9.8 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
             </span>
+            <span class="header-summary-inline">{{ parsedContent.summary }}</span>
           </template>
         </div>
         <div class="header-actions">
@@ -168,11 +181,6 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
           </button>
           <CollapseToggle v-if="!isTextStyle" :collapsed="isCollapsed" @toggle="toggleCollapse" />
         </div>
-      </div>
-
-      <!-- 折叠时显示摘要 - 与 ToolUseMessage 完全一致 -->
-      <div v-if="isCollapsed && !isTextStyle" class="collapsed-summary-line" @click="toggleCollapse">
-        {{ parsedContent.summary }}
       </div>
 
       <!-- 展开时显示详细内容 - 与 ToolUseMessage 的 tool-body 完全一致 -->
@@ -286,6 +294,7 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
   cursor: pointer;
   user-select: none;
   min-width: 0;
+  position: relative;
 }
 
 .tool-header:hover {
@@ -313,6 +322,10 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
 
 .tool-use-card.text-style .tool-info {
   flex: 0 1 auto;
+}
+
+.tool-info {
+  overflow: hidden;
 }
 
 .tool-icon {
@@ -350,6 +363,16 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
   color: #C4C7CF;
 }
 
+.header-summary-inline {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: #A1A1AA;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  flex: 1 1 auto;
+}
+
 .text-style-label {
   flex-shrink: 0;
 }
@@ -378,7 +401,7 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
 }
 
 .text-style-status.is-success {
-  color: #8B93A7;
+  color: #6EE7B7;
 }
 
 .text-style-status.is-error {
@@ -406,9 +429,9 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-  margin-left: 8px;
+  gap: 0;
+  flex: 0 0 auto;
+  margin-left: 10px;
 }
 
 .tool-use-card.text-style .header-actions {
@@ -421,7 +444,7 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
   color: #71717A;
   background: transparent;
   border: none;
-  padding: 4px;
+  padding: 2px;
   border-radius: 4px;
   cursor: pointer;
   opacity: 0;
@@ -430,6 +453,13 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
   align-items: center;
   justify-content: center;
   line-height: 1;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .copy-btn svg {
@@ -438,6 +468,7 @@ const showInlineStatusIcon = computed(() => isTextStyle.value && avatarMode.valu
 
 .tool-header:hover .copy-btn {
   opacity: 0.6;
+  pointer-events: auto;
 }
 
 .copy-btn:hover {

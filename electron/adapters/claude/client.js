@@ -38,6 +38,11 @@ class ClaudeClient {
     this.projectSettings = projectSettings // 已解析的最终配置 { modelId, modelCardId, promptIds, documentIds }
     this.debugEnabled = options.debug === true
     this.initializeResponse = null
+    this.sidechainMonitorTimer = null
+    this.sidechainFileState = new Map()
+    this.sidechainSeenEntryIds = new Set()
+    this.sidechainFileAgents = new Map()
+    this.watchedSidechainAgents = new Map()
   }
 
   /**
@@ -456,6 +461,7 @@ class ClaudeClient {
 
     // Handle exit
     this.process.on('exit', (code, signal) => {
+      this.stopSidechainMonitor()
       // Emit exit event so SessionInstance can update envInfo
       const exitHandlers = this.messageHandlers.get('exit') || []
       exitHandlers.forEach(handler => {
@@ -790,6 +796,7 @@ class ClaudeClient {
    */
   stop() {
     if (this.process) {
+      this.stopSidechainMonitor()
       this.process.kill('SIGTERM')
       this.process = null
     }
@@ -813,6 +820,160 @@ class ClaudeClient {
     return Array.isArray(this.initializeResponse?.models)
       ? this.initializeResponse.models
       : []
+  }
+
+  getSubagentsDirectory() {
+    if (!this.sessionId || !this.workingDirectory) {
+      return null
+    }
+
+    const projectId = calculateProjectId(this.workingDirectory)
+    return path.join(os.homedir(), '.claude', 'projects', projectId, this.sessionId, 'subagents')
+  }
+
+  startSidechainMonitor() {
+    if (this.sidechainMonitorTimer) {
+      return
+    }
+
+    this.pollSidechainEntries()
+    this.sidechainMonitorTimer = setInterval(() => {
+      this.pollSidechainEntries()
+    }, 1000)
+  }
+
+  stopSidechainMonitor() {
+    if (this.sidechainMonitorTimer) {
+      clearInterval(this.sidechainMonitorTimer)
+      this.sidechainMonitorTimer = null
+    }
+    this.sidechainFileState.clear()
+    this.sidechainSeenEntryIds.clear()
+    this.sidechainFileAgents.clear()
+    this.watchedSidechainAgents.clear()
+  }
+
+  watchSidechainAgent(agentInfo) {
+    const normalizedAgentId = String(
+      typeof agentInfo === 'string'
+        ? agentInfo
+        : (agentInfo?.agentId || '')
+    ).trim()
+    if (!normalizedAgentId) {
+      return
+    }
+
+    const normalizedPrompt = String(agentInfo?.prompt || '').replace(/\s+/g, ' ').trim()
+    const normalizedName = String(agentInfo?.name || '').trim()
+
+    this.watchedSidechainAgents.set(normalizedAgentId, {
+      agentId: normalizedAgentId,
+      name: normalizedName,
+      prompt: normalizedPrompt
+    })
+    this.startSidechainMonitor()
+  }
+
+  readSidechainMeta(filePath) {
+    const metaPath = filePath.replace(/\.jsonl$/i, '.meta.json')
+    if (!fs.existsSync(metaPath)) {
+      return null
+    }
+
+    try {
+      const raw = fs.readFileSync(metaPath, 'utf8')
+      const meta = JSON.parse(raw)
+      const agentType = String(meta?.agentType || '').trim()
+      return agentType ? { agentType } : null
+    } catch (error) {
+      logger.warn(`[ClaudeClient] Failed to parse sidechain meta ${metaPath}: ${error.message}`)
+      return null
+    }
+  }
+
+  matchSidechainAgent(filePath) {
+    const meta = this.readSidechainMeta(filePath)
+    if (!meta?.agentType) {
+      return null
+    }
+
+    const exactNameMatches = Array.from(this.watchedSidechainAgents.values())
+      .filter(candidate => candidate.name === meta.agentType)
+
+    if (exactNameMatches.length === 1) {
+      return exactNameMatches[0]
+    }
+
+    return null
+  }
+
+  pollSidechainEntries() {
+    const subagentsDir = this.getSubagentsDirectory()
+    if (!subagentsDir || !fs.existsSync(subagentsDir) || this.watchedSidechainAgents.size === 0) {
+      return
+    }
+
+    let files = []
+    try {
+      files = fs.readdirSync(subagentsDir)
+        .filter(name => name.endsWith('.jsonl'))
+        .map(name => path.join(subagentsDir, name))
+        .sort()
+    } catch (error) {
+      logger.warn(`[ClaudeClient] Failed to read subagents directory: ${error.message}`)
+      return
+    }
+
+    for (const filePath of files) {
+      try {
+        const raw = fs.readFileSync(filePath, 'utf8')
+        const lines = raw.split('\n').filter(Boolean)
+        const state = this.sidechainFileState.get(filePath) || { lineCount: 0 }
+        if (lines.length < state.lineCount) {
+          state.lineCount = 0
+        }
+
+        for (let index = state.lineCount; index < lines.length; index += 1) {
+          let entry = null
+          try {
+            entry = JSON.parse(lines[index])
+          } catch (error) {
+            logger.warn(`[ClaudeClient] Failed to parse sidechain entry from ${filePath}: ${error.message}`)
+            continue
+          }
+
+          const entryId = `${filePath}::${entry?.uuid || entry?.message?.id || index}`
+          if (this.sidechainSeenEntryIds.has(entryId)) {
+            continue
+          }
+
+          this.sidechainSeenEntryIds.add(entryId)
+          let fileAgentId = this.sidechainFileAgents.get(filePath) || null
+          if (!fileAgentId) {
+            const matchedAgent = this.matchSidechainAgent(filePath)
+            if (matchedAgent?.agentId) {
+              fileAgentId = matchedAgent.agentId
+              this.sidechainFileAgents.set(filePath, fileAgentId)
+            }
+          }
+
+          if (!fileAgentId) {
+            continue
+          }
+
+          this.handleMessage({
+            type: 'sidechain_entry',
+            agentId: fileAgentId,
+            entry
+          })
+        }
+
+        state.lineCount = lines.length
+        this.sidechainFileState.set(filePath, state)
+      } catch (error) {
+        logger.warn(`[ClaudeClient] Failed to poll sidechain file ${filePath}: ${error.message}`)
+      }
+    }
   }
 }
 

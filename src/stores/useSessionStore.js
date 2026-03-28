@@ -92,11 +92,14 @@ function normalizeAgentRegistryEntry(entry) {
     agentKind: entry.agentKind || entry.agent_kind || null,
     agentType: entry.agentType || entry.agent_type || null,
     name: entry.name || null,
+    color: entry.color || entry.agentColor || entry.agent_color || null,
     prompt: entry.prompt || null,
     model: entry.model || null,
     teamId: entry.teamId || entry.team_id || null,
     parentAgentId: entry.parentAgentId || entry.parent_agent_id || null,
-    status: entry.status || null
+    status: entry.status || null,
+    canWrite: entry.canWrite !== undefined ? Boolean(entry.canWrite) : null,
+    interactionMode: entry.interactionMode || entry.interaction_mode || null
   }
 }
 
@@ -117,6 +120,7 @@ function normalizeOrchestrationEntry(entry) {
     agentKind: entry.agentKind || entry.agent_kind || null,
     agentType: entry.agentType || entry.agent_type || null,
     name: entry.name || null,
+    color: entry.color || entry.agentColor || entry.agent_color || null,
     prompt: entry.prompt || null,
     model: entry.model || null,
     teamId: entry.teamId || entry.team_id || null,
@@ -127,6 +131,8 @@ function normalizeOrchestrationEntry(entry) {
     reason: entry.reason || null,
     result: entry.result || null,
     status: entry.status || null,
+    canWrite: entry.canWrite !== undefined ? Boolean(entry.canWrite) : null,
+    interactionMode: entry.interactionMode || entry.interaction_mode || null,
     targetKind: entry.targetKind || entry.target_kind || null,
     timestamp: entry.timestamp || null
   }
@@ -462,6 +468,8 @@ function createMainAgentRegistryEntry(session) {
     teamId: null,
     parentAgentId: null,
     status: 'running',
+    canWrite: true,
+    interactionMode: 'interactive',
     startTime: null,
     endTime: null,
     deleteTime: null
@@ -486,6 +494,8 @@ function mergeAgentRegistryEntry(currentEntry, patch) {
     teamId: pickFirstDefined(normalizedPatch.teamId, currentEntry?.teamId),
     parentAgentId: pickFirstDefined(normalizedPatch.parentAgentId, currentEntry?.parentAgentId),
     status: pickFirstDefined(normalizedPatch.status, currentEntry?.status),
+    canWrite: pickFirstDefined(normalizedPatch.canWrite, currentEntry?.canWrite),
+    interactionMode: pickFirstDefined(normalizedPatch.interactionMode, currentEntry?.interactionMode),
     startTime: pickFirstDefined(normalizedPatch.startTime, currentEntry?.startTime),
     endTime: pickFirstDefined(normalizedPatch.endTime, currentEntry?.endTime),
     deleteTime: pickFirstDefined(normalizedPatch.deleteTime, currentEntry?.deleteTime)
@@ -509,7 +519,9 @@ function mergeRegistryEntryFromEvent(currentEntry, event) {
     prompt: normalizedEvent.prompt,
     model: normalizedEvent.model,
     teamId: normalizedEvent.teamId,
-    parentAgentId: normalizedEvent.parentAgentId
+    parentAgentId: normalizedEvent.parentAgentId,
+    canWrite: normalizedEvent.canWrite,
+    interactionMode: normalizedEvent.interactionMode
   }
 
   if (normalizedEvent.eventType === 'start') {
@@ -899,8 +911,11 @@ export const useSessionStore = defineStore('session', () => {
           agentId: entry.agentId,
           title: entry.title || entry.name || (entry.agentId === mainAgentId ? 'Master' : '协作型代理'),
           subtitle: entry.agentId === mainAgentId ? '主会话' : (entry.agentType || entry.model || null),
+          color: entry.color || null,
           status: entry.status || 'running',
-          canInput: entry.status !== 'deleted',
+          canInput: entry.status !== 'deleted' && entry.canWrite !== false && entry.interactionMode !== 'read-only',
+          canWrite: entry.canWrite !== false,
+          interactionMode: entry.interactionMode || null,
           messages: bucket.messages || [],
           bucket,
           registry: entry,
@@ -933,6 +948,7 @@ export const useSessionStore = defineStore('session', () => {
           agentKind: entry.agentKind || null,
           agentType: entry.agentType || null,
           title: entry.title || entry.name || (isMain ? 'Master' : 'Agent'),
+          color: entry.color || null,
           subtitle: isMain
             ? '主代理'
             : (entry.agentKind === 'execution'
@@ -942,6 +958,8 @@ export const useSessionStore = defineStore('session', () => {
           isMain,
           isCollaborative,
           canActivate: isCollaborative,
+          canWrite: entry.canWrite !== false,
+          interactionMode: entry.interactionMode || null,
           messageCount: bucket.messages.length
         }
       })
@@ -1352,6 +1370,12 @@ export const useSessionStore = defineStore('session', () => {
       inputTargetAgentId &&
       inputTargetAgentId !== getMainAgentId(session)
     )
+    const inputTargetRegistry = inputTargetAgentId
+      ? session.agentRegistry.get(inputTargetAgentId)
+      : null
+    if (inputTargetRegistry && (inputTargetRegistry.canWrite === false || inputTargetRegistry.interactionMode === 'read-only')) {
+      throw new Error('当前协作型代理为只读模式，暂不支持直接发送消息')
+    }
 
     if (shouldAttachAgentAttribution) {
       const nextCcgui = {

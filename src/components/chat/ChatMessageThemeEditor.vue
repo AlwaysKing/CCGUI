@@ -249,6 +249,20 @@ const themeLabelMap = {
   messageSpacing: Object.fromEntries(fieldOptions.messageSpacing.map(option => [option.value, option.label]))
 }
 
+const avatarModeOptions = computed(() => {
+  if (props.themeConfig?.messageSurface === 'ghost') {
+    return fieldOptions.avatarMode.filter(option => option.value === 'small' || option.value === 'none')
+  }
+  return fieldOptions.avatarMode
+})
+
+const avatarModeModelValue = computed(() => {
+  if (props.themeConfig?.messageSurface === 'ghost' && props.themeConfig?.avatarMode === 'large') {
+    return 'small'
+  }
+  return props.themeConfig?.avatarMode
+})
+
 function updateMode(nextMode) {
   emit('update:mode', nextMode)
 }
@@ -258,6 +272,20 @@ function handlePresetChange(nextPresetKey) {
 }
 
 function updateField(field, value) {
+  if (field === 'messageSurface') {
+    const nextTheme = {
+      ...props.themeConfig,
+      messageSurface: value
+    }
+
+    if (value === 'ghost' && nextTheme.avatarMode === 'large') {
+      nextTheme.avatarMode = 'small'
+    }
+
+    emit('update:themeConfig', nextTheme)
+    return
+  }
+
   emit('update:themeConfig', {
     ...props.themeConfig,
     [field]: value
@@ -335,10 +363,10 @@ onUnmounted(() => {
           <div class="theme-field">
             <label class="field-label">头像</label>
             <AppSelect
-              :model-value="themeConfig.avatarMode"
+              :model-value="avatarModeModelValue"
               class="theme-select"
               full-width
-              :options="fieldOptions.avatarMode"
+              :options="avatarModeOptions"
               @update:model-value="updateField('avatarMode', $event)"
             />
           </div>

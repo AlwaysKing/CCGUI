@@ -48,13 +48,24 @@ function pickThemeFields(source = {}) {
   }, {})
 }
 
+function enforceThemeConstraints(theme = {}) {
+  const nextTheme = { ...theme }
+
+  // 简约模式下不允许大头像，避免出现不协调的“纯文本 + 大头像”组合。
+  if (nextTheme.messageSurface === 'ghost' && nextTheme.avatarMode === 'large') {
+    nextTheme.avatarMode = 'small'
+  }
+
+  return nextTheme
+}
+
 export function normalizeChatMessageTheme(theme = {}, fallbackPreset = 'classic') {
   const presetKey = CHAT_MESSAGE_THEME_PRESETS[fallbackPreset] ? fallbackPreset : 'classic'
-  return {
+  return enforceThemeConstraints({
     ...CHAT_MESSAGE_THEME_DEFAULTS,
     ...CHAT_MESSAGE_THEME_PRESETS[presetKey],
     ...pickThemeFields(theme)
-  }
+  })
 }
 
 export function buildChatMessageThemeFromPreset(presetKey = 'classic') {

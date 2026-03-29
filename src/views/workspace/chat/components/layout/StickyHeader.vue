@@ -182,7 +182,7 @@ function scrollToUserMessage() {
   z-index: 50;
   display: flex;
   justify-content: flex-end;
-  margin-right: calc(var(--right-inset, 0px) - 12px);
+  padding-right: 16px;
   margin-top: -14px;
 }
 

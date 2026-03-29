@@ -145,7 +145,7 @@ const displayToolName = computed(() => {
           <template v-if="isTextStyle">
             <span class="tool-name text-style-label">权限确认</span>
             <CollapseToggle :collapsed="isCollapsed" @toggle="toggleCollapse" />
-            <span class="text-style-summary">{{ parsedContent.summary }}</span>
+            <span v-if="isCollapsed" class="text-style-summary">{{ parsedContent.summary }}</span>
             <span v-if="showInlineStatusIcon" class="text-style-status" :class="parsedContent.isDenied ? 'is-error' : 'is-success'" aria-hidden="true">
               <svg v-if="parsedContent.isDenied" viewBox="0 0 12 12" fill="none">
                 <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
@@ -184,7 +184,8 @@ const displayToolName = computed(() => {
       </div>
 
       <!-- 展开时显示详细内容 - 与 ToolUseMessage 的 tool-body 完全一致 -->
-      <div v-if="!isCollapsed" class="tool-body">
+      <div v-if="!isCollapsed" class="tool-body" :class="{ 'text-style-body': isTextStyle }">
+        <div v-if="isTextStyle" class="text-style-body-card">
         <!-- 说明部分 - 与 ToolUseMessage 完全一致 -->
         <div v-if="parsedContent.description" class="tool-section">
           <div class="section-label">说明</div>
@@ -245,6 +246,7 @@ const displayToolName = computed(() => {
           <div class="section-content empty">
             没有详细信息
           </div>
+        </div>
         </div>
       </div>
     </div>
@@ -501,6 +503,25 @@ const displayToolName = computed(() => {
   border-top: 1px solid #333;
 }
 
+.tool-use-card.text-style .tool-body.text-style-body {
+  padding: 8px 0 10px 24px;
+  border-top: none;
+}
+
+.text-style-body-card {
+  background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
+  border: 1px solid #22C55E;
+  border-left: 3px solid #22C55E;
+  border-radius: 8px;
+  overflow: hidden;
+  padding: 12px 14px;
+}
+
+.tool-use-card.denied .text-style-body-card {
+  border-color: #EF4444;
+  border-left-color: #EF4444;
+}
+
 .tool-section {
   margin-bottom: 10px;
 }
@@ -586,6 +607,13 @@ const displayToolName = computed(() => {
   color: #93C5FD;
   word-break: break-all;
   white-space: pre-wrap;
+}
+
+.tool-use-card.text-style .text-style-body-card .section-content.description,
+.tool-use-card.text-style .text-style-body-card .section-content.code {
+  background: #18181B;
+  padding: 8px 12px;
+  border-radius: 6px;
 }
 
 /* Bash 命令样式 - 与 ToolUseMessage 完全一致 */

@@ -200,6 +200,76 @@ const receiveMessageData = computed(() => {
   }
 })
 
+const cronCreateData = computed(() => {
+  if (props.toolName !== 'CronCreate') return null
+
+  const input = mergedToolInput.value || {}
+  let parsedResult = {}
+  const rawResult = typeof props.result === 'string'
+    ? props.result
+    : Array.isArray(props.result)
+      ? props.result.map(item => item?.text || '').join('\n')
+      : ''
+
+  const toolUseResult = props.rawMessages?.find(msg => msg?.tool_use_result)?.tool_use_result || {}
+  const taskIdMatch = rawResult.match(/task\s+([a-z0-9]+)/i)
+
+  parsedResult = {
+    id: toolUseResult.id || taskIdMatch?.[1] || '',
+    schedule: toolUseResult.humanSchedule || input.cron || '',
+    recurring: typeof toolUseResult.recurring === 'boolean' ? toolUseResult.recurring : !!input.recurring,
+    durable: typeof toolUseResult.durable === 'boolean' ? toolUseResult.durable : !!input.durable,
+    sessionOnly: /Session-only/i.test(rawResult),
+    autoDelete: /auto-delete/i.test(rawResult)
+  }
+
+  return {
+    prompt: input.prompt || '',
+    schedule: parsedResult.schedule,
+    recurring: parsedResult.recurring,
+    durable: parsedResult.durable,
+    sessionOnly: parsedResult.sessionOnly,
+    autoDelete: parsedResult.autoDelete,
+    id: parsedResult.id
+  }
+})
+
+const cronDeleteData = computed(() => {
+  if (props.toolName !== 'CronDelete') return null
+  const input = mergedToolInput.value || {}
+  return {
+    id: input.id || input.task_id || input.taskId || '',
+    description: input.description || ''
+  }
+})
+
+const cronListData = computed(() => {
+  if (props.toolName !== 'CronList') return null
+  const rawResult = typeof props.result === 'string'
+    ? props.result
+    : Array.isArray(props.result)
+      ? props.result.map(item => item?.text || '').join('\n')
+      : ''
+
+  let parsed = null
+  try {
+    parsed = JSON.parse(rawResult)
+  } catch {
+    parsed = null
+  }
+
+  const tasks = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.tasks)
+      ? parsed.tasks
+      : []
+
+  return {
+    tasks,
+    rawResult
+  }
+})
+
 const props = defineProps({
   toolName: {
     type: String,
@@ -305,6 +375,9 @@ const toolIcon = computed(() => {
     SendMessage: '✉️',
     ReceiveMessage: '📩',
     TeamCreate: '👥',
+    CronCreate: '⏰',
+    CronDelete: '🗑️',
+    CronList: '🕒',
     AskUserQuestion: '❓',
     EnterPlanMode: '📋',
     EnterWorktree: '🌳',
@@ -319,6 +392,9 @@ const displayToolName = computed(() => {
     ApplyPatch: '补丁',
     TeamCreate: '创建团队',
     TeamDelete: '删除团队',
+    CronCreate: '创建定时任务',
+    CronDelete: '删除定时任务',
+    CronList: '查看定时任务',
     SendMessage: '发送消息',
     ReceiveMessage: '接收消息',
     Bash: '命令',
@@ -457,6 +533,30 @@ const primaryContent = computed(() => {
         value: input.team_name || input.teamName || '',
         description: input.description || null
       }
+    case 'TeamDelete':
+      return {
+        label: '名称',
+        value: input.team_name || input.teamName || input.name || '',
+        description: input.description || null
+      }
+    case 'CronCreate':
+      return {
+        label: '时间',
+        value: input.cron || '',
+        description: input.prompt || null
+      }
+    case 'CronDelete':
+      return {
+        label: '任务 ID',
+        value: input.id || input.task_id || input.taskId || '',
+        description: input.description || null
+      }
+    case 'CronList':
+      return {
+        label: '定时任务',
+        value: '查看当前会话任务',
+        description: null
+      }
     case 'TodoWrite':
       // 显示任务列表
       const todos = input.todos || []
@@ -572,6 +672,48 @@ const formatReadRange = (input = {}) => {
   return ''
 }
 
+const describeCronExpression = (cron) => {
+  const text = String(cron || '').trim()
+  if (!text) return ''
+
+  const parts = text.split(/\s+/)
+  if (parts.length !== 5) return text
+
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts
+  const isNumber = value => /^\d+$/.test(value)
+  const paddedHour = isNumber(hour) ? hour.padStart(2, '0') : hour
+  const paddedMinute = isNumber(minute) ? minute.padStart(2, '0') : minute
+  const timeText = `${paddedHour}:${paddedMinute}`
+
+  if (dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    return `每天 ${timeText}（${text}）`
+  }
+
+  if (dayOfMonth === '*' && month === '*' && isNumber(dayOfWeek)) {
+    const weekMap = {
+      '0': '周日',
+      '1': '周一',
+      '2': '周二',
+      '3': '周三',
+      '4': '周四',
+      '5': '周五',
+      '6': '周六',
+      '7': '周日'
+    }
+    return `${weekMap[dayOfWeek] || `每周 ${dayOfWeek}`} ${timeText}（${text}）`
+  }
+
+  if (isNumber(dayOfMonth) && isNumber(month) && dayOfWeek === '*') {
+    return `${month.padStart(2, '0')}-${dayOfMonth.padStart(2, '0')} ${timeText}（${text}）`
+  }
+
+  if (isNumber(dayOfMonth) && month === '*' && dayOfWeek === '*') {
+    return `每月 ${dayOfMonth} 日 ${timeText}（${text}）`
+  }
+
+  return `${timeText}（${text}）`
+}
+
 // 折叠时显示的精简摘要
 const collapsedSummary = computed(() => {
   const input = mergedToolInput.value
@@ -648,6 +790,12 @@ const collapsedSummary = computed(() => {
       const teamName = input.team_name || input.teamName || ''
       const teamDescription = input.description || ''
       return teamDescription ? `${teamName} - ${teamDescription}` : teamName
+    case 'CronCreate':
+      return input.prompt || input.cron || ''
+    case 'CronDelete':
+      return input.id || input.task_id || input.taskId || ''
+    case 'CronList':
+      return '当前会话任务'
     case 'TodoWrite':
       const todos = input.todos || []
       if (todos.length === 0) return '无任务'
@@ -1026,9 +1174,10 @@ async function handlePreviewFile(event) {
         <CollapseToggle v-if="!isTextStyle" :collapsed="!isExpanded" @toggle="toggleExpand" />
       </div>
     </div>
-    <div v-if="isExpanded" class="tool-body">
+    <div v-if="isExpanded" class="tool-body" :class="{ 'text-style-body': isTextStyle }">
+      <div :class="{ 'text-style-body-card': isTextStyle }">
       <!-- 描述 -->
-      <div v-if="primaryContent?.description && props.toolName !== 'TeamCreate' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage' && props.toolName !== 'Agent'" class="tool-section has-copy">
+      <div v-if="primaryContent?.description && props.toolName !== 'TeamCreate' && props.toolName !== 'TeamDelete' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage' && props.toolName !== 'Agent' && props.toolName !== 'CronCreate' && props.toolName !== 'CronDelete'" class="tool-section has-copy">
         <div class="section-label">说明</div>
         <div class="section-content description">
           <button class="section-copy-btn" @click.stop="copyDescription" :title="copiedType === 'description' ? '已复制' : '复制'">
@@ -1045,9 +1194,9 @@ async function handlePreviewFile(event) {
       </div>
 
       <!-- 主要内容 -->
-      <div v-if="primaryContent && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage'" class="tool-section has-copy">
+      <div v-if="primaryContent && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage' && props.toolName !== 'TeamDelete' && props.toolName !== 'CronCreate' && props.toolName !== 'CronDelete' && props.toolName !== 'CronList'" class="tool-section has-copy">
         <div
-          v-if="props.toolName !== 'Agent'"
+          v-if="props.toolName !== 'Agent' && props.toolName !== 'Grep'"
           class="section-label"
           :class="{ 'todo-label': props.toolName === 'TodoWrite' }"
         >{{ primaryContent.label }}</div>
@@ -1225,16 +1374,17 @@ async function handlePreviewFile(event) {
         <!-- Grep 专用搜索卡片 -->
         <template v-else-if="props.toolName === 'Grep' && grepData">
           <div class="grep-container">
-            <div class="grep-pattern-box">
-              <div class="grep-icon">🔎</div>
-              <div class="grep-pattern">{{ grepData.pattern }}</div>
+            <div class="grep-row">
+              <div class="grep-field-label">关键字</div>
+              <div class="grep-field-value grep-field-value--inline">
+                <span class="grep-pattern">{{ grepData.pattern }}</span>
+              </div>
             </div>
-            <!-- 搜索选项 -->
+            <div v-if="grepData.path" class="grep-row">
+              <div class="grep-field-label">路径</div>
+              <div class="grep-field-value">{{ formatFilePath(grepData.path) }}</div>
+            </div>
             <div class="grep-options">
-              <span v-if="grepData.path" class="grep-option">
-                <span class="option-label">路径:</span>
-                {{ formatFilePath(grepData.path) }}
-              </span>
               <span v-if="grepData.glob" class="grep-option">
                 <span class="option-label">文件:</span>
                 {{ grepData.glob }}
@@ -1294,6 +1444,72 @@ async function handlePreviewFile(event) {
         </div>
       </div>
 
+      <template v-if="props.toolName === 'TeamDelete' && primaryContent">
+        <div class="tool-section">
+          <div class="section-label">名称</div>
+          <div class="section-content code">{{ primaryContent.value }}</div>
+        </div>
+        <div v-if="primaryContent.description" class="tool-section has-copy">
+          <div class="section-label">说明</div>
+          <div class="section-content description">
+            <button class="section-copy-btn" @click.stop="copyDescription" :title="copiedType === 'description' ? '已复制' : '复制'">
+              <svg v-if="copiedType === 'description'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+              <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+            {{ primaryContent.description }}
+          </div>
+        </div>
+      </template>
+
+      <template v-if="props.toolName === 'CronCreate' && cronCreateData">
+        <div v-if="cronCreateData.schedule" class="tool-section">
+          <div class="section-label">时间</div>
+          <div class="section-content code">{{ describeCronExpression(cronCreateData.schedule) }}</div>
+        </div>
+        <div v-if="cronCreateData.prompt" class="tool-section has-copy">
+          <div class="section-label">提示词</div>
+          <div class="section-content description">{{ cronCreateData.prompt }}</div>
+        </div>
+        <div v-if="cronCreateData.id || cronCreateData.sessionOnly || cronCreateData.autoDelete || cronCreateData.recurring || cronCreateData.durable" class="tool-section">
+          <div class="section-label">任务信息</div>
+          <div class="section-content code cron-meta">
+            <div v-if="cronCreateData.id" class="cron-meta__row"><span class="cron-meta__label">任务 ID</span><span>{{ cronCreateData.id }}</span></div>
+            <div class="cron-meta__row"><span class="cron-meta__label">类型</span><span>{{ cronCreateData.recurring ? '循环任务' : '一次性任务' }}</span></div>
+            <div class="cron-meta__row"><span class="cron-meta__label">作用域</span><span>{{ cronCreateData.sessionOnly ? '仅当前会话' : (cronCreateData.durable ? '持久化' : '当前运行期') }}</span></div>
+            <div v-if="!cronCreateData.recurring && cronCreateData.autoDelete" class="cron-meta__row"><span class="cron-meta__label">清理</span><span>执行后自动删除</span></div>
+          </div>
+        </div>
+      </template>
+
+      <template v-if="props.toolName === 'CronDelete' && cronDeleteData">
+        <div v-if="cronDeleteData.id" class="tool-section">
+          <div class="section-label">任务 ID</div>
+          <div class="section-content code">{{ cronDeleteData.id }}</div>
+        </div>
+        <div v-if="cronDeleteData.description" class="tool-section has-copy">
+          <div class="section-label">说明</div>
+          <div class="section-content description">{{ cronDeleteData.description }}</div>
+        </div>
+      </template>
+
+      <template v-if="props.toolName === 'CronList' && cronListData">
+        <div v-if="cronListData.tasks.length" class="tool-section">
+          <div class="section-label">任务列表</div>
+          <div class="section-content code cron-list">
+            <div v-for="(task, index) in cronListData.tasks" :key="task.id || index" class="cron-list__item">
+              <div class="cron-list__line"><span class="cron-meta__label">任务</span><span>{{ task.id || `#${index + 1}` }}</span></div>
+              <div v-if="task.humanSchedule || task.cron" class="cron-list__line"><span class="cron-meta__label">时间</span><span>{{ task.humanSchedule || task.cron }}</span></div>
+              <div v-if="task.prompt" class="cron-list__line"><span class="cron-meta__label">提示词</span><span>{{ task.prompt }}</span></div>
+            </div>
+          </div>
+        </div>
+      </template>
+
       <template v-if="props.toolName === 'SendMessage' && sendMessageData">
         <div v-if="sendMessageData.sender" class="tool-section">
           <div class="section-label">发送者</div>
@@ -1329,7 +1545,7 @@ async function handlePreviewFile(event) {
       </template>
 
       <!-- 结果 -->
-      <div v-if="formattedResult && props.toolName !== 'TeamCreate' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage' && props.toolName !== 'Agent'" class="tool-section result-section">
+      <div v-if="formattedResult && props.toolName !== 'TeamCreate' && props.toolName !== 'TeamDelete' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage' && props.toolName !== 'Agent' && props.toolName !== 'CronCreate' && props.toolName !== 'CronDelete' && props.toolName !== 'CronList'" class="tool-section result-section">
         <div class="section-label">结果</div>
         <div class="section-content-wrapper">
           <button class="section-copy-btn" @click.stop="copyResult" :title="copiedType === 'result' ? '已复制' : '复制'">
@@ -1343,6 +1559,7 @@ async function handlePreviewFile(event) {
           </button>
           <pre class="section-content result" :class="{ 'error-text': isError }">{{ formattedResult }}</pre>
         </div>
+      </div>
       </div>
     </div>
   </div>
@@ -1385,6 +1602,35 @@ async function handlePreviewFile(event) {
 .tool-use-card.executing {
   border-color: #3B82F6;
   border-left-color: #3B82F6;
+}
+
+.cron-meta,
+.cron-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cron-meta__row,
+.cron-list__line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cron-meta__label {
+  color: #71717A;
+  flex-shrink: 0;
+}
+
+.cron-list__item {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(63, 63, 70, 0.5);
+}
+
+.cron-list__item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
 }
 
 .tool-use-card.collapsed {
@@ -1733,6 +1979,48 @@ async function handlePreviewFile(event) {
 .tool-use-card.text-style .tool-body {
   padding: 0 0 10px 24px;
   border-top: none;
+}
+
+.tool-use-card.text-style .tool-body.text-style-body {
+  padding: 8px 0 10px 24px;
+}
+
+.text-style-body-card {
+  background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
+  border: 1px solid #3B82F6;
+  border-left: 3px solid #3B82F6;
+  border-radius: 8px;
+  overflow: hidden;
+  padding: 12px 14px;
+}
+
+.tool-use-card.text-style .text-style-body-card .section-content.description {
+  color: #A1A1AA;
+  white-space: pre-wrap;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  background: #18181B;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.tool-use-card.text-style .text-style-body-card .section-content.code {
+  background: #18181B;
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: #A1A1AA;
+}
+
+.tool-use-card.text-style .text-style-body-card .section-content.result {
+  background: #18181B;
+  padding: 10px 12px;
+  border-radius: 6px;
+  color: #A1A1AA;
+}
+
+.tool-use-card.text-style .text-style-body-card .section-copy-btn {
+  background: rgba(39, 39, 42, 0.9);
 }
 
 .tool-section {
@@ -2410,51 +2698,67 @@ async function handlePreviewFile(event) {
   margin-top: 8px;
   border-radius: 8px;
   overflow: hidden;
-  background: #0D1117;
-  border: 1px solid #30363D;
+  background: transparent;
+  border: none;
+  padding: 0;
 }
 
-.grep-pattern-box {
+.grep-field-label {
+  font-size: 11px;
+  color: #71717A;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.grep-row {
+  margin-bottom: 10px;
+}
+
+.grep-row:last-child {
+  margin-bottom: 0;
+}
+
+.grep-field-value {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 14px;
-  background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
-}
-
-.grep-icon {
-  font-size: 20px;
-  flex-shrink: 0;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #18181B;
+  border-radius: 6px;
+  color: #A1A1AA;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
 }
 
 .grep-pattern {
   font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
-  font-size: 14px;
-  color: #F0883E;
-  line-height: 1.5;
-  word-break: break-all;
+  font-size: 12px;
+  color: inherit;
+  line-height: 1.6;
+  word-break: break-word;
 }
 
 .grep-options {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: #161B22;
-  border-top: 1px solid #30363D;
+  gap: 8px;
+  padding-top: 2px;
 }
 
 .grep-option {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
-  color: #94A3B8;
+  font-size: 11px;
+  color: #8B93A7;
 }
 
 .grep-option .option-label {
-  color: #6E7681;
+  color: #6B7280;
 }
 
 .grep-option-tag {
@@ -2464,8 +2768,8 @@ async function handlePreviewFile(event) {
   border-radius: 12px;
   font-size: 11px;
   font-weight: 500;
-  background: rgba(88, 166, 255, 0.15);
-  color: #58A6FF;
+  background: rgba(39, 39, 42, 0.9);
+  color: #A1A1AA;
 }
 
 /* ========== Skill 工具样式 ========== */

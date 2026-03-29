@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import MessageItem from './messages/MessageItem.vue'
 import ExecutionAgentCard from './messages/ExecutionAgentCard.vue'
+import StickyHeader from './layout/StickyHeader.vue'
 
 const props = defineProps({
   timelineBlocks: {
@@ -48,6 +49,26 @@ const props = defineProps({
     type: Number,
     default: null
   },
+  stickyMessage: {
+    type: Object,
+    default: null
+  },
+  showStickyHeader: {
+    type: Boolean,
+    default: false
+  },
+  stickyIsProcessing: {
+    type: Boolean,
+    default: false
+  },
+  stickyCopied: {
+    type: Boolean,
+    default: false
+  },
+  containerHeight: {
+    type: Number,
+    default: 400
+  },
   chatTheme: {
     type: Object,
     default: () => ({})
@@ -64,7 +85,10 @@ const emit = defineEmits([
   'rewindAndFork',
   'jumpToMessage',
   'copyContent',
-  'copyQuestionContent'
+  'copyQuestionContent',
+  'copySticky',
+  'scrollToSticky',
+  'contentScroll'
 ])
 
 function selectAgent(agentId) {
@@ -81,6 +105,10 @@ function toggleViewMode(mode) {
 
 function forward(eventName, payload) {
   emit(eventName, payload)
+}
+
+function handleContentScroll(event) {
+  emit('contentScroll', event)
 }
 
 function railItemStyle(agentItem) {
@@ -202,7 +230,19 @@ const railStandaloneEntries = computed(() => {
       'agent-workspace--split': hasCollaborativeChildren && viewMode === 'split'
     }"
   >
-    <div class="agent-workspace__content">
+    <div class="agent-workspace__content" @scroll="handleContentScroll">
+      <StickyHeader
+        v-if="showStickyHeader && stickyMessage"
+        :message="stickyMessage"
+        :is-processing="stickyIsProcessing"
+        :current-time="currentTime"
+        :container-height="containerHeight"
+        :right-inset="0"
+        :content-width="0"
+        :is-copied="stickyCopied"
+        @copy="forward('copySticky')"
+        @scroll-to-user="forward('scrollToSticky')"
+      />
       <div class="agent-workspace__main-stage">
         <template v-if="activeSession?.isMain">
           <template v-for="(block, index) in timelineBlocksWithShell" :key="block.key || `${block.type}-${index}`">

@@ -16,7 +16,6 @@ import MessageDetailDialog from './components/dialogs/MessageDetailDialog.vue'
 // 引入子组件
 import EnvInfoBar from './components/layout/EnvInfoBar.vue'
 import ChatInput from './components/layout/ChatInput.vue'
-import StickyHeader from './components/layout/StickyHeader.vue'
 import AgentWorkspace from './components/AgentWorkspace.vue'
 import TaskFloatingWindow from './components/TaskFloatingWindow.vue'
 
@@ -1211,8 +1210,8 @@ function scrollToBottom(forceScroll = false) {
 
 // 处理用户滚动事件
 function handleUserScroll() {
-  if (!messagesContainer.value) return
-  const container = messagesContainer.value
+  const container = document.querySelector('.chat-window .agent-workspace__content') || messagesContainer.value
+  if (!container) return
   const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < AUTO_SCROLL_NEAR_BOTTOM_PX
 
   // 如果用户滚动离开底部，设置标记
@@ -1229,8 +1228,8 @@ function handleUserScroll() {
 
 // 更新粘性头部显示的用户消息
 function updateStickyMessage() {
-  if (!messagesContainer.value) return
-  const container = messagesContainer.value
+  const container = document.querySelector('.chat-window .agent-workspace__content') || messagesContainer.value
+  if (!container) return
 
   // 获取所有消息元素
   const messageElements = container.querySelectorAll('.message')
@@ -1916,19 +1915,6 @@ function handleToggleAgentViewMode(mode) {
       @pid-click="handlePidClick"
     />
     <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight } : {}">
-      <!-- 粘性头部 - 浮动在聊天内容上方 -->
-      <StickyHeader
-        v-if="shouldShowStickyHeader"
-        :message="stickyMessage"
-        :is-processing="isStickyMessageProcessing"
-        :current-time="currentTime"
-        :container-height="containerHeight"
-        :right-inset="contentViewport.right"
-        :content-width="contentViewport.width"
-        :is-copied="stickyCopied"
-        @copy="copyStickyMessage"
-        @scroll-to-user="scrollToStickyMessage"
-      />
       <AgentWorkspace
         :timeline-blocks="mainTimelineBlocks"
         :has-collaborative-children="hasCollaborativeChildren"
@@ -1941,11 +1927,19 @@ function handleToggleAgentViewMode(mode) {
         :input-target-agent-id="agentWorkspaceState.inputTargetAgentId"
         :working-directory="workingDirectory"
         :current-time="currentTime"
+        :sticky-message="stickyMessage"
+        :show-sticky-header="shouldShowStickyHeader"
+        :sticky-is-processing="isStickyMessageProcessing"
+        :sticky-copied="stickyCopied"
+        :container-height="containerHeight"
         :chat-theme="resolvedChatMessageTheme"
         @select-agent="handleSelectAgent"
         @focus-agent="handleFocusAgent"
         @toggle-view-mode="handleToggleAgentViewMode"
         @message-click="handleMessageClick"
+        @copy-sticky="copyStickyMessage"
+        @scroll-to-sticky="scrollToStickyMessage"
+        @content-scroll="handleUserScroll"
         @rewind="handleRewind"
         @fork="handleFork"
         @rewind-and-fork="handleRewindAndFork"

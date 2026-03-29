@@ -43,6 +43,7 @@ class ClaudeClient {
     this.sidechainSeenEntryIds = new Set()
     this.sidechainFileAgents = new Map()
     this.watchedSidechainAgents = new Map()
+    this.sidechainAgentFiles = new Map()
   }
 
   /**
@@ -850,6 +851,7 @@ class ClaudeClient {
     this.sidechainFileState.clear()
     this.sidechainSeenEntryIds.clear()
     this.sidechainFileAgents.clear()
+    this.sidechainAgentFiles.clear()
     this.watchedSidechainAgents.clear()
   }
 
@@ -865,11 +867,15 @@ class ClaudeClient {
 
     const normalizedPrompt = String(agentInfo?.prompt || '').replace(/\s+/g, ' ').trim()
     const normalizedName = String(agentInfo?.name || '').trim()
+    const normalizedTeamId = String(agentInfo?.teamId || '').trim()
+    const normalizedAgentType = String(agentInfo?.agentType || '').trim()
 
     this.watchedSidechainAgents.set(normalizedAgentId, {
       agentId: normalizedAgentId,
       name: normalizedName,
-      prompt: normalizedPrompt
+      prompt: normalizedPrompt,
+      teamId: normalizedTeamId,
+      agentType: normalizedAgentType
     })
     this.startSidechainMonitor()
   }
@@ -884,27 +890,205 @@ class ClaudeClient {
       const raw = fs.readFileSync(metaPath, 'utf8')
       const meta = JSON.parse(raw)
       const agentType = String(meta?.agentType || '').trim()
-      return agentType ? { agentType } : null
+      const description = String(meta?.description || '').replace(/\s+/g, ' ').trim()
+      if (!agentType && !description) {
+        return null
+      }
+      return { agentType, description }
     } catch (error) {
       logger.warn(`[ClaudeClient] Failed to parse sidechain meta ${metaPath}: ${error.message}`)
       return null
     }
   }
 
+  normalizeSidechainText(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase()
+  }
+
+  extractPromptAnchors(value) {
+    const text = this.normalizeSidechainText(value)
+    if (!text) {
+      return []
+    }
+
+    const anchors = new Set()
+    const matches = text.match(/[\u4e00-\u9fff]{2,}|[a-z0-9][a-z0-9_-]{2,}/g) || []
+    for (const token of matches) {
+      if (token.length < 2) continue
+      if ([
+        '你是', '请发', '第一轮', '第二轮', '第三轮', '讨论', '话题', '观点',
+        'team', 'lead', 'general', 'purpose', 'message'
+      ].includes(token)) {
+        continue
+      }
+      anchors.add(token)
+    }
+
+    const quoted = text.match(/"([^"]+)"|“([^”]+)”/g) || []
+    for (const raw of quoted) {
+      anchors.add(raw.replace(/^["“]|["”]$/g, '').trim())
+    }
+
+    return Array.from(anchors).filter(Boolean)
+  }
+
+  countAnchorMatches(anchors, previewText) {
+    if (!anchors.length || !previewText) {
+      return 0
+    }
+
+    let count = 0
+    for (const anchor of anchors) {
+      if (anchor && previewText.includes(anchor)) {
+        count += 1
+      }
+    }
+    return count
+  }
+
+  getCandidateTeamTokens(candidate) {
+    const tokens = new Set()
+    const teamId = String(candidate?.teamId || '').trim()
+    const agentId = String(candidate?.agentId || '').trim()
+
+    if (teamId) {
+      tokens.add(this.normalizeSidechainText(teamId))
+    }
+
+    if (agentId.includes('@')) {
+      const [, suffix = ''] = agentId.split('@')
+      if (suffix) {
+        tokens.add(this.normalizeSidechainText(suffix))
+      }
+    }
+
+    return Array.from(tokens).filter(Boolean)
+  }
+
+  readSidechainPreview(filePath) {
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8')
+      const lines = raw.split('\n').filter(Boolean).slice(0, 3)
+      const parts = []
+
+      for (const line of lines) {
+        let entry = null
+        try {
+          entry = JSON.parse(line)
+        } catch {
+          continue
+        }
+
+        const messageContent = entry?.message?.content
+        if (typeof messageContent === 'string') {
+          parts.push(messageContent)
+          continue
+        }
+
+        if (Array.isArray(messageContent)) {
+          for (const item of messageContent) {
+            if (typeof item?.text === 'string') {
+              parts.push(item.text)
+            }
+          }
+        }
+      }
+
+      return this.normalizeSidechainText(parts.join(' '))
+    } catch (error) {
+      logger.warn(`[ClaudeClient] Failed to build sidechain preview for ${filePath}: ${error.message}`)
+      return ''
+    }
+  }
+
+  scoreSidechainCandidate(candidate, meta, previewText) {
+    let score = 0
+    const normalizedPreview = previewText || ''
+    const normalizedName = this.normalizeSidechainText(candidate?.name)
+    const normalizedPrompt = this.normalizeSidechainText(candidate?.prompt)
+    const normalizedAgentType = this.normalizeSidechainText(candidate?.agentType)
+    const normalizedMetaAgentType = this.normalizeSidechainText(meta?.agentType)
+    const normalizedMetaDescription = this.normalizeSidechainText(meta?.description)
+
+    if (normalizedName && normalizedMetaAgentType && normalizedName === normalizedMetaAgentType) {
+      score += 60
+    }
+
+    if (normalizedAgentType && normalizedMetaAgentType && normalizedAgentType === normalizedMetaAgentType) {
+      score += 25
+    }
+
+    if (normalizedPrompt && normalizedMetaDescription && normalizedPrompt.includes(normalizedMetaDescription)) {
+      score += 20
+    }
+
+    if (normalizedName && normalizedPreview.includes(normalizedName)) {
+      score += 20
+    }
+
+    if (normalizedPrompt && normalizedPreview && (
+      normalizedPreview.includes(normalizedPrompt)
+      || normalizedPrompt.includes(normalizedPreview.slice(0, 120))
+    )) {
+      score += 80
+    }
+
+    const promptAnchors = this.extractPromptAnchors(candidate?.prompt)
+    const anchorMatches = this.countAnchorMatches(promptAnchors, normalizedPreview)
+    if (anchorMatches > 0) {
+      score += Math.min(anchorMatches * 12, 72)
+    }
+
+    for (const token of this.getCandidateTeamTokens(candidate)) {
+      if (token && normalizedPreview.includes(token)) {
+        score += 30
+        break
+      }
+    }
+
+    return score
+  }
+
+  getFileMtimeMs(filePath) {
+    try {
+      return fs.statSync(filePath).mtimeMs || 0
+    } catch {
+      return 0
+    }
+  }
+
   matchSidechainAgent(filePath) {
     const meta = this.readSidechainMeta(filePath)
-    if (!meta?.agentType) {
+    if (!meta) {
       return null
     }
 
-    const exactNameMatches = Array.from(this.watchedSidechainAgents.values())
-      .filter(candidate => candidate.name === meta.agentType)
+    const previewText = this.readSidechainPreview(filePath)
+    const candidates = Array.from(this.watchedSidechainAgents.values())
+      .map((candidate) => ({
+        candidate,
+        score: this.scoreSidechainCandidate(candidate, meta, previewText),
+        isBoundElsewhere: this.sidechainAgentFiles.has(candidate.agentId) && this.sidechainAgentFiles.get(candidate.agentId) !== filePath
+      }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => {
+        if (a.isBoundElsewhere !== b.isBoundElsewhere) {
+          return a.isBoundElsewhere ? 1 : -1
+        }
+        return b.score - a.score
+      })
 
-    if (exactNameMatches.length === 1) {
-      return exactNameMatches[0]
+    if (candidates.length === 0) {
+      return null
     }
 
-    return null
+    return {
+      candidate: candidates[0].candidate,
+      score: candidates[0].score
+    }
   }
 
   pollSidechainEntries() {
@@ -942,7 +1126,10 @@ class ClaudeClient {
             continue
           }
 
-          const entryId = `${filePath}::${entry?.uuid || entry?.message?.id || index}`
+          const stableEntryId = entry?.uuid || entry?.message?.id || null
+          const entryId = stableEntryId
+            ? `sidechain:${stableEntryId}`
+            : `${filePath}::${index}`
           if (this.sidechainSeenEntryIds.has(entryId)) {
             continue
           }
@@ -950,10 +1137,25 @@ class ClaudeClient {
           this.sidechainSeenEntryIds.add(entryId)
           let fileAgentId = this.sidechainFileAgents.get(filePath) || null
           if (!fileAgentId) {
-            const matchedAgent = this.matchSidechainAgent(filePath)
-            if (matchedAgent?.agentId) {
-              fileAgentId = matchedAgent.agentId
+            const matched = this.matchSidechainAgent(filePath)
+            if (matched?.candidate?.agentId) {
+              const matchedAgent = matched.candidate
+              const candidateAgentId = matchedAgent.agentId
+              const existingFilePath = this.sidechainAgentFiles.get(candidateAgentId) || null
+
+              if (existingFilePath && existingFilePath !== filePath) {
+                const currentFileMtime = this.getFileMtimeMs(filePath)
+                const existingFileMtime = this.getFileMtimeMs(existingFilePath)
+                if (currentFileMtime <= existingFileMtime) {
+                  continue
+                }
+
+                this.sidechainFileAgents.delete(existingFilePath)
+              }
+
+              fileAgentId = candidateAgentId
               this.sidechainFileAgents.set(filePath, fileAgentId)
+              this.sidechainAgentFiles.set(fileAgentId, filePath)
             }
           }
 

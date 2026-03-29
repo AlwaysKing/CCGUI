@@ -609,6 +609,13 @@ const primaryContent = computed(() => {
       if (input.description) {
         return { label: '描述', value: input.description, description: null }
       }
+      if (Object.keys(input).length > 0) {
+        return {
+          label: '参数',
+          value: JSON.stringify(input, null, 2),
+          description: null
+        }
+      }
       return null
   }
 })
@@ -1016,7 +1023,16 @@ const textStyleStatus = computed(() => {
 // 格式化结果显示
 const formattedResult = computed(() => {
   if (!props.result) return null
-  return props.result
+  if (typeof props.result === 'string') return props.result
+  if (Array.isArray(props.result)) {
+    return props.result
+      .map(item => (typeof item?.text === 'string' ? item.text : JSON.stringify(item, null, 2)))
+      .join('\n')
+  }
+  if (typeof props.result === 'object') {
+    return JSON.stringify(props.result, null, 2)
+  }
+  return String(props.result)
 })
 
 function toggleExpand() {
@@ -1338,7 +1354,21 @@ async function handlePreviewFile(event) {
         </template>
         <!-- Agent 专用信息卡片 -->
         <template v-else-if="props.toolName === 'Agent' && agentData">
-          <div class="agent-container">
+          <div v-if="isTextStyle" class="agent-flat">
+            <div class="tool-section">
+              <div class="section-label">类型</div>
+              <div class="section-content code">{{ agentData.subagentType || '通用代理' }}</div>
+            </div>
+            <div v-if="agentData.description" class="tool-section has-copy">
+              <div class="section-label">说明</div>
+              <div class="section-content description">{{ agentData.description }}</div>
+            </div>
+            <div v-if="agentData.prompt" class="tool-section has-copy">
+              <div class="section-label">任务提示</div>
+              <div class="section-content description">{{ agentData.prompt }}</div>
+            </div>
+          </div>
+          <div v-else class="agent-container">
             <div class="agent-info-card">
               <div class="agent-type-badge">
                 🤖 {{ agentData.subagentType || '通用代理' }}

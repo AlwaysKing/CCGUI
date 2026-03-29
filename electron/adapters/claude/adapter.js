@@ -833,7 +833,9 @@ class ClaudeAdapter extends ClaudeClient {
         this.watchSidechainAgent({
           agentId,
           name: message.name || candidate?.name || agentType,
-          prompt: message.prompt || candidate?.prompt || candidate?.description || null
+          prompt: message.prompt || candidate?.prompt || candidate?.description || null,
+          teamId,
+          agentType: candidate?.agentType || agentType || null
         })
       }
       this.emit('task-event', {
@@ -1249,7 +1251,9 @@ class ClaudeAdapter extends ClaudeClient {
       this.watchSidechainAgent({
         agentId,
         name: toolResult.name || candidate?.name || null,
-        prompt: candidate?.prompt || candidate?.description || null
+        prompt: candidate?.prompt || candidate?.description || null,
+        teamId,
+        agentType: candidate?.agentType || toolResult.name || null
       })
     }
 

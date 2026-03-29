@@ -34,10 +34,18 @@ const props = defineProps({
   isChatCollapsed: {
     type: Boolean,
     default: false
+  },
+  showAgentRailToggle: {
+    type: Boolean,
+    default: false
+  },
+  isAgentRailVisible: {
+    type: Boolean,
+    default: true
   }
 })
 
-const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail'])
 
 // 使用 useMessage composable
 const { formatMcpServers, formatSkills } = useMessage()
@@ -514,6 +522,38 @@ function toggleSilentPanel() {
           </span>
           <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">
             {{ showEnvDetail ? '收起' : '详情' }}
+          </button>
+          <button
+            v-if="showAgentRailToggle"
+            class="env-detail-btn env-detail-btn--icon"
+            @click="emit('toggleAgentRail')"
+            :title="isAgentRailVisible ? '隐藏团队' : '显示团队'"
+          >
+            <svg
+              class="env-detail-btn__icon"
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              fill="none"
+              aria-hidden="true"
+            >
+              <rect
+                x="1.5"
+                y="2"
+                width="9"
+                height="8"
+                rx="2"
+                stroke="currentColor"
+                stroke-width="1.2"
+              />
+              <path
+                v-if="isAgentRailVisible"
+                d="M8 2V10"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+              />
+            </svg>
           </button>
         </div>
       </div>
@@ -999,6 +1039,20 @@ function toggleSilentPanel() {
 .env-detail-btn:hover {
   background: var(--bg-hover);
   color: var(--text-secondary);
+}
+
+.env-detail-btn--icon {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.env-detail-btn__icon {
+  display: block;
+  flex-shrink: 0;
 }
 
 .env-detail-dropdown {

@@ -1897,6 +1897,24 @@ function handleFocusAgent(agentId) {
 function handleToggleAgentViewMode(mode) {
   sessionStore.setCollaborativeViewMode(mode)
 }
+
+const isAgentRailVisible = ref(true)
+
+watch(hasCollaborativeChildren, (hasChildren) => {
+  if (!hasChildren) {
+    isAgentRailVisible.value = true
+    return
+  }
+
+  isAgentRailVisible.value = true
+}, { immediate: true })
+
+function handleToggleAgentRail() {
+  if (!hasCollaborativeChildren.value) {
+    return
+  }
+  isAgentRailVisible.value = !isAgentRailVisible.value
+}
 </script>
 
 <template>
@@ -1910,9 +1928,12 @@ function handleToggleAgentViewMode(mode) {
       :permission-mode="permissionMode"
       :show-collapse-toggle="showCollapseToggle"
       :is-chat-collapsed="isCollapsedByPreview"
+      :show-agent-rail-toggle="hasCollaborativeChildren"
+      :is-agent-rail-visible="isAgentRailVisible"
       @toggle-sidebar="emit('toggleSidebar')"
       @toggle-collapse="emit('toggleCollapse')"
       @pid-click="handlePidClick"
+      @toggle-agent-rail="handleToggleAgentRail"
     />
     <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight } : {}">
       <AgentWorkspace
@@ -1933,6 +1954,7 @@ function handleToggleAgentViewMode(mode) {
         :sticky-copied="stickyCopied"
         :container-height="containerHeight"
         :chat-theme="resolvedChatMessageTheme"
+        :rail-visible="isAgentRailVisible"
         @select-agent="handleSelectAgent"
         @focus-agent="handleFocusAgent"
         @toggle-view-mode="handleToggleAgentViewMode"

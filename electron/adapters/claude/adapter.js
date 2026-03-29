@@ -1292,7 +1292,7 @@ class ClaudeAdapter extends ClaudeClient {
         }, {
           eventType: 'end',
           agentId,
-          reason: toolResultContent.is_error ? 'error' : 'completed',
+          reason: 'completed',
           result: toolResultContent.content || null,
           status: 'ended'
         })

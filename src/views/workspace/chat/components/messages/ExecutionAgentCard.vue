@@ -28,6 +28,8 @@ const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble')
 
 const statusLabel = computed(() => {
   switch (props.card?.status) {
+    case 'failed':
+      return '失败'
     case 'ended':
       return '已结束'
     case 'deleted':
@@ -95,11 +97,13 @@ const textStyleStatus = computed(() => {
   if (props.card?.status === 'running' || props.card?.status === 'starting') {
     return 'executing'
   }
-  if (Number(props.card?.errorToolCount || 0) > 0 || props.card?.status === 'deleted') {
+  if (props.card?.status === 'failed' || props.card?.status === 'deleted') {
     return 'error'
   }
   return 'success'
 })
+
+const statusSummary = computed(() => toolListSummary.value || '')
 
 const nestedTimelineTheme = computed(() => ({
   ...props.chatTheme,
@@ -182,6 +186,9 @@ function buildCompletedSummary() {
             <span v-if="!expanded" class="execution-agent-card__summary-inline execution-agent-card__summary-inline--text-style">
               {{ promptPreview }}
             </span>
+            <span v-if="!expanded" class="execution-agent-card__status-summary execution-agent-card__status-summary--text-style">
+              {{ statusSummary }}
+            </span>
             <span class="execution-agent-card__status execution-agent-card__status--text-style" :class="`is-${textStyleStatus}`" aria-hidden="true">
               <svg v-if="textStyleStatus === 'success'" viewBox="0 0 12 12" fill="none">
                 <path d="M2.2 6.2L4.7 8.7L9.8 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
@@ -197,6 +204,9 @@ function buildCompletedSummary() {
           </template>
         </div>
         <div v-if="!expanded && !isTextStyle" class="execution-agent-card__summary-inline">{{ promptPreview }}</div>
+        <div v-if="!isTextStyle && !expanded" class="execution-agent-card__status-summary">
+          {{ statusSummary }}
+        </div>
         <span v-if="!isTextStyle" class="execution-agent-card__toggle">{{ expanded ? '▼' : '▶' }}</span>
       </div>
     </button>
@@ -355,6 +365,8 @@ function buildCompletedSummary() {
   cursor: pointer;
   text-align: left;
   appearance: none;
+  min-height: 39px;
+  box-sizing: border-box;
 }
 
 .execution-agent-card__header--text-style {
@@ -381,9 +393,11 @@ function buildCompletedSummary() {
 
 .execution-agent-card__title-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  min-height: 19px;
 }
 
 .execution-agent-card__header--text-style .execution-agent-card__title-row {
@@ -417,13 +431,13 @@ function buildCompletedSummary() {
 .execution-agent-card__title--text-style {
   font-size: 12px;
   font-weight: 500;
-  color: #C4C7CF;
+  color: #8B8B95;
   flex-shrink: 0;
-  line-height: 1;
+  line-height: 1.5;
 }
 
 .execution-agent-card__toggle {
-  grid-column: 3;
+  grid-column: 4;
   justify-self: end;
   color: #c4c7cf;
   width: 14px;
@@ -473,7 +487,7 @@ function buildCompletedSummary() {
 }
 
 .execution-agent-card__header--text-style .execution-agent-card__summary-inline {
-  color: #8b93a7;
+  color: #6B7280;
   font-size: 12px;
   line-height: 1;
 }
@@ -483,6 +497,19 @@ function buildCompletedSummary() {
   flex: 1 1 auto;
   min-width: 0;
   line-height: 1;
+}
+
+.execution-agent-card__status-summary {
+  color: #8b93a7;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+  grid-column: 3;
+}
+
+.execution-agent-card__status-summary--text-style {
+  font-size: 11px;
 }
 
 .execution-agent-card__status {

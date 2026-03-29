@@ -315,7 +315,7 @@ const toolIcon = computed(() => {
 
 const displayToolName = computed(() => {
   const labels = {
-    Agent: '代理',
+    Agent: '代理任务',
     ApplyPatch: '补丁',
     TeamCreate: '创建团队',
     TeamDelete: '删除团队',
@@ -1028,7 +1028,7 @@ async function handlePreviewFile(event) {
     </div>
     <div v-if="isExpanded" class="tool-body">
       <!-- 描述 -->
-      <div v-if="primaryContent?.description && props.toolName !== 'TeamCreate' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage'" class="tool-section has-copy">
+      <div v-if="primaryContent?.description && props.toolName !== 'TeamCreate' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage' && props.toolName !== 'Agent'" class="tool-section has-copy">
         <div class="section-label">说明</div>
         <div class="section-content description">
           <button class="section-copy-btn" @click.stop="copyDescription" :title="copiedType === 'description' ? '已复制' : '复制'">
@@ -1046,7 +1046,11 @@ async function handlePreviewFile(event) {
 
       <!-- 主要内容 -->
       <div v-if="primaryContent && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage'" class="tool-section has-copy">
-        <div class="section-label" :class="{ 'todo-label': props.toolName === 'TodoWrite' }">{{ primaryContent.label }}</div>
+        <div
+          v-if="props.toolName !== 'Agent'"
+          class="section-label"
+          :class="{ 'todo-label': props.toolName === 'TodoWrite' }"
+        >{{ primaryContent.label }}</div>
         <!-- TodoWrite 专用样式 -->
         <template v-if="props.toolName === 'TodoWrite'">
           <div class="section-content todo-list" v-html="primaryContent.value"></div>
@@ -1325,7 +1329,7 @@ async function handlePreviewFile(event) {
       </template>
 
       <!-- 结果 -->
-      <div v-if="formattedResult && props.toolName !== 'TeamCreate' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage'" class="tool-section result-section">
+      <div v-if="formattedResult && props.toolName !== 'TeamCreate' && props.toolName !== 'SendMessage' && props.toolName !== 'ReceiveMessage' && props.toolName !== 'Agent'" class="tool-section result-section">
         <div class="section-label">结果</div>
         <div class="section-content-wrapper">
           <button class="section-copy-btn" @click.stop="copyResult" :title="copiedType === 'result' ? '已复制' : '复制'">

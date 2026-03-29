@@ -17,6 +17,10 @@ const props = defineProps({
   sidebarCollapsed: {
     type: Boolean,
     default: false
+  },
+  contentBounds: {
+    type: Object,
+    default: () => ({ left: 0, right: 0, width: 0 })
   }
 })
 
@@ -104,7 +108,9 @@ function toggleCollapse(taskId) {
 function getBounds() {
   const PADDING = 12
   const TOP_BOUND = 40
-  const LEFT_BOUND = props.sidebarCollapsed ? 12 : props.sidebarWidth + 12
+  const LEFT_BOUND = Number.isFinite(props.contentBounds?.left) && props.contentBounds.left > 0
+    ? props.contentBounds.left + PADDING
+    : (props.sidebarCollapsed ? 12 : props.sidebarWidth + 12)
 
   const resizeHandle = document.querySelector('.chat-window .resize-handle')
   let bottomBound = 120
@@ -112,16 +118,24 @@ function getBounds() {
     bottomBound = window.innerHeight - resizeHandle.getBoundingClientRect().top + PADDING
   }
 
-  return { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound }
+  return {
+    PADDING,
+    TOP_BOUND,
+    LEFT_BOUND,
+    bottomBound,
+    RIGHT_BOUND: Number.isFinite(props.contentBounds?.right) && props.contentBounds.right > 0
+      ? window.innerWidth - props.contentBounds.right
+      : window.innerWidth
+  }
 }
 
 // 计算任务的默认位置 (从下往上堆叠)
 function getDefaultPosition(taskIndex) {
-  const { PADDING, LEFT_BOUND, bottomBound } = getBounds()
+  const { PADDING, LEFT_BOUND, bottomBound, RIGHT_BOUND } = getBounds()
   const taskHeight = 60
   const gap = 8
 
-  const x = window.innerWidth - 320 - PADDING
+  const x = RIGHT_BOUND - 320 - PADDING
   const y = window.innerHeight - bottomBound - taskHeight - (taskIndex * (taskHeight + gap))
 
   return {
@@ -132,7 +146,7 @@ function getDefaultPosition(taskIndex) {
 
 // 调整所有任务位置 (粘性逻辑)
 function adjustAllPositions() {
-  const { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound } = getBounds()
+  const { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound, RIGHT_BOUND } = getBounds()
 
   taskStates.value.forEach((state, taskId) => {
     if (!state.position) return
@@ -141,7 +155,7 @@ function adjustAllPositions() {
     if (!taskEl) return
 
     const containerRect = taskEl.getBoundingClientRect()
-    const maxX = window.innerWidth - containerRect.width - PADDING
+    const maxX = RIGHT_BOUND - containerRect.width - PADDING
     const maxY = window.innerHeight - containerRect.height - bottomBound
 
     // 粘着右边
@@ -169,7 +183,29 @@ function adjustAllPositions() {
     }
   })
 
+  stackStickyWindows()
   taskStates.value = new Map(taskStates.value)
+}
+
+function stackStickyWindows() {
+  const { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound, RIGHT_BOUND } = getBounds()
+  const stickyTasks = activeTasks.value.filter(task => {
+    const state = getTaskState(task.id)
+    return state.isStickyToRight && state.isStickyToBottom
+  })
+
+  let nextBottomY = window.innerHeight - bottomBound
+  for (const task of stickyTasks) {
+    const state = getTaskState(task.id)
+    const taskEl = document.querySelector(`[data-task-id="${task.id}"]`)
+    const rect = taskEl?.getBoundingClientRect()
+    const width = rect?.width || 300
+    const height = rect?.height || 60
+    const x = Math.max(LEFT_BOUND, RIGHT_BOUND - width - PADDING)
+    const y = Math.max(TOP_BOUND, nextBottomY - height)
+    state.position = { x, y }
+    nextBottomY = y - 8
+  }
 }
 
 // 拖拽状态跟踪
@@ -209,13 +245,13 @@ function startDrag(event, taskId) {
 
     if (!dragState.value.isDragging) return
 
-    const { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound } = getBounds()
+    const { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound, RIGHT_BOUND } = getBounds()
     const containerRect = container.getBoundingClientRect()
 
     let newX = e.clientX - dragOffset.x
     let newY = e.clientY - dragOffset.y
 
-    const maxX = window.innerWidth - containerRect.width - PADDING
+    const maxX = RIGHT_BOUND - containerRect.width - PADDING
     const maxY = window.innerHeight - containerRect.height - bottomBound
 
     newX = Math.max(LEFT_BOUND, Math.min(newX, maxX))
@@ -289,6 +325,11 @@ watch(() => props.sidebarCollapsed, () => {
   })
   taskStates.value = new Map(taskStates.value)
 })
+
+watch(() => props.contentBounds, () => {
+  nextTick(adjustAllPositions)
+}, { deep: true })
+
 
 onMounted(() => {
   window.addEventListener('resize', adjustAllPositions)

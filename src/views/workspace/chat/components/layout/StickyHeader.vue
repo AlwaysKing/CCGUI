@@ -24,6 +24,14 @@ const props = defineProps({
     type: Number,
     default: 400
   },
+  rightInset: {
+    type: Number,
+    default: 0
+  },
+  contentWidth: {
+    type: Number,
+    default: 0
+  },
   isCopied: {
     type: Boolean,
     default: false
@@ -85,7 +93,8 @@ const isDurationStreaming = computed(() => {
 
 // CSS 变量
 const cssMaxHeight = computed(() => `${props.containerHeight * 0.5}px`)
-
+const cssRightInset = computed(() => `${props.rightInset}px`)
+const cssContentWidth = computed(() => props.contentWidth > 0 ? `${props.contentWidth}px` : '100%')
 function copyContent() {
   emit('copy')
 }
@@ -96,8 +105,8 @@ function scrollToUserMessage() {
 </script>
 
 <template>
-  <div class="sticky-header">
-    <div class="sticky-content" :style="{ '--max-height': cssMaxHeight }">
+  <div class="sticky-header" :style="{ '--right-inset': cssRightInset }">
+    <div class="sticky-content" :style="{ '--max-height': cssMaxHeight, '--content-width': cssContentWidth }">
       <!-- 折叠状态：简单信息 -->
       <div class="sticky-collapsed">
         <div class="sticky-info">
@@ -173,7 +182,7 @@ function scrollToUserMessage() {
   z-index: 50;
   display: flex;
   justify-content: flex-end;
-  margin-right: -12px;
+  margin-right: calc(var(--right-inset, 0px) - 12px);
   margin-top: -14px;
 }
 
@@ -185,7 +194,7 @@ function scrollToUserMessage() {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
   padding: 4px 12px;
-  max-width: 70%;
+  max-width: min(70%, var(--content-width, 100%));
   flex-direction: column;
   gap: 4px;
   transform: translateY(-6px);

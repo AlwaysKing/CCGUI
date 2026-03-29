@@ -138,6 +138,80 @@ function normalizeOrchestrationEntry(entry) {
   }
 }
 
+function normalizeRoutingParticipant(value) {
+  if (!value) return null
+  return String(value)
+    .trim()
+    .replace(/^@/, '')
+    .replace(/v\d+$/i, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+}
+
+function buildCollaborativeColorMap(registryEntries, buckets, mainAgentId) {
+  const colorMap = new Map()
+  const aliasesByAgentId = new Map()
+
+  const registerAlias = (agentId, alias) => {
+    const normalized = normalizeRoutingParticipant(alias)
+    if (!agentId || !normalized) return
+    if (!aliasesByAgentId.has(agentId)) {
+      aliasesByAgentId.set(agentId, new Set())
+    }
+    aliasesByAgentId.get(agentId).add(normalized)
+  }
+
+  for (const entry of registryEntries) {
+    if (!entry?.agentId) continue
+    registerAlias(entry.agentId, entry.name)
+    registerAlias(entry.agentId, entry.title)
+    registerAlias(entry.agentId, entry.agentId)
+    registerAlias(entry.agentId, entry.teamId)
+
+    if (entry.agentId === mainAgentId) {
+      registerAlias(entry.agentId, 'master')
+      registerAlias(entry.agentId, 'team-lead')
+      registerAlias(entry.agentId, 'team lead')
+      registerAlias(entry.agentId, 'teamlead')
+    }
+
+    if (entry.color) {
+      colorMap.set(entry.agentId, entry.color)
+    }
+  }
+
+  const agentIdByAlias = new Map()
+  aliasesByAgentId.forEach((aliases, agentId) => {
+    aliases.forEach(alias => {
+      if (!agentIdByAlias.has(alias)) {
+        agentIdByAlias.set(alias, agentId)
+      }
+    })
+  })
+
+  const assignColor = (agentId, color) => {
+    if (agentId && color && !colorMap.has(agentId)) {
+      colorMap.set(agentId, color)
+    }
+  }
+
+  buckets.forEach((bucket) => {
+    for (const message of bucket.messages || []) {
+      const rawMessage = message?.rawMessages?.[0] || null
+      const routing = rawMessage?.toolUseResult?.routing || rawMessage?.tool_use_result?.routing || null
+      if (!routing) continue
+
+      const senderAgentId = agentIdByAlias.get(normalizeRoutingParticipant(routing.sender))
+      const targetAgentId = agentIdByAlias.get(normalizeRoutingParticipant(routing.target))
+
+      assignColor(senderAgentId, routing.senderColor)
+      assignColor(targetAgentId, routing.targetColor)
+    }
+  })
+
+  return colorMap
+}
+
 function toPlainAttachment(attachment) {
   if (!attachment || typeof attachment !== 'object') {
     return attachment
@@ -902,6 +976,7 @@ export const useSessionStore = defineStore('session', () => {
     const mainAgentId = currentMainAgentId.value
     const registryEntries = Array.from(currentAgentRegistry.value.values())
     const buckets = currentAgentBuckets.value
+    const collaborativeColorMap = buildCollaborativeColorMap(registryEntries, buckets, mainAgentId)
 
     return registryEntries
       .filter(entry => entry?.agentKind === 'collaborative')
@@ -911,7 +986,7 @@ export const useSessionStore = defineStore('session', () => {
           agentId: entry.agentId,
           title: entry.title || entry.name || (entry.agentId === mainAgentId ? 'Master' : '协作型代理'),
           subtitle: entry.agentId === mainAgentId ? '主会话' : (entry.agentType || entry.model || null),
-          color: entry.color || null,
+          color: collaborativeColorMap.get(entry.agentId) || entry.color || null,
           status: entry.status || 'running',
           canInput: entry.status !== 'deleted' && entry.canWrite !== false && entry.interactionMode !== 'read-only',
           canWrite: entry.canWrite !== false,
@@ -935,6 +1010,7 @@ export const useSessionStore = defineStore('session', () => {
     const registryEntries = Array.from(currentAgentRegistry.value.values())
     const buckets = currentAgentBuckets.value
     const mainAgentId = currentMainAgentId.value
+    const collaborativeColorMap = buildCollaborativeColorMap(registryEntries, buckets, mainAgentId)
 
     return registryEntries
       .filter(entry => entry?.agentId === mainAgentId || entry?.agentKind === 'collaborative')
@@ -947,8 +1023,10 @@ export const useSessionStore = defineStore('session', () => {
           agentId: entry.agentId,
           agentKind: entry.agentKind || null,
           agentType: entry.agentType || null,
+          teamId: entry.teamId || null,
+          parentAgentId: entry.parentAgentId || null,
           title: entry.title || entry.name || (isMain ? 'Master' : 'Agent'),
-          color: entry.color || null,
+          color: collaborativeColorMap.get(entry.agentId) || entry.color || null,
           subtitle: isMain
             ? '主代理'
             : (entry.agentKind === 'execution'

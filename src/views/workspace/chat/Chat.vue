@@ -141,6 +141,7 @@ const stickyMessageIndex = ref(-1) // 当前粘性显示的消息索引
 const containerHeight = ref(400) // 聊天容器高度，用于限制粘性面板
 const messagesHeight = ref(null) // 消息区域高度，null 表示自动
 const isResizing = ref(false) // 是否正在调整大小
+const contentViewport = ref({ left: 0, right: 0, width: 0 })
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
 let previousWindowHeight = null // 上一次窗口高度
@@ -663,6 +664,7 @@ onMounted(async () => {
       for (const entry of entries) {
         containerHeight.value = entry.contentRect.height
       }
+      nextTick(updateContentViewport)
     })
     resizeObserver.observe(messagesContainer.value)
   }
@@ -684,6 +686,7 @@ onMounted(async () => {
           }
         }
       }
+      nextTick(updateContentViewport)
     })
     chatPanelResizeObserver.observe(chatPanel)
   }
@@ -701,6 +704,8 @@ onMounted(async () => {
   await loadModelConfigContext()
   await loadProviderSubModels()
   await loadSessionEffortCapabilities()
+  await nextTick()
+  updateContentViewport()
 
   // 注意：所有事件现在通过 SessionStore 的 session-event 通道处理
 
@@ -864,6 +869,21 @@ watch(() => messages.value, async (newMessages) => {
     scrollToBottom(true)
   }
 }, { deep: true, immediate: false })
+
+watch(
+  () => [
+    hasCollaborativeChildren.value,
+    agentWorkspaceState.value.collaborativeViewMode,
+    activeCollaborativeSession.value?.agentId,
+    splitSideSessions.value.length,
+    agentWorkspaceAgents.value.length
+  ],
+  async () => {
+    await nextTick()
+    updateContentViewport()
+  },
+  { immediate: false }
+)
 
 // 监听消息变化，当有新消息时自动折叠之前已完成的消息
 watch(() => messages.value, async (newMessages) => {
@@ -1293,7 +1313,25 @@ function handleWindowResize() {
     const newHeight = Math.max(200, currentMessagesHeight + delta)
     messagesHeight.value = newHeight + 'px'
   }
+  nextTick(updateContentViewport)
   // 如果没有设置高度（自动模式），则不需要处理，让 flex 布局自动调整
+}
+
+function updateContentViewport() {
+  const messagesRect = messagesContainer.value?.getBoundingClientRect?.()
+  const contentEl = document.querySelector('.chat-window .agent-workspace__content')
+  const contentRect = contentEl?.getBoundingClientRect?.()
+
+  if (!messagesRect || !contentRect) {
+    contentViewport.value = { left: 0, right: 0, width: 0 }
+    return
+  }
+
+  contentViewport.value = {
+    left: Math.max(0, contentRect.left - messagesRect.left),
+    right: Math.max(0, messagesRect.right - contentRect.right),
+    width: Math.max(0, contentRect.width)
+  }
 }
 
 // 开始调整大小
@@ -1885,6 +1923,8 @@ function handleToggleAgentViewMode(mode) {
         :is-processing="isStickyMessageProcessing"
         :current-time="currentTime"
         :container-height="containerHeight"
+        :right-inset="contentViewport.right"
+        :content-width="contentViewport.width"
         :is-copied="stickyCopied"
         @copy="copyStickyMessage"
         @scroll-to-user="scrollToStickyMessage"
@@ -1972,6 +2012,7 @@ function handleToggleAgentViewMode(mode) {
       v-if="!isCollapsedByPreview"
       :sidebar-collapsed="sidebarCollapsed"
       :sidebar-width="sidebarWidth"
+      :content-bounds="contentViewport"
     />
 
     <!-- 可拖拽的分隔条 -->
@@ -2423,13 +2464,10 @@ function handleToggleAgentViewMode(mode) {
 .messages {
   flex: 1 1 auto;
   min-height: 80px;
-  overflow-y: auto;
-  padding: 20px;
+  overflow: hidden;
+  padding: 0;
   position: relative;
   background: transparent;
-  /* Modern scrollbar styling */
-  scrollbar-width: thin;
-  scrollbar-color: #52525B transparent;
 }
 
 /* 当设置了固定高度时 */
@@ -3238,31 +3276,6 @@ function handleToggleAgentViewMode(mode) {
 
 .interrupt-button:hover {
   background: #EA580C;
-}
-
-/* Modern scrollbar styles for Webkit browsers */
-.messages::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-
-.messages::-webkit-scrollbar-track {
-  background: transparent;
-  border-radius: 999px;
-}
-
-.messages::-webkit-scrollbar-thumb {
-  background: #52525B;
-  border-radius: 999px;
-  border: none;
-}
-
-.messages::-webkit-scrollbar-thumb:hover {
-  background: #71717A;
-}
-
-.messages::-webkit-scrollbar-thumb:active {
-  background: #A1A1AA;
 }
 
 /* Also style scrollbars in markdown content */

@@ -1208,7 +1208,15 @@ class ClaudeAdapter extends ClaudeClient {
         agentKind: 'collaborative',
         agentType: candidate?.agentType || toolResult.name || 'team-member',
         name: toolResult.name || candidate?.name || null,
-        color: this.resolveAgentColor(toolResult.color || toolResult.agent_color || candidate?.color || candidate?.agentColor || null),
+        color: this.resolveAgentColor(
+          toolResult.color
+          || toolResult.agent_color
+          || toolResult.routing?.targetColor
+          || toolResult.routing?.senderColor
+          || candidate?.color
+          || candidate?.agentColor
+          || null
+        ),
         prompt: candidate?.prompt || candidate?.description || null,
         model: candidate?.model || null,
         teamId,
@@ -1221,7 +1229,15 @@ class ClaudeAdapter extends ClaudeClient {
         agentKind: 'collaborative',
         agentType: candidate?.agentType || toolResult.name || 'team-member',
         name: toolResult.name || candidate?.name || null,
-        color: this.resolveAgentColor(toolResult.color || toolResult.agent_color || candidate?.color || candidate?.agentColor || null),
+        color: this.resolveAgentColor(
+          toolResult.color
+          || toolResult.agent_color
+          || toolResult.routing?.targetColor
+          || toolResult.routing?.senderColor
+          || candidate?.color
+          || candidate?.agentColor
+          || null
+        ),
         prompt: candidate?.prompt || candidate?.description || null,
         model: candidate?.model || null,
         teamId,

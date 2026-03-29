@@ -16,6 +16,13 @@ export function useMessageList() {
     return false
   }
 
+  function isResponseMessage(message) {
+    if (!message) return false
+    if (message.role === 'assistant') return true
+    if (message.role === 'tool_use' && message.subtype === 'execution-card') return true
+    return false
+  }
+
   function findAssistantResponse(messages, userMessageIndex) {
     if (!Array.isArray(messages) || userMessageIndex < 0) return null
     const userMessage = messages[userMessageIndex]
@@ -24,7 +31,7 @@ export function useMessageList() {
     for (let i = userMessageIndex + 1; i < messages.length; i += 1) {
       const message = messages[i]
       if (!message) continue
-      if (message.role === 'assistant') {
+      if (isResponseMessage(message)) {
         return { message, index: i }
       }
       if (isSkippableMessageBetweenUserAndAssistant(message)) {

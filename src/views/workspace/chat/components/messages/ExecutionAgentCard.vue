@@ -24,6 +24,7 @@ const props = defineProps({
 
 const expanded = ref(false)
 const copiedSection = ref('')
+const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
 
 const statusLabel = computed(() => {
   switch (props.card?.status) {
@@ -58,6 +59,25 @@ const latestResultLabel = computed(() => {
   return props.card?.status === 'running' ? '等待最终结果' : '暂无运行结果'
 })
 
+const toolListSummary = computed(() => {
+  const toolCount = Number(props.card?.toolCount || props.card?.timelineItems?.length || 0)
+  const completedToolCount = Number(props.card?.completedToolCount || 0)
+  const errorToolCount = Number(props.card?.errorToolCount || 0)
+
+  if (!toolCount) {
+    return '0 次调用'
+  }
+
+  const parts = [`${toolCount} 次调用`]
+  if (completedToolCount) {
+    parts.push(`${completedToolCount} 完成`)
+  }
+  if (errorToolCount) {
+    parts.push(`${errorToolCount} 失败`)
+  }
+  return parts.join(' · ')
+})
+
 const collapsedStatusLabel = computed(() => {
   if (props.card?.displayTimelineItems?.length) {
     return null
@@ -65,6 +85,20 @@ const collapsedStatusLabel = computed(() => {
   return props.card?.status === 'running'
     ? '思考中'
     : buildCompletedSummary()
+})
+
+const showActivePreview = computed(() => {
+  return props.card?.status === 'running' || props.card?.status === 'starting'
+})
+
+const textStyleStatus = computed(() => {
+  if (props.card?.status === 'running' || props.card?.status === 'starting') {
+    return 'executing'
+  }
+  if (Number(props.card?.errorToolCount || 0) > 0 || props.card?.status === 'deleted') {
+    return 'error'
+  }
+  return 'success'
 })
 
 const nestedTimelineTheme = computed(() => ({
@@ -127,19 +161,47 @@ function buildCompletedSummary() {
 </script>
 
 <template>
-  <section class="execution-agent-card" :data-agent-id="card.agentId">
-    <button class="execution-agent-card__header" type="button" @click="toggleExpanded">
+  <section
+    class="execution-agent-card"
+    :class="{ 'execution-agent-card--plain': isTextStyle }"
+    :data-agent-id="card.agentId"
+  >
+    <button
+      class="execution-agent-card__header"
+      :class="{ 'execution-agent-card__header--text-style': isTextStyle }"
+      type="button"
+      @click="toggleExpanded"
+    >
       <div class="execution-agent-card__title-row">
         <div class="execution-agent-card__identity">
-          <span class="execution-agent-card__icon">🤖</span>
-          <span class="execution-agent-card__title">{{ card.title }}</span>
+          <template v-if="isTextStyle">
+            <span class="execution-agent-card__title execution-agent-card__title--text-style">{{ card.title }}</span>
+            <span class="execution-agent-card__toggle execution-agent-card__toggle--text-style collapse-toggle">
+              {{ expanded ? '▼' : '▶' }}
+            </span>
+            <span v-if="!expanded" class="execution-agent-card__summary-inline execution-agent-card__summary-inline--text-style">
+              {{ promptPreview }}
+            </span>
+            <span class="execution-agent-card__status execution-agent-card__status--text-style" :class="`is-${textStyleStatus}`" aria-hidden="true">
+              <svg v-if="textStyleStatus === 'success'" viewBox="0 0 12 12" fill="none">
+                <path d="M2.2 6.2L4.7 8.7L9.8 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+              <svg v-else-if="textStyleStatus === 'error'" viewBox="0 0 12 12" fill="none">
+                <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"></path>
+              </svg>
+              <span v-else class="execution-agent-card__status-spinner"></span>
+            </span>
+          </template>
+          <template v-else>
+            <span class="execution-agent-card__title">{{ card.title }}</span>
+          </template>
         </div>
-        <div v-if="!expanded" class="execution-agent-card__summary-inline">{{ promptPreview }}</div>
-        <span class="execution-agent-card__toggle">{{ expanded ? '▼' : '▶' }}</span>
+        <div v-if="!expanded && !isTextStyle" class="execution-agent-card__summary-inline">{{ promptPreview }}</div>
+        <span v-if="!isTextStyle" class="execution-agent-card__toggle">{{ expanded ? '▼' : '▶' }}</span>
       </div>
     </button>
     <div class="execution-agent-card__divider"></div>
-    <div v-if="!expanded" class="execution-agent-card__active-list">
+    <div v-if="!expanded && showActivePreview" class="execution-agent-card__active-list">
       <template v-if="card.displayTimelineItems?.length">
         <div
           v-for="(message, index) in card.displayTimelineItems"
@@ -188,7 +250,11 @@ function buildCompletedSummary() {
       </template>
     </div>
 
-    <div v-if="expanded" class="execution-agent-card__body tool-body">
+    <div
+      v-if="expanded"
+      class="execution-agent-card__body tool-body"
+      :class="{ 'execution-agent-card__body--text-style': isTextStyle }"
+    >
       <div class="tool-section result-section">
         <div class="section-label">提示词</div>
         <div class="section-content-wrapper">
@@ -232,7 +298,10 @@ function buildCompletedSummary() {
       </div>
 
       <div class="tool-section">
-        <div class="section-label">工具调用列表</div>
+        <div class="section-label execution-agent-card__section-label">
+          <span>工具调用列表</span>
+          <span class="execution-agent-card__section-meta">{{ toolListSummary }}</span>
+        </div>
         <div v-if="card.timelineItems?.length" class="execution-agent-card__tool-list execution-agent-card__tool-list-scroll">
           <div
             v-for="(message, index) in card.timelineItems"
@@ -270,6 +339,13 @@ function buildCompletedSummary() {
   overflow: hidden;
 }
 
+.execution-agent-card--plain {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+
 .execution-agent-card__header {
   width: 100%;
   border: none;
@@ -278,17 +354,44 @@ function buildCompletedSummary() {
   padding: 10px 14px;
   cursor: pointer;
   text-align: left;
+  appearance: none;
+}
+
+.execution-agent-card__header--text-style {
+  all: unset;
+  display: block;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  line-height: 1;
+  min-height: 0;
+  font-size: 12px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
 }
 
 .execution-agent-card__header:hover {
   background: #2d2d30;
 }
 
+.execution-agent-card__header--text-style:hover {
+  background: transparent;
+}
+
 .execution-agent-card__title-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+}
+
+.execution-agent-card__header--text-style .execution-agent-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 0;
+  line-height: 1;
 }
 
 .execution-agent-card__identity {
@@ -296,10 +399,12 @@ function buildCompletedSummary() {
   display: flex;
   align-items: center;
   gap: 8px;
+  line-height: 1;
 }
 
-.execution-agent-card__icon {
-  font-size: 13px;
+.execution-agent-card__header--text-style .execution-agent-card__identity {
+  gap: 6px;
+  flex: 0 1 auto;
   line-height: 1;
 }
 
@@ -309,11 +414,48 @@ function buildCompletedSummary() {
   font-weight: 600;
 }
 
+.execution-agent-card__title--text-style {
+  font-size: 12px;
+  font-weight: 500;
+  color: #C4C7CF;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
 .execution-agent-card__toggle {
   grid-column: 3;
   justify-self: end;
   color: #c4c7cf;
-  font-size: 12px;
+  width: 14px;
+  min-width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.execution-agent-card__header--text-style .execution-agent-card__toggle {
+  color: #8b93a7;
+}
+
+.execution-agent-card__toggle--text-style {
+  width: auto;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1;
+  color: #71717A;
+}
+
+.collapse-toggle {
+  cursor: pointer;
+  transition: transform 0.15s;
+  user-select: none;
+}
+
+.collapse-toggle:hover {
+  color: #A1A1AA;
 }
 
 .execution-agent-card__summary-inline {
@@ -330,12 +472,78 @@ function buildCompletedSummary() {
   white-space: nowrap;
 }
 
+.execution-agent-card__header--text-style .execution-agent-card__summary-inline {
+  color: #8b93a7;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.execution-agent-card__summary-inline--text-style {
+  grid-column: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1;
+}
+
+.execution-agent-card__status {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.execution-agent-card__status svg {
+  width: 12px;
+  height: 12px;
+}
+
+.execution-agent-card__status--text-style.is-success {
+  color: #6EE7B7;
+}
+
+.execution-agent-card__status--text-style.is-error {
+  color: #F87171;
+}
+
+.execution-agent-card__status--text-style.is-executing {
+  color: #94A3B8;
+}
+
+.execution-agent-card__status-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.35px solid rgba(148, 163, 184, 0.28);
+  border-top-color: currentColor;
+  animation: execution-agent-spin 0.9s linear infinite;
+}
+
 .execution-agent-card__body {
   padding: 0 14px 14px;
 }
 
+.execution-agent-card__body--text-style {
+  margin-left: 24px;
+  max-width: calc(100% - 24px);
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-top: none;
+  background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
+  border: 1px solid #3B82F6;
+  border-left: 3px solid #3B82F6;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
 .execution-agent-card__active-list {
   padding: 10px 14px 0 22px;
+}
+
+.execution-agent-card--text-style .execution-agent-card__active-list {
+  padding: 8px 0 0 24px;
 }
 
 .execution-agent-card__active-item + .execution-agent-card__active-item {
@@ -355,6 +563,10 @@ function buildCompletedSummary() {
   border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
 
+.execution-agent-card--plain .execution-agent-card__divider {
+  display: none;
+}
+
 .execution-agent-card__tool-list {
   display: flex;
   flex-direction: column;
@@ -368,6 +580,21 @@ function buildCompletedSummary() {
   padding-right: 16px;
   border-radius: 6px;
   background: #18181b;
+}
+
+.execution-agent-card__tool-list-scroll :deep(.message) {
+  width: 100%;
+  align-items: stretch;
+}
+
+.execution-agent-card__tool-list-scroll :deep(.message-body) {
+  width: 100%;
+  max-width: 100%;
+}
+
+.execution-agent-card__tool-list-scroll :deep(.tool-use-message-wrapper) {
+  width: 100%;
+  max-width: 100%;
 }
 
 .execution-agent-card__tool-item {
@@ -400,6 +627,20 @@ function buildCompletedSummary() {
   margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.execution-agent-card__section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.execution-agent-card__section-meta {
+  color: #8b93a7;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: none;
 }
 
 .section-content {

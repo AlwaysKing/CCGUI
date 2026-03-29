@@ -112,6 +112,14 @@ const shouldShowStickyHeader = computed(() => {
   return Boolean(activeCollaborativeSession.value?.isMain)
 })
 
+const collaborativeRailPlacement = computed(() => {
+  if (!hasCollaborativeChildren.value) {
+    return 'side'
+  }
+
+  return messagesViewportWidth.value >= 1080 ? 'side' : 'top'
+})
+
 // UI 状态
 const pendingPermission = computed(() => sessionStore.pendingPermission)
 const pendingControlRequest = computed(() => sessionStore.pendingControlRequest)
@@ -141,6 +149,7 @@ const containerHeight = ref(400) // 聊天容器高度，用于限制粘性面�
 const messagesHeight = ref(null) // 消息区域高度，null 表示自动
 const isResizing = ref(false) // 是否正在调整大小
 const contentViewport = ref({ left: 0, right: 0, width: 0 })
+const messagesViewportWidth = ref(0)
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
 let previousWindowHeight = null // 上一次窗口高度
@@ -662,6 +671,7 @@ onMounted(async () => {
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         containerHeight.value = entry.contentRect.height
+        messagesViewportWidth.value = entry.contentRect.width
       }
       nextTick(updateContentViewport)
     })
@@ -704,6 +714,7 @@ onMounted(async () => {
   await loadProviderSubModels()
   await loadSessionEffortCapabilities()
   await nextTick()
+  messagesViewportWidth.value = messagesContainer.value?.getBoundingClientRect?.().width || 0
   updateContentViewport()
 
   // 注意：所有事件现在通过 SessionStore 的 session-event 通道处理
@@ -1320,6 +1331,8 @@ function updateContentViewport() {
   const messagesRect = messagesContainer.value?.getBoundingClientRect?.()
   const contentEl = document.querySelector('.chat-window .agent-workspace__content')
   const contentRect = contentEl?.getBoundingClientRect?.()
+
+  messagesViewportWidth.value = messagesRect?.width || 0
 
   if (!messagesRect || !contentRect) {
     contentViewport.value = { left: 0, right: 0, width: 0 }
@@ -1955,6 +1968,7 @@ function handleToggleAgentRail() {
         :container-height="containerHeight"
         :chat-theme="resolvedChatMessageTheme"
         :rail-visible="isAgentRailVisible"
+        :rail-placement="collaborativeRailPlacement"
         @select-agent="handleSelectAgent"
         @focus-agent="handleFocusAgent"
         @toggle-view-mode="handleToggleAgentViewMode"

@@ -176,7 +176,7 @@ const usesToolAvatarIcon = computed(() => {
 // 头像字符
 const avatarChar = computed(() => {
   if (props.message.subtype === 'execution-card') {
-    return 'A'
+    return '🤖'
   }
   // rewind-notice 特殊头像
   if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
@@ -1040,7 +1040,7 @@ onUnmounted(() => {
 
 .message.avatar-small.permission_result .message-avatar {
   font-size: 0;
-  margin-top: 5px;
+  margin-top: 3px;
 }
 
 .message.avatar-small.question .message-avatar {

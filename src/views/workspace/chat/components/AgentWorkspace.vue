@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import MessageItem from './messages/MessageItem.vue'
 import ExecutionAgentCard from './messages/ExecutionAgentCard.vue'
 import StickyHeader from './layout/StickyHeader.vue'
+import AgentWorkspaceTopRail from './AgentWorkspaceTopRail.vue'
 
 const props = defineProps({
   timelineBlocks: {
@@ -76,6 +77,10 @@ const props = defineProps({
   railVisible: {
     type: Boolean,
     default: true
+  },
+  railPlacement: {
+    type: String,
+    default: 'side'
   }
 })
 
@@ -186,6 +191,15 @@ const timelineBlocksWithShell = computed(() => {
   })
 })
 
+const mainStageDisplayMessages = computed(() => {
+  return timelineBlocksWithShell.value.map(block => {
+    if (block.type === 'execution-card') {
+      return block.shellMessage
+    }
+    return block.message
+  }).filter(Boolean)
+})
+
 const railMasterEntry = computed(() => {
   return props.agentEntries.find(entry => entry.isMain) || null
 })
@@ -270,9 +284,21 @@ const shouldShowRail = computed(() => {
     :class="{
       'agent-workspace--plain': props.agentEntries.length === 0,
       'agent-workspace--split': hasCollaborativeChildren && viewMode === 'split',
-      'agent-workspace--no-rail': !shouldShowRail
+      'agent-workspace--no-rail': !shouldShowRail,
+      'agent-workspace--rail-top': shouldShowRail && props.railPlacement === 'top'
     }"
   >
+    <AgentWorkspaceTopRail
+      v-if="shouldShowRail && props.railPlacement === 'top'"
+      :master-entry="railMasterEntry"
+      :active-team-groups="railActiveTeamGroups"
+      :deleted-team-groups="railDeletedTeamGroups"
+      :active-session="activeSession"
+      :view-mode="viewMode"
+      @select-agent="selectAgent"
+      @toggle-view-mode="toggleViewMode"
+    />
+
     <div class="agent-workspace__content" @scroll="handleContentScroll">
       <StickyHeader
         v-if="showStickyHeader && stickyMessage"
@@ -292,11 +318,11 @@ const shouldShowRail = computed(() => {
             <MessageItem
               v-if="block.type === 'message'"
               :message="block.message"
-              :message-index="block.messageIndex"
-              :total-messages="block.totalMessages"
+              :message-index="index"
+              :total-messages="mainStageDisplayMessages.length"
               :working-directory="workingDirectory"
               :current-time="currentTime"
-              :all-messages="block.allMessages"
+              :all-messages="mainStageDisplayMessages"
               :chat-theme="chatTheme"
               @message-click="forward('messageClick', $event)"
               @rewind="forward('rewind', $event)"
@@ -309,11 +335,11 @@ const shouldShowRail = computed(() => {
             <MessageItem
               v-else-if="block.type === 'execution-card'"
               :message="block.shellMessage"
-              :message-index="0"
-              :total-messages="1"
+              :message-index="index"
+              :total-messages="mainStageDisplayMessages.length"
               :working-directory="workingDirectory"
               :current-time="currentTime"
-              :all-messages="[block.shellMessage]"
+              :all-messages="mainStageDisplayMessages"
               :chat-theme="chatTheme"
               @message-click="forward('messageClick', $event)"
               @rewind="forward('rewind', $event)"
@@ -401,7 +427,7 @@ const shouldShowRail = computed(() => {
       </aside>
     </div>
 
-    <aside v-if="shouldShowRail" class="agent-workspace__rail">
+    <aside v-if="shouldShowRail && props.railPlacement !== 'top'" class="agent-workspace__rail">
       <div class="agent-workspace__rail-header">
         <span>团队</span>
       </div>
@@ -558,6 +584,11 @@ const shouldShowRail = computed(() => {
 
 .agent-workspace--no-rail {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.agent-workspace--rail-top {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .agent-workspace--split {

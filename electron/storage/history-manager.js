@@ -44,6 +44,19 @@ function getMetadataFilePath(projectId, sessionId) {
 }
 
 /**
+ * 获取语义事件历史文件路径
+ * @param {string} projectId - 项目ID
+ * @param {string} sessionId - 会话ID
+ */
+function getSemanticEventsFilePath(projectId, sessionId) {
+  return path.join(getSessionHistoryDir(projectId, sessionId), 'semantic-events.jsonl')
+}
+
+function getSessionEventsFilePath(projectId, sessionId) {
+  return path.join(getSessionHistoryDir(projectId, sessionId), 'session-events.jsonl')
+}
+
+/**
  * 确保历史目录存在
  * @param {string} projectId - 项目ID
  * @param {string} sessionId - 会话ID
@@ -248,6 +261,64 @@ function appendMessage(projectId, sessionId, message) {
 }
 
 /**
+ * 追加语义事件到历史记录
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {object} event
+ */
+function appendSemanticEvent(projectId, sessionId, event) {
+  try {
+    ensureHistoryDir(projectId, sessionId)
+
+    const eventsPath = getSemanticEventsFilePath(projectId, sessionId)
+    const eventLine = serializeMessage(event) + '\n'
+
+    fs.appendFileSync(eventsPath, eventLine, 'utf-8')
+
+    logger.debug('[HistoryManager] Appended semantic event', {
+      projectId,
+      sessionId,
+      eventType: event?.eventType || event?.type || 'unknown'
+    })
+
+    return true
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to append semantic event', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return false
+  }
+}
+
+function appendSessionEvent(projectId, sessionId, event) {
+  try {
+    ensureHistoryDir(projectId, sessionId)
+
+    const eventsPath = getSessionEventsFilePath(projectId, sessionId)
+    const eventLine = serializeMessage(event) + '\n'
+
+    fs.appendFileSync(eventsPath, eventLine, 'utf-8')
+
+    logger.debug('[HistoryManager] Appended session event', {
+      projectId,
+      sessionId,
+      eventType: event?.eventType || 'unknown'
+    })
+
+    return true
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to append session event', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return false
+  }
+}
+
+/**
  * 更新指定消息（通过消息ID）
  * @param {string} projectId - 项目ID
  * @param {string} sessionId - 会话ID
@@ -328,6 +399,100 @@ function loadHistory(projectId, sessionId) {
     return messages
   } catch (error) {
     logger.error('[HistoryManager] Failed to load history', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return []
+  }
+}
+
+/**
+ * 加载语义事件历史
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @returns {Array}
+ */
+function loadSemanticEvents(projectId, sessionId) {
+  try {
+    const eventsPath = getSemanticEventsFilePath(projectId, sessionId)
+
+    if (!fs.existsSync(eventsPath)) {
+      logger.debug('[HistoryManager] Semantic history file not found', { projectId, sessionId })
+      return []
+    }
+
+    const content = fs.readFileSync(eventsPath, 'utf-8')
+    const lines = content.trim().split('\n')
+
+    const events = []
+    for (const line of lines) {
+      if (!line.trim()) continue
+
+      try {
+        events.push(deserializeMessage(line))
+      } catch (e) {
+        logger.warn('[HistoryManager] Failed to parse semantic event line', {
+          projectId,
+          sessionId,
+          line: line.substring(0, 100)
+        })
+      }
+    }
+
+    logger.info('[HistoryManager] Loaded semantic history', {
+      projectId,
+      sessionId,
+      eventCount: events.length
+    })
+
+    return events
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to load semantic history', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return []
+  }
+}
+
+function loadSessionEvents(projectId, sessionId) {
+  try {
+    const eventsPath = getSessionEventsFilePath(projectId, sessionId)
+
+    if (!fs.existsSync(eventsPath)) {
+      logger.debug('[HistoryManager] Session event log not found', { projectId, sessionId })
+      return []
+    }
+
+    const content = fs.readFileSync(eventsPath, 'utf-8')
+    const lines = content.trim().split('\n')
+
+    const events = []
+    for (const line of lines) {
+      if (!line.trim()) continue
+
+      try {
+        events.push(deserializeMessage(line))
+      } catch (e) {
+        logger.warn('[HistoryManager] Failed to parse session event line', {
+          projectId,
+          sessionId,
+          line: line.substring(0, 100)
+        })
+      }
+    }
+
+    logger.info('[HistoryManager] Loaded session event log', {
+      projectId,
+      sessionId,
+      eventCount: events.length
+    })
+
+    return events
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to load session event log', {
       projectId,
       sessionId,
       error: error.message
@@ -426,12 +591,18 @@ module.exports = {
   getSessionHistoryDir,
   getMessagesFilePath,
   getMetadataFilePath,
+  getSemanticEventsFilePath,
+  getSessionEventsFilePath,
   loadMetadata,
   saveMetadata,
   updateSessionEnvInfo,
   appendMessage,
+  appendSemanticEvent,
+  appendSessionEvent,
   updateMessage,
   loadHistory,
+  loadSemanticEvents,
+  loadSessionEvents,
   deleteHistory,
   saveAllMessages,
   historyExists

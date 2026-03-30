@@ -47,6 +47,7 @@ class SessionData {
     // 环境信息
     this.envInfo = null
     this.silentMessages = []
+    this.taskEvents = []
 
     // Runtime 状态
     this.runtimeReady = false
@@ -92,6 +93,8 @@ function normalizeAgentRegistryEntry(entry) {
     agentKind: entry.agentKind || entry.agent_kind || null,
     agentType: entry.agentType || entry.agent_type || null,
     name: entry.name || null,
+    title: entry.title || null,
+    description: entry.description || null,
     color: entry.color || entry.agentColor || entry.agent_color || null,
     prompt: entry.prompt || null,
     model: entry.model || null,
@@ -99,7 +102,10 @@ function normalizeAgentRegistryEntry(entry) {
     parentAgentId: entry.parentAgentId || entry.parent_agent_id || null,
     status: entry.status || null,
     canWrite: entry.canWrite !== undefined ? Boolean(entry.canWrite) : null,
-    interactionMode: entry.interactionMode || entry.interaction_mode || null
+    interactionMode: entry.interactionMode || entry.interaction_mode || null,
+    startTime: entry.startTime || entry.start_time || null,
+    endTime: entry.endTime || entry.end_time || null,
+    deleteTime: entry.deleteTime || entry.delete_time || null
   }
 }
 
@@ -148,68 +154,124 @@ function normalizeRoutingParticipant(value) {
     .toLowerCase()
 }
 
-function buildCollaborativeColorMap(registryEntries, buckets, mainAgentId) {
-  const colorMap = new Map()
-  const aliasesByAgentId = new Map()
+function isGenericCollaborativeLabel(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  return !normalized ||
+    normalized === 'team-member' ||
+    normalized === '协作型代理' ||
+    normalized === 'team-lead' ||
+    normalized === 'team lead' ||
+    normalized === 'teamlead' ||
+    normalized === 'master'
+}
 
-  const registerAlias = (agentId, alias) => {
-    const normalized = normalizeRoutingParticipant(alias)
-    if (!agentId || !normalized) return
-    if (!aliasesByAgentId.has(agentId)) {
-      aliasesByAgentId.set(agentId, new Set())
+function pickSpecificCollaborativeValue(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) {
+      continue
     }
-    aliasesByAgentId.get(agentId).add(normalized)
+    const normalized = String(value).trim()
+    if (!normalized) {
+      continue
+    }
+    if (isGenericCollaborativeLabel(normalized)) {
+      continue
+    }
+    return value
   }
+  return null
+}
 
-  for (const entry of registryEntries) {
-    if (!entry?.agentId) continue
-    registerAlias(entry.agentId, entry.name)
-    registerAlias(entry.agentId, entry.title)
-    registerAlias(entry.agentId, entry.agentId)
-    registerAlias(entry.agentId, entry.teamId)
-
-    if (entry.agentId === mainAgentId) {
-      registerAlias(entry.agentId, 'master')
-      registerAlias(entry.agentId, 'team-lead')
-      registerAlias(entry.agentId, 'team lead')
-      registerAlias(entry.agentId, 'teamlead')
+function hasSpecificCollaborativeIdentityPayload(...entries) {
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') {
+      continue
     }
 
-    if (entry.color) {
-      colorMap.set(entry.agentId, entry.color)
-    }
-  }
+    const title = pickSpecificCollaborativeValue(entry.title)
+    const name = pickSpecificCollaborativeValue(entry.name)
+    const agentType = pickSpecificCollaborativeValue(entry.agentType, entry.agent_type)
+    const color = typeof entry.color === 'string' && entry.color.trim() ? entry.color.trim() : null
 
-  const agentIdByAlias = new Map()
-  aliasesByAgentId.forEach((aliases, agentId) => {
-    aliases.forEach(alias => {
-      if (!agentIdByAlias.has(alias)) {
-        agentIdByAlias.set(alias, agentId)
-      }
-    })
-  })
-
-  const assignColor = (agentId, color) => {
-    if (agentId && color && !colorMap.has(agentId)) {
-      colorMap.set(agentId, color)
+    if (title || name || agentType || color) {
+      return true
     }
   }
 
-  buckets.forEach((bucket) => {
-    for (const message of bucket.messages || []) {
-      const rawMessage = message?.rawMessages?.[0] || null
-      const routing = rawMessage?.toolUseResult?.routing || rawMessage?.tool_use_result?.routing || null
-      if (!routing) continue
+  return false
+}
 
-      const senderAgentId = agentIdByAlias.get(normalizeRoutingParticipant(routing.sender))
-      const targetAgentId = agentIdByAlias.get(normalizeRoutingParticipant(routing.target))
+function extractTeammateMessageMeta(text) {
+  if (typeof text !== 'string' || !text.trim()) {
+    return null
+  }
 
-      assignColor(senderAgentId, routing.senderColor)
-      assignColor(targetAgentId, routing.targetColor)
+  const match = text.match(/^<teammate-message\b([^>]*)>([\s\S]*?)<\/teammate-message>\s*$/)
+  if (!match) {
+    return null
+  }
+
+  const [, rawAttrs = '', rawBody = ''] = match
+  const attrs = {}
+  for (const attrMatch of rawAttrs.matchAll(/([a-zA-Z0-9_:-]+)="([^"]*)"/g)) {
+    attrs[attrMatch[1]] = attrMatch[2]
+  }
+
+  return {
+    sender: attrs.teammate_id || attrs.sender || '',
+    summary: attrs.summary || '',
+    color: attrs.color || '',
+    content: rawBody.trim()
+  }
+}
+
+function extractTeammateDisplayName(teammateMeta) {
+  if (!teammateMeta) {
+    return null
+  }
+
+  const bodyMatch = teammateMeta.content?.match(/你是([^\s。，“”"'':：\-]{1,20})/u)
+  if (bodyMatch?.[1] && !isGenericCollaborativeLabel(bodyMatch[1])) {
+    return bodyMatch[1].trim()
+  }
+
+  const summary = String(teammateMeta.summary || '').trim()
+  if (!summary) {
+    return null
+  }
+
+  const summaryMatch = summary.match(/^([^\s。，“”"'':：\-]{1,20}?)(?:参与讨论|讨论|开始|第\d+轮|发言|回应|总结|结束|$)/u)
+  if (summaryMatch?.[1] && !isGenericCollaborativeLabel(summaryMatch[1])) {
+    return summaryMatch[1].trim()
+  }
+
+  const head = summary.split(/[\s，。,：:\-]/u)[0]?.trim() || ''
+  if (head && !isGenericCollaborativeLabel(head)) {
+    return head
+  }
+
+  return null
+}
+
+function inferCollaborativeDisplay(entry, mainAgentId) {
+  const fallbackTitle = entry?.agentId === mainAgentId ? 'Master' : '协作型代理'
+  const existingTitle = (() => {
+    const candidate = entry?.title || entry?.name || null
+    if (!candidate || isGenericCollaborativeLabel(candidate)) {
+      return null
     }
-  })
+    return candidate
+  })()
+  const title = existingTitle || fallbackTitle
+  const agentType = entry?.agentType && entry.agentType !== 'team-member'
+    ? entry.agentType
+    : null
 
-  return colorMap
+  return {
+    title,
+    subtitle: entry?.agentId === mainAgentId ? '主会话' : (agentType || entry?.model || null),
+    effectiveAgentType: agentType || entry?.agentType || null
+  }
 }
 
 function toPlainAttachment(attachment) {
@@ -556,12 +618,29 @@ function mergeAgentRegistryEntry(currentEntry, patch) {
     return currentEntry || null
   }
 
+  const nextName = pickSpecificCollaborativeValue(normalizedPatch.name, currentEntry?.name)
+    ?? pickFirstDefined(normalizedPatch.name, currentEntry?.name)
+  const nextTitle = pickSpecificCollaborativeValue(
+    normalizedPatch.title,
+    normalizedPatch.name,
+    currentEntry?.title,
+    currentEntry?.name
+  ) ?? pickFirstDefined(
+    normalizedPatch.title,
+    normalizedPatch.name,
+    currentEntry?.title,
+    currentEntry?.name
+  )
+  const nextAgentType = pickSpecificCollaborativeValue(normalizedPatch.agentType, currentEntry?.agentType)
+    ?? pickFirstDefined(normalizedPatch.agentType, currentEntry?.agentType)
+
   return {
     agentId: normalizedPatch.agentId,
     agentKind: pickFirstDefined(normalizedPatch.agentKind, currentEntry?.agentKind),
-    agentType: pickFirstDefined(normalizedPatch.agentType, currentEntry?.agentType),
-    name: pickFirstDefined(normalizedPatch.name, currentEntry?.name),
-    title: pickFirstDefined(normalizedPatch.title, normalizedPatch.name, currentEntry?.title, currentEntry?.name),
+    agentType: nextAgentType,
+    name: nextName,
+    color: pickFirstDefined(normalizedPatch.color, currentEntry?.color),
+    title: nextTitle,
     description: pickFirstDefined(normalizedPatch.description, normalizedPatch.prompt, currentEntry?.description, currentEntry?.prompt),
     prompt: pickFirstDefined(normalizedPatch.prompt, currentEntry?.prompt),
     model: pickFirstDefined(normalizedPatch.model, currentEntry?.model),
@@ -586,10 +665,26 @@ function mergeRegistryEntryFromEvent(currentEntry, event) {
   const eventPatch = {
     agentId: normalizedEvent.agentId,
     agentKind: normalizedEvent.agentKind,
-    agentType: normalizedEvent.agentType,
-    name: normalizedEvent.name,
-    title: normalizedEvent.title || normalizedEvent.name,
-    description: normalizedEvent.description || normalizedEvent.prompt,
+    agentType: normalizedEvent.agentKind === 'collaborative' &&
+      !(normalizedEvent.eventType === 'start' && hasSpecificCollaborativeIdentityPayload(normalizedEvent))
+      ? null
+      : normalizedEvent.agentType,
+    name: normalizedEvent.agentKind === 'collaborative' &&
+      !(normalizedEvent.eventType === 'start' && hasSpecificCollaborativeIdentityPayload(normalizedEvent))
+      ? null
+      : normalizedEvent.name,
+    title: normalizedEvent.agentKind === 'collaborative' &&
+      !(normalizedEvent.eventType === 'start' && hasSpecificCollaborativeIdentityPayload(normalizedEvent))
+      ? null
+      : (normalizedEvent.title || normalizedEvent.name),
+    description: normalizedEvent.agentKind === 'collaborative' &&
+      !(normalizedEvent.eventType === 'start' && hasSpecificCollaborativeIdentityPayload(normalizedEvent))
+      ? null
+      : (normalizedEvent.description || normalizedEvent.prompt),
+    color: normalizedEvent.agentKind === 'collaborative' &&
+      !(normalizedEvent.eventType === 'start' && hasSpecificCollaborativeIdentityPayload(normalizedEvent))
+      ? null
+      : normalizedEvent.color,
     prompt: normalizedEvent.prompt,
     model: normalizedEvent.model,
     teamId: normalizedEvent.teamId,
@@ -610,6 +705,37 @@ function mergeRegistryEntryFromEvent(currentEntry, event) {
   }
 
   return mergeAgentRegistryEntry(currentEntry, eventPatch)
+}
+
+function sanitizeCollaborativeRegistryPatch(registryEntry, payload = {}, options = {}) {
+  if (!registryEntry?.agentId) {
+    return registryEntry
+  }
+
+  const orchestrationEntry = normalizeOrchestrationEntry(payload?.ccgui?.orchestration)
+  const isCollaborative = registryEntry.agentKind === 'collaborative' || orchestrationEntry?.agentKind === 'collaborative'
+  if (!isCollaborative) {
+    return registryEntry
+  }
+
+  const allowIdentityUpdate =
+    options?.sourceEventType === 'agent-update' ||
+    (
+      orchestrationEntry?.eventType === 'start' &&
+      hasSpecificCollaborativeIdentityPayload(registryEntry, orchestrationEntry)
+    )
+  if (allowIdentityUpdate) {
+    return registryEntry
+  }
+
+  return {
+    ...registryEntry,
+    agentType: null,
+    name: null,
+    title: null,
+    description: null,
+    color: null
+  }
 }
 
 /**
@@ -804,7 +930,10 @@ export const useSessionStore = defineStore('session', () => {
         bucket.lastTimestamp = timestamp
       }
 
-      const registryEntry = normalizeAgentRegistryEntry(message?.ccgui?.registry)
+      const registryEntry = sanitizeCollaborativeRegistryPatch(
+        normalizeAgentRegistryEntry(message?.ccgui?.registry),
+        message
+      )
       if (registryEntry?.agentId) {
         nextRegistry.set(registryEntry.agentId, mergeAgentRegistryEntry(nextRegistry.get(registryEntry.agentId), registryEntry))
       } else if (!nextRegistry.has(messageAgentId)) {
@@ -816,6 +945,29 @@ export const useSessionStore = defineStore('session', () => {
 
       recordEvent(message?.ccgui?.orchestration)
     }
+
+    for (const silentMessage of session.silentMessages || []) {
+      const registryEntry = sanitizeCollaborativeRegistryPatch(
+        normalizeAgentRegistryEntry(silentMessage?.ccgui?.registry),
+        silentMessage
+      )
+      if (registryEntry?.agentId) {
+        nextRegistry.set(registryEntry.agentId, mergeAgentRegistryEntry(nextRegistry.get(registryEntry.agentId), registryEntry))
+      }
+      recordEvent(silentMessage?.ccgui?.orchestration)
+    }
+
+    for (const taskEvent of session.taskEvents || []) {
+      const registryEntry = sanitizeCollaborativeRegistryPatch(
+        normalizeAgentRegistryEntry(taskEvent?.ccgui?.registry),
+        taskEvent
+      )
+      if (registryEntry?.agentId) {
+        nextRegistry.set(registryEntry.agentId, mergeAgentRegistryEntry(nextRegistry.get(registryEntry.agentId), registryEntry))
+      }
+      recordEvent(taskEvent?.ccgui?.orchestration)
+    }
+
     if (!nextBuckets.has(mainAgentId)) {
       nextBuckets.set(mainAgentId, createAgentBucket(mainAgentId))
     }
@@ -825,12 +977,16 @@ export const useSessionStore = defineStore('session', () => {
     syncAgentWorkspaceState(session)
   }
 
-  function recordAgentSemantics(session, payload = {}) {
+  function recordAgentSemantics(session, payload = {}, options = {}) {
     if (!session || !payload || typeof payload !== 'object') {
       return
     }
 
-    const registryEntry = normalizeAgentRegistryEntry(payload?.ccgui?.registry)
+    const registryEntry = sanitizeCollaborativeRegistryPatch(
+      normalizeAgentRegistryEntry(payload?.ccgui?.registry),
+      payload,
+      options
+    )
     if (registryEntry?.agentId) {
       session.agentRegistry.set(
         registryEntry.agentId,
@@ -976,17 +1132,17 @@ export const useSessionStore = defineStore('session', () => {
     const mainAgentId = currentMainAgentId.value
     const registryEntries = Array.from(currentAgentRegistry.value.values())
     const buckets = currentAgentBuckets.value
-    const collaborativeColorMap = buildCollaborativeColorMap(registryEntries, buckets, mainAgentId)
 
     return registryEntries
       .filter(entry => entry?.agentKind === 'collaborative')
       .map(entry => {
         const bucket = buckets.get(entry.agentId) || createAgentBucket(entry.agentId)
+        const display = inferCollaborativeDisplay(entry, mainAgentId)
         return {
           agentId: entry.agentId,
-          title: entry.title || entry.name || (entry.agentId === mainAgentId ? 'Master' : '协作型代理'),
-          subtitle: entry.agentId === mainAgentId ? '主会话' : (entry.agentType || entry.model || null),
-          color: collaborativeColorMap.get(entry.agentId) || entry.color || null,
+          title: display.title,
+          subtitle: display.subtitle,
+          color: entry.color || null,
           status: entry.status || 'running',
           canInput: entry.status !== 'deleted' && entry.canWrite !== false && entry.interactionMode !== 'read-only',
           canWrite: entry.canWrite !== false,
@@ -1010,7 +1166,6 @@ export const useSessionStore = defineStore('session', () => {
     const registryEntries = Array.from(currentAgentRegistry.value.values())
     const buckets = currentAgentBuckets.value
     const mainAgentId = currentMainAgentId.value
-    const collaborativeColorMap = buildCollaborativeColorMap(registryEntries, buckets, mainAgentId)
 
     return registryEntries
       .filter(entry => entry?.agentId === mainAgentId || entry?.agentKind === 'collaborative')
@@ -1018,20 +1173,22 @@ export const useSessionStore = defineStore('session', () => {
         const bucket = buckets.get(entry.agentId) || createAgentBucket(entry.agentId)
         const isMain = entry.agentId === mainAgentId
         const isCollaborative = entry.agentKind === 'collaborative'
+        const display = inferCollaborativeDisplay(entry, mainAgentId)
+        const displayAgentType = display.effectiveAgentType
 
         return {
           agentId: entry.agentId,
           agentKind: entry.agentKind || null,
-          agentType: entry.agentType || null,
+          agentType: displayAgentType || null,
           teamId: entry.teamId || null,
           parentAgentId: entry.parentAgentId || null,
-          title: entry.title || entry.name || (isMain ? 'Master' : 'Agent'),
-          color: collaborativeColorMap.get(entry.agentId) || entry.color || null,
+          title: display.title || (isMain ? 'Master' : 'Agent'),
+          color: entry.color || null,
           subtitle: isMain
             ? '主代理'
             : (entry.agentKind === 'execution'
-                ? (entry.agentType || '执行型代理')
-                : (entry.agentType || entry.model || '协作型代理')),
+                ? (displayAgentType || '执行型代理')
+                : (display.subtitle || '协作型代理')),
           status: entry.status || 'running',
           isMain,
           isCollaborative,
@@ -1201,15 +1358,17 @@ export const useSessionStore = defineStore('session', () => {
 
       // 创建前端 SessionData，使用 reactive 包装以支持响应式更新
       const sessionData = reactive(new SessionData(sessionId, projectPath))
+      const eventLog = Array.isArray(result.state?.eventLog) ? result.state.eventLog : []
 
       // 从后端状态恢复数据
-      if (result.state) {
+      if (result.state && eventLog.length === 0) {
         // 使用 reactive 包装每个消息对象以确保响应式
         sessionData.messages = (result.state.messages || []).map(msg => reactive(msg))
         sessionData.inputAttachments = result.state.inputAttachments || []
         sessionData.inputHistory = result.state.inputHistory || []
         sessionData.envInfo = result.state.envInfo || null
         sessionData.silentMessages = (result.state.silentMessages || []).map(msg => reactive(msg))
+        sessionData.taskEvents = (result.state.taskEvents || []).map(event => reactive(event))
         sessionData.runtimeReady = result.state.runtimeReady || false
         // 恢复权限模式
         if (result.state.permissionMode) {
@@ -1233,9 +1392,31 @@ export const useSessionStore = defineStore('session', () => {
         console.log('[SessionStore] No result.state for session:', sessionId, 'result:', result)
       }
 
-      // 存储到 Map
-      rebuildAgentSemanticState(sessionData)
+      // 先放进 Map，方便事件重放直接走统一 reducer
       sessions.value.set(sessionId, sessionData)
+
+      if (eventLog.length > 0) {
+        sessionData.envInfo = result.state?.envInfo || null
+        sessionData.runtimeReady = result.state?.runtimeReady || false
+        sessionData.permissionMode = result.state?.permissionMode || sessionData.permissionMode
+        sessionData.inputAttachments = result.state?.inputAttachments || []
+        sessionData.inputHistory = result.state?.inputHistory || []
+
+        for (const event of eventLog) {
+          handleSessionEvent(event)
+        }
+      } else {
+        for (const silentMessage of sessionData.silentMessages) {
+          recordAgentSemantics(sessionData, silentMessage)
+        }
+
+        for (const taskEvent of sessionData.taskEvents) {
+          recordAgentSemantics(sessionData, taskEvent)
+          handleTaskEvent(sessionData, taskEvent)
+        }
+
+        rebuildAgentSemanticState(sessionData)
+      }
 
       // 设置为当前会话
       currentSessionId.value = sessionId
@@ -1866,8 +2047,14 @@ export const useSessionStore = defineStore('session', () => {
       case 'task-event':
         // 子任务事件（started/progress/notification）
         log('[SessionStore] Task event:', data)
+        session.taskEvents.push(reactive(data))
         recordAgentSemantics(session, data)
         handleTaskEvent(session, data)
+        break
+
+      case 'agent-update':
+        log('[SessionStore] Agent update:', data)
+        recordAgentSemantics(session, data, { sourceEventType: 'agent-update' })
         break
 
       case 'system-message':
@@ -1906,6 +2093,7 @@ export const useSessionStore = defineStore('session', () => {
       'result',
       'env-info',
       'silent-message',
+      'agent-update',
       'system-message',
       'unknown-message',
       'abnormal-exit',
@@ -2815,18 +3003,23 @@ export const useSessionStore = defineStore('session', () => {
             }
           : (task.ccgui || data.ccgui || null)
         // 添加任务完成消息到聊天
-        session.messages.push({
-          id: `task-complete-${taskId}`,
-          role: 'task_complete',
-          taskId: taskId,
-          taskType: task.taskType,
-          description: task.description,
-          summary: task.summary,
-          usage: task.usage,
-          ccgui: taskCcgui,
-          duration: Date.now() - task.startTime,
-          timestamp: new Date()
-        })
+        const existingTaskComplete = session.messages.find(message =>
+          message?.role === 'task_complete' && message?.taskId === taskId
+        )
+        if (!existingTaskComplete) {
+          session.messages.push({
+            id: `task-complete-${taskId}`,
+            role: 'task_complete',
+            taskId: taskId,
+            taskType: task.taskType,
+            description: task.description,
+            summary: task.summary,
+            usage: task.usage,
+            ccgui: taskCcgui,
+            duration: Date.now() - task.startTime,
+            timestamp: new Date()
+          })
+        }
         // 从活跃列表移除
         session.activeTasks.delete(taskId)
         rebuildAgentSemanticState(session)

@@ -41,11 +41,14 @@ function normalizeAgentRegistry(entry = null) {
     agentKind: pickFirstDefined(entry.agentKind, entry.agent_kind),
     agentType: pickFirstDefined(entry.agentType, entry.agent_type),
     name: pickFirstDefined(entry.name, entry.title),
+    color: pickFirstDefined(entry.color, entry.agentColor, entry.agent_color),
     prompt: pickFirstDefined(entry.prompt, entry.description),
     model: pickFirstDefined(entry.model, entry.subModel, entry.sub_model),
     teamId: pickFirstDefined(entry.teamId, entry.team_id),
     parentAgentId: pickFirstDefined(entry.parentAgentId, entry.parent_agent_id),
-    status: pickFirstDefined(entry.status)
+    status: pickFirstDefined(entry.status),
+    canWrite: entry.canWrite !== undefined ? Boolean(entry.canWrite) : null,
+    interactionMode: pickFirstDefined(entry.interactionMode, entry.interaction_mode)
   }).filter(([, value]) => value !== null))
 }
 
@@ -66,6 +69,7 @@ function normalizeOrchestrationEvent(event = null) {
     agentKind: pickFirstDefined(event.agentKind, event.agent_kind),
     agentType: pickFirstDefined(event.agentType, event.agent_type),
     name: pickFirstDefined(event.name),
+    color: pickFirstDefined(event.color, event.agentColor, event.agent_color),
     prompt: pickFirstDefined(event.prompt, event.description),
     model: pickFirstDefined(event.model),
     teamId: pickFirstDefined(event.teamId, event.team_id),
@@ -77,7 +81,9 @@ function normalizeOrchestrationEvent(event = null) {
     result: pickFirstDefined(event.result),
     status: pickFirstDefined(event.status),
     targetKind: pickFirstDefined(event.targetKind, event.target_kind),
-    timestamp: pickFirstDefined(event.timestamp)
+    timestamp: pickFirstDefined(event.timestamp),
+    canWrite: event.canWrite !== undefined ? Boolean(event.canWrite) : null,
+    interactionMode: pickFirstDefined(event.interactionMode, event.interaction_mode)
   }).filter(([, value]) => value !== null))
 }
 
@@ -308,51 +314,6 @@ function normalizeLegacyManagerEvent(message = {}, provider = 'unknown') {
   }
 
   const subtype = typeof message.subtype === 'string' ? message.subtype.trim() : ''
-  if (subtype === 'task_started') {
-    return {
-      eventType: 'task-event',
-      data: {
-        eventType: 'started',
-        taskId: message.task_id || message.taskId || null,
-        taskType: message.task_type || message.taskType || null,
-        description: message.description || null,
-        prompt: message.prompt || null,
-        provider: normalizedProvider,
-        ccgui: attachExistingCcgui(message).ccgui || null,
-        rawMessage: message
-      }
-    }
-  }
-
-  if (subtype === 'task_progress') {
-    return {
-      eventType: 'task-event',
-      data: {
-        eventType: 'progress',
-        taskId: message.task_id || message.taskId || null,
-        usage: message.usage || null,
-        summary: message.summary || null,
-        description: message.description || null,
-        provider: normalizedProvider,
-        ccgui: attachExistingCcgui(message).ccgui || null,
-        rawMessage: message
-      }
-    }
-  }
-
-  if (subtype === 'task_notification') {
-    return {
-      eventType: 'task-event',
-      data: {
-        eventType: 'notification',
-        taskId: message.task_id || message.taskId || null,
-        provider: normalizedProvider,
-        ccgui: attachExistingCcgui(message).ccgui || null,
-        rawMessage: message
-      }
-    }
-  }
-
   if (subtype === 'compact_boundary') {
     return {
       eventType: 'system-notification',
@@ -654,6 +615,8 @@ class SessionInstance {
       provider: 'claude'
     }
     this.silentMessages = []
+    this.taskEvents = []
+    this.eventLog = []
 
     // 流式消息处理状态
     this.currentStreamingAssistantId = null
@@ -713,6 +676,16 @@ class SessionInstance {
       }
 
       const ccguiMessages = historyManager.loadHistory(this.projectId, this.id)
+      const semanticEvents = historyManager.loadSemanticEvents(this.projectId, this.id)
+      this.eventLog = historyManager.loadSessionEvents(this.projectId, this.id)
+      this.silentMessages = semanticEvents
+        .filter(event => event?.eventType === 'silent-message')
+        .map(event => event.payload)
+        .filter(Boolean)
+      this.taskEvents = semanticEvents
+        .filter(event => event?.eventType === 'task-event')
+        .map(event => event.payload)
+        .filter(Boolean)
 
       if (ccguiMessages.length > 0) {
         this.messages = ccguiMessages
@@ -761,6 +734,8 @@ class SessionInstance {
       pendingControlRequest: this.pendingControlRequest,
       envInfo: this.envInfo,
       silentMessages: this.silentMessages,
+      taskEvents: this.taskEvents,
+      eventLog: this.eventLog,
       runtimeReady: this.runtimeManager?.isReady() || false,
       provider: this.provider,
       permissionMode: this.permissionMode
@@ -1581,7 +1556,17 @@ class SessionInstance {
         timestamp: message.timestamp || new Date().toISOString()
       }
       this.silentMessages.push(silentMessage)
+      historyManager.appendSemanticEvent(this.projectId, this.id, {
+        eventType: 'silent-message',
+        timestamp: new Date().toISOString(),
+        payload: silentMessage
+      })
       this.emit('silent-message', silentMessage)
+    })
+
+    manager.on('agent-update', (message) => {
+      const normalizedAgentUpdate = attachExistingCcgui(message)
+      this.emit('agent-update', normalizedAgentUpdate)
     })
 
     manager.on('system-notification', (message) => {
@@ -1609,6 +1594,12 @@ class SessionInstance {
 
     manager.on('task-event', (message) => {
       const normalizedTaskEvent = attachExistingCcgui(message)
+      this.taskEvents.push(normalizedTaskEvent)
+      historyManager.appendSemanticEvent(this.projectId, this.id, {
+        eventType: 'task-event',
+        timestamp: new Date().toISOString(),
+        payload: normalizedTaskEvent
+      })
       this.emit('task-event', normalizedTaskEvent)
     })
 
@@ -2018,6 +2009,68 @@ class SessionInstance {
     return this.messages
   }
 
+  extractControlResponsePayload(response = null) {
+    if (!response || typeof response !== 'object') {
+      return null
+    }
+
+    if (response.response?.response && typeof response.response.response === 'object') {
+      return response.response.response
+    }
+
+    if (response.response && typeof response.response === 'object') {
+      return response.response
+    }
+
+    return null
+  }
+
+  appendControlOutcomeMessage(request = {}, response = null) {
+    const subtype = typeof request?.subtype === 'string' ? request.subtype : ''
+    const payload = this.extractControlResponsePayload(response)
+    if (!payload || payload.error) {
+      return null
+    }
+
+    if (subtype === 'fork_session') {
+      const newSessionId = payload.session_id || payload.new_session_id || '已生成'
+      const message = {
+        id: `fork-${Date.now()}`,
+        role: 'system',
+        subtype: 'fork-notice',
+        content: `✅ 会话分支创建成功\n新会话 ID: ${newSessionId}\n\n您可以在项目列表中找到这个新会话`,
+        timestamp: new Date()
+      }
+      this.messages.push(message)
+      this.saveMessageToHistory(message)
+      this.emit('message', message)
+      return message
+    }
+
+    if (subtype === 'rewind_and_fork') {
+      const newSessionId = payload.new_session_id || payload.session_id || '已生成'
+      const restoredCount = (payload.changed_files || payload.restored_files || payload.filesChanged || []).length || 0
+      const message = {
+        id: `rewind-fork-${Date.now()}`,
+        role: 'system',
+        subtype: 'rewind-and-fork-notice',
+        content:
+          `✅ 已还原并创建分支\n\n` +
+          `📦 新分支 ID: ${newSessionId}\n` +
+          ` (已保存当前状态)\n` +
+          `🔄 还原了 ${restoredCount} 个文件\n\n` +
+          `您可以在项目列表中找到新分支继续探索`,
+        timestamp: new Date()
+      }
+      this.messages.push(message)
+      this.saveMessageToHistory(message)
+      this.emit('message', message)
+      return message
+    }
+
+    return null
+  }
+
   normalizeControlRequestForProvider(request = {}) {
     const normalizedRequest = { ...request }
 
@@ -2194,6 +2247,54 @@ class SessionInstance {
     return resolvedRequest
   }
 
+  updateToolMessageState(toolUseId, updates = {}) {
+    if (!toolUseId || !updates || typeof updates !== 'object') {
+      return null
+    }
+
+    const toolUseIdStr = String(toolUseId)
+    const message = [...this.messages].reverse().find(item =>
+      item &&
+      (item.role === 'tool_use' || item.role === 'diff') &&
+      (
+        String(item.id || '') === toolUseIdStr ||
+        String(item.request_id || '') === toolUseIdStr ||
+        String(item.tool_use_id || '') === toolUseIdStr ||
+        String(item.toolUseId || '') === toolUseIdStr
+      )
+    )
+
+    if (!message) {
+      return null
+    }
+
+    const normalizedUpdates = attachExistingCcgui({
+      ...updates,
+      id: message.id,
+      tool_use_id: updates.tool_use_id || updates.toolUseId || message.request_id || message.tool_use_id || message.id,
+      ccgui: mergeCcguiSemantics(message.ccgui || null, updates.ccgui || null)
+    })
+
+    Object.assign(message, normalizedUpdates)
+    if ((normalizedUpdates.isStreaming === false || normalizedUpdates.isExecuting === false) && !message.duration && message.startTime) {
+      message.duration = Date.now() - message.startTime
+    }
+
+    historyManager.updateMessage(this.projectId, this.id, message.id, {
+      ...normalizedUpdates,
+      duration: message.duration || normalizedUpdates.duration || null
+    })
+    this.emit('message-update', {
+      messageId: message.id,
+      updates: {
+        ...normalizedUpdates,
+        ...(message.duration ? { duration: message.duration } : {})
+      }
+    })
+
+    return message
+  }
+
   /**
    * 发送控制响应（权限批准/拒绝）
    */
@@ -2212,6 +2313,15 @@ class SessionInstance {
           this.saveMessageToHistory(permissionResultMessage)
           this.emit('message', permissionResultMessage)
         }
+      }
+
+      if (!approved && toolName !== 'AskUserQuestion') {
+        const toolUseId = pendingRequest.tool_use_id || pendingRequest.toolUseId || pendingRequest.id || requestId
+        this.updateToolMessageState(toolUseId, {
+          isExecuting: false,
+          isError: true,
+          result: '用户拒绝'
+        })
       }
     }
     if (approved && pendingRequest) {
@@ -2232,6 +2342,14 @@ class SessionInstance {
   sendRuntimeToolResult(toolUseId, content, isError = false) {
     if (!this.runtimeManager || typeof this.runtimeManager.sendToolResult !== 'function') {
       throw new Error('Current provider does not support sendToolResult')
+    }
+
+    if (isError) {
+      this.updateToolMessageState(toolUseId, {
+        isExecuting: false,
+        isError: true,
+        result: content || '(无输出)'
+      })
     }
 
     this.runtimeManager.sendToolResult(toolUseId, content, isError)
@@ -2313,6 +2431,10 @@ class SessionInstance {
     if (this.runtimeManager.sendControlRequest) {
       const response = await this.runtimeManager.sendControlRequest(normalizedRequest)
       if (response) {
+        if (normalizedRequest?.subtype === 'rewind_and_fork' && normalizedRequest?.user_message_id) {
+          this.applyRewindLocally(normalizedRequest.user_message_id, this.extractControlResponsePayload(response) || {})
+        }
+        this.appendControlOutcomeMessage(normalizedRequest, response)
         this.emit('control-response', response)
         return response
       }
@@ -2704,12 +2826,17 @@ class SessionInstance {
    * 向前端发送事件
    */
   emit(eventType, data) {
+    const event = {
+      sessionId: this.id,
+      eventType,
+      data,
+      timestamp: new Date().toISOString()
+    }
+    this.eventLog.push(event)
+    historyManager.appendSessionEvent(this.projectId, this.id, event)
+
     if (this.webContents && !this.webContents.isDestroyed()) {
-      this.webContents.send('session-event', {
-        sessionId: this.id,
-        eventType,
-        data
-      })
+      this.webContents.send('session-event', event)
     }
   }
 

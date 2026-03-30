@@ -32,14 +32,16 @@ class ClaudeAdapter extends ClaudeClient {
       providerPid: null
     }
     this.pendingAgentToolUses = new Map()
+    this.pendingCollaborativePreAgentsByToolUseId = new Map()
+    this.pendingCollaborativePreAgentsByAddressKey = new Map()
+    this.pendingCollaborativePreAgentsByTaskId = new Map()
+    this.pendingCollaborativePreAgentsByProviderAgentId = new Map()
+    this.collaborativeAddressToAgentId = new Map()
     this.taskIdToAgentId = new Map()
     this.toolUseIdToAgentId = new Map()
     this.providerAgentIdToAgentId = new Map()
-    this.agentRegistry = new Map()
+    this.startedExecutionAgentIds = new Set()
     this.teamNameToTeamId = new Map()
-    this.teamLeadByTeamId = new Map()
-    this.teamMembersByTeamId = new Map()
-    this.teammateNameToAgentId = new Map()
     this.sidechainMessageIds = new Set()
   }
 
@@ -50,6 +52,23 @@ class ClaudeAdapter extends ClaudeClient {
     }
   }
 
+  pickTeamMemberAgentType(...values) {
+    for (const value of values) {
+      if (typeof value !== 'string') {
+        continue
+      }
+      const normalized = value.trim()
+      if (!normalized) {
+        continue
+      }
+      if (normalized.toLowerCase() === 'team-member') {
+        continue
+      }
+      return normalized
+    }
+    return 'team-member'
+  }
+
   resolveAgentColor(value) {
     if (typeof value !== 'string') {
       return null
@@ -58,13 +77,222 @@ class ClaudeAdapter extends ClaudeClient {
     return trimmed || null
   }
 
+  buildTeamMemberAddressKey(name = null, teamName = null) {
+    const normalizedName = String(name || '').trim()
+    const normalizedTeamName = String(teamName || '').trim()
+    if (!normalizedName || !normalizedTeamName) {
+      return null
+    }
+    return `${normalizedName}@${normalizedTeamName}`
+  }
+
+  createCollaborativePreAgent({
+    toolUseId = null,
+    name = null,
+    teamName = null,
+    prompt = null,
+    description = null,
+    model = null,
+    agentType = null
+  } = {}) {
+    if (!toolUseId) {
+      return null
+    }
+
+    const existing = this.pendingCollaborativePreAgentsByToolUseId.get(toolUseId) || null
+    const nextPreAgent = {
+      stage: 'pre',
+      toolUseId,
+      name: name || existing?.name || null,
+      teamName: teamName || existing?.teamName || null,
+      addressKey: this.buildTeamMemberAddressKey(name, teamName) || existing?.addressKey || null,
+      prompt: prompt || existing?.prompt || null,
+      description: description || existing?.description || null,
+      model: model || existing?.model || null,
+      agentType: agentType || existing?.agentType || null,
+      taskId: existing?.taskId || null,
+      providerAgentId: existing?.providerAgentId || null,
+      teammateId: existing?.teammateId || null,
+      pendingTaskStartedMessage: existing?.pendingTaskStartedMessage || null
+    }
+
+    return this.updateCollaborativePreAgent(nextPreAgent, {})
+  }
+
+  findCollaborativePreAgent({
+    toolUseId = null,
+    teammateId = null,
+    providerAgentId = null,
+    taskId = null,
+    name = null,
+    teamName = null
+  } = {}) {
+    if (toolUseId && this.pendingCollaborativePreAgentsByToolUseId.has(toolUseId)) {
+      return this.pendingCollaborativePreAgentsByToolUseId.get(toolUseId)
+    }
+    if (providerAgentId && this.pendingCollaborativePreAgentsByProviderAgentId.has(providerAgentId)) {
+      return this.pendingCollaborativePreAgentsByProviderAgentId.get(providerAgentId)
+    }
+    if (taskId && this.pendingCollaborativePreAgentsByTaskId.has(taskId)) {
+      return this.pendingCollaborativePreAgentsByTaskId.get(taskId)
+    }
+    if (teammateId && this.pendingCollaborativePreAgentsByAddressKey.has(teammateId)) {
+      return this.pendingCollaborativePreAgentsByAddressKey.get(teammateId)
+    }
+    const addressKey = this.buildTeamMemberAddressKey(name, teamName)
+    if (addressKey && this.pendingCollaborativePreAgentsByAddressKey.has(addressKey)) {
+      return this.pendingCollaborativePreAgentsByAddressKey.get(addressKey)
+    }
+    return null
+  }
+
+  updateCollaborativePreAgent(preAgent, patch = {}) {
+    if (!preAgent?.toolUseId) {
+      return null
+    }
+
+    const nextPreAgent = {
+      ...preAgent,
+      ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
+    }
+
+    const previous = this.pendingCollaborativePreAgentsByToolUseId.get(nextPreAgent.toolUseId) || null
+    if (previous?.addressKey && previous.addressKey !== nextPreAgent.addressKey) {
+      this.pendingCollaborativePreAgentsByAddressKey.delete(previous.addressKey)
+    }
+    if (previous?.taskId && previous.taskId !== nextPreAgent.taskId) {
+      this.pendingCollaborativePreAgentsByTaskId.delete(previous.taskId)
+    }
+    if (previous?.providerAgentId && previous.providerAgentId !== nextPreAgent.providerAgentId) {
+      this.pendingCollaborativePreAgentsByProviderAgentId.delete(previous.providerAgentId)
+    }
+
+    this.pendingCollaborativePreAgentsByToolUseId.set(nextPreAgent.toolUseId, nextPreAgent)
+    if (nextPreAgent.addressKey) {
+      this.pendingCollaborativePreAgentsByAddressKey.set(nextPreAgent.addressKey, nextPreAgent)
+    }
+    if (nextPreAgent.taskId) {
+      this.pendingCollaborativePreAgentsByTaskId.set(nextPreAgent.taskId, nextPreAgent)
+    }
+    if (nextPreAgent.providerAgentId) {
+      this.pendingCollaborativePreAgentsByProviderAgentId.set(nextPreAgent.providerAgentId, nextPreAgent)
+    }
+
+    return nextPreAgent
+  }
+
+  clearCollaborativePreAgent(preAgent) {
+    if (!preAgent?.toolUseId) {
+      return
+    }
+    this.pendingCollaborativePreAgentsByToolUseId.delete(preAgent.toolUseId)
+    if (preAgent.addressKey) {
+      this.pendingCollaborativePreAgentsByAddressKey.delete(preAgent.addressKey)
+    }
+    if (preAgent.taskId) {
+      this.pendingCollaborativePreAgentsByTaskId.delete(preAgent.taskId)
+    }
+    if (preAgent.providerAgentId) {
+      this.pendingCollaborativePreAgentsByProviderAgentId.delete(preAgent.providerAgentId)
+    }
+  }
+
+  clearPendingCollaborativePreAgents() {
+    this.pendingCollaborativePreAgentsByToolUseId.clear()
+    this.pendingCollaborativePreAgentsByAddressKey.clear()
+    this.pendingCollaborativePreAgentsByTaskId.clear()
+    this.pendingCollaborativePreAgentsByProviderAgentId.clear()
+  }
+
+  clearPendingAgentToolUses() {
+    this.pendingAgentToolUses.clear()
+  }
+
+  isTerminalTaskStatus(status) {
+    const normalized = String(status || '').trim().toLowerCase()
+    return normalized === 'completed' ||
+      normalized === 'stopped' ||
+      normalized === 'failed' ||
+      normalized === 'cancelled' ||
+      normalized === 'canceled'
+  }
+
+  clearProviderAgentMappings(agentId) {
+    if (!agentId) {
+      return
+    }
+    for (const [providerAgentId, mappedAgentId] of this.providerAgentIdToAgentId.entries()) {
+      if (mappedAgentId === agentId) {
+        this.providerAgentIdToAgentId.delete(providerAgentId)
+      }
+    }
+  }
+
+  clearCollaborativeAddressMappings(agentId) {
+    if (!agentId) {
+      return
+    }
+    for (const [addressKey, mappedAgentId] of this.collaborativeAddressToAgentId.entries()) {
+      if (mappedAgentId === agentId) {
+        this.collaborativeAddressToAgentId.delete(addressKey)
+      }
+    }
+  }
+
+  cleanupAgentCorrelation({ agentId = null, taskId = null, toolUseId = null, clearProvider = false } = {}) {
+    if (taskId) {
+      this.taskIdToAgentId.delete(taskId)
+    }
+    if (toolUseId) {
+      this.toolUseIdToAgentId.delete(toolUseId)
+    }
+    if (agentId) {
+      this.startedExecutionAgentIds.delete(agentId)
+      if (clearProvider) {
+        this.clearProviderAgentMappings(agentId)
+        this.clearCollaborativeAddressMappings(agentId)
+      }
+    }
+  }
+
   sanitizeSemanticId(value, fallback = 'agent') {
     const normalized = String(value || '')
       .trim()
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/[^\p{L}\p{N}]+/gu, '-')
       .replace(/^-+|-+$/g, '')
     return normalized || fallback
+  }
+
+  normalizeMainAgentAlias(value) {
+    const normalized = String(value || '')
+      .replace(/^@/, '')
+      .trim()
+      .toLowerCase()
+
+    if (!normalized) {
+      return null
+    }
+
+    if (
+      normalized === 'master' ||
+      normalized === 'team-lead' ||
+      normalized === 'team lead' ||
+      normalized === 'teamlead' ||
+      normalized.startsWith('team-lead@')
+    ) {
+      return 'master'
+    }
+
+    return null
+  }
+
+  isCollaborativeAgentId(agentId) {
+    const normalized = String(agentId || '').trim()
+    return normalized.startsWith('claude-team-member:') ||
+      normalized.startsWith('claude-team:') ||
+      normalized.startsWith('team-lead@') ||
+      normalized === 'master'
   }
 
   buildCcguiPatch({ registry = null, orchestration = null, attribution = null } = {}) {
@@ -98,19 +326,6 @@ class ClaudeAdapter extends ClaudeClient {
     return Object.keys(ccgui).length > 0 ? ccgui : null
   }
 
-  mergeRegistry(entry = {}) {
-    if (!entry?.agentId) {
-      return null
-    }
-
-    const nextEntry = {
-      ...(this.agentRegistry.get(entry.agentId) || {}),
-      ...Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== null && value !== undefined))
-    }
-    this.agentRegistry.set(entry.agentId, nextEntry)
-    return nextEntry
-  }
-
   emitAgentSilent(ccgui, rawMessage = null, extra = {}) {
     if (!ccgui) {
       return
@@ -126,14 +341,59 @@ class ClaudeAdapter extends ClaudeClient {
     })
   }
 
+  emitAgentUpdate(registry = {}, rawMessage = null, extra = {}) {
+    const normalizedRegistry = registry?.agentId
+      ? Object.fromEntries(Object.entries(registry).filter(([, value]) => value !== null && value !== undefined))
+      : null
+    if (!normalizedRegistry?.agentId) {
+      return
+    }
+
+    this.emit('agent-update', {
+      provider: 'claude',
+      ...(rawMessage ? { rawMessage } : {}),
+      ...extra,
+      ccgui: this.buildCcguiPatch({ registry: normalizedRegistry }),
+      timestamp: new Date().toISOString()
+    })
+  }
+
   buildLifecycleCcgui(entry = {}, orchestration = {}) {
-    const mergedRegistry = this.mergeRegistry(entry)
+    const registry = entry?.agentId
+      ? Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== null && value !== undefined))
+      : null
     return this.buildCcguiPatch({
-      registry: mergedRegistry,
+      registry,
       orchestration: {
         timestamp: new Date().toISOString(),
         ...orchestration,
-        agentId: orchestration.agentId || mergedRegistry?.agentId
+        agentId: orchestration.agentId || registry?.agentId
+      }
+    })
+  }
+
+  buildCollaborativeTaskCcgui({
+    agentId = null,
+    teamId = null,
+    status = 'running'
+  } = {}, orchestration = {}) {
+    if (!agentId) {
+      return null
+    }
+
+    return this.buildCcguiPatch({
+      registry: {
+        agentId,
+        agentKind: 'collaborative',
+        teamId: teamId || null,
+        parentAgentId: teamId ? 'master' : null,
+        status,
+        ...this.getCollaborativeReadOnlyFields()
+      },
+      orchestration: {
+        timestamp: new Date().toISOString(),
+        ...orchestration,
+        agentId
       }
     })
   }
@@ -186,26 +446,41 @@ class ClaudeAdapter extends ClaudeClient {
     teammateId = null,
     providerAgentId = null,
     name = null,
+    teamName = null,
     toolUseId = null
   } = {}) {
+    const preAgent = this.findCollaborativePreAgent({
+      toolUseId,
+      teammateId,
+      providerAgentId,
+      taskId
+    })
+    const stableAddressKey =
+      teammateId ||
+      preAgent?.addressKey ||
+      this.buildTeamMemberAddressKey(name, teamName || preAgent?.teamName || null)
+    let unifiedAgentId = null
+
     if (providerAgentId && this.providerAgentIdToAgentId.has(providerAgentId)) {
-      return this.providerAgentIdToAgentId.get(providerAgentId)
-    }
-    if (taskId && this.taskIdToAgentId.has(taskId)) {
-      return this.taskIdToAgentId.get(taskId)
-    }
-    if (toolUseId && this.toolUseIdToAgentId.has(toolUseId)) {
-      return this.toolUseIdToAgentId.get(toolUseId)
+      unifiedAgentId = this.providerAgentIdToAgentId.get(providerAgentId)
+    } else if (stableAddressKey && this.collaborativeAddressToAgentId.has(stableAddressKey)) {
+      unifiedAgentId = this.collaborativeAddressToAgentId.get(stableAddressKey)
+    } else if (toolUseId && this.toolUseIdToAgentId.has(toolUseId)) {
+      unifiedAgentId = this.toolUseIdToAgentId.get(toolUseId)
+    } else if (!stableAddressKey && taskId && this.taskIdToAgentId.has(taskId)) {
+      unifiedAgentId = this.taskIdToAgentId.get(taskId)
     }
 
-    const identity = providerAgentId || teammateId || taskId || toolUseId || name
+    const identity = providerAgentId || stableAddressKey
     if (!identity) {
       return null
     }
 
-    const unifiedAgentId = teamId
-      ? `claude-team-member:${this.sanitizeSemanticId(teamId)}:${this.sanitizeSemanticId(identity)}`
-      : `claude-team-member:${this.sanitizeSemanticId(identity)}`
+    if (!unifiedAgentId) {
+      unifiedAgentId = teamId
+        ? `claude-team-member:${this.sanitizeSemanticId(teamId)}:${this.sanitizeSemanticId(identity)}`
+        : `claude-team-member:${this.sanitizeSemanticId(identity)}`
+    }
 
     if (taskId) {
       this.taskIdToAgentId.set(taskId, unifiedAgentId)
@@ -216,22 +491,33 @@ class ClaudeAdapter extends ClaudeClient {
     if (providerAgentId) {
       this.providerAgentIdToAgentId.set(providerAgentId, unifiedAgentId)
     }
-    if (name) {
-      this.teammateNameToAgentId.set(String(name).trim(), unifiedAgentId)
+    if (stableAddressKey) {
+      this.collaborativeAddressToAgentId.set(stableAddressKey, unifiedAgentId)
     }
-    if (teamId) {
-      const memberSet = this.teamMembersByTeamId.get(teamId) || new Set()
-      memberSet.add(unifiedAgentId)
-      this.teamMembersByTeamId.set(teamId, memberSet)
-    }
-
     return unifiedAgentId
   }
 
   getAttributionForClaudeMessage(message = {}) {
     const providerAgentId = message?.agent_id || message?.agentId || null
+    const normalizedMainProviderAgentId = this.normalizeMainAgentAlias(providerAgentId)
+    if (normalizedMainProviderAgentId) {
+      return {
+        agentId: normalizedMainProviderAgentId,
+        actorId: normalizedMainProviderAgentId
+      }
+    }
+
     if (providerAgentId && this.providerAgentIdToAgentId.has(providerAgentId)) {
       const agentId = this.providerAgentIdToAgentId.get(providerAgentId)
+      return {
+        agentId,
+        actorId: agentId
+      }
+    }
+
+    const teammateId = message?.teammate_id || null
+    if (teammateId && this.collaborativeAddressToAgentId.has(teammateId)) {
+      const agentId = this.collaborativeAddressToAgentId.get(teammateId)
       return {
         agentId,
         actorId: agentId
@@ -260,13 +546,25 @@ class ClaudeAdapter extends ClaudeClient {
     const sender = message?.routing?.sender || message?.sender || null
     const target = message?.routing?.target || null
     const teamId = this.resolveTeamId(teamName)
-    const actorId = sender
-      ? (this.teammateNameToAgentId.get(String(sender).replace(/^@/, '').trim()) || this.teamLeadByTeamId.get(teamId) || null)
+    const senderAddressKey = this.buildTeamMemberAddressKey(
+      sender ? String(sender).replace(/^@/, '').trim() : null,
+      teamName
+    )
+    if (senderAddressKey && this.collaborativeAddressToAgentId.has(senderAddressKey)) {
+      const agentId = this.collaborativeAddressToAgentId.get(senderAddressKey)
+      return {
+        agentId,
+        actorId: agentId
+      }
+    }
+    const normalizedSender = sender
+      ? String(sender).replace(/^@/, '').trim().toLowerCase()
       : null
+    const actorId = this.normalizeMainAgentAlias(normalizedSender)
     const targetId = target
       ? (target === '@team'
           ? teamId
-          : (this.teammateNameToAgentId.get(String(target).replace(/^@/, '').trim()) || null))
+          : null)
       : null
 
     if (actorId || targetId) {
@@ -287,17 +585,31 @@ class ClaudeAdapter extends ClaudeClient {
 
     const input = toolUse.toolInput || {}
     const rawName = String(toolUse.rawName || '').trim()
-    this.pendingAgentToolUses.set(toolUse.toolUseId, {
+    const previous = this.pendingAgentToolUses.get(toolUse.toolUseId) || null
+    const nextCandidate = {
       rawName,
       toolUseId: toolUse.toolUseId,
-      prompt: input.prompt || input.task || input.description || null,
-      description: input.description || null,
-      model: input.model || null,
-      name: input.name || input.role || null,
-      agentType: input.subagent_type || input.subagentType || input.agentType || input.agent_type || input.role || null,
-      teamName: input.team_name || input.teamName || null,
+      prompt: input.prompt || input.task || input.description || previous?.prompt || null,
+      description: input.description || previous?.description || null,
+      model: input.model || previous?.model || null,
+      name: input.name || input.role || previous?.name || null,
+      agentType: input.subagent_type || input.subagentType || input.agentType || input.agent_type || input.role || previous?.agentType || null,
+      teamName: input.team_name || input.teamName || previous?.teamName || null,
       rawMessage
-    })
+    }
+    this.pendingAgentToolUses.set(toolUse.toolUseId, nextCandidate)
+
+    if (rawName === 'Agent') {
+      this.createCollaborativePreAgent({
+        toolUseId: toolUse.toolUseId,
+        name: nextCandidate.name || null,
+        teamName: nextCandidate.teamName || null,
+        prompt: nextCandidate.prompt || null,
+        description: nextCandidate.description || null,
+        model: nextCandidate.model || null,
+        agentType: nextCandidate.agentType || null
+      })
+    }
   }
 
   emitTeamCreateLifecycle(toolResult = {}, rawMessage = null) {
@@ -330,26 +642,7 @@ class ClaudeAdapter extends ClaudeClient {
     if (!leadProviderId) {
       return
     }
-
-    this.teamLeadByTeamId.set(teamId, leadProviderId)
-    const leadCcgui = this.buildLifecycleCcgui({
-      agentId: leadProviderId,
-      agentKind: 'collaborative',
-      agentType: 'team-lead',
-      name: 'Team Lead',
-      teamId,
-      status: 'running',
-      ...this.getCollaborativeReadOnlyFields()
-    }, {
-      eventType: 'start',
-      agentId: leadProviderId,
-      agentKind: 'collaborative',
-      agentType: 'team-lead',
-      teamId,
-      source: 'team_create',
-      status: 'running'
-    })
-    this.emitAgentSilent(leadCcgui, rawMessage)
+    this.providerAgentIdToAgentId.set(leadProviderId, 'master')
   }
 
   emitTeamDeleteLifecycle(toolResult = {}, rawMessage = null) {
@@ -357,22 +650,6 @@ class ClaudeAdapter extends ClaudeClient {
     const teamId = this.resolveTeamId(teamName)
     if (!teamId) {
       return
-    }
-
-    for (const agentId of this.teamMembersByTeamId.get(teamId) || []) {
-      const memberDelete = this.buildLifecycleCcgui({
-        agentId,
-        status: 'deleted'
-      }, {
-        eventType: 'delete',
-        agentId,
-        reason: 'team_cleanup',
-        targetKind: 'agent',
-        status: 'deleted',
-        actorId: this.teamLeadByTeamId.get(teamId) || null,
-        targetId: agentId
-      })
-      this.emitAgentSilent(memberDelete, rawMessage)
     }
 
     const teamDelete = this.buildLifecycleCcgui({
@@ -384,7 +661,7 @@ class ClaudeAdapter extends ClaudeClient {
       reason: 'team_cleanup',
       targetKind: 'team',
       status: 'deleted',
-      actorId: this.teamLeadByTeamId.get(teamId) || null,
+      actorId: 'master',
       targetId: teamId
     })
     this.emitAgentSilent(teamDelete, rawMessage)
@@ -590,6 +867,8 @@ class ClaudeAdapter extends ClaudeClient {
 
     if (message.type === 'control_cancel_request') {
       this.currentAssistantMessage = null
+      this.clearPendingCollaborativePreAgents()
+      this.clearPendingAgentToolUses()
       this.emit('interrupt', message)
       return
     }
@@ -618,6 +897,8 @@ class ClaudeAdapter extends ClaudeClient {
     }
 
     if (message.type === 'result') {
+      this.clearPendingCollaborativePreAgents()
+      this.clearPendingAgentToolUses()
       if (this.shouldTreatAsErrorResult(message)) {
         const subtype = message?.subtype || 'error'
         const errorText =
@@ -777,12 +1058,36 @@ class ClaudeAdapter extends ClaudeClient {
       const candidate = this.pendingAgentToolUses.get(message.tool_use_id) || null
       const teamId = this.resolveTeamId(message.team_name || candidate?.teamName || null)
       const isTeamMember = message.task_type === 'in_process_teammate' || Boolean(message.teammate_id || message.agent_id || teamId)
+      const preAgent = isTeamMember
+        ? this.findCollaborativePreAgent({
+            toolUseId: message.tool_use_id || candidate?.toolUseId || null,
+            taskId: message.task_id,
+            providerAgentId: message.agent_id,
+            teammateId: message.teammate_id,
+            name: message.name || candidate?.name || candidate?.agentType,
+            teamName: message.team_name || candidate?.teamName || null
+          })
+        : null
       const isKnownExecutionTask = Boolean(
         candidate?.rawName === 'Agent' ||
         (message.task_id && this.taskIdToAgentId.has(message.task_id)) ||
         (message.tool_use_id && this.toolUseIdToAgentId.has(message.tool_use_id)) ||
         (message.agent_id && this.providerAgentIdToAgentId.has(message.agent_id))
       )
+      if (isTeamMember && preAgent) {
+        this.updateCollaborativePreAgent(preAgent, {
+          taskId: message.task_id || preAgent.taskId || null,
+          pendingTaskStartedMessage: message,
+          name: message.name || candidate?.name || preAgent.name || null,
+          teamName: message.team_name || candidate?.teamName || preAgent.teamName || null,
+          addressKey: preAgent.addressKey || this.buildTeamMemberAddressKey(
+            message.name || candidate?.name || preAgent.name || null,
+            message.team_name || candidate?.teamName || preAgent.teamName || null
+          )
+        })
+        return
+      }
+
       const agentId = isTeamMember
         ? this.resolveTeamMemberAgentId({
             teamId,
@@ -790,54 +1095,56 @@ class ClaudeAdapter extends ClaudeClient {
             teammateId: message.teammate_id,
             providerAgentId: message.agent_id,
             name: message.name || candidate?.name || candidate?.agentType,
+            teamName: message.team_name || candidate?.teamName || preAgent?.teamName || null,
             toolUseId: message.tool_use_id || candidate?.toolUseId || null
           })
         : (isKnownExecutionTask
-            ? this.resolveExecutionAgentId({
-                taskId: message.task_id,
-                toolUseId: message.tool_use_id || candidate?.toolUseId || null,
-                providerAgentId: message.agent_id || null
-              })
-            : null)
+          ? this.resolveExecutionAgentId({
+              taskId: message.task_id,
+              toolUseId: message.tool_use_id || candidate?.toolUseId || null,
+              providerAgentId: message.agent_id || null
+            })
+          : null)
       const agentKind = isTeamMember ? 'collaborative' : 'execution'
       const agentType = isTeamMember
-        ? (candidate?.agentType || message.name || 'team-member')
+        ? this.pickTeamMemberAgentType(
+            message.agent_type,
+            message.agentType,
+            candidate?.agentType
+          )
         : (candidate?.agentType || 'subagent')
       const lifecycleCcgui = agentId
-        ? this.buildLifecycleCcgui({
-            agentId,
-            agentKind,
-            agentType,
-            name: message.name || candidate?.name || agentType,
-            prompt: message.prompt || candidate?.prompt || candidate?.description || null,
-            model: candidate?.model || null,
-            teamId,
-            parentAgentId: teamId ? (this.teamLeadByTeamId.get(teamId) || null) : null,
-            status: 'running',
-            ...(isTeamMember ? this.getCollaborativeReadOnlyFields() : {})
-          }, {
-            eventType: 'start',
-            agentId,
-            agentKind,
-            agentType,
-            name: message.name || candidate?.name || agentType,
-            prompt: message.prompt || candidate?.prompt || candidate?.description || null,
-            model: candidate?.model || null,
-            teamId,
-            parentAgentId: teamId ? (this.teamLeadByTeamId.get(teamId) || null) : null,
-            source: isTeamMember ? 'team_member_spawn' : 'subagent_spawn',
-            status: 'running'
-          })
+        ? (isTeamMember
+            ? this.buildCcguiPatch({
+                attribution: {
+                  agentId,
+                  actorId: agentId
+                }
+              })
+            : this.buildLifecycleCcgui({
+                agentId,
+                agentKind,
+                agentType,
+                name: message.name || candidate?.name || agentType,
+                prompt: message.prompt || candidate?.prompt || candidate?.description || null,
+                model: candidate?.model || null,
+                teamId,
+                parentAgentId: teamId ? 'master' : null,
+                status: 'running'
+              }, {
+                eventType: 'start',
+                agentId,
+                agentKind,
+                agentType,
+                name: message.name || candidate?.name || agentType,
+                prompt: message.prompt || candidate?.prompt || candidate?.description || null,
+                model: candidate?.model || null,
+                teamId,
+                parentAgentId: teamId ? 'master' : null,
+                source: 'subagent_spawn',
+                status: 'running'
+              }))
         : null
-      if (isTeamMember && agentId) {
-        this.watchSidechainAgent({
-          agentId,
-          name: message.name || candidate?.name || agentType,
-          prompt: message.prompt || candidate?.prompt || candidate?.description || null,
-          teamId,
-          agentType: candidate?.agentType || agentType || null
-        })
-      }
       this.emit('task-event', {
         eventType: 'started',
         taskId: message.task_id,
@@ -889,6 +1196,14 @@ class ClaudeAdapter extends ClaudeClient {
         }),
         rawMessage: message
       })
+      if (this.isTerminalTaskStatus(message.status) && agentId && !this.isCollaborativeAgentId(agentId)) {
+        this.cleanupAgentCorrelation({
+          agentId,
+          taskId: message.task_id || null,
+          toolUseId: message.tool_use_id || null,
+          clearProvider: true
+        })
+      }
       return
     }
 
@@ -981,7 +1296,9 @@ class ClaudeAdapter extends ClaudeClient {
           })
         }
         this.toolUseMessages.set(toolUse.toolUseId, {
-          toolInputBuffer: ''
+          toolInputBuffer: '',
+          rawName: toolUse.rawName,
+          toolName: toolUse.toolName
         })
         if (['Agent', 'TeamCreate', 'SendMessage', 'TeamDelete'].includes(toolUse.rawName)) {
           this.rememberAgentToolUse(toolUse, message)
@@ -1059,6 +1376,14 @@ class ClaudeAdapter extends ClaudeClient {
 
         try {
           const parsedInput = JSON.parse(toolState.toolInputBuffer)
+          if (toolState.rawName && ['Agent', 'TeamCreate', 'SendMessage', 'TeamDelete'].includes(toolState.rawName)) {
+            this.rememberAgentToolUse({
+              rawName: toolState.rawName,
+              toolName: toolState.toolName || toolState.rawName,
+              toolUseId: contentBlockId,
+              toolInput: parsedInput
+            }, message)
+          }
           this.emit('message-update', {
             messageId: contentBlockId,
             updates: { toolInput: { ...parsedInput } }
@@ -1169,6 +1494,13 @@ class ClaudeAdapter extends ClaudeClient {
     const toolResult = message?.tool_use_result || {}
     const resultUsage = toolResult?.usage || toolResultContent?.usage || null
     const teamId = this.resolveTeamId(toolResult.team_name || candidate?.teamName || null)
+    const preAgent = this.findCollaborativePreAgent({
+      toolUseId,
+      teammateId: toolResult.teammate_id,
+      providerAgentId: toolResult.agent_id || toolResult.agentId || null,
+      name: toolResult.name || candidate?.name || null,
+      teamName: toolResult.team_name || candidate?.teamName || null
+    })
     const isTeamCreate = candidate?.rawName === 'TeamCreate'
     const isTeamDelete = candidate?.rawName === 'TeamDelete'
     const isSendMessage = candidate?.rawName === 'SendMessage'
@@ -1181,9 +1513,11 @@ class ClaudeAdapter extends ClaudeClient {
     const agentId = isTeamMember
       ? this.resolveTeamMemberAgentId({
           teamId,
+          taskId: preAgent?.taskId || null,
           teammateId: toolResult.teammate_id,
           providerAgentId: toolResult.agent_id || toolResult.agentId || null,
           name: toolResult.name || candidate?.name || null,
+          teamName: toolResult.team_name || candidate?.teamName || preAgent?.teamName || null,
           toolUseId
         })
       : (isExecutionAgentResult
@@ -1205,10 +1539,32 @@ class ClaudeAdapter extends ClaudeClient {
     } else if (isTeamDelete) {
       this.emitTeamDeleteLifecycle(toolResult, message)
     } else if (isTeamMember && agentId) {
+      const nextPreAgent = preAgent
+        ? this.updateCollaborativePreAgent(preAgent, {
+            taskId: preAgent.taskId || null,
+            providerAgentId: toolResult.agent_id || toolResult.agentId || preAgent.providerAgentId || null,
+            teammateId: toolResult.teammate_id || preAgent.teammateId || null,
+            name: toolResult.name || candidate?.name || preAgent.name || null,
+            teamName: toolResult.team_name || candidate?.teamName || preAgent.teamName || null,
+            addressKey: this.buildTeamMemberAddressKey(
+              toolResult.name || candidate?.name || preAgent.name || null,
+              toolResult.team_name || candidate?.teamName || preAgent.teamName || null
+            ) || preAgent.addressKey,
+            prompt: candidate?.prompt || candidate?.description || preAgent.prompt || null,
+            description: candidate?.description || preAgent.description || null,
+            model: candidate?.model || preAgent.model || null,
+            agentType: candidate?.agentType || preAgent.agentType || null
+          })
+        : null
+      const collaborativeAgentType = this.pickTeamMemberAgentType(
+        toolResult.agent_type,
+        toolResult.agentType,
+        candidate?.agentType
+      )
       const startCcgui = this.buildLifecycleCcgui({
         agentId,
         agentKind: 'collaborative',
-        agentType: candidate?.agentType || toolResult.name || 'team-member',
+        agentType: collaborativeAgentType,
         name: toolResult.name || candidate?.name || null,
         color: this.resolveAgentColor(
           toolResult.color
@@ -1222,14 +1578,14 @@ class ClaudeAdapter extends ClaudeClient {
         prompt: candidate?.prompt || candidate?.description || null,
         model: candidate?.model || null,
         teamId,
-        parentAgentId: teamId ? (this.teamLeadByTeamId.get(teamId) || null) : null,
+        parentAgentId: teamId ? 'master' : null,
         status: 'running',
         ...this.getCollaborativeReadOnlyFields()
       }, {
         eventType: 'start',
         agentId,
         agentKind: 'collaborative',
-        agentType: candidate?.agentType || toolResult.name || 'team-member',
+        agentType: collaborativeAgentType,
         name: toolResult.name || candidate?.name || null,
         color: this.resolveAgentColor(
           toolResult.color
@@ -1243,21 +1599,51 @@ class ClaudeAdapter extends ClaudeClient {
         prompt: candidate?.prompt || candidate?.description || null,
         model: candidate?.model || null,
         teamId,
-        parentAgentId: teamId ? (this.teamLeadByTeamId.get(teamId) || null) : null,
-        source: 'team_member_spawn',
+        parentAgentId: teamId ? 'master' : null,
+        source: 'agent_start',
         status: 'running'
       })
       this.emitAgentSilent(startCcgui, message)
-      this.watchSidechainAgent({
-        agentId,
-        name: toolResult.name || candidate?.name || null,
-        prompt: candidate?.prompt || candidate?.description || null,
-        teamId,
-        agentType: candidate?.agentType || toolResult.name || null
+
+      if (nextPreAgent?.pendingTaskStartedMessage) {
+        this.emit('task-event', {
+          eventType: 'started',
+          taskId: nextPreAgent.pendingTaskStartedMessage.task_id,
+          taskType: nextPreAgent.pendingTaskStartedMessage.task_type,
+          description: nextPreAgent.pendingTaskStartedMessage.description,
+          prompt: nextPreAgent.pendingTaskStartedMessage.prompt,
+          tool_use_id: nextPreAgent.pendingTaskStartedMessage.tool_use_id || null,
+          ccgui: this.buildCcguiPatch({
+            attribution: {
+              agentId,
+              actorId: agentId
+            }
+          }),
+          rawMessage: nextPreAgent.pendingTaskStartedMessage
+        })
+      }
+
+      this.clearCollaborativePreAgent(nextPreAgent || preAgent)
+    } else if (isTeamMember && preAgent) {
+      this.updateCollaborativePreAgent(preAgent, {
+        taskId: preAgent.taskId || null,
+        providerAgentId: toolResult.agent_id || toolResult.agentId || preAgent.providerAgentId || null,
+        teammateId: toolResult.teammate_id || preAgent.teammateId || null,
+        name: toolResult.name || candidate?.name || preAgent.name || null,
+        teamName: toolResult.team_name || candidate?.teamName || preAgent.teamName || null,
+        addressKey: this.buildTeamMemberAddressKey(
+          toolResult.name || candidate?.name || preAgent.name || null,
+          toolResult.team_name || candidate?.teamName || preAgent.teamName || null
+        ) || preAgent.addressKey,
+        prompt: toolResult.prompt || candidate?.prompt || preAgent.prompt || null,
+        description: candidate?.description || preAgent.description || null,
+        model: toolResult.model || candidate?.model || preAgent.model || null,
+        agentType: toolResult.agent_type || toolResult.agentType || candidate?.agentType || preAgent.agentType || null
       })
     }
 
-    if (!isTeamCreate && !isTeamDelete && !isTeamMember && isExecutionAgentResult && agentId && !this.agentRegistry.has(agentId)) {
+    if (!isTeamCreate && !isTeamDelete && !isTeamMember && isExecutionAgentResult && agentId && !this.startedExecutionAgentIds.has(agentId)) {
+      this.startedExecutionAgentIds.add(agentId)
       const startCcgui = this.buildLifecycleCcgui({
         agentId,
         agentKind: 'execution',
@@ -1449,6 +1835,10 @@ class ClaudeAdapter extends ClaudeClient {
         continue
       }
 
+      if (['Agent', 'TeamCreate', 'SendMessage', 'TeamDelete'].includes(toolUse.rawName)) {
+        this.rememberAgentToolUse(toolUse, message)
+      }
+
       const toolUseId = toolUse.toolUseId || `tool-${Date.now()}`
       if (this.toolUseMessages.has(toolUseId)) {
         continue
@@ -1456,9 +1846,6 @@ class ClaudeAdapter extends ClaudeClient {
       this.toolUseMessages.set(toolUseId, {
         toolInputBuffer: ''
       })
-      if (['Agent', 'TeamCreate', 'SendMessage', 'TeamDelete'].includes(toolUse.rawName)) {
-        this.rememberAgentToolUse(toolUse, message)
-      }
 
       this.emit('message-start', {
         id: toolUseId,
@@ -1497,7 +1884,27 @@ class ClaudeAdapter extends ClaudeClient {
   }
 
   resolveSidechainAgentId(message = {}) {
-    return message?.agentId || null
+    if (message?.agentId) {
+      return message.agentId
+    }
+
+    const teammateId = message?.teammate_id || message?.teammateId || null
+    if (teammateId && this.collaborativeAddressToAgentId.has(teammateId)) {
+      return this.collaborativeAddressToAgentId.get(teammateId)
+    }
+
+    const entry = message?.entry || null
+    const sender = entry?.routing?.sender || entry?.sender || null
+    const teamName = entry?.team_name || entry?.teamName || null
+    const addressKey = this.buildTeamMemberAddressKey(
+      sender ? String(sender).replace(/^@/, '').trim() : null,
+      teamName
+    )
+    if (addressKey && this.collaborativeAddressToAgentId.has(addressKey)) {
+      return this.collaborativeAddressToAgentId.get(addressKey)
+    }
+
+    return null
   }
 
   parseTeammateMessage(text = '') {

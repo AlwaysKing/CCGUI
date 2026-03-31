@@ -24,6 +24,10 @@ const props = defineProps({
     type: Number,
     default: -1
   },
+  showCopyButton: {
+    type: Boolean,
+    default: true
+  },
   chatTheme: {
     type: Object,
     default: () => ({})
@@ -69,6 +73,7 @@ function copyContent() {
       </div>
       <div v-if="!isCollapsed" class="thinking-content-ghost">
         <CopyButton
+          v-if="showCopyButton"
           :is-copied="isCopied"
           @copy="copyContent"
         />
@@ -85,6 +90,7 @@ function copyContent() {
       </div>
       <div v-if="!isCollapsed" class="thinking-content-wrapper">
         <CopyButton
+          v-if="showCopyButton"
           :is-copied="isCopied"
           @copy="copyContent"
         />

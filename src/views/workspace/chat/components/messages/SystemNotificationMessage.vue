@@ -358,6 +358,25 @@ const notificationContent = computed(() => {
     }
   }
 
+  if (notificationType === 'api-retry') {
+    const attempt = Number.isFinite(data.attempt) ? data.attempt : null
+    const maxRetries = Number.isFinite(data.maxRetries) ? data.maxRetries : null
+    const retryDelayMs = Number.isFinite(data.retryDelayMs) ? data.retryDelayMs : null
+    const errorStatus = Number.isFinite(data.errorStatus) ? data.errorStatus : null
+    const errorText = data.error || 'unknown'
+    const delayText = retryDelayMs != null ? `${Math.max(retryDelayMs / 1000, 0.1).toFixed(1)} 秒后重试` : '即将重试'
+    const attemptText = attempt != null && maxRetries != null
+      ? `第 ${attempt}/${maxRetries} 次重试`
+      : '正在重试请求'
+    const statusText = errorStatus != null ? `HTTP ${errorStatus}` : '请求受限'
+
+    return {
+      icon: '⏳',
+      title: '请求触发重试',
+      description: `${statusText} ${errorText}，${attemptText}，${delayText}`
+    }
+  }
+
   // 未知通知类型
   return {
     icon: '🔔',

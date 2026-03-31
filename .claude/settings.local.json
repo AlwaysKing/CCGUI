@@ -80,7 +80,14 @@
       "Bash(echo \"【第二次发言 - 化学/物理角度】:*)",
       "Bash(echo \"【第二次发言：从本体论与经验世界的裂隙出发】:*)",
       "Bash(echo \"【第三次发言 - 生物学/社会学角度】:*)",
-      "Bash(echo \"【第三次发言：辩证综合与真理的层次性】:*)"
+      "Bash(echo \"【第三次发言：辩证综合与真理的层次性】:*)",
+      "Bash(PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\" node_modules/.bin/vite build)",
+      "Bash(find /Users/alwaysking/AKProject/CCGUI -name *.log -maxdepth 3)",
+      "Bash(find /Users/alwaysking/Library/Application Support/CCGUI-dev -name *.jsonl)",
+      "Bash(find ~/Library/Application Support -maxdepth 5 -name *f1e9ca24* -type f)",
+      "Bash(find /Users/alwaysking/Library/Application Support -maxdepth 6 -name *events* -path *CCGUI* -type f)",
+      "Bash(find /Users/alwaysking/Library/Application Support/CCGUI-dev -type f -name *.jsonl)",
+      "Bash(find '/Users/alwaysking/Library/Application Support/CCGUI-dev' -type f -name *.jsonl)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

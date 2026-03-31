@@ -25,6 +25,9 @@ class ClaudeAdapter extends ClaudeClient {
     this.contentBlockIndexToId = new Map()
     this.contentBlockState = new Map()
     this.toolUseMessages = new Map()
+    this.lastVisibleMessageId = null  // 当前 raw message 内最后一个有效可见消息 ID，用于挂 usage
+    this.contentBlockMessageIds = new Map()  // blockIndex → messageId 映射
+    this.streamedAssistantMessageIds = new Set()
     this.envInfo = {
       cwd: this.workingDirectory,
       session_id: this.sessionId,
@@ -612,6 +615,20 @@ class ClaudeAdapter extends ClaudeClient {
     }
   }
 
+  updatePendingAgentToolUse(toolUseId, patch = {}) {
+    if (!toolUseId || !this.pendingAgentToolUses.has(toolUseId)) {
+      return null
+    }
+
+    const previous = this.pendingAgentToolUses.get(toolUseId) || {}
+    const nextCandidate = {
+      ...previous,
+      ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
+    }
+    this.pendingAgentToolUses.set(toolUseId, nextCandidate)
+    return nextCandidate
+  }
+
   emitTeamCreateLifecycle(toolResult = {}, rawMessage = null) {
     const teamName = toolResult.team_name || toolResult.teamName || null
     const teamId = this.resolveTeamId(teamName)
@@ -993,6 +1010,20 @@ class ClaudeAdapter extends ClaudeClient {
   }
 
   handleSystemMessage(message) {
+    if (message.subtype === 'api_retry') {
+      this.emit('system-notification', {
+        type: 'api-retry',
+        provider: 'claude',
+        attempt: Number.isFinite(message.attempt) ? message.attempt : null,
+        maxRetries: Number.isFinite(message.max_retries) ? message.max_retries : null,
+        retryDelayMs: Number.isFinite(message.retry_delay_ms) ? message.retry_delay_ms : null,
+        errorStatus: Number.isFinite(message.error_status) ? message.error_status : null,
+        error: message.error || null,
+        metadata: message
+      })
+      return
+    }
+
     if (message.subtype === 'init') {
       const filteredMessage = {}
       for (const [key, value] of Object.entries(message)) {
@@ -1145,6 +1176,13 @@ class ClaudeAdapter extends ClaudeClient {
                 status: 'running'
               }))
         : null
+      if (message.tool_use_id) {
+        this.updatePendingAgentToolUse(message.tool_use_id, {
+          taskId: message.task_id || candidate?.taskId || null,
+          providerAgentId: message.agent_id || candidate?.providerAgentId || null,
+          resolvedAgentId: agentId || candidate?.resolvedAgentId || null
+        })
+      }
       this.emit('task-event', {
         eventType: 'started',
         taskId: message.task_id,
@@ -1182,11 +1220,33 @@ class ClaudeAdapter extends ClaudeClient {
 
     if (message.subtype === 'task_notification') {
       const agentId = this.taskIdToAgentId.get(message.task_id) || null
+      const terminalExecutionStatus = this.isTerminalTaskStatus(message.status) && agentId && !this.isCollaborativeAgentId(agentId)
+      const executionTerminalCcgui = terminalExecutionStatus
+        ? this.buildLifecycleCcgui({
+            agentId,
+            agentKind: 'execution',
+            status: message.status === 'failed' ? 'failed' : 'ended'
+          }, {
+            eventType: 'end',
+            agentId,
+            agentKind: 'execution',
+            reason: message.status || 'completed',
+            status: message.status === 'failed' ? 'failed' : 'ended'
+          })
+        : null
+      if (message.tool_use_id) {
+        this.updatePendingAgentToolUse(message.tool_use_id, {
+          taskId: message.task_id || null,
+          resolvedAgentId: agentId || null
+        })
+      }
       this.emit('task-event', {
         eventType: 'notification',
         taskId: message.task_id,
         tool_use_id: message.tool_use_id || null,
         ccgui: this.buildCcguiPatch({
+          ...(executionTerminalCcgui?.registry ? { registry: executionTerminalCcgui.registry } : {}),
+          ...(executionTerminalCcgui?.orchestration ? { orchestration: executionTerminalCcgui.orchestration } : {}),
           attribution: agentId
             ? {
                 agentId,
@@ -1196,14 +1256,6 @@ class ClaudeAdapter extends ClaudeClient {
         }),
         rawMessage: message
       })
-      if (this.isTerminalTaskStatus(message.status) && agentId && !this.isCollaborativeAgentId(agentId)) {
-        this.cleanupAgentCorrelation({
-          agentId,
-          taskId: message.task_id || null,
-          toolUseId: message.tool_use_id || null,
-          clearProvider: true
-        })
-      }
       return
     }
 
@@ -1231,28 +1283,14 @@ class ClaudeAdapter extends ClaudeClient {
         stopReason: null,
         attribution: assistantAttribution
       }
-      this.assistantSnapshots.set(messageId, {
-        thinking: '',
-        content: ''
-      })
+      this.streamedAssistantMessageIds.add(messageId)
       this.currentTurnNumber = 0
       this.hasSeenToolUseInCurrentTurn = false
+      this.lastVisibleMessageId = null
       this.contentBlockIndexToId.clear()
       this.contentBlockState.clear()
-
-      this.emit('message-start', {
-        id: messageId,
-        role: 'assistant',
-        content: '',
-        thinking: '',
-        hasThinking: false,
-        isStreaming: true,
-        startTime: Date.now(),
-        timestamp: new Date(),
-        usage: event.message?.usage || null,
-        turnNumber: 1,
-        rawMessages: [message]
-      })
+      this.contentBlockMessageIds.clear()
+      // 不再 emit message-start，等 content_block_start 再决定
       return
     }
 
@@ -1266,18 +1304,59 @@ class ClaudeAdapter extends ClaudeClient {
           this.hasSeenToolUseInCurrentTurn = false
         }
 
-        if (this.currentAssistantMessage?.id) {
-          const snapshot = this.assistantSnapshots.get(this.currentAssistantMessage.id) || { thinking: '', content: '' }
-          this.emit('message-update', {
-            messageId: this.currentAssistantMessage.id,
-            updates: {
-              hasThinking: true,
-              turnNumber: this.currentTurnNumber + 1,
-              showTurnSeparator: this.currentTurnNumber > 0,
-              ...(snapshot.thinking ? {} : { thinkingCollapsed: false })
-            }
-          })
-        }
+        // thinking 作为独立消息
+        const thinkingMessageId = `thinking-${this.currentAssistantMessage?.id || Date.now()}-${blockIndex ?? 0}`
+        this.contentBlockMessageIds.set(blockIndex, thinkingMessageId)
+        this.assistantSnapshots.set(thinkingMessageId, { thinking: '', content: '' })
+
+        this.lastVisibleMessageId = thinkingMessageId
+
+        this.emit('message-start', {
+          id: thinkingMessageId,
+          role: 'assistant',
+          subtype: 'thinking',
+          content: '',
+          thinking: '',
+          hasThinking: true,
+          isStreaming: true,
+          startTime: Date.now(),
+          timestamp: new Date(),
+          turnNumber: this.currentTurnNumber + 1,
+          showTurnSeparator: this.currentTurnNumber > 0,
+          thinkingCollapsed: false,
+          ccgui: this.buildCcguiPatch({
+            attribution: this.currentAssistantMessage?.attribution || this.getAttributionForClaudeMessage(event.message || message)
+          }),
+          rawMessages: [message]
+        })
+        return
+      }
+
+      if (contentBlock?.type === 'text') {
+        // text 作为独立消息
+        const textMessageId = `text-${this.currentAssistantMessage?.id || Date.now()}-${blockIndex ?? 0}`
+        this.contentBlockMessageIds.set(blockIndex, textMessageId)
+        this.assistantSnapshots.set(textMessageId, { thinking: '', content: '' })
+
+        this.lastVisibleMessageId = textMessageId
+
+        this.emit('message-start', {
+          id: textMessageId,
+          role: 'assistant',
+          subtype: null,
+          content: '',
+          thinking: '',
+          hasThinking: false,
+          isStreaming: true,
+          startTime: Date.now(),
+          timestamp: new Date(),
+          turnNumber: this.currentTurnNumber + 1,
+          showTurnSeparator: this.currentTurnNumber > 0,
+          ccgui: this.buildCcguiPatch({
+            attribution: this.currentAssistantMessage?.attribution || this.getAttributionForClaudeMessage(event.message || message)
+          }),
+          rawMessages: [message]
+        })
         return
       }
 
@@ -1294,6 +1373,7 @@ class ClaudeAdapter extends ClaudeClient {
             type: 'tool_use',
             toolUseId: toolUse.toolUseId
           })
+          this.contentBlockMessageIds.set(blockIndex, toolUse.toolUseId)
         }
         this.toolUseMessages.set(toolUse.toolUseId, {
           toolInputBuffer: '',
@@ -1303,6 +1383,8 @@ class ClaudeAdapter extends ClaudeClient {
         if (['Agent', 'TeamCreate', 'SendMessage', 'TeamDelete'].includes(toolUse.rawName)) {
           this.rememberAgentToolUse(toolUse, message)
         }
+
+        this.lastVisibleMessageId = toolUse.toolUseId
 
         this.emit('message-start', {
           id: toolUse.toolUseId,
@@ -1339,28 +1421,27 @@ class ClaudeAdapter extends ClaudeClient {
 
     if (event.type === 'content_block_delta') {
       const delta = event.delta
+      const blockMessageId = typeof event.index === 'number'
+        ? this.contentBlockMessageIds.get(event.index)
+        : null
 
-      if (delta?.type === 'thinking_delta' && delta.thinking && this.currentAssistantMessage?.id) {
-        const snapshot = this.assistantSnapshots.get(this.currentAssistantMessage.id) || { thinking: '', content: '' }
+      if (delta?.type === 'thinking_delta' && delta.thinking && blockMessageId) {
+        const snapshot = this.assistantSnapshots.get(blockMessageId) || { thinking: '', content: '' }
         snapshot.thinking += delta.thinking
-        this.assistantSnapshots.set(this.currentAssistantMessage.id, snapshot)
+        this.assistantSnapshots.set(blockMessageId, snapshot)
         this.emit('message-delta', {
-          messageId: this.currentAssistantMessage.id,
+          messageId: blockMessageId,
           field: 'thinking',
           delta: delta.thinking
         })
       }
 
-      if (delta?.type === 'text_delta' && delta.text && this.currentAssistantMessage?.id) {
-        const snapshot = this.assistantSnapshots.get(this.currentAssistantMessage.id) || { thinking: '', content: '' }
-        const hadNoContent = !snapshot.content
+      if (delta?.type === 'text_delta' && delta.text && blockMessageId) {
+        const snapshot = this.assistantSnapshots.get(blockMessageId) || { thinking: '', content: '' }
         snapshot.content += delta.text
-        this.assistantSnapshots.set(this.currentAssistantMessage.id, snapshot)
-        if (hadNoContent) {
-          this.collapseThinkingIfNeeded(this.currentAssistantMessage.id, snapshot, true)
-        }
+        this.assistantSnapshots.set(blockMessageId, snapshot)
         this.emit('message-delta', {
-          messageId: this.currentAssistantMessage.id,
+          messageId: blockMessageId,
           field: 'content',
           delta: delta.text
         })
@@ -1393,11 +1474,11 @@ class ClaudeAdapter extends ClaudeClient {
         }
       }
 
-      if (delta?.type === 'citations_delta' && this.currentAssistantMessage?.id) {
+      if (delta?.type === 'citations_delta' && blockMessageId) {
         this.emit('silent-message', {
           messageType: 'claude/citations_delta',
           params: {
-            messageId: this.currentAssistantMessage.id,
+            messageId: blockMessageId,
             index: event.index,
             citation: delta.citation || null
           },
@@ -1405,9 +1486,9 @@ class ClaudeAdapter extends ClaudeClient {
         })
       }
 
-      if (delta?.type === 'signature_delta' && this.currentAssistantMessage?.id) {
+      if (delta?.type === 'signature_delta' && blockMessageId) {
         this.emit('message-update', {
-          messageId: this.currentAssistantMessage.id,
+          messageId: blockMessageId,
           updates: {
             thinkingSignature: delta.signature || null
           }
@@ -1438,24 +1519,35 @@ class ClaudeAdapter extends ClaudeClient {
         }
         this.contentBlockState.delete(event.index)
         this.contentBlockIndexToId.delete(event.index)
-      }
 
-      const snapshot = this.currentAssistantMessage?.id
-        ? (this.assistantSnapshots.get(this.currentAssistantMessage.id) || { thinking: '', content: '' })
-        : null
-
-      if (this.currentAssistantMessage?.id && snapshot?.thinking) {
-        this.emit('message-update', {
-          messageId: this.currentAssistantMessage.id,
-          updates: {
-            thinkingCollapsed: true
-          }
-        })
+        // thinking/text block 结束 → emit message-complete
+        const blockMessageId = this.contentBlockMessageIds.get(event.index)
+        const blockType = blockState?.type
+        if (blockMessageId && blockType !== 'tool_use') {
+          const snapshot = this.assistantSnapshots.get(blockMessageId)
+          this.emit('message-complete', {
+            messageId: blockMessageId,
+            updates: {
+              isStreaming: false,
+              ...(snapshot?.thinking ? { thinkingCollapsed: true } : {})
+            }
+          })
+          this.assistantSnapshots.delete(blockMessageId)
+        }
+        // tool_use block 结束 → emit message-stop（输入流结束，但仍执行中）
+        if (blockMessageId && blockType === 'tool_use') {
+          this.emit('message-stop', {
+            messageId: blockMessageId,
+            reason: 'input_complete'
+          })
+        }
+        this.contentBlockMessageIds.delete(event.index)
       }
       return
     }
 
-    if (event.type === 'message_delta' && this.currentAssistantMessage?.id) {
+    if (event.type === 'message_delta') {
+      // usage 挂给当前 raw message 内最后一个有效可见消息
       if (event.usage) {
         this.currentAssistantMessage.usage = event.usage
       }
@@ -1463,26 +1555,26 @@ class ClaudeAdapter extends ClaudeClient {
         this.currentAssistantMessage.stopReason = event.delta.stop_reason
       }
 
-      this.emit('message-update', {
-        messageId: this.currentAssistantMessage.id,
-        updates: {
-          usage: this.currentAssistantMessage.usage,
-          stopReason: this.currentAssistantMessage.stopReason
-        }
-      })
+      // usage 挂给当前 raw message 内最后一个有效可见消息
+      const targetId = this.lastVisibleMessageId
+      if (targetId) {
+        this.emit('message-update', {
+          messageId: targetId,
+          updates: {
+            usage: this.currentAssistantMessage.usage,
+            stopReason: this.currentAssistantMessage.stopReason
+          }
+        })
+      }
       return
     }
 
-    if (event.type === 'message_stop' && this.currentAssistantMessage?.id) {
-      this.emit('message-complete', {
-        messageId: this.currentAssistantMessage.id,
-        updates: {
-          isStreaming: false,
-          thinkingCollapsed: true
-        }
-      })
-      this.assistantSnapshots.delete(this.currentAssistantMessage.id)
+    if (event.type === 'message_stop') {
+      // 只清理内部状态，不发事件
+      // thinking/text 的 message-complete 已在 content_block_stop 中发出
+      // tool_use 等待 tool_result
       this.currentAssistantMessage = null
+      this.lastVisibleMessageId = null
     }
   }
 
@@ -1522,8 +1614,9 @@ class ClaudeAdapter extends ClaudeClient {
         })
       : (isExecutionAgentResult
           ? this.resolveExecutionAgentId({
+              taskId: toolResult.task_id || toolResult.taskId || candidate?.taskId || null,
               toolUseId,
-              providerAgentId: toolResult.agent_id || toolResult.agentId || null
+              providerAgentId: toolResult.agent_id || toolResult.agentId || candidate?.providerAgentId || null
             })
           : null)
     const toolAttribution = isSendMessage
@@ -1684,8 +1777,13 @@ class ClaudeAdapter extends ClaudeClient {
         })
       : null
 
-    this.emit('tool-result', {
-      toolUseId,
+    // 用统一的 message-result 替代 tool-result + message-update
+    const updateAttribution = agentId
+      ? { agentId, actorId: agentId }
+      : (toolAttribution?.agentId ? toolAttribution : null)
+
+    this.emit('message-result', {
+      messageId: toolUseId,
       content: toolResultContent.content || '(无输出)',
       isError: toolResultContent.is_error || false,
       usage: resultUsage,
@@ -1695,32 +1793,19 @@ class ClaudeAdapter extends ClaudeClient {
       ccgui: this.buildCcguiPatch({
         ...(lifecycleCcgui?.registry ? { registry: lifecycleCcgui.registry } : {}),
         ...(lifecycleCcgui?.orchestration ? { orchestration: lifecycleCcgui.orchestration } : {}),
-        attribution: toolAttribution || (agentId ? { agentId, actorId: agentId } : null)
+        attribution: updateAttribution || toolAttribution || (agentId ? { agentId, actorId: agentId } : null)
       }),
       rawMessage: message
     })
 
-    const updateAttribution = agentId
-      ? { agentId, actorId: agentId }
-      : (toolAttribution?.agentId ? toolAttribution : null)
-
-    this.emit('message-update', {
-      messageId: toolUseId,
-      updates: {
-        isExecuting: false,
-        isError: toolResultContent.is_error || false,
-        result: toolResultContent.content || '(无输出)',
-        ...(resultUsage ? { usage: resultUsage } : {}),
-        ...(updateAttribution
-          ? {
-              ccgui: this.buildCcguiPatch({
-                attribution: updateAttribution
-              })
-            }
-          : {}),
-        rawMessages: [message]
-      }
-    })
+    if (!isTeamCreate && !isTeamDelete && !isTeamMember && isExecutionAgentResult && agentId) {
+      this.cleanupAgentCorrelation({
+        agentId,
+        taskId: toolResult.task_id || toolResult.taskId || candidate?.taskId || null,
+        toolUseId,
+        clearProvider: true
+      })
+    }
 
     this.pendingAgentToolUses.delete(toolUseId)
   }
@@ -1731,6 +1816,7 @@ class ClaudeAdapter extends ClaudeClient {
     const messageTimestamp = message?.timestamp ? new Date(message.timestamp) : new Date()
     const messageStartTime = message?.timestamp ? Date.parse(message.timestamp) : Date.now()
     const content = Array.isArray(assistantMessage.content) ? assistantMessage.content : []
+    const assistantAttribution = this.getAttributionForClaudeMessage(message)
     const thinkingText = content
       .filter(block => block?.type === 'thinking' && typeof block.thinking === 'string')
       .map(block => block.thinking)
@@ -1762,6 +1848,88 @@ class ClaudeAdapter extends ClaudeClient {
 
     if (!this.currentAssistantMessage || this.currentAssistantMessage.id === messageId) {
       this.currentAssistantMessage = currentAssistantState
+    }
+
+    if (this.streamedAssistantMessageIds.has(messageId)) {
+      const finalThinkingBlocks = content
+        .map((block, index) => ({ block, index }))
+        .filter(({ block }) => block?.type === 'thinking' && typeof block.thinking === 'string')
+      const finalTextBlocks = content
+        .map((block, index) => ({ block, index }))
+        .filter(({ block }) => block?.type === 'text' && typeof block.text === 'string')
+
+      for (const { block, index } of finalThinkingBlocks) {
+        const streamedMessageId = `thinking-${messageId}-${index}`
+        this.emit('message-replace', {
+          messageId: streamedMessageId,
+          replacement: {
+            thinking: block.thinking || '',
+            hasThinking: Boolean(block.thinking),
+            rawMessages: [message],
+            ccgui: this.buildCcguiPatch({
+              attribution: assistantAttribution
+            })
+          }
+        })
+      }
+
+      for (const { block, index } of finalTextBlocks) {
+        const streamedMessageId = `text-${messageId}-${index}`
+        this.emit('message-replace', {
+          messageId: streamedMessageId,
+          replacement: {
+            content: block.text || '',
+            rawMessages: [message],
+            ccgui: this.buildCcguiPatch({
+              attribution: assistantAttribution
+            })
+          }
+        })
+      }
+
+      const finalVisibleId = finalTextBlocks.length > 0
+        ? `text-${messageId}-${finalTextBlocks[finalTextBlocks.length - 1].index}`
+        : (finalThinkingBlocks.length > 0
+            ? `thinking-${messageId}-${finalThinkingBlocks[finalThinkingBlocks.length - 1].index}`
+            : null)
+
+      if (finalVisibleId) {
+        this.emit('message-update', {
+          messageId: finalVisibleId,
+          updates: {
+            usage: assistantMessage.usage || null,
+            stopReason: assistantMessage.stop_reason || assistantMessage.stopReason || null,
+            rawMessages: [message],
+            ccgui: this.buildCcguiPatch({
+              attribution: assistantAttribution
+            })
+          }
+        })
+      }
+
+      if (assistantMessage.stop_reason || assistantMessage.stopReason) {
+        for (const { index } of finalThinkingBlocks) {
+          this.emit('message-complete', {
+            messageId: `thinking-${messageId}-${index}`,
+            updates: {
+              isStreaming: false,
+              thinkingCollapsed: true
+            }
+          })
+        }
+        for (const { index } of finalTextBlocks) {
+          this.emit('message-complete', {
+            messageId: `text-${messageId}-${index}`,
+            updates: {
+              isStreaming: false
+            }
+          })
+        }
+        if (this.currentAssistantMessage?.id === messageId) {
+          this.currentAssistantMessage = null
+        }
+      }
+      return
     }
 
     if (hasAssistantTextContent) {

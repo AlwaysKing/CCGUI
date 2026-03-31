@@ -882,10 +882,14 @@ export const useSessionStore = defineStore('session', () => {
     )
     const nextBuckets = new Map()
     const eventKeys = new Set()
+    const supportedExecutionAgentIds = new Set()
 
     const ensureBucket = (agentId) => {
       if (!nextBuckets.has(agentId)) {
         nextBuckets.set(agentId, createAgentBucket(agentId))
+      }
+      if (agentId) {
+        supportedExecutionAgentIds.add(agentId)
       }
       return nextBuckets.get(agentId)
     }
@@ -909,6 +913,7 @@ export const useSessionStore = defineStore('session', () => {
       }
 
       eventKeys.add(dedupeKey)
+      supportedExecutionAgentIds.add(normalizedEvent.agentId)
       ensureBucket(normalizedEvent.agentId).orchestrationEvents.push(normalizedEvent)
       nextRegistry.set(
         normalizedEvent.agentId,
@@ -935,6 +940,7 @@ export const useSessionStore = defineStore('session', () => {
         message
       )
       if (registryEntry?.agentId) {
+        supportedExecutionAgentIds.add(registryEntry.agentId)
         nextRegistry.set(registryEntry.agentId, mergeAgentRegistryEntry(nextRegistry.get(registryEntry.agentId), registryEntry))
       } else if (!nextRegistry.has(messageAgentId)) {
         nextRegistry.set(messageAgentId, mergeAgentRegistryEntry(nextRegistry.get(messageAgentId), {
@@ -952,6 +958,7 @@ export const useSessionStore = defineStore('session', () => {
         silentMessage
       )
       if (registryEntry?.agentId) {
+        supportedExecutionAgentIds.add(registryEntry.agentId)
         nextRegistry.set(registryEntry.agentId, mergeAgentRegistryEntry(nextRegistry.get(registryEntry.agentId), registryEntry))
       }
       recordEvent(silentMessage?.ccgui?.orchestration)
@@ -963,6 +970,7 @@ export const useSessionStore = defineStore('session', () => {
         taskEvent
       )
       if (registryEntry?.agentId) {
+        supportedExecutionAgentIds.add(registryEntry.agentId)
         nextRegistry.set(registryEntry.agentId, mergeAgentRegistryEntry(nextRegistry.get(registryEntry.agentId), registryEntry))
       }
       recordEvent(taskEvent?.ccgui?.orchestration)
@@ -970,6 +978,20 @@ export const useSessionStore = defineStore('session', () => {
 
     if (!nextBuckets.has(mainAgentId)) {
       nextBuckets.set(mainAgentId, createAgentBucket(mainAgentId))
+    }
+
+    // Execution agents should be reconstructed from concrete messages/task events.
+    // If an old registry entry no longer has any supporting payload, it becomes a
+    // ghost card that gets appended to the end of the timeline.
+    for (const [agentId, entry] of nextRegistry.entries()) {
+      if (entry?.agentKind !== 'execution') {
+        continue
+      }
+      if (supportedExecutionAgentIds.has(agentId)) {
+        continue
+      }
+      nextRegistry.delete(agentId)
+      nextBuckets.delete(agentId)
     }
 
     session.agentRegistry = nextRegistry
@@ -1702,12 +1724,6 @@ export const useSessionStore = defineStore('session', () => {
       session.isProcessing = false
       session.inputMessage = typeof outgoingContent === 'string' ? outgoingContent : (outgoingContent?.text || '')
       session.inputAttachments = Array.isArray(outgoingContent?.attachments) ? outgoingContent.attachments : []
-      session.messages.push({
-        id: `error-${Date.now()}`,
-        role: 'system',
-        content: `Error: ${error.message}`,
-        timestamp: new Date()
-      })
       throw error
     }
   }
@@ -1964,10 +1980,20 @@ export const useSessionStore = defineStore('session', () => {
         handleMessageDelta(session, data)
         break
 
+      case 'message-replace':
+        recordAgentSemantics(session, data?.replacement || data)
+        handleMessageReplace(session, data)
+        break
+
       case 'message-complete':
         // 后端发送的消息完成事件
         recordAgentSemantics(session, data?.updates || data)
         handleMessageComplete(session, data)
+        break
+
+      case 'message-stop':
+        // tool_use 输入流结束（仍在执行中）
+        handleMessageStop(session, data)
         break
 
       case 'message-update':
@@ -1983,6 +2009,11 @@ export const useSessionStore = defineStore('session', () => {
       case 'tool-result':
         recordAgentSemantics(session, data)
         handleToolResult(session, data)
+        break
+
+      case 'message-result':
+        recordAgentSemantics(session, data)
+        handleMessageResult(session, data)
         break
 
       case 'result':
@@ -2086,8 +2117,10 @@ export const useSessionStore = defineStore('session', () => {
     if ([
       'message',
       'message-start',
+      'message-replace',
       'message-complete',
       'message-update',
+      'message-result',
       'messages-reset',
       'tool-result',
       'result',
@@ -2387,7 +2420,7 @@ export const useSessionStore = defineStore('session', () => {
    * 处理消息创建事件（来自后端）
    */
   function handleMessageStart(session, message) {
-    log('[SessionStore] handleMessageStart:', message.role, message.id)
+    log('[SessionStore] handleMessageStart:', message.role, message.subtype, message.id)
 
     const nextMessage = {
       ...message
@@ -2414,9 +2447,6 @@ export const useSessionStore = defineStore('session', () => {
         hasThinking: existingMessage.hasThinking || nextMessage.hasThinking || false
       })
 
-      if (nextMessage.role === 'assistant') {
-        session.currentAssistantMessageIndex = existingIndex
-      }
       session.currentStreamingAssistantId = nextMessage.id
       if (nextMessage.role === 'assistant') {
         syncUserRealtimeStats(session, {
@@ -2429,20 +2459,11 @@ export const useSessionStore = defineStore('session', () => {
       return
     }
 
-    // 添加消息到列表
+    // 所有角色都直接添加，不再延迟
     session.messages.push(reactive(nextMessage))
     session.currentStreamingAssistantId = nextMessage.id
 
-    // 根据角色设置初始状态
-    if (nextMessage.role === 'assistant') {
-      session.currentAssistantMessageIndex = session.messages.length - 1
-      syncUserRealtimeStats(session, {
-        turnNumber: nextMessage.turnNumber,
-        usage: nextMessage.usage,
-        usageSourceKey: `main:${nextMessage.id}`
-      })
-    } else if (nextMessage.role === 'tool_use' || nextMessage.role === 'diff') {
-      // 记录 tool_use 的索引
+    if (nextMessage.role === 'tool_use' || nextMessage.role === 'diff') {
       if (typeof nextMessage.request_id === 'number') {
         session.contentBlockIndexToId.set(nextMessage.request_id, nextMessage.id)
       }
@@ -2477,6 +2498,29 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] handleMessageDelta:', field, 'delta length:', delta.length)
   }
 
+  function handleMessageReplace(session, data) {
+    const { messageId, replacement } = data || {}
+    if (!messageId || !replacement || typeof replacement !== 'object') {
+      return
+    }
+
+    const msg = session.messages.find(m => m.id === messageId)
+    if (!msg) {
+      log('[SessionStore] handleMessageReplace: message not found', messageId)
+      return
+    }
+
+    const nextReplacement = {
+      ...replacement
+    }
+    Object.assign(msg, nextReplacement)
+    if (typeof nextReplacement.thinking === 'string') {
+      msg.hasThinking = Boolean(nextReplacement.thinking)
+    }
+
+    log('[SessionStore] handleMessageReplace:', messageId, 'fields:', Object.keys(nextReplacement))
+  }
+
   /**
    * 处理消息完成事件（来自后端）
    */
@@ -2498,12 +2542,23 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     // 清除流式标记
-    if (msg.role === 'assistant') {
-      session.currentAssistantMessageIndex = -1
-    }
     session.currentStreamingAssistantId = null
 
     log('[SessionStore] handleMessageComplete:', messageId)
+  }
+
+  /**
+   * 处理 message-stop（tool_use 输入流结束，仍在执行中）
+   * 将 isStreaming 设为 false，但保留 isExecuting
+   */
+  function handleMessageStop(session, data) {
+    const messageId = data?.messageId
+    if (!messageId) return
+
+    const msg = session.messages.find(m => m.id === messageId)
+    if (msg) {
+      msg.isStreaming = false
+    }
   }
 
   /**
@@ -2511,6 +2566,7 @@ export const useSessionStore = defineStore('session', () => {
    */
   function handleMessageUpdate(session, data) {
     const { messageId, updates } = data
+
 
     // 查找对应的消息
     const msgIndex = session.messages.findIndex(m => m.id === messageId)
@@ -2586,6 +2642,48 @@ export const useSessionStore = defineStore('session', () => {
         }
         if (msg.role === 'tool_use' && msg.toolName === 'Agent') {
           setUserUsageSource(session, `execution:${toolUseId}`, data.usage)
+        }
+        return
+      }
+    }
+  }
+
+  /**
+   * 处理 message-result 事件（来自 adapter 的 tool_result）
+   * 替代旧的 tool-result + message-update 双事件
+   */
+  function handleMessageResult(session, data) {
+    const messageId = data?.messageId
+    if (!messageId) return
+
+    // 处理 AskUserQuestion 响应
+    if (data.answers) {
+      for (let i = session.messages.length - 1; i >= 0; i--) {
+        const msg = session.messages[i]
+        if (msg.role === 'question' && msg.tool_use_id === messageId) {
+          msg.resultReceived = true
+          msg.receivedAnswers = data.answers || null
+          msg.answersConsistent = data.answers ? compareAnswers(msg.userAnswers, data.answers) : true
+          return
+        }
+      }
+    }
+
+    // 更新对应 tool_use/diff 消息
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      const msg = session.messages[i]
+      if ((msg.role === 'tool_use' || msg.role === 'diff') && (msg.id === messageId || msg.request_id === messageId)) {
+        msg.isExecuting = false
+        msg.isError = !!data.isError
+        msg.result = data.content || '(无输出)'
+        if (data.usage) {
+          msg.usage = data.usage
+        }
+        if (!msg.duration && msg.startTime) {
+          msg.duration = Date.now() - msg.startTime
+        }
+        if (msg.role === 'tool_use' && msg.toolName === 'Agent') {
+          setUserUsageSource(session, `execution:${messageId}`, data.usage)
         }
         return
       }
@@ -2699,15 +2797,6 @@ export const useSessionStore = defineStore('session', () => {
    */
   function handleInterrupt(session, data) {
     session.isProcessing = false
-
-    // 添加中断消息
-    session.messages.push({
-      id: `interrupt-${Date.now()}`,
-      role: 'system',
-      subtype: 'interrupt',
-      content: '已中断',
-      timestamp: new Date()
-    })
   }
 
   /**

@@ -144,7 +144,7 @@ const chatInputRef = ref(null)
 const workingDirectory = ref('') // 工作目录
 const selectedMessage = ref(null) // 当前选中的消息（用于显示详情）
 const currentTime = ref(Date.now()) // 用于实时更新消耗时间
-const stickyMessageIndex = ref(-1) // 当前粘性显示的消息索引
+const stickyMessageId = ref(null) // 当前粘性显示的消息 ID
 const containerHeight = ref(400) // 聊天容器高度，用于限制粘性面板
 const messagesHeight = ref(null) // 消息区域高度，null 表示自动
 const isResizing = ref(false) // 是否正在调整大小
@@ -330,7 +330,7 @@ const resolvedChatMessageTheme = computed(() => {
   ).theme
 })
 
-const AUTO_SCROLL_NEAR_BOTTOM_PX = 36
+const AUTO_SCROLL_NEAR_BOTTOM_PX = 5
 const STREAMING_NEAR_BOTTOM_PX = 52
 const SYSTEM_NEAR_BOTTOM_PX = 44
 
@@ -835,9 +835,9 @@ watch(() => {
   const hasStreaming = messages.value.some(m => m.isStreaming)
   return hasStreaming
 }, (hasStreaming) => {
-  if (hasStreaming && messagesContainer.value) {
+  const container = getScrollContainer()
+  if (hasStreaming && container) {
     // 在 DOM 更新前检查滚动位置
-    const container = messagesContainer.value
     wasNearBottomBeforeStreaming = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
   }
 }, { immediate: false, flush: 'sync' })
@@ -866,7 +866,7 @@ watch(() => messages.value, async (newMessages) => {
   if (!hasStreamingMessage) return
 
   // 在 DOM 更新前检查用户是否在底部
-  const container = messagesContainer.value
+  const container = getScrollContainer()
   if (!container) return
 
   const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
@@ -901,7 +901,7 @@ watch(() => messages.value, async (newMessages) => {
 
   if (newLength > previousMessageCount) {
     // 检查用户是否在底部（在折叠前检查）
-    const container = messagesContainer.value
+    const container = getScrollContainer()
     const wasNearBottom = container
       ? container.scrollHeight - container.scrollTop - container.clientHeight < 50
       : true
@@ -967,7 +967,7 @@ watch(() => {
 }, async (newSignature, oldSignature) => {
   if (!newSignature || newSignature === oldSignature) return
 
-  const container = messagesContainer.value
+  const container = getScrollContainer()
   if (!container) return
 
   const lastMessage = messages.value?.[messages.value.length - 1]
@@ -1140,11 +1140,8 @@ async function handleSendMessage(userText) {
     // 使用 SessionStore 发送消息（会自动处理 sessionId）
     await sessionStore.sendMessage(userText)
   } catch (error) {
-    messages.value.push({
-      role: 'system',
-      content: `Error: ${error.message}`,
-      timestamp: new Date()
-    })
+    console.error('[ChatWindow] Failed to send message:', error)
+    notifyTurnError(`发送消息失败: ${error.message || error}`)
   }
 }
 
@@ -1171,11 +1168,25 @@ function handleRewindNoticeClick(rewindToMessageId) {
 // 记录用户是否主动滚动离开底部
 let userScrolledAway = false
 
+function notifyTurnError(message) {
+  sessionStore.addMessage({
+    id: `turn-error-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role: 'system_notification',
+    notificationType: 'turn-error',
+    scope: 'turn',
+    data: { type: 'turn-error', message },
+    timestamp: new Date()
+  })
+}
+
+function getScrollContainer() {
+  return document.querySelector('.chat-window .agent-workspace__content') || messagesContainer.value || null
+}
+
 // 滚动到底部
 function scrollToBottom(forceScroll = false) {
-  if (!messagesContainer.value) return
-
-  const container = messagesContainer.value
+  const container = getScrollContainer()
+  if (!container) return
 
   // 如果不强制滚动，检查当前是否接近底部
   if (!forceScroll) {
@@ -1198,8 +1209,9 @@ function scrollToBottom(forceScroll = false) {
   // 使用 requestAnimationFrame 确保在下一帧渲染后滚动
   // 这能更好地处理高高度元素的异步渲染
   const doScroll = () => {
-    if (messagesContainer.value) {
-      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+    const activeContainer = getScrollContainer()
+    if (activeContainer) {
+      activeContainer.scrollTop = activeContainer.scrollHeight
     }
   }
 
@@ -1221,7 +1233,7 @@ function scrollToBottom(forceScroll = false) {
 
 // 处理用户滚动事件
 function handleUserScroll() {
-  const container = document.querySelector('.chat-window .agent-workspace__content') || messagesContainer.value
+  const container = getScrollContainer()
   if (!container) return
   const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < AUTO_SCROLL_NEAR_BOTTOM_PX
 
@@ -1239,41 +1251,43 @@ function handleUserScroll() {
 
 // 更新粘性头部显示的用户消息
 function updateStickyMessage() {
-  const container = document.querySelector('.chat-window .agent-workspace__content') || messagesContainer.value
+  const container = getScrollContainer()
   if (!container) return
 
   // 获取所有消息元素
   const messageElements = container.querySelectorAll('.message')
 
-  let currentStickyIndex = -1
+  let lastScrolledPastUserId = null
 
   // 从上往下遍历，找到最后一个已经滚过顶部的用户消息
-  messageElements.forEach((el, idx) => {
+  messageElements.forEach((el) => {
     const rect = el.getBoundingClientRect()
     const containerRect = container.getBoundingClientRect()
 
-    // 如果消息顶部已经在容器顶部以上（或刚好在顶部）
-    if (rect.top <= containerRect.top + 10) {
-      // 检查这个消息是否是用户消息，或者它前面的最近用户消息
-      const msgIndex = parseInt(el.getAttribute('data-index') || idx)
-      const msg = messages.value[msgIndex]
+    // 消息顶部已滚过容器顶部（放宽阈值到 40px）
+    if (rect.top <= containerRect.top + 40) {
+      const msgId = el.getAttribute('data-message-id')
+      if (!msgId) return
 
+      const msg = messages.value.find(m => m.id === msgId)
       if (msg && msg.role === 'user') {
-        currentStickyIndex = msgIndex
+        lastScrolledPastUserId = msgId
       }
     }
   })
 
   // 检查可见区域内是否有用户消息
   let hasVisibleUserMessage = false
-  messageElements.forEach((el, idx) => {
+  messageElements.forEach((el) => {
     const rect = el.getBoundingClientRect()
     const containerRect = container.getBoundingClientRect()
 
     // 消息在可见区域内
     if (rect.bottom > containerRect.top && rect.top < containerRect.bottom) {
-      const msgIndex = parseInt(el.getAttribute('data-index') || idx)
-      const msg = messages.value[msgIndex]
+      const msgId = el.getAttribute('data-message-id')
+      if (!msgId) return
+
+      const msg = messages.value.find(m => m.id === msgId)
       if (msg && msg.role === 'user') {
         hasVisibleUserMessage = true
       }
@@ -1282,20 +1296,18 @@ function updateStickyMessage() {
 
   // 只有当可见区域内没有用户消息时，才显示粘性头部
   if (hasVisibleUserMessage) {
-    stickyMessageIndex.value = -1
-  } else if (currentStickyIndex >= 0) {
-    stickyMessageIndex.value = currentStickyIndex
+    stickyMessageId.value = null
+  } else if (lastScrolledPastUserId) {
+    stickyMessageId.value = lastScrolledPastUserId
   } else {
-    stickyMessageIndex.value = -1
+    stickyMessageId.value = null
   }
 }
 
-// 通过索引获取粘性消息（确保响应式更新）
+// 通过 ID 获取粘性消息（确保响应式更新）
 const stickyMessage = computed(() => {
-  if (stickyMessageIndex.value >= 0 && stickyMessageIndex.value < messages.value.length) {
-    return messages.value[stickyMessageIndex.value]
-  }
-  return null
+  if (!stickyMessageId.value) return null
+  return messages.value.find(m => m.id === stickyMessageId.value) || null
 })
 
 // 判断粘性消息是否正在被回答（基于消息是否有 duration）
@@ -1470,14 +1482,8 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
       await sessionStore.sendRuntimeToolResult(requestId, '', false)
     }
   } catch (error) {
-    // 找到对应的 tool_use 消息并更新状态
-    // 对于 control_request，消息使用 tool_use_id 作为 request_id
-    const searchId = controlRequest?.tool_use_id || requestId
-    const toolUseMsg = messages.value.find(m => (m.role === 'tool_use' || m.role === 'diff') && m.request_id === searchId)
-    if (toolUseMsg) {
-      toolUseMsg.isError = true
-      toolUseMsg.result = `发送权限响应失败: ${error.message}`
-    }
+    console.error('[ChatWindow] Failed to approve permission:', error)
+    notifyTurnError(`批准权限失败: ${error.message || error}`)
   }
 }
 
@@ -1486,20 +1492,6 @@ async function handlePermissionDeny(requestId) {
 
   // 清除权限请求，并保存请求信息用于后续添加权限结果消息
   sessionStore.clearPendingPermissions(requestId, true)
-
-  // 找到对应的 tool_use 消息并更新状态
-  // 对于 control_request，消息使用 tool_use_id 作为 request_id
-  const searchId = controlRequest?.tool_use_id || requestId
-  const toolUseMsg = messages.value.find(m => (m.role === 'tool_use' || m.role === 'diff') && m.request_id === searchId)
-  if (toolUseMsg) {
-    toolUseMsg.isExecuting = false
-    toolUseMsg.isError = true
-    toolUseMsg.result = '用户拒绝'
-    // 计算 duration
-    if (toolUseMsg.startTime) {
-      toolUseMsg.duration = Date.now() - toolUseMsg.startTime
-    }
-  }
 
   try {
     // Check if this is a control_request (for --permission-prompt-tool stdio)
@@ -1518,9 +1510,8 @@ async function handlePermissionDeny(requestId) {
       await sessionStore.sendRuntimeToolResult(requestId, 'Permission denied by user', true)
     }
   } catch (error) {
-    if (toolUseMsg) {
-      toolUseMsg.result = `发送拒绝响应失败: ${error.message}`
-    }
+    console.error('[ChatWindow] Failed to deny permission:', error)
+    notifyTurnError(`拒绝权限失败: ${error.message || error}`)
   }
 }
 
@@ -1624,16 +1615,11 @@ async function handleRewind({ messageId, messageIndex }) {
 
   } catch (error) {
     console.error('[Rewind] Preview error:', error)
-
-    // 关闭对话框并显示错误
     showRewindDialog.value = false
-
-    messages.value.push({
-      role: 'system',
-      content: `❌ 获取还原预览失败: ${error.message || error}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
+    rewindPreviewData.value = null
+    rewindTargetMessageId.value = null
+    rewindTargetMessageIndex.value = null
+    notifyTurnError(`获取还原预览失败: ${error.message || error}`)
   }
 }
 
@@ -1653,13 +1639,7 @@ async function confirmRewind() {
     }
   } catch (error) {
     console.error('[Rewind] Error:', error)
-
-    messages.value.push({
-      role: 'system',
-      content: `❌ 还原失败: ${error.message || error}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
+    notifyTurnError(`还原失败: ${error.message || error}`)
   }
 }
 
@@ -1694,22 +1674,11 @@ async function handleFork({ messageId, messageIndex }) {
     })
 
     if (response && response.response) {
-      const result = response.response
-      messages.value.push({
-        role: 'system',
-        content: `✅ 会话分支创建成功\n新会话 ID: ${result.session_id || '已生成'}\n\n您可以在项目列表中找到这个新会话`,
-        timestamp: new Date()
-      })
       scrollToBottom()
     }
   } catch (error) {
     console.error('[Fork] Error:', error)
-    messages.value.push({
-      role: 'system',
-      content: `❌ 创建分支失败: ${error.message || error}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
+    notifyTurnError(`创建分支失败: ${error.message || error}`)
   }
 }
 
@@ -1719,8 +1688,8 @@ async function handleRewindAndFork({ messageId, messageIndex }) {
     '确定要还原并创建分支吗？\n\n' +
     '这将：\n' +
     '• 先将当前状态保存到新分支\n' +
-    '• 然后还原到此次提问之前的状态\n' +
-    '• 删除此次提问后的所有消息\n' +
+    '• 然后将文件状态还原到此次提问之前\n' +
+    '• 保留完整消息历史，不删除任何消息\n' +
     '• 此操作无法撤销\n\n' +
     '适用于：想保留当前进度，同时回滚代码探索其他方案'
   )
@@ -1736,36 +1705,11 @@ async function handleRewindAndFork({ messageId, messageIndex }) {
     })
 
     if (response && response.response) {
-      const result = response.response
-
-      // 删除此次提问之后的所有消息
-      const deleteCount = messages.value.length - messageIndex - 1
-      if (deleteCount > 0) {
-        messages.value.splice(messageIndex + 1, deleteCount)
-      }
-
-      const restoredCount = (result.changed_files || result.restored_files || []).length || 0
-      const newSessionId = result.new_session_id || '已生成'
-
-      messages.value.push({
-        role: 'system',
-        content: `✅ 已还原并创建分支\n\n` +
-          `📦 新分支 ID: ${newSessionId}\n` +
-          ` (已保存当前状态)\n` +
-          `🔄 还原了 ${restoredCount} 个文件\n\n` +
-          `您可以在项目列表中找到新分支继续探索`,
-        timestamp: new Date()
-      })
       scrollToBottom()
     }
   } catch (error) {
     console.error('[RewindAndFork] Error:', error)
-    messages.value.push({
-      role: 'system',
-      content: `❌ 还原并创建分支失败: ${error.message || error}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
+    notifyTurnError(`还原并创建分支失败: ${error.message || error}`)
   }
 }
 
@@ -1787,8 +1731,6 @@ async function handlePermissionModeChange(mode) {
   const previousMode = permissionMode.value
   permissionMode.value = mode
 
-  const modeLabel = permissionModes.find(m => m.value === mode)?.label || mode
-
   try {
     // 调用 sessionStore 的 setPermissionMode
     // 后端会自动判断运行时是否已启动，并在适当时机应用新模式
@@ -1800,30 +1742,11 @@ async function handlePermissionModeChange(mode) {
       newMode: mode,
       sessionCurrentMode: sessionStore.currentSession?.permissionMode
     })
-
-    // 添加系统通知消息（使用统一的 system_notification 类型）
-    messages.value.push({
-      role: 'system_notification',
-      notificationType: 'permission-mode-change',
-      data: {
-        permissionMode: mode,
-        source: 'manual', // 手动切换
-        pending: !runtimeActive.value // 是否待生效
-      },
-      timestamp: new Date()
-    })
-    scrollToBottom()
   } catch (error) {
     // 恢复之前的模式
     permissionMode.value = previousMode
     console.error('Failed to set permission mode:', error)
-
-    messages.value.push({
-      role: 'system',
-      content: `❌ 设置权限模式失败: ${error.message}`,
-      timestamp: new Date()
-    })
-    scrollToBottom()
+    notifyTurnError(`设置权限模式失败: ${error.message || error}`)
   }
 }
 

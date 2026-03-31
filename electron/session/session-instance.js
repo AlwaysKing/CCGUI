@@ -1492,18 +1492,89 @@ class SessionInstance {
       this.emit('message-update', { messageId, updates: normalizedUpdates })
     })
 
+    manager.on('message-replace', ({ messageId, replacement }) => {
+      const msg = this.messages.find(item => item.id === messageId)
+      const normalizedReplacement = attachExistingCcgui({
+        ...(replacement || {}),
+        id: messageId,
+        rawMessages: replacement?.rawMessages,
+        rawMessage: replacement?.rawMessage,
+        toolInput: replacement?.toolInput,
+        tool_use_id: replacement?.tool_use_id || replacement?.toolUseId || msg?.request_id || msg?.id,
+        ccgui: mergeCcguiSemantics(msg?.ccgui || null, replacement?.ccgui || null)
+      })
+      if (msg) {
+        Object.assign(msg, normalizedReplacement)
+        if (normalizedReplacement.ccgui) {
+          msg.ccgui = normalizedReplacement.ccgui
+        }
+        this.registerChangedFilesFromToolMessage(msg)
+        historyManager.updateMessage(this.projectId, this.id, messageId, normalizedReplacement)
+      }
+      this.emit('message-replace', { messageId, replacement: normalizedReplacement })
+    })
+
     manager.on('tool-result', (payload) => {
       const normalizedPayload = attachExistingCcgui(payload)
       this.emit('tool-result', normalizedPayload)
     })
 
+    manager.on('message-result', (payload) => {
+      const normalizedPayload = attachExistingCcgui(payload)
+      // 更新对应 tool_use 消息的状态
+      const toolMsgIndex = this.messages.findIndex(m => m.id === payload.messageId)
+      if (toolMsgIndex >= 0) {
+        const msg = this.messages[toolMsgIndex]
+        Object.assign(msg, {
+          isExecuting: false,
+          isError: payload.isError || false,
+          result: payload.content || '(无输出)',
+          ...(payload.usage ? { usage: payload.usage } : {})
+        })
+      }
+      this.emit('message-result', normalizedPayload)
+    })
+
     manager.on('message-complete', ({ messageId, updates }) => {
-      const msg = this.messages.find(item => item.id === messageId)
+      const msgIndex = this.messages.findIndex(item => item.id === messageId)
+      const msg = msgIndex >= 0 ? this.messages[msgIndex] : null
       if (msg) {
         Object.assign(msg, updates)
         this.registerChangedFilesFromToolMessage(msg)
         if (!msg.duration && msg.startTime) {
           msg.duration = Date.now() - msg.startTime
+        }
+
+        // Remove empty assistant messages that never received content or thinking.
+        // The frontend defers these via pendingAssistantMessage and discards them,
+        // but the backend unconditionally pushes them on message-start.
+        // Without cleanup they persist in history and appear as blank bubbles on resume.
+        if (
+          msg.role === 'assistant' &&
+          !msg.content?.trim() &&
+          !msg.thinking?.trim() &&
+          msg.isStreaming === false
+        ) {
+          const lastToolMsg = [...this.messages].reverse().find(
+            m => m.role === 'tool_use' || m.role === 'diff'
+          )
+          if (lastToolMsg) {
+            const pendingUsage = updates?.usage || msg.usage
+            if (pendingUsage) lastToolMsg.usage = pendingUsage
+            if (!lastToolMsg.duration && msg.startTime) {
+              lastToolMsg.duration = Date.now() - msg.startTime
+            }
+          }
+          this.messages.splice(msgIndex, 1)
+          logger.info(`[SessionInstance] Removed empty assistant message ${messageId}`)
+          this.emit('message-complete', {
+            messageId,
+            updates: {
+              ...updates,
+              ...(msg.duration ? { duration: msg.duration } : {})
+            }
+          })
+          return
         }
       }
       this.emit('message-complete', {
@@ -1513,6 +1584,15 @@ class SessionInstance {
           ...(msg?.duration ? { duration: msg.duration } : {})
         }
       })
+    })
+
+    manager.on('message-stop', ({ messageId }) => {
+      // tool_use 输入流结束，标记 isStreaming=false 但保留 isExecuting=true
+      const msg = this.messages.find(item => item.id === messageId)
+      if (msg) {
+        msg.isStreaming = false
+      }
+      this.emit('message-stop', { messageId })
     })
 
     manager.on('result', (message) => {

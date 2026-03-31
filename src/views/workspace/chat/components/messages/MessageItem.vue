@@ -76,6 +76,10 @@ const props = defineProps({
   chatTheme: {
     type: Object,
     default: () => ({})
+  },
+  externalizeThinking: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -115,24 +119,6 @@ const sessionStore = useSessionStore()
 
 // ============ 计算属性 ============
 
-// 是否有回答（允许中间穿插 session 级通知）
-const hasAssistantResponse = computed(() => {
-  if (props.message.role !== 'user') return false
-  return !!findAssistantResponse(props.allMessages, props.messageIndex)
-})
-
-// 是否显示折叠按钮（有回答就显示）
-const showCollapseBtn = computed(() => hasAssistantResponse.value)
-
-// 是否显示撤销菜单（有回答、不是最后一条、不在处理中）
-const showRewindBtn = computed(() => {
-  if (!hasAssistantResponse.value) return false
-  if (props.messageIndex >= props.totalMessages - 1) return false
-  if (!props.message.id) return false
-  // 检查是否正在处理中
-  return !sessionStore.isProcessing
-})
-
 // 是否因为前面的用户消息回答被折叠而应该隐藏
 const shouldHide = computed(() => {
   if (
@@ -149,11 +135,6 @@ const shouldHide = computed(() => {
   if (props.message.role === 'user') return false
   const { collapsed } = getResponseCollapseState(props.allMessages, props.messageIndex)
   return collapsed
-})
-
-// 是否显示折叠的回答占位符
-const showCollapsedPlaceholder = computed(() => {
-  return props.message.role === 'user' && props.message.responseCollapsed
 })
 
 // 是否是一轮新问答的开始（用户消息且不是第一条）
@@ -256,10 +237,13 @@ const isStreaming = computed(() => {
 
 // 是否显示思考过程
 const showThinking = computed(() => {
-  return props.message.hasThinking && props.message.thinking
+  return !props.externalizeThinking && props.message.hasThinking && props.message.thinking
 })
 
 const showAssistantMessage = computed(() => {
+  if (props.message.role === 'assistant' && props.message.subtype === 'thinking') {
+    return false
+  }
   return Boolean(props.message.content || props.message.showTurnSeparator || props.message.isStreaming)
 })
 
@@ -287,7 +271,29 @@ const showTailStats = computed(() => false)
 const showBottomStats = computed(() => false)
 const showFloatingStats = computed(() => showMessageStats.value && isFloatingStatus.value)
 const showUserRightColumn = computed(() => {
-  return props.message.role === 'user' && (showAvatar.value || showCollapseBtn.value || showRewindBtn.value)
+  return props.message.role === 'user' && showAvatar.value
+})
+
+const responseToolbarTarget = computed(() => {
+  if (props.message.role !== 'user') return null
+  const response = findAssistantResponse(props.allMessages, props.messageIndex)
+  if (!response) return null
+  return { message: props.message, index: props.messageIndex, response }
+})
+
+const showResponseToolbar = computed(() => {
+  return Boolean(responseToolbarTarget.value) &&
+    (showResponseToolbarCollapseBtn.value || showResponseToolbarRewindBtn.value)
+})
+
+const showResponseToolbarCollapseBtn = computed(() => Boolean(responseToolbarTarget.value))
+
+const showResponseToolbarRewindBtn = computed(() => {
+  const target = responseToolbarTarget.value
+  if (!target) return false
+  if (target.index >= props.totalMessages - 1) return false
+  if (!target.message?.id) return false
+  return !sessionStore.isProcessing
 })
 
 const hasCustomContent = computed(() => Boolean(slots.default))
@@ -577,6 +583,77 @@ onUnmounted(() => {
           :chat-theme="chatTheme"
           @copyContent="copyMessageContent"
         />
+        <div v-if="showResponseToolbar" class="response-toolbar-row">
+          <span class="response-toolbar-line" aria-hidden="true"></span>
+          <div class="response-toolbar">
+            <button
+              v-if="showResponseToolbarCollapseBtn"
+              class="icon-action-btn response-toolbar-btn"
+              @click.stop="onToggleResponseCollapse(responseToolbarTarget.index, $event)"
+              :title="responseToolbarTarget.message.responseCollapsed ? '展开回答' : '折叠回答'"
+            >
+              <svg v-if="responseToolbarTarget.message.responseCollapsed" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <polyline points="9 21 3 21 3 15"></polyline>
+                <line x1="21" y1="3" x2="14" y2="10"></line>
+                <line x1="3" y1="21" x2="10" y2="14"></line>
+              </svg>
+              <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="4 14 10 14 10 20"></polyline>
+                <polyline points="20 10 14 10 14 4"></polyline>
+                <line x1="14" y1="10" x2="21" y2="3"></line>
+                <line x1="3" y1="21" x2="10" y2="14"></line>
+              </svg>
+            </button>
+
+            <div v-if="showResponseToolbarRewindBtn" class="action-menu-wrapper" @click.stop>
+              <button
+                class="icon-action-btn rewind-btn response-toolbar-btn"
+                :class="{ active: openActionMenuIndex === responseToolbarTarget.index }"
+                @click="onToggleActionMenu(responseToolbarTarget.index)"
+                title="更多操作"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                  <path d="M3 3v5h5"></path>
+                </svg>
+              </button>
+              <div v-if="openActionMenuIndex === responseToolbarTarget.index" class="action-dropdown-menu action-dropdown-menu--toolbar">
+                <button class="menu-item rewind-item" @click="handleRewind(responseToolbarTarget.message.id, responseToolbarTarget.index)">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                    <path d="M3 3v5h5"></path>
+                  </svg>
+                  还原
+                  <span class="menu-hint">撤销后续修改</span>
+                </button>
+                <button class="menu-item fork-item" @click="handleFork(responseToolbarTarget.message.id, responseToolbarTarget.index)">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="6" y1="3" x2="6" y2="15"></line>
+                    <circle cx="18" cy="6" r="3"></circle>
+                    <circle cx="6" cy="18" r="3"></circle>
+                    <path d="M18 9a9 9 0 0 1-9 9"></path>
+                  </svg>
+                  创建分支
+                  <span class="menu-hint">保留当前状态</span>
+                </button>
+                <button class="menu-item rewind-fork-item" @click="handleRewindAndFork(responseToolbarTarget.message.id, responseToolbarTarget.index)">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                    <path d="M3 3v5h5"></path>
+                    <line x1="6" y1="8" x2="6" y2="16"></line>
+                    <circle cx="16" cy="10" r="3"></circle>
+                    <circle cx="6" cy="18" r="3"></circle>
+                    <path d="M16 13a6 6 0 0 1-6 5"></path>
+                  </svg>
+                  还原并创建分支
+                  <span class="menu-hint">保存并回滚</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <span class="response-toolbar-line" aria-hidden="true"></span>
+        </div>
       </template>
 
       <!-- Assistant 消息 -->
@@ -680,92 +757,14 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 用户消息右侧：头像 + 操作按钮 -->
+    <!-- 用户消息右侧：头像 -->
     <div v-if="showUserRightColumn" class="user-right-column" :class="{ 'avatar-hidden': !showAvatar }">
       <div v-if="showAvatar" class="message-avatar">
         {{ avatarChar }}
       </div>
-      <div class="user-action-buttons">
-        <!-- 展开/折叠回答按钮 -->
-        <button
-          v-if="showCollapseBtn"
-          class="icon-action-btn"
-          @click.stop="onToggleResponseCollapse(messageIndex, $event)"
-          :title="message.responseCollapsed ? '展开回答' : '折叠回答'"
-        >
-          <svg v-if="message.responseCollapsed" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="15 3 21 3 21 9"></polyline>
-            <polyline points="9 21 3 21 3 15"></polyline>
-            <line x1="21" y1="3" x2="14" y2="10"></line>
-            <line x1="3" y1="21" x2="10" y2="14"></line>
-          </svg>
-          <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="4 14 10 14 10 20"></polyline>
-            <polyline points="20 10 14 10 14 4"></polyline>
-            <line x1="14" y1="10" x2="21" y2="3"></line>
-            <line x1="3" y1="21" x2="10" y2="14"></line>
-          </svg>
-        </button>
-        <!-- 操作菜单按钮 -->
-        <div v-if="showRewindBtn" class="action-menu-wrapper" @click.stop>
-          <button
-            class="icon-action-btn rewind-btn"
-            :class="{ active: openActionMenuIndex === messageIndex }"
-            @click="onToggleActionMenu(messageIndex)"
-            title="更多操作"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-              <path d="M3 3v5h5"></path>
-            </svg>
-          </button>
-          <!-- 下拉菜单 -->
-          <div v-if="openActionMenuIndex === messageIndex" class="action-dropdown-menu">
-            <button class="menu-item rewind-item" @click="handleRewind(message.id, messageIndex)">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                <path d="M3 3v5h5"></path>
-              </svg>
-              还原
-              <span class="menu-hint">撤销后续修改</span>
-            </button>
-            <button class="menu-item fork-item" @click="handleFork(message.id, messageIndex)">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="6" y1="3" x2="6" y2="15"></line>
-                <circle cx="18" cy="6" r="3"></circle>
-                <circle cx="6" cy="18" r="3"></circle>
-                <path d="M18 9a9 9 0 0 1-9 9"></path>
-              </svg>
-              创建分支
-              <span class="menu-hint">保留当前状态</span>
-            </button>
-            <button class="menu-item rewind-fork-item" @click="handleRewindAndFork(message.id, messageIndex)">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                <path d="M3 3v5h5"></path>
-                <line x1="6" y1="8" x2="6" y2="16"></line>
-                <circle cx="16" cy="10" r="3"></circle>
-                <circle cx="6" cy="18" r="3"></circle>
-                <path d="M16 13a6 6 0 0 1-6 5"></path>
-              </svg>
-              还原并创建分支
-              <span class="menu-hint">保存并回滚</span>
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 
-  <!-- 折叠的回答占位符 -->
-  <div
-    v-if="showCollapsedPlaceholder"
-    class="collapsed-response-placeholder"
-    @click="onToggleResponseCollapse(messageIndex, $event)"
-  >
-    <span class="collapsed-icon">▶</span>
-    <span class="collapsed-text">回答已折叠，点击展开</span>
-  </div>
 </template>
 
 <style scoped>
@@ -831,22 +830,6 @@ onUnmounted(() => {
   width: 28px;
 }
 
-.user-action-buttons {
-  display: flex;
-  flex-direction: row;
-  gap: 2px;
-  opacity: 0;
-  transition: opacity 0.15s;
-  width: 100%;  /* 占满父容器宽度 */
-  justify-content: center;  /* 按钮居中 */
-}
-
-/* hover 整个消息行时显示操作按钮，或菜单打开时保持显示 */
-.message.user:hover .user-action-buttons,
-.message.user .user-action-buttons:has(.action-dropdown-menu) {
-  opacity: 1;
-}
-
 .icon-action-btn {
   display: flex;
   align-items: center;
@@ -878,6 +861,46 @@ onUnmounted(() => {
   position: relative;
 }
 
+.response-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  margin: 6px 0 2px;
+}
+
+.response-toolbar-line {
+  flex: 1;
+  min-width: 24px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(82, 82, 91, 0.04), rgba(82, 82, 91, 0.5), rgba(82, 82, 91, 0.04));
+}
+
+.response-toolbar {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px;
+}
+
+.response-toolbar-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #18181B;
+  border: 1px solid rgba(82, 82, 91, 0.75);
+  color: #71717A;
+  box-shadow: 0 0 0 4px rgba(24, 24, 27, 0.92);
+}
+
+.response-toolbar-btn:hover {
+  background: #232329;
+  border-color: rgba(113, 113, 122, 0.95);
+  color: #D4D4D8;
+}
+
 .action-dropdown-menu {
   position: absolute;
   top: 100%;
@@ -890,6 +913,12 @@ onUnmounted(() => {
   min-width: 180px;
   z-index: 100;
   overflow: hidden;
+}
+
+.action-dropdown-menu--toolbar {
+  top: calc(100% + 8px);
+  right: 50%;
+  transform: translateX(50%);
 }
 
 .menu-item {
@@ -1127,8 +1156,16 @@ onUnmounted(() => {
   gap: 8px;
 }
 
+.message.assistant.surface-ghost .assistant-content-wrapper {
+  max-width: min(85%, calc(100% - 48px));
+}
+
 .message.no-avatar .assistant-content-wrapper {
   max-width: 100%;
+}
+
+.message.assistant.surface-ghost.no-avatar .assistant-content-wrapper {
+  max-width: 85%;
 }
 
 .assistant-content-wrapper > * {
@@ -1284,29 +1321,4 @@ onUnmounted(() => {
   margin-top: 4px;
 }
 
-.collapsed-response-placeholder {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: #18181B;
-  border-bottom: 1px solid #27272A;
-  cursor: pointer;
-  font-size: 11px;
-  color: #71717A;
-  transition: all 0.15s;
-}
-
-.collapsed-response-placeholder:hover {
-  background: #27272A;
-  color: #A1A1AA;
-}
-
-.collapsed-icon {
-  font-size: 10px;
-}
-
-.collapsed-text {
-  flex: 1;
-}
 </style>

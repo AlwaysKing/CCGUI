@@ -2,8 +2,10 @@
 import { computed, ref } from 'vue'
 import MessageItem from './messages/MessageItem.vue'
 import ExecutionAgentCard from './messages/ExecutionAgentCard.vue'
+import ThinkingSection from './messages/ThinkingSection.vue'
 import StickyHeader from './layout/StickyHeader.vue'
 import AgentWorkspaceTopRail from './AgentWorkspaceTopRail.vue'
+import { useMessage } from '../composables/useMessage'
 
 const props = defineProps({
   timelineBlocks: {
@@ -100,6 +102,8 @@ const emit = defineEmits([
   'contentScroll'
 ])
 
+const { copiedMessageIndex: copiedThinkingIndex, copyToClipboard } = useMessage()
+
 function selectAgent(agentId) {
   emit('selectAgent', agentId)
 }
@@ -159,8 +163,13 @@ function railItemTypeLabel(agentItem) {
 
 const timelineBlocksWithShell = computed(() => {
   return props.timelineBlocks.map((block, index) => {
+    const displayIndex = index
+
     if (block.type !== 'execution-card') {
-      return block
+      return {
+        ...block,
+        displayIndex
+      }
     }
 
     const timestamp = block.card?.bucket?.firstTimestamp || block.card?.registry?.startTime || new Date().toISOString()
@@ -186,7 +195,8 @@ const timelineBlocksWithShell = computed(() => {
 
     return {
       ...block,
-      shellMessage
+      shellMessage,
+      displayIndex
     }
   })
 })
@@ -199,6 +209,134 @@ const mainStageDisplayMessages = computed(() => {
     return block.message
   }).filter(Boolean)
 })
+
+function getBlockMessage(block) {
+  if (!block) return null
+  if (block.type === 'execution-card') return block.shellMessage || null
+  return block.message || null
+}
+
+function isAssistantAnswerBlock(block) {
+  const message = getBlockMessage(block)
+  return message?.role === 'assistant' && message?.subtype !== 'thinking'
+}
+
+function isFoldableActivityBlock(block) {
+  const message = getBlockMessage(block)
+  if (!message) return false
+  if (message.role === 'user' || message.role === 'assistant') return false
+  if (message.role === 'system' || message.role === 'task_complete') return false
+  if (message.role === 'system_notification' && message.scope === 'session') return false
+  return true
+}
+
+function hasExternalThinking(block) {
+  const message = getBlockMessage(block)
+  return Boolean(message?.role === 'assistant' && message?.thinking)
+}
+
+function getFoldableActivityCount(activityBlocks, assistantBlock = null) {
+  return activityBlocks.length + (hasExternalThinking(assistantBlock) ? 1 : 0)
+}
+
+function getActivityGroupToolCallCount(group) {
+  if (!group) return 0
+  return (group.foldableBlocks || []).reduce((count, block) => {
+    const message = getBlockMessage(block)
+    if (!message) return count
+    if (message.role === 'tool_use' || message.role === 'diff') {
+      return count + 1
+    }
+    return count
+  }, 0)
+}
+
+function getActivityGroupCollapsedLabel(group) {
+  const toolCalls = getActivityGroupToolCallCount(group)
+  if (toolCalls > 0) {
+    return `已折叠 ${toolCalls} 次工具调用`
+  }
+  return '已折叠活动内容'
+}
+
+function isMessageHiddenByResponseCollapse(messages, messageIndex) {
+  if (!Array.isArray(messages) || messageIndex <= 0) return false
+
+  for (let i = messageIndex - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (!message) continue
+
+    if (message.role === 'user') {
+      return Boolean(message.responseCollapsed)
+    }
+  }
+
+  return false
+}
+
+function buildRenderableTimeline(blocks) {
+  const renderBlocks = []
+  let pendingActivities = []
+
+  const flushPendingActivities = () => {
+    if (pendingActivities.length === 0) return
+    pendingActivities.forEach(block => {
+      renderBlocks.push({
+        type: 'block',
+        key: block.key || `block-${block.displayIndex}`,
+        block
+      })
+    })
+    pendingActivities = []
+  }
+
+  blocks.forEach(block => {
+    if (isFoldableActivityBlock(block)) {
+      pendingActivities.push(block)
+      return
+    }
+
+    if (isAssistantAnswerBlock(block)) {
+      if (getFoldableActivityCount(pendingActivities, block) >= 2) {
+        renderBlocks.push({
+          type: 'activity-group',
+          key: `activity-group-${getBlockMessage(block)?.id || block.displayIndex}`,
+          foldableBlocks: pendingActivities,
+          assistantBlock: block
+        })
+        pendingActivities = []
+        return
+      }
+    }
+
+    flushPendingActivities()
+    renderBlocks.push({
+      type: 'block',
+      key: block.key || `block-${block.displayIndex}`,
+      block
+    })
+  })
+
+  flushPendingActivities()
+  return renderBlocks
+}
+
+const collapsedActivityGroups = ref({})
+
+const renderableMainTimelineBlocks = computed(() => buildRenderableTimeline(timelineBlocksWithShell.value))
+
+function isActivityGroupCollapsed(groupKey) {
+  return Boolean(collapsedActivityGroups.value[groupKey])
+}
+
+function toggleActivityGroup(groupKey) {
+  collapsedActivityGroups.value[groupKey] = !collapsedActivityGroups.value[groupKey]
+}
+
+async function copyGroupedThinking(message, index) {
+  if (!message?.thinking) return
+  await copyToClipboard(message.thinking, index)
+}
 
 const railMasterEntry = computed(() => {
   return props.agentEntries.find(entry => entry.isMain) || null
@@ -314,11 +452,106 @@ const shouldShowRail = computed(() => {
       />
       <div class="agent-workspace__main-stage">
         <template v-if="activeSession?.isMain">
-          <template v-for="(block, index) in timelineBlocksWithShell" :key="block.key || `${block.type}-${index}`">
+          <template v-for="renderBlock in renderableMainTimelineBlocks" :key="renderBlock.key">
+            <template v-if="renderBlock.type === 'activity-group'">
+              <template v-if="!isMessageHiddenByResponseCollapse(mainStageDisplayMessages, renderBlock.assistantBlock.displayIndex)">
+              <div class="activity-group" :class="{ collapsed: isActivityGroupCollapsed(renderBlock.key) }">
+                <div class="activity-group__foldable">
+                  <button
+                    class="activity-group__rail-toggle"
+                    type="button"
+                    :title="isActivityGroupCollapsed(renderBlock.key) ? '展开活动段' : '折叠活动段'"
+                    @click="toggleActivityGroup(renderBlock.key)"
+                  ><span class="activity-group__rail"></span></button>
+                  <div v-if="!isActivityGroupCollapsed(renderBlock.key)" class="activity-group__content">
+                    <ThinkingSection
+                      v-if="hasExternalThinking(renderBlock.assistantBlock)"
+                      :thinking="renderBlock.assistantBlock.message.thinking"
+                      :is-collapsed="false"
+                      :message-index="renderBlock.assistantBlock.displayIndex"
+                      :copied-message-index="copiedThinkingIndex"
+                      :chat-theme="chatTheme"
+                      @copy-content="() => copyGroupedThinking(renderBlock.assistantBlock.message, renderBlock.assistantBlock.displayIndex)"
+                    />
+                    <template v-for="nestedBlock in renderBlock.foldableBlocks" :key="nestedBlock.key || `nested-${nestedBlock.displayIndex}`">
+                      <MessageItem
+                        v-if="nestedBlock.type === 'message'"
+                        :message="nestedBlock.message"
+                        :message-index="nestedBlock.displayIndex"
+                        :total-messages="mainStageDisplayMessages.length"
+                        :working-directory="workingDirectory"
+                        :current-time="currentTime"
+                        :all-messages="mainStageDisplayMessages"
+                        :chat-theme="chatTheme"
+                        @message-click="forward('messageClick', $event)"
+                        @rewind="forward('rewind', $event)"
+                        @fork="forward('fork', $event)"
+                        @rewind-and-fork="forward('rewindAndFork', $event)"
+                        @jump-to-message="forward('jumpToMessage', $event)"
+                        @copy-content="forward('copyContent', $event)"
+                        @copy-question-content="forward('copyQuestionContent', $event)"
+                      />
+                      <MessageItem
+                        v-else
+                        :message="nestedBlock.shellMessage"
+                        :message-index="nestedBlock.displayIndex"
+                        :total-messages="mainStageDisplayMessages.length"
+                        :working-directory="workingDirectory"
+                        :current-time="currentTime"
+                        :all-messages="mainStageDisplayMessages"
+                        :chat-theme="chatTheme"
+                        @message-click="forward('messageClick', $event)"
+                        @rewind="forward('rewind', $event)"
+                        @fork="forward('fork', $event)"
+                        @rewind-and-fork="forward('rewindAndFork', $event)"
+                        @jump-to-message="forward('jumpToMessage', $event)"
+                        @copy-content="forward('copyContent', $event)"
+                        @copy-question-content="forward('copyQuestionContent', $event)"
+                      >
+                        <ExecutionAgentCard
+                          :card="nestedBlock.card"
+                          :working-directory="workingDirectory"
+                          :current-time="currentTime"
+                          :chat-theme="chatTheme"
+                        />
+                      </MessageItem>
+                    </template>
+                  </div>
+                  <button
+                    v-else
+                    class="activity-group__summary"
+                    type="button"
+                    @click="toggleActivityGroup(renderBlock.key)"
+                  >
+                    {{ getActivityGroupCollapsedLabel(renderBlock) }}
+                  </button>
+                </div>
+
+                <MessageItem
+                  :message="renderBlock.assistantBlock.message"
+                  :message-index="renderBlock.assistantBlock.displayIndex"
+                  :total-messages="mainStageDisplayMessages.length"
+                  :working-directory="workingDirectory"
+                  :current-time="currentTime"
+                  :all-messages="mainStageDisplayMessages"
+                  :chat-theme="chatTheme"
+                  :externalize-thinking="hasExternalThinking(renderBlock.assistantBlock)"
+                  @message-click="forward('messageClick', $event)"
+                  @rewind="forward('rewind', $event)"
+                  @fork="forward('fork', $event)"
+                  @rewind-and-fork="forward('rewindAndFork', $event)"
+                  @jump-to-message="forward('jumpToMessage', $event)"
+                  @copy-content="forward('copyContent', $event)"
+                  @copy-question-content="forward('copyQuestionContent', $event)"
+                />
+              </div>
+              </template>
+            </template>
+
             <MessageItem
-              v-if="block.type === 'message'"
-              :message="block.message"
-              :message-index="index"
+              v-else-if="renderBlock.type === 'block' && renderBlock.block.type === 'message'"
+              :message="renderBlock.block.message"
+              :message-index="renderBlock.block.displayIndex"
               :total-messages="mainStageDisplayMessages.length"
               :working-directory="workingDirectory"
               :current-time="currentTime"
@@ -333,9 +566,9 @@ const shouldShowRail = computed(() => {
               @copy-question-content="forward('copyQuestionContent', $event)"
             />
             <MessageItem
-              v-else-if="block.type === 'execution-card'"
-              :message="block.shellMessage"
-              :message-index="index"
+              v-else-if="renderBlock.type === 'block'"
+              :message="renderBlock.block.shellMessage"
+              :message-index="renderBlock.block.displayIndex"
               :total-messages="mainStageDisplayMessages.length"
               :working-directory="workingDirectory"
               :current-time="currentTime"
@@ -350,7 +583,7 @@ const shouldShowRail = computed(() => {
               @copy-question-content="forward('copyQuestionContent', $event)"
             >
               <ExecutionAgentCard
-                :card="block.card"
+                :card="renderBlock.block.card"
                 :working-directory="workingDirectory"
                 :current-time="currentTime"
                 :chat-theme="chatTheme"
@@ -620,6 +853,113 @@ const shouldShowRail = computed(() => {
 
 .agent-workspace__main-stage {
   min-width: 0;
+}
+
+.activity-group {
+  min-width: 0;
+}
+
+.activity-group__foldable {
+  position: relative;
+  min-width: 0;
+}
+
+.activity-group__rail-toggle {
+  position: absolute;
+  left: -18px;
+  top: 0;
+  bottom: 10px;
+  z-index: 2;
+  width: 12px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.activity-group__rail-toggle:hover .activity-group__rail {
+  box-shadow: 0 0 0 1px rgba(161, 161, 170, 0.42);
+}
+
+.activity-group__rail-toggle:hover::before,
+.activity-group__rail-toggle:hover::after {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(212, 212, 216, 0.9);
+  font-size: 8px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.activity-group__rail-toggle:hover::before {
+  top: -2px;
+  content: '⌄';
+}
+
+.activity-group__rail-toggle:hover::after {
+  bottom: 8px;
+  content: '⌃';
+}
+
+.activity-group__rail {
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 10px;
+  width: 6px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(161, 161, 170, 0.2), rgba(161, 161, 170, 0.12));
+}
+
+.activity-group.collapsed .activity-group__rail-toggle {
+  bottom: auto;
+  top: 0;
+  height: 24px;
+}
+
+.activity-group.collapsed .activity-group__rail-toggle:hover::before {
+  top: 1px;
+  content: '⌃';
+}
+
+.activity-group.collapsed .activity-group__rail-toggle:hover::after {
+  bottom: 1px;
+  content: '⌄';
+}
+
+.activity-group.collapsed .activity-group__rail {
+  top: 0;
+  bottom: auto;
+  height: 24px;
+}
+
+.activity-group__content {
+  display: flow-root;
+  min-width: 0;
+}
+
+.activity-group__summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 0 10px;
+  border: none;
+  background: transparent;
+  color: #71717A;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  text-align: left;
+}
+
+.activity-group__summary:hover {
+  color: #A1A1AA;
+}
+
+.activity-group__content > :first-child {
+  margin-top: 0;
 }
 
 .agent-workspace__split-side {

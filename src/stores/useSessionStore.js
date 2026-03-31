@@ -2040,6 +2040,13 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'silent-message':
         recordAgentSemantics(session, data)
+        {
+          const escalatedNotification = getEscalatedSilentMessageNotification(data)
+          if (escalatedNotification) {
+            handleSystemNotification(session, escalatedNotification)
+            break
+          }
+        }
         session.silentMessages.push(reactive(data))
         break
 
@@ -3039,6 +3046,51 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     session.messages.push(notificationMsg)
+  }
+
+  function getEscalatedSilentMessageNotification(data) {
+    const textCandidates = [
+      data?.rawMessage?.tool_use_result?.content,
+      data?.rawMessage?.message?.content,
+      data?.rawMessage?.tool_use_result?.prompt,
+      data?.params?.rawMessage?.tool_use_result?.content,
+      data?.params?.rawMessage?.message?.content,
+      data?.params?.tool_use_result?.content,
+      data?.params?.content,
+      data?.rawMessage?.content,
+      data?.message,
+      data?.params
+    ]
+
+    const flattenedText = textCandidates
+      .flatMap(value => {
+        if (Array.isArray(value)) {
+          return value.map(item => {
+            if (typeof item === 'string') return item
+            if (typeof item?.text === 'string') return item.text
+            if (typeof item?.content === 'string') return item.content
+            return ''
+          })
+        }
+        if (typeof value === 'string') return [value]
+        if (typeof value?.text === 'string') return [value.text]
+        return []
+      })
+      .filter(Boolean)
+      .join('\n')
+
+    if (!/context window limit/i.test(flattenedText)) {
+      return null
+    }
+
+    return {
+      type: 'turn-error',
+      errorType: 'contextWindowLimit',
+      message: flattenedText.trim() || 'The model has reached its context window limit.',
+      provider: data?.provider || 'claude',
+      source: 'silent-message-escalation',
+      metadata: data
+    }
   }
 
   /**

@@ -5,6 +5,7 @@
  */
 import { ref, computed } from 'vue'
 import { useMessage } from '../../composables/useMessage'
+import CopyButton from '../ui/CopyButton.vue'
 
 const props = defineProps({
   envInfo: {
@@ -48,7 +49,7 @@ const props = defineProps({
 const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail'])
 
 // 使用 useMessage composable
-const { formatMcpServers, formatSkills } = useMessage()
+const { formatMcpServers, formatSkills, copiedMessageIndex, copyToClipboard } = useMessage()
 
 // 是否显示详情
 const showEnvDetail = ref(false)
@@ -369,6 +370,14 @@ function resolveUsageStrokeColor(percent, palette = 'default') {
 function toggleSilentPanel() {
   showSilentPanel.value = !showSilentPanel.value
 }
+
+function getSilentMessageContent(message) {
+  return JSON.stringify(message?.params ?? message, null, 2)
+}
+
+async function copySilentMessage(message, reverseIndex) {
+  await copyToClipboard(getSilentMessageContent(message), reverseIndex)
+}
 </script>
 
 <template>
@@ -565,12 +574,19 @@ function toggleSilentPanel() {
         </div>
         <div v-if="!silentMessages.length" class="silent-empty">暂无沉没消息</div>
         <div v-else class="silent-list">
-          <div v-for="message in silentMessages.slice().reverse()" :key="message.id" class="silent-item">
+          <div v-for="(message, reverseIndex) in silentMessages.slice().reverse()" :key="message.id" class="silent-item">
             <div class="silent-item-header">
               <span class="silent-type">{{ message.messageType }}</span>
               <span class="silent-time">{{ new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}</span>
             </div>
-            <pre class="silent-content">{{ JSON.stringify(message.params ?? message, null, 2) }}</pre>
+            <div class="silent-content-wrap">
+              <CopyButton
+                :is-copied="copiedMessageIndex === reverseIndex"
+                title="复制消息体"
+                @copy="copySilentMessage(message, reverseIndex)"
+              />
+              <pre class="silent-content">{{ getSilentMessageContent(message) }}</pre>
+            </div>
           </div>
         </div>
       </div>
@@ -967,6 +983,22 @@ function toggleSilentPanel() {
   line-height: 1.5;
   color: #D4D4D8;
   font-family: var(--font-family-mono);
+}
+
+.silent-content-wrap {
+  position: relative;
+}
+
+.silent-content-wrap :deep(.copy-btn) {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.silent-content-wrap:hover :deep(.copy-btn) {
+  opacity: 1;
 }
 
 .mcp-status-summary {

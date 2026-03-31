@@ -350,6 +350,14 @@ const notificationContent = computed(() => {
       }
     }
 
+    if (errorType === 'contextWindowLimit') {
+      return {
+        icon: '📦',
+        title: '上下文窗口已满',
+        description: errorMessage
+      }
+    }
+
     // 其他 turn 错误
     return {
       icon: '⚠️',

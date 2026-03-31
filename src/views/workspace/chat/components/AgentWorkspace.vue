@@ -259,6 +259,12 @@ function getActivityGroupCollapsedLabel(group) {
   return '已折叠活动内容'
 }
 
+function getActivityGroupKey(activityBlocks, assistantBlock = null) {
+  const firstBlock = activityBlocks?.[0] || assistantBlock || null
+  const firstMessage = getBlockMessage(firstBlock)
+  return `activity-group-${firstMessage?.id || firstBlock?.displayIndex || 'unknown'}`
+}
+
 function isMessageHiddenByResponseCollapse(messages, messageIndex) {
   if (!Array.isArray(messages) || messageIndex <= 0) return false
 
@@ -280,13 +286,22 @@ function buildRenderableTimeline(blocks) {
 
   const flushPendingActivities = () => {
     if (pendingActivities.length === 0) return
-    pendingActivities.forEach(block => {
+    if (getFoldableActivityCount(pendingActivities, null) >= 2) {
       renderBlocks.push({
-        type: 'block',
-        key: block.key || `block-${block.displayIndex}`,
-        block
+        type: 'activity-group',
+        key: getActivityGroupKey(pendingActivities, null),
+        foldableBlocks: [...pendingActivities],
+        assistantBlock: null
       })
-    })
+    } else {
+      pendingActivities.forEach(block => {
+        renderBlocks.push({
+          type: 'block',
+          key: block.key || `block-${block.displayIndex}`,
+          block
+        })
+      })
+    }
     pendingActivities = []
   }
 
@@ -300,8 +315,8 @@ function buildRenderableTimeline(blocks) {
       if (getFoldableActivityCount(pendingActivities, block) >= 2) {
         renderBlocks.push({
           type: 'activity-group',
-          key: `activity-group-${getBlockMessage(block)?.id || block.displayIndex}`,
-          foldableBlocks: pendingActivities,
+          key: getActivityGroupKey(pendingActivities, block),
+          foldableBlocks: [...pendingActivities],
           assistantBlock: block
         })
         pendingActivities = []
@@ -327,6 +342,14 @@ const renderableMainTimelineBlocks = computed(() => buildRenderableTimeline(time
 
 function isActivityGroupCollapsed(groupKey) {
   return Boolean(collapsedActivityGroups.value[groupKey])
+}
+
+function resolveActivityGroupCollapsed(group) {
+  const stored = collapsedActivityGroups.value[group.key]
+  if (typeof stored === 'boolean') {
+    return stored
+  }
+  return Boolean(group?.assistantBlock)
 }
 
 function toggleActivityGroup(groupKey) {
@@ -454,16 +477,16 @@ const shouldShowRail = computed(() => {
         <template v-if="activeSession?.isMain">
           <template v-for="renderBlock in renderableMainTimelineBlocks" :key="renderBlock.key">
             <template v-if="renderBlock.type === 'activity-group'">
-              <template v-if="!isMessageHiddenByResponseCollapse(mainStageDisplayMessages, renderBlock.assistantBlock.displayIndex)">
-              <div class="activity-group" :class="{ collapsed: isActivityGroupCollapsed(renderBlock.key) }">
+              <template v-if="!renderBlock.assistantBlock || !isMessageHiddenByResponseCollapse(mainStageDisplayMessages, renderBlock.assistantBlock.displayIndex)">
+              <div class="activity-group" :class="{ collapsed: resolveActivityGroupCollapsed(renderBlock) }">
                 <div class="activity-group__foldable">
                   <button
                     class="activity-group__rail-toggle"
                     type="button"
-                    :title="isActivityGroupCollapsed(renderBlock.key) ? '展开活动段' : '折叠活动段'"
+                    :title="resolveActivityGroupCollapsed(renderBlock) ? '展开活动段' : '折叠活动段'"
                     @click="toggleActivityGroup(renderBlock.key)"
                   ><span class="activity-group__rail"></span></button>
-                  <div v-if="!isActivityGroupCollapsed(renderBlock.key)" class="activity-group__content">
+                  <div v-if="!resolveActivityGroupCollapsed(renderBlock)" class="activity-group__content">
                     <ThinkingSection
                       v-if="hasExternalThinking(renderBlock.assistantBlock)"
                       :thinking="renderBlock.assistantBlock.message.thinking"
@@ -528,6 +551,7 @@ const shouldShowRail = computed(() => {
                 </div>
 
                 <MessageItem
+                  v-if="renderBlock.assistantBlock"
                   :message="renderBlock.assistantBlock.message"
                   :message-index="renderBlock.assistantBlock.displayIndex"
                   :total-messages="mainStageDisplayMessages.length"

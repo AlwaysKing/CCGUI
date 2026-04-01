@@ -100,7 +100,7 @@ function toggleCollapse(taskId) {
 
   // 折叠/展开后调整位置
   nextTick(() => {
-    adjustAllPositions()
+    resolveCollisions()
   })
 }
 
@@ -144,68 +144,90 @@ function getDefaultPosition(taskIndex) {
   }
 }
 
-// 调整所有任务位置 (粘性逻辑)
-function adjustAllPositions() {
-  const { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound, RIGHT_BOUND } = getBounds()
-
-  taskStates.value.forEach((state, taskId) => {
-    if (!state.position) return
-
-    const taskEl = document.querySelector(`[data-task-id="${taskId}"]`)
-    if (!taskEl) return
-
-    const containerRect = taskEl.getBoundingClientRect()
-    const maxX = RIGHT_BOUND - containerRect.width - PADDING
-    const maxY = window.innerHeight - containerRect.height - bottomBound
-
-    // 粘着右边
-    if (state.isStickyToRight) {
-      state.position.x = maxX
-    } else if (state.position.x > maxX) {
-      state.position.x = maxX
-    }
-
-    // 粘着底部
-    if (state.isStickyToBottom) {
-      state.position.y = maxY
-    } else if (state.position.y > maxY) {
-      state.position.y = maxY
-    }
-
-    // 左边界
-    if (state.position.x < LEFT_BOUND) {
-      state.position.x = LEFT_BOUND
-    }
-
-    // 上边界
-    if (state.position.y < TOP_BOUND) {
-      state.position.y = TOP_BOUND
-    }
-  })
-
-  stackStickyWindows()
-  taskStates.value = new Map(taskStates.value)
+// 获取任务目标尺寸
+function getTargetSize(taskId) {
+  const state = getTaskState(taskId)
+  const el = document.querySelector(`[data-task-id="${taskId}"]`)
+  if (!el) {
+    return { width: state.collapsed ? 260 : 300, height: 60 }
+  }
+  return { width: el.offsetWidth, height: el.offsetHeight }
 }
 
-function stackStickyWindows() {
+// 统一碰撞解析：所有窗口互不重叠，保持粘性
+function resolveCollisions() {
   const { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound, RIGHT_BOUND } = getBounds()
-  const stickyTasks = activeTasks.value.filter(task => {
+  const GAP = 8
+  const tasks = activeTasks.value
+  if (tasks.length === 0) return
+
+  // 收集所有任务的尺寸和期望位置
+  const items = tasks.map((task, index) => {
     const state = getTaskState(task.id)
-    return state.isStickyToRight && state.isStickyToBottom
+    const size = getTargetSize(task.id)
+    const maxX = RIGHT_BOUND - size.width - PADDING
+    const maxY = window.innerHeight - size.height - bottomBound
+
+    let x, y
+    if (state.position) {
+      x = state.position.x
+      y = state.position.y
+    } else {
+      x = maxX
+      y = maxY
+      state.isStickyToRight = true
+      state.isStickyToBottom = true
+    }
+
+    // 应用粘性吸附
+    if (state.isStickyToRight) x = maxX
+    else x = Math.max(LEFT_BOUND, Math.min(x, maxX))
+
+    if (state.isStickyToBottom) y = maxY
+    else y = Math.max(TOP_BOUND, Math.min(y, maxY))
+
+    return { id: task.id, state, x, y, index, ...size }
   })
 
-  let nextBottomY = window.innerHeight - bottomBound
-  for (const task of stickyTasks) {
-    const state = getTaskState(task.id)
-    const taskEl = document.querySelector(`[data-task-id="${task.id}"]`)
-    const rect = taskEl?.getBoundingClientRect()
-    const width = rect?.width || 300
-    const height = rect?.height || 60
-    const x = Math.max(LEFT_BOUND, RIGHT_BOUND - width - PADDING)
-    const y = Math.max(TOP_BOUND, nextBottomY - height)
-    state.position = { x, y }
-    nextBottomY = y - 8
+  // 粘底窗口按创建顺序（先创建靠近底部），非粘底按 Y 位置
+  items.sort((a, b) => {
+    const aSticky = a.state.isStickyToBottom ? 1 : 0
+    const bSticky = b.state.isStickyToBottom ? 1 : 0
+    if (aSticky !== bSticky) return bSticky - aSticky
+    if (aSticky) return a.index - b.index
+    return b.y - a.y
+  })
+
+  // 依次放置，解析重叠
+  const placed = []
+  for (const item of items) {
+    let { x, y, width: w, height: h } = item
+
+    // 与已放置的窗口进行碰撞检测
+    let dirty = true
+    let safety = 0
+    while (dirty && safety < 10) {
+      dirty = false
+      safety++
+      for (const p of placed) {
+        if (x < p.right + GAP && x + w + GAP > p.left &&
+            y < p.bottom + GAP && y + h + GAP > p.top) {
+          y = p.top - GAP - h
+          dirty = true
+          if (y < TOP_BOUND) {
+            y = TOP_BOUND
+            dirty = false
+            break
+          }
+        }
+      }
+    }
+
+    item.state.position = { x, y }
+    placed.push({ left: x, top: y, right: x + w, bottom: y + h })
   }
+
+  taskStates.value = new Map(taskStates.value)
 }
 
 // 拖拽状态跟踪
@@ -268,6 +290,9 @@ function startDrag(event, taskId) {
   const onUp = () => {
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
+    if (dragState.value.isDragging) {
+      nextTick(() => resolveCollisions())
+    }
   }
 
   document.addEventListener('mousemove', onMove)
@@ -301,7 +326,7 @@ function initializeTaskPositions() {
 watch(activeTasks, () => {
   nextTick(() => {
     initializeTaskPositions()
-    adjustAllPositions()
+    resolveCollisions()
   })
 }, { deep: true })
 
@@ -327,18 +352,18 @@ watch(() => props.sidebarCollapsed, () => {
 })
 
 watch(() => props.contentBounds, () => {
-  nextTick(adjustAllPositions)
+  nextTick(resolveCollisions)
 }, { deep: true })
 
 
 onMounted(() => {
-  window.addEventListener('resize', adjustAllPositions)
+  window.addEventListener('resize', resolveCollisions)
 
   // 监听 messages 容器大小变化
   const messagesContainer = document.querySelector('.chat-window .messages')
   if (messagesContainer) {
     resizeObserver.value = new ResizeObserver(() => {
-      nextTick(adjustAllPositions)
+      nextTick(resolveCollisions)
     })
     resizeObserver.value.observe(messagesContainer)
   }
@@ -348,7 +373,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', adjustAllPositions)
+  window.removeEventListener('resize', resolveCollisions)
   if (resizeObserver.value) {
     resizeObserver.value.disconnect()
   }
@@ -448,7 +473,7 @@ onUnmounted(() => {
   z-index: 1000;
   cursor: move;
   user-select: none;
-  transition: width 0.2s ease, box-shadow 0.2s ease;
+  transition: box-shadow 0.2s ease;
 }
 
 .task-floating-window:hover {

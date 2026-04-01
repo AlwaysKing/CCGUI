@@ -1107,6 +1107,25 @@ class SessionInstance {
     return 'turn'
   }
 
+  shouldPersistEventInTurnHistory(event = null) {
+    if (!event || typeof event !== 'object') {
+      return false
+    }
+
+    if (event.eventType === 'normal-exit' || event.eventType === 'abnormal-exit') {
+      return false
+    }
+
+    if (event.eventType === 'system-notification') {
+      const payload = event.data || null
+      if (this.resolveNotificationScope(payload?.type, payload) === 'session') {
+        return false
+      }
+    }
+
+    return true
+  }
+
   appendSystemNotificationMessage(notificationType, data = {}) {
     const message = {
       id: `system-notification-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1530,7 +1549,8 @@ class SessionInstance {
     if (this.isManualStop && this.pendingLifecycleReason === 'restart-for-config') {
       // Controlled restart: lifecycle is represented by restarting/ready notifications.
     } else if (this.isManualStop) {
-      this.emit('normal-exit', {
+      this.emit('system-notification', {
+        type: 'runtime-stopped',
         code,
         signal,
         provider: this.provider,
@@ -1538,7 +1558,8 @@ class SessionInstance {
         message: `${this.getProviderDisplayName()} 已停止运行`
       })
     } else if (isAbnormalExit) {
-      this.emit('abnormal-exit', {
+      this.emit('system-notification', {
+        type: 'runtime-exit',
         code,
         signal,
         provider: this.provider,
@@ -3049,6 +3070,10 @@ class SessionInstance {
       return
     }
 
+    if (!this.shouldPersistEventInTurnHistory(event)) {
+      return
+    }
+
     historyManager.appendTurnEvent(this.projectId, this.id, this.currentHistoryTurnId, event)
     this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
   }
@@ -3178,15 +3203,6 @@ class SessionInstance {
         }
       }
       this.currentStreamingAssistantId = null
-      if (reason !== 'restart-for-config') {
-        this.finalizePendingLifecycleNotification('runtime-stopped', {
-          provider: this.provider,
-          reason,
-          message: reason === 'project-close'
-            ? `${this.getProviderDisplayName()} 已随项目关闭停止`
-            : `${this.getProviderDisplayName()} 已停止运行`
-        })
-      }
       this.finalizeActiveMessages()
       this.isProcessing = false
       this.emit('state-update', { isProcessing: false })

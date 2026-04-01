@@ -514,6 +514,8 @@ onUnmounted(() => {
 }
 
 .theme-select {
+  width: 116px;
+  min-width: 116px;
 }
 
 .theme-hint {

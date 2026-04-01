@@ -2137,7 +2137,9 @@ export const useSessionStore = defineStore('session', () => {
             break
           }
         }
-        session.silentMessages.push(reactive(data))
+        if (!isSilentMessageHandled(data)) {
+          session.silentMessages.push(reactive(data))
+        }
         break
 
       case 'cli-status':
@@ -3144,6 +3146,15 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     session.messages.push(notificationMsg)
+  }
+
+  const HANDLED_SILENT_MESSAGE_TYPES = new Set([
+    'agent-orchestration',
+    'claude/citations_delta'
+  ])
+
+  function isSilentMessageHandled(data) {
+    return HANDLED_SILENT_MESSAGE_TYPES.has(data?.messageType)
   }
 
   function getEscalatedSilentMessageNotification(data) {

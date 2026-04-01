@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps({
   modelValue: {
@@ -35,7 +35,9 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'change'])
 
 const rootRef = ref(null)
+const triggerRef = ref(null)
 const isOpen = ref(false)
+const menuStyle = ref({})
 
 const flatOptions = computed(() => {
   if (props.groups.length > 0) {
@@ -53,13 +55,29 @@ const triggerLabel = computed(() => {
   return selectedOption.value?.label || props.placeholder
 })
 
+function updatePosition() {
+  if (!triggerRef.value) return
+  const rect = triggerRef.value.getBoundingClientRect()
+  menuStyle.value = {
+    position: 'fixed',
+    top: `${rect.bottom + 6}px`,
+    left: `${rect.left}px`,
+    width: `${rect.width}px`,
+    zIndex: 9999
+  }
+}
+
 function close() {
   isOpen.value = false
+  menuStyle.value = {}
 }
 
 function toggle() {
   if (props.disabled) return
   isOpen.value = !isOpen.value
+  if (isOpen.value) {
+    nextTick(() => nextTick(updatePosition))
+  }
 }
 
 function selectOption(option) {
@@ -72,6 +90,8 @@ function selectOption(option) {
 function handlePointerDown(event) {
   if (!rootRef.value) return
   if (rootRef.value.contains(event.target)) return
+  const menu = document.querySelector('.app-select-menu[teleported]')
+  if (menu && menu.contains(event.target)) return
   close()
 }
 
@@ -81,14 +101,22 @@ function handleEscape(event) {
   }
 }
 
+function handleScroll() {
+  if (isOpen.value) updatePosition()
+}
+
 onMounted(() => {
   document.addEventListener('mousedown', handlePointerDown)
   document.addEventListener('keydown', handleEscape)
+  window.addEventListener('scroll', handleScroll, true)
+  window.addEventListener('resize', handleScroll)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', handlePointerDown)
   document.removeEventListener('keydown', handleEscape)
+  window.removeEventListener('scroll', handleScroll, true)
+  window.removeEventListener('resize', handleScroll)
 })
 </script>
 
@@ -99,6 +127,7 @@ onBeforeUnmount(() => {
     :class="{ open: isOpen, disabled, 'full-width': fullWidth }"
   >
     <button
+      ref="triggerRef"
       type="button"
       class="app-select-trigger"
       :class="{ 'is-placeholder': !selectedOption && !selectedLabel }"
@@ -109,16 +138,33 @@ onBeforeUnmount(() => {
       <span class="app-select-caret" aria-hidden="true">▾</span>
     </button>
 
-    <div v-if="isOpen" class="app-select-menu">
-      <template v-if="groups.length > 0">
-        <div
-          v-for="group in groups"
-          :key="group.key || group.label"
-          class="app-select-group"
-        >
-          <div class="app-select-group-label">{{ group.label }}</div>
+    <Teleport to="body">
+      <div v-if="isOpen" class="app-select-menu" teleported="" :style="menuStyle">
+        <template v-if="groups.length > 0">
+          <div
+            v-for="group in groups"
+            :key="group.key || group.label"
+            class="app-select-group"
+          >
+            <div class="app-select-group-label">{{ group.label }}</div>
+            <button
+              v-for="option in group.options"
+              :key="option.id || option.value"
+              type="button"
+              class="app-select-option"
+              :class="{ active: option.value === modelValue, disabled: option.disabled }"
+              :disabled="option.disabled"
+              @click="selectOption(option)"
+            >
+              <span class="app-select-option-label">{{ option.menuLabel || option.label }}</span>
+              <span v-if="option.description" class="app-select-option-desc">{{ option.description }}</span>
+            </button>
+          </div>
+        </template>
+
+        <template v-else>
           <button
-            v-for="option in group.options"
+            v-for="option in options"
             :key="option.id || option.value"
             type="button"
             class="app-select-option"
@@ -129,24 +175,9 @@ onBeforeUnmount(() => {
             <span class="app-select-option-label">{{ option.menuLabel || option.label }}</span>
             <span v-if="option.description" class="app-select-option-desc">{{ option.description }}</span>
           </button>
-        </div>
-      </template>
-
-      <template v-else>
-        <button
-          v-for="option in options"
-          :key="option.id || option.value"
-          type="button"
-          class="app-select-option"
-          :class="{ active: option.value === modelValue, disabled: option.disabled }"
-          :disabled="option.disabled"
-          @click="selectOption(option)"
-        >
-          <span class="app-select-option-label">{{ option.menuLabel || option.label }}</span>
-          <span v-if="option.description" class="app-select-option-desc">{{ option.description }}</span>
-        </button>
-      </template>
-    </div>
+        </template>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -219,11 +250,6 @@ onBeforeUnmount(() => {
 }
 
 .app-select-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  z-index: 200;
   max-height: 280px;
   overflow-y: auto;
   padding: 6px;

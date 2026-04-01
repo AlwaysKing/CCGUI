@@ -34,6 +34,8 @@ const statusLabel = computed(() => {
       return '已结束'
     case 'deleted':
       return '已删除'
+    case 'interrupted':
+      return '已中断'
     case 'starting':
       return '启动中'
     default:
@@ -58,7 +60,13 @@ const latestResultLabel = computed(() => {
   if (text) {
     return text
   }
-  return props.card?.status === 'running' ? '等待最终结果' : '暂无运行结果'
+  if (props.card?.status === 'running' || props.card?.status === 'starting') {
+    return '等待最终结果'
+  }
+  if (props.card?.status === 'interrupted') {
+    return '子代理在会话关闭时被中断，恢复历史后不会继续执行。'
+  }
+  return '暂无运行结果'
 })
 
 const toolListSummary = computed(() => {
@@ -84,9 +92,11 @@ const collapsedStatusLabel = computed(() => {
   if (props.card?.displayTimelineItems?.length) {
     return null
   }
-  return props.card?.status === 'running'
+  return (props.card?.status === 'running' || props.card?.status === 'starting')
     ? '思考中'
-    : buildCompletedSummary()
+    : (props.card?.status === 'interrupted'
+        ? '已中断'
+        : buildCompletedSummary())
 })
 
 const showActivePreview = computed(() => {
@@ -97,7 +107,7 @@ const textStyleStatus = computed(() => {
   if (props.card?.status === 'running' || props.card?.status === 'starting') {
     return 'executing'
   }
-  if (props.card?.status === 'failed' || props.card?.status === 'deleted') {
+  if (props.card?.status === 'failed' || props.card?.status === 'deleted' || props.card?.status === 'interrupted') {
     return 'error'
   }
   return 'success'
@@ -245,13 +255,13 @@ function buildCompletedSummary() {
               :tool-input="{}"
               :result="''"
               :is-error="false"
-              :is-executing="card.status === 'running'"
+              :is-executing="card.status === 'running' || card.status === 'starting'"
               :collapsed="true"
               :working-directory="workingDirectory"
               :chat-theme="nestedTimelineTheme"
               text-style-label-override=""
               :text-style-summary-override="collapsedStatusLabel"
-              :text-style-status-override="card.status === 'running' ? 'executing' : 'success'"
+              :text-style-status-override="(card.status === 'running' || card.status === 'starting') ? 'executing' : (card.status === 'interrupted' ? 'error' : 'success')"
               :hide-text-style-toggle="true"
               :non-interactive="true"
             />

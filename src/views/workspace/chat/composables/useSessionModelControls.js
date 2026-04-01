@@ -116,6 +116,61 @@ export function useSessionModelControls({
   const effortSwitching = ref(false)
   const subModelCache = new Map()
   const effortCapabilityCache = new Map()
+  const sessionSubModelStateCache = new Map()
+  const sessionEffortStateCache = new Map()
+
+  function getCurrentSessionId() {
+    return appStore.currentSession?.id || ''
+  }
+
+  function persistSessionDerivedState(sessionId = getCurrentSessionId()) {
+    if (!sessionId) {
+      return
+    }
+
+    sessionSubModelStateCache.set(sessionId, {
+      providerSubModelOptions: toPlainObject(providerSubModelOptions.value),
+      providerSubModelDefaultValue: providerSubModelDefaultValue.value || '',
+      lastLoadedSubModelProvider: lastLoadedSubModelProvider.value || ''
+    })
+
+    sessionEffortStateCache.set(sessionId, {
+      providerEffortOptions: toPlainObject(providerEffortOptions.value),
+      providerEffortDefaultValue: providerEffortDefaultValue.value || '',
+      providerSupportsRuntimeEffortSwitch: providerSupportsRuntimeEffortSwitch.value === true,
+      lastLoadedEffortKey: lastLoadedEffortKey.value || ''
+    })
+  }
+
+  function restoreSessionDerivedState(sessionId = getCurrentSessionId()) {
+    if (!sessionId) {
+      return false
+    }
+
+    providerSubModelLoading.value = false
+    providerEffortLoading.value = false
+
+    let restored = false
+
+    if (sessionSubModelStateCache.has(sessionId)) {
+      const cachedSubModel = sessionSubModelStateCache.get(sessionId)
+      providerSubModelOptions.value = Array.isArray(cachedSubModel?.providerSubModelOptions) ? cachedSubModel.providerSubModelOptions : []
+      providerSubModelDefaultValue.value = cachedSubModel?.providerSubModelDefaultValue || ''
+      lastLoadedSubModelProvider.value = cachedSubModel?.lastLoadedSubModelProvider || ''
+      restored = true
+    }
+
+    if (sessionEffortStateCache.has(sessionId)) {
+      const cachedEffort = sessionEffortStateCache.get(sessionId)
+      providerEffortOptions.value = Array.isArray(cachedEffort?.providerEffortOptions) ? cachedEffort.providerEffortOptions : []
+      providerEffortDefaultValue.value = cachedEffort?.providerEffortDefaultValue || ''
+      providerSupportsRuntimeEffortSwitch.value = cachedEffort?.providerSupportsRuntimeEffortSwitch === true
+      lastLoadedEffortKey.value = cachedEffort?.lastLoadedEffortKey || ''
+      restored = true
+    }
+
+    return restored
+  }
 
   const isSwitchingSessionControls = computed(() => {
     return targetSwitching.value || subModelSwitching.value || effortSwitching.value
@@ -269,6 +324,7 @@ export function useSessionModelControls({
     const cacheKey = buildSubModelCacheKey(projectId, sessionId, provider, modelSelectionKey)
 
     if (!options.force && lastLoadedSubModelProvider.value === cacheKey && providerSubModelOptions.value.length > 0) {
+      providerSubModelLoading.value = false
       return
     }
 
@@ -277,6 +333,8 @@ export function useSessionModelControls({
       providerSubModelOptions.value = Array.isArray(cached?.options) ? cached.options : []
       providerSubModelDefaultValue.value = cached?.defaultValue || ''
       lastLoadedSubModelProvider.value = cacheKey
+      providerSubModelLoading.value = false
+      persistSessionDerivedState()
       return
     }
 
@@ -299,6 +357,7 @@ export function useSessionModelControls({
         defaultValue: providerSubModelDefaultValue.value,
         provider: result.provider || provider
       })
+      persistSessionDerivedState()
     } catch (error) {
       providerSubModelOptions.value = []
       providerSubModelDefaultValue.value = ''
@@ -318,6 +377,7 @@ export function useSessionModelControls({
     const cacheKey = buildEffortCacheKey(projectId, sessionId, currentModelProvider.value, model || 'default')
 
     if (!options.force && lastLoadedEffortKey.value === cacheKey && providerEffortOptions.value.length > 0) {
+      providerEffortLoading.value = false
       return
     }
 
@@ -327,6 +387,8 @@ export function useSessionModelControls({
       providerEffortDefaultValue.value = cached?.defaultValue || ''
       providerSupportsRuntimeEffortSwitch.value = cached?.supportsRuntimeSwitch === true
       lastLoadedEffortKey.value = cacheKey
+      providerEffortLoading.value = false
+      persistSessionDerivedState()
       return
     }
 
@@ -351,6 +413,7 @@ export function useSessionModelControls({
         defaultValue: providerEffortDefaultValue.value,
         supportsRuntimeSwitch: providerSupportsRuntimeEffortSwitch.value
       })
+      persistSessionDerivedState()
     } catch (error) {
       resetEffortStateRefs({
         providerEffortOptions,
@@ -505,6 +568,8 @@ export function useSessionModelControls({
     sessionConfig.value = null
     sessionTargetOptions.value = []
     currentSessionTargetId.value = ''
+    providerSubModelLoading.value = false
+    providerEffortLoading.value = false
     resetSubModelStateRefs({
       providerSubModelOptions,
         providerSubModelDefaultValue,
@@ -519,6 +584,7 @@ export function useSessionModelControls({
   }
 
   function resetSubModelState() {
+    providerSubModelLoading.value = false
     resetSubModelStateRefs({
       providerSubModelOptions,
         providerSubModelDefaultValue,
@@ -527,6 +593,7 @@ export function useSessionModelControls({
   }
 
   function resetEffortState() {
+    providerEffortLoading.value = false
     resetEffortStateRefs({
       providerEffortOptions,
       providerEffortDefaultValue,
@@ -559,6 +626,7 @@ export function useSessionModelControls({
     loadModelConfigContext,
     loadProviderSubModels,
     loadSessionEffortCapabilities,
+    restoreSessionDerivedState,
     handleQuickModelChange,
     handleQuickSubModelChange,
     handleQuickEffortChange,

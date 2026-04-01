@@ -28,6 +28,10 @@ const props = defineProps({
     type: Object,
     default: null
   },
+  sessionId: {
+    type: String,
+    default: ''
+  },
   splitSessions: {
     type: Array,
     default: () => []
@@ -502,6 +506,7 @@ const shouldShowRail = computed(() => {
                         :message="nestedBlock.message"
                         :message-index="nestedBlock.displayIndex"
                         :total-messages="mainStageDisplayMessages.length"
+                        :session-id="sessionId"
                         :working-directory="workingDirectory"
                         :current-time="currentTime"
                         :all-messages="mainStageDisplayMessages"
@@ -519,6 +524,7 @@ const shouldShowRail = computed(() => {
                         :message="nestedBlock.shellMessage"
                         :message-index="nestedBlock.displayIndex"
                         :total-messages="mainStageDisplayMessages.length"
+                        :session-id="sessionId"
                         :working-directory="workingDirectory"
                         :current-time="currentTime"
                         :all-messages="mainStageDisplayMessages"
@@ -555,6 +561,7 @@ const shouldShowRail = computed(() => {
                   :message="renderBlock.assistantBlock.message"
                   :message-index="renderBlock.assistantBlock.displayIndex"
                   :total-messages="mainStageDisplayMessages.length"
+                  :session-id="sessionId"
                   :working-directory="workingDirectory"
                   :current-time="currentTime"
                   :all-messages="mainStageDisplayMessages"
@@ -577,6 +584,7 @@ const shouldShowRail = computed(() => {
               :message="renderBlock.block.message"
               :message-index="renderBlock.block.displayIndex"
               :total-messages="mainStageDisplayMessages.length"
+              :session-id="sessionId"
               :working-directory="workingDirectory"
               :current-time="currentTime"
               :all-messages="mainStageDisplayMessages"
@@ -594,6 +602,7 @@ const shouldShowRail = computed(() => {
               :message="renderBlock.block.shellMessage"
               :message-index="renderBlock.block.displayIndex"
               :total-messages="mainStageDisplayMessages.length"
+              :session-id="sessionId"
               :working-directory="workingDirectory"
               :current-time="currentTime"
               :all-messages="mainStageDisplayMessages"
@@ -622,19 +631,20 @@ const shouldShowRail = computed(() => {
             :key="message.id || `${activeSession.agentId}-${index}`"
             :message="message"
             :message-index="index"
-          :total-messages="activeSession.messages.length"
-          :working-directory="workingDirectory"
-          :current-time="currentTime"
-          :all-messages="activeSession.messages"
-          :chat-theme="chatTheme"
-          @message-click="forward('messageClick', $event)"
-          @rewind="forward('rewind', $event)"
-          @fork="forward('fork', $event)"
-          @rewind-and-fork="forward('rewindAndFork', $event)"
-          @jump-to-message="forward('jumpToMessage', $event)"
-          @copy-content="forward('copyContent', $event)"
-          @copy-question-content="forward('copyQuestionContent', $event)"
-        />
+            :total-messages="activeSession.messages.length"
+            :session-id="sessionId"
+            :working-directory="workingDirectory"
+            :current-time="currentTime"
+            :all-messages="activeSession.messages"
+            :chat-theme="chatTheme"
+            @message-click="forward('messageClick', $event)"
+            @rewind="forward('rewind', $event)"
+            @fork="forward('fork', $event)"
+            @rewind-and-fork="forward('rewindAndFork', $event)"
+            @jump-to-message="forward('jumpToMessage', $event)"
+            @copy-content="forward('copyContent', $event)"
+            @copy-question-content="forward('copyQuestionContent', $event)"
+          />
         </template>
       </div>
 
@@ -668,6 +678,7 @@ const shouldShowRail = computed(() => {
             :message="message"
             :message-index="index"
             :total-messages="sessionItem.messages.length"
+            :session-id="sessionId"
             :working-directory="workingDirectory"
             :current-time="currentTime"
             :all-messages="sessionItem.messages"

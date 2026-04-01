@@ -24,6 +24,10 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  sessionControlsSwitching: {
+    type: Boolean,
+    default: false
+  },
   hasPermission: {
     type: Boolean,
     default: false
@@ -246,7 +250,7 @@ const modeThemeClass = computed(() => {
 })
 
 const disablePrimarySessionControls = computed(() => {
-  return props.toolbarLocked || props.isProcessing
+  return props.toolbarLocked || props.isProcessing || props.sessionControlsSwitching
 })
 
 const disablePermissionModeControl = computed(() => {

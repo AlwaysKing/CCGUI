@@ -56,6 +56,18 @@ function getSessionEventsFilePath(projectId, sessionId) {
   return path.join(getSessionHistoryDir(projectId, sessionId), 'session-events.jsonl')
 }
 
+function getTurnIndexFilePath(projectId, sessionId) {
+  return path.join(getSessionHistoryDir(projectId, sessionId), 'turn-index.json')
+}
+
+function getTurnsDirPath(projectId, sessionId) {
+  return path.join(getSessionHistoryDir(projectId, sessionId), 'turns')
+}
+
+function getTurnStreamFilePath(projectId, sessionId, fileName) {
+  return path.join(getTurnsDirPath(projectId, sessionId), fileName)
+}
+
 /**
  * 确保历史目录存在
  * @param {string} projectId - 项目ID
@@ -66,6 +78,13 @@ function ensureHistoryDir(projectId, sessionId) {
   if (!fs.existsSync(historyDir)) {
     fs.mkdirSync(historyDir, { recursive: true })
     logger.info('[HistoryManager] Created history directory', { projectId, sessionId })
+  }
+}
+
+function ensureTurnsDir(projectId, sessionId) {
+  const turnsDir = getTurnsDirPath(projectId, sessionId)
+  if (!fs.existsSync(turnsDir)) {
+    fs.mkdirSync(turnsDir, { recursive: true })
   }
 }
 
@@ -92,6 +111,73 @@ function cloneSerializable(value) {
   }
 
   return JSON.parse(JSON.stringify(value))
+}
+
+function createTurnIndexEntry(message = {}) {
+  const turnId = String(message.id || message.uuid || `turn-${Date.now()}`)
+  const normalizedContent = typeof message.content === 'string'
+    ? message.content
+    : (typeof message.serializedContent === 'string' ? message.serializedContent : '')
+
+  return {
+    entryType: 'turn',
+    turnId,
+    schemaVersion: 1,
+    userMessageId: turnId,
+    userText: normalizedContent,
+    serializedContent: typeof message.serializedContent === 'string'
+      ? message.serializedContent
+      : normalizedContent,
+    attachments: cloneSerializable(Array.isArray(message.attachments) ? message.attachments : []),
+    createdAt: message.timestamp || new Date().toISOString(),
+    updatedAt: message.timestamp || new Date().toISOString(),
+    streamFile: `${turnId}.jsonl`,
+    status: 'pending',
+    hasAssistantResponse: false,
+    eventCount: 0
+  }
+}
+
+function createIndexMessageEntry(message = {}) {
+  const messageId = String(message.id || `index-message-${Date.now()}`)
+  return {
+    entryType: 'message',
+    messageId,
+    createdAt: message.timestamp || new Date().toISOString(),
+    updatedAt: message.timestamp || new Date().toISOString(),
+    message: cloneSerializable({
+      ...message,
+      id: messageId
+    })
+  }
+}
+
+function loadJsonLines(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return []
+  }
+
+  const content = fs.readFileSync(filePath, 'utf-8')
+  if (!content.trim()) {
+    return []
+  }
+
+  const lines = content.trim().split('\n')
+  const items = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    try {
+      items.push(deserializeMessage(line))
+    } catch (error) {
+      logger.warn('[HistoryManager] Failed to parse jsonl line', {
+        filePath,
+        line: line.substring(0, 100),
+        error: error.message
+      })
+    }
+  }
+
+  return items
 }
 
 /**
@@ -318,6 +404,239 @@ function appendSessionEvent(projectId, sessionId, event) {
   }
 }
 
+function loadTurnIndex(projectId, sessionId) {
+  try {
+    const indexPath = getTurnIndexFilePath(projectId, sessionId)
+    if (!fs.existsSync(indexPath)) {
+      return []
+    }
+
+    const content = fs.readFileSync(indexPath, 'utf-8')
+    const parsed = JSON.parse(content)
+    return Array.isArray(parsed) ? parsed : []
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to load turn index', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return []
+  }
+}
+
+function saveTurnIndex(projectId, sessionId, turns) {
+  try {
+    ensureHistoryDir(projectId, sessionId)
+    const indexPath = getTurnIndexFilePath(projectId, sessionId)
+    fs.writeFileSync(indexPath, JSON.stringify(Array.isArray(turns) ? turns : [], null, 2), 'utf-8')
+    return true
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to save turn index', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return false
+  }
+}
+
+function appendTurn(projectId, sessionId, message) {
+  try {
+    ensureHistoryDir(projectId, sessionId)
+    ensureTurnsDir(projectId, sessionId)
+
+    const turns = loadTurnIndex(projectId, sessionId)
+    const nextEntry = createTurnIndexEntry(message)
+    const existingIndex = turns.findIndex(turn => turn.turnId === nextEntry.turnId)
+
+    if (existingIndex >= 0) {
+      turns[existingIndex] = {
+        ...turns[existingIndex],
+        ...nextEntry,
+        updatedAt: new Date().toISOString()
+      }
+    } else {
+      turns.push(nextEntry)
+    }
+
+    saveTurnIndex(projectId, sessionId, turns)
+    return nextEntry
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to append turn', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return null
+  }
+}
+
+function appendIndexMessage(projectId, sessionId, message) {
+  try {
+    ensureHistoryDir(projectId, sessionId)
+    const entries = loadTurnIndex(projectId, sessionId)
+    const nextEntry = createIndexMessageEntry(message)
+    const existingIndex = entries.findIndex(entry =>
+      entry?.entryType === 'message' && entry?.messageId === nextEntry.messageId
+    )
+
+    if (existingIndex >= 0) {
+      entries[existingIndex] = {
+        ...entries[existingIndex],
+        ...nextEntry,
+        updatedAt: new Date().toISOString()
+      }
+    } else {
+      entries.push(nextEntry)
+    }
+
+    saveTurnIndex(projectId, sessionId, entries)
+    return nextEntry
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to append index message', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return null
+  }
+}
+
+function updateIndexMessage(projectId, sessionId, messageId, updates = {}) {
+  try {
+    const entries = loadTurnIndex(projectId, sessionId)
+    const entryIndex = entries.findIndex(entry =>
+      entry?.entryType === 'message' && entry?.messageId === messageId
+    )
+    if (entryIndex === -1) {
+      return false
+    }
+
+    const currentMessage = entries[entryIndex]?.message || {}
+    entries[entryIndex] = {
+      ...entries[entryIndex],
+      updatedAt: new Date().toISOString(),
+      message: cloneSerializable({
+        ...currentMessage,
+        ...updates,
+        id: messageId
+      })
+    }
+
+    return saveTurnIndex(projectId, sessionId, entries)
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to update index message', {
+      projectId,
+      sessionId,
+      messageId,
+      error: error.message
+    })
+    return false
+  }
+}
+
+function updateTurn(projectId, sessionId, turnId, updates = {}) {
+  try {
+    const turns = loadTurnIndex(projectId, sessionId)
+    const turnIndex = turns.findIndex(turn => turn.turnId === turnId)
+    if (turnIndex === -1) {
+      return false
+    }
+
+    turns[turnIndex] = {
+      ...turns[turnIndex],
+      ...cloneSerializable(updates),
+      updatedAt: new Date().toISOString()
+    }
+
+    return saveTurnIndex(projectId, sessionId, turns)
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to update turn', {
+      projectId,
+      sessionId,
+      turnId,
+      error: error.message
+    })
+    return false
+  }
+}
+
+function appendTurnEvent(projectId, sessionId, turnId, event) {
+  try {
+    const turns = loadTurnIndex(projectId, sessionId)
+    const turnIndex = turns.findIndex(turn => turn.turnId === turnId)
+    if (turnIndex === -1) {
+      return false
+    }
+
+    ensureHistoryDir(projectId, sessionId)
+    ensureTurnsDir(projectId, sessionId)
+
+    const turn = turns[turnIndex]
+    const streamPath = getTurnStreamFilePath(projectId, sessionId, turn.streamFile)
+    fs.appendFileSync(streamPath, serializeMessage(event) + '\n', 'utf-8')
+
+    const payload = event?.data || null
+    const nextUpdates = {
+      eventCount: Number(turn.eventCount || 0) + 1,
+      updatedAt: new Date().toISOString()
+    }
+
+    if (
+      (event?.eventType === 'message-start' || event?.eventType === 'message') &&
+      payload?.role === 'assistant'
+    ) {
+      nextUpdates.hasAssistantResponse = true
+      nextUpdates.status = payload?.isStreaming ? 'streaming' : 'completed'
+    } else if (event?.eventType === 'result') {
+      nextUpdates.status = 'completed'
+    } else if (
+      event?.eventType === 'abnormal-exit' ||
+      (event?.eventType === 'system-notification' && payload?.type === 'turn-error')
+    ) {
+      nextUpdates.status = 'error'
+    } else if (event?.eventType === 'message-start' && payload?.role !== 'user') {
+      nextUpdates.status = 'streaming'
+    }
+
+    turns[turnIndex] = {
+      ...turn,
+      ...nextUpdates
+    }
+    saveTurnIndex(projectId, sessionId, turns)
+
+    return true
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to append turn event', {
+      projectId,
+      sessionId,
+      turnId,
+      error: error.message
+    })
+    return false
+  }
+}
+
+function loadTurnEvents(projectId, sessionId, turnId) {
+  try {
+    const turns = loadTurnIndex(projectId, sessionId)
+    const turn = turns.find(item => item.turnId === turnId)
+    if (!turn?.streamFile) {
+      return []
+    }
+
+    return loadJsonLines(getTurnStreamFilePath(projectId, sessionId, turn.streamFile))
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to load turn events', {
+      projectId,
+      sessionId,
+      turnId,
+      error: error.message
+    })
+    return []
+  }
+}
+
 /**
  * 更新指定消息（通过消息ID）
  * @param {string} projectId - 项目ID
@@ -370,25 +689,7 @@ function loadHistory(projectId, sessionId) {
       logger.debug('[HistoryManager] History file not found', { projectId, sessionId })
       return []
     }
-
-    const content = fs.readFileSync(messagesPath, 'utf-8')
-    const lines = content.trim().split('\n')
-
-    const messages = []
-    for (const line of lines) {
-      if (!line.trim()) continue
-
-      try {
-        const message = deserializeMessage(line)
-        messages.push(message)
-      } catch (e) {
-        logger.warn('[HistoryManager] Failed to parse message line', {
-          projectId,
-          sessionId,
-          line: line.substring(0, 100)
-        })
-      }
-    }
+    const messages = loadJsonLines(messagesPath)
 
     logger.info('[HistoryManager] Loaded history', {
       projectId,
@@ -421,24 +722,7 @@ function loadSemanticEvents(projectId, sessionId) {
       logger.debug('[HistoryManager] Semantic history file not found', { projectId, sessionId })
       return []
     }
-
-    const content = fs.readFileSync(eventsPath, 'utf-8')
-    const lines = content.trim().split('\n')
-
-    const events = []
-    for (const line of lines) {
-      if (!line.trim()) continue
-
-      try {
-        events.push(deserializeMessage(line))
-      } catch (e) {
-        logger.warn('[HistoryManager] Failed to parse semantic event line', {
-          projectId,
-          sessionId,
-          line: line.substring(0, 100)
-        })
-      }
-    }
+    const events = loadJsonLines(eventsPath)
 
     logger.info('[HistoryManager] Loaded semantic history', {
       projectId,
@@ -465,24 +749,7 @@ function loadSessionEvents(projectId, sessionId) {
       logger.debug('[HistoryManager] Session event log not found', { projectId, sessionId })
       return []
     }
-
-    const content = fs.readFileSync(eventsPath, 'utf-8')
-    const lines = content.trim().split('\n')
-
-    const events = []
-    for (const line of lines) {
-      if (!line.trim()) continue
-
-      try {
-        events.push(deserializeMessage(line))
-      } catch (e) {
-        logger.warn('[HistoryManager] Failed to parse session event line', {
-          projectId,
-          sessionId,
-          line: line.substring(0, 100)
-        })
-      }
-    }
+    const events = loadJsonLines(eventsPath)
 
     logger.info('[HistoryManager] Loaded session event log', {
       projectId,
@@ -584,7 +851,8 @@ function saveAllMessages(projectId, sessionId, messages) {
  */
 function historyExists(projectId, sessionId) {
   const messagesPath = getMessagesFilePath(projectId, sessionId)
-  return fs.existsSync(messagesPath)
+  const turnIndexPath = getTurnIndexFilePath(projectId, sessionId)
+  return fs.existsSync(messagesPath) || fs.existsSync(turnIndexPath)
 }
 
 module.exports = {
@@ -593,16 +861,25 @@ module.exports = {
   getMetadataFilePath,
   getSemanticEventsFilePath,
   getSessionEventsFilePath,
+  getTurnIndexFilePath,
+  getTurnsDirPath,
   loadMetadata,
   saveMetadata,
   updateSessionEnvInfo,
   appendMessage,
   appendSemanticEvent,
   appendSessionEvent,
+  appendTurn,
+  appendIndexMessage,
+  updateTurn,
+  updateIndexMessage,
+  appendTurnEvent,
   updateMessage,
   loadHistory,
   loadSemanticEvents,
   loadSessionEvents,
+  loadTurnIndex,
+  loadTurnEvents,
   deleteHistory,
   saveAllMessages,
   historyExists

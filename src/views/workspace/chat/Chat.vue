@@ -155,6 +155,9 @@ let durationTimer = null // 消耗时间更新定时器
 let previousWindowHeight = null // 上一次窗口高度
 let chatPanelHeight = ref(0) // chat-panel 容器的高度
 let chatPanelResizeObserver = null // ResizeObserver 实例
+const suppressSessionControlWatchers = ref(false)
+const skipNextProviderRefreshSessionId = ref('')
+const skipNextSubModelRefreshSessionId = ref('')
 const inputHistory = computed(() => sessionStore.currentSession?.inputHistory || [])
 // Note: isLoadingHistory removed - history is now loaded by SessionStore/SessionInstance
 
@@ -295,6 +298,7 @@ const {
   loadProviderSubModels,
   loadSessionEffortCapabilities,
   isSwitchingSessionControls,
+  restoreSessionDerivedState,
   handleQuickModelChange,
   handleQuickSubModelChange,
   handleQuickEffortChange,
@@ -508,7 +512,7 @@ const isRuntimeTransitioning = computed(() => {
 })
 
 const toolbarLocked = computed(() => {
-  return isRuntimeTransitioning.value || isSwitchingSessionControls.value || sessionAvailability.value.available === false
+  return isRuntimeTransitioning.value || sessionAvailability.value.available === false
 })
 
 const collapsibleStats = computed(() => {
@@ -761,27 +765,37 @@ watch(
   () => [appStore.currentProject?.id, appStore.currentSession?.id],
   async ([projectId, sessionId]) => {
     if (projectId && sessionId) {
-      const availabilityResult = await window.electronAPI.getSessionAvailable({
-        projectId,
-        sessionId
-      })
-      sessionAvailability.value = availabilityResult?.success
-        ? {
-            available: availabilityResult.available !== false,
-            reason: availabilityResult.reason || '',
-            initProvider: availabilityResult.initProvider || null,
-            currentProvider: availabilityResult.currentProvider || null
-          }
-        : {
-            available: true,
-            reason: '',
-            initProvider: null,
-            currentProvider: null
-          }
-      resetModelState()
-      await loadModelConfigContext()
-      await loadProviderSubModels({ force: true })
-      await loadSessionEffortCapabilities({ force: true })
+      suppressSessionControlWatchers.value = true
+      skipNextProviderRefreshSessionId.value = sessionId
+      skipNextSubModelRefreshSessionId.value = sessionId
+      try {
+        const availabilityResult = await window.electronAPI.getSessionAvailable({
+          projectId,
+          sessionId
+        })
+        sessionAvailability.value = availabilityResult?.success
+          ? {
+              available: availabilityResult.available !== false,
+              reason: availabilityResult.reason || '',
+              initProvider: availabilityResult.initProvider || null,
+              currentProvider: availabilityResult.currentProvider || null
+            }
+          : {
+              available: true,
+              reason: '',
+              initProvider: null,
+              currentProvider: null
+            }
+        await loadModelConfigContext()
+        const restored = restoreSessionDerivedState(sessionId)
+        if (!restored) {
+          await loadProviderSubModels()
+          await loadSessionEffortCapabilities()
+        }
+        await nextTick()
+      } finally {
+        suppressSessionControlWatchers.value = false
+      }
     } else {
       sessionAvailability.value = {
         available: true,
@@ -789,6 +803,9 @@ watch(
         initProvider: null,
         currentProvider: null
       }
+      suppressSessionControlWatchers.value = false
+      skipNextProviderRefreshSessionId.value = ''
+      skipNextSubModelRefreshSessionId.value = ''
       resetModelState()
     }
   },
@@ -796,8 +813,21 @@ watch(
 )
 
 watch(
-  () => currentModelProvider.value,
-  async (provider, previousProvider) => {
+  () => [appStore.currentSession?.id, currentModelProvider.value],
+  async ([sessionId, provider], [previousSessionId, previousProvider]) => {
+    if (suppressSessionControlWatchers.value) {
+      return
+    }
+
+    if (!sessionId || sessionId !== previousSessionId) {
+      return
+    }
+
+    if (skipNextProviderRefreshSessionId.value === sessionId) {
+      skipNextProviderRefreshSessionId.value = ''
+      return
+    }
+
     if (provider && provider !== previousProvider) {
       await loadModelConfigContext()
       resetSubModelState()
@@ -809,8 +839,21 @@ watch(
 )
 
 watch(
-  () => currentSubModelKey.value,
-  async (subModel, previousSubModel) => {
+  () => [appStore.currentSession?.id, currentSubModelKey.value],
+  async ([sessionId, subModel], [previousSessionId, previousSubModel]) => {
+    if (suppressSessionControlWatchers.value) {
+      return
+    }
+
+    if (!sessionId || sessionId !== previousSessionId) {
+      return
+    }
+
+    if (skipNextSubModelRefreshSessionId.value === sessionId) {
+      skipNextSubModelRefreshSessionId.value = ''
+      return
+    }
+
     if (subModel && subModel !== previousSubModel) {
       resetEffortState()
       await loadSessionEffortCapabilities({ force: true })
@@ -1878,6 +1921,7 @@ function handleToggleAgentRail() {
         :agent-entries="agentWorkspaceAgents"
         :collaborative-sessions="collaborativeAgentSessions"
         :active-session="activeCollaborativeSession"
+        :session-id="sessionStore.currentSession?.id || ''"
         :split-sessions="splitSideSessions"
         :view-mode="agentWorkspaceState.collaborativeViewMode"
         :focused-pane-agent-id="agentWorkspaceState.focusedPaneAgentId"
@@ -2041,6 +2085,7 @@ function handleToggleAgentRail() {
         v-model:attachments="inputAttachments"
         :is-processing="isProcessing"
         :toolbar-locked="toolbarLocked"
+        :session-controls-switching="isSwitchingSessionControls"
         :has-permission="pendingPermission !== null || pendingControlRequest !== null"
         :permission-mode="permissionMode"
         :permission-modes="permissionModes"

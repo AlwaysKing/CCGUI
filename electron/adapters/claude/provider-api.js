@@ -3,6 +3,8 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
+const DEFAULT_CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high']
+
 async function withClaudeProviderClient(task, options = {}) {
   const client = new ClaudeClient(
     options.workingDirectory || process.cwd(),
@@ -91,7 +93,7 @@ async function listClaudeReasoningCapabilities(options = {}) {
   const matched = entries.find(entry => entry.value === modelId) || null
   const levels = matched?.supportsEffort
     ? matched.supportedEffortLevels
-    : []
+    : DEFAULT_CLAUDE_EFFORT_LEVELS
 
   return {
     provider: 'claude',

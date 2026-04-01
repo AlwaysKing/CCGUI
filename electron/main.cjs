@@ -9,6 +9,7 @@ const { encodeProjectPath, decodeProjectPath } = require('./project-paths')
 const appService = require('./services/app-service')
 const projectService = require('./services/project-service')
 const attachmentService = require('./services/attachment-service')
+const historyManager = require('./storage/history-manager')
 
 const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -923,6 +924,32 @@ ipcMain.handle('select-session', async (event, { sessionId, projectId, projectPa
 ipcMain.handle('get-session-state', async (event, { sessionId }) => {
   const state = sessionManager.getSessionState(sessionId)
   return state
+})
+
+ipcMain.handle('load-session-history-turn', async (event, { sessionId, turnId }) => {
+  try {
+    const session = sessionManager.getSession(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    const turns = historyManager.loadTurnIndex(session.projectId, sessionId)
+    const turn = turns.find(item => item.turnId === turnId) || null
+    const events = historyManager.loadTurnEvents(session.projectId, sessionId, turnId)
+
+    return {
+      success: true,
+      turn,
+      events
+    }
+  } catch (error) {
+    logger.error('[IPC] load-session-history-turn error:', {
+      sessionId,
+      turnId,
+      message: error.message
+    })
+    return { success: false, error: error.message }
+  }
 })
 
 // Update session UI state

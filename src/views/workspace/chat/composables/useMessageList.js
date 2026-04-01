@@ -40,6 +40,18 @@ export function useMessageList() {
       break
     }
 
+    if (userMessage?.historyTurn?.hasResponse) {
+      return {
+        message: {
+          id: `history-response-${userMessage.historyTurn.turnId}`,
+          role: 'assistant',
+          unloaded: !userMessage.historyTurn.loaded
+        },
+        index: userMessageIndex + 1,
+        unloaded: !userMessage.historyTurn.loaded
+      }
+    }
+
     return null
   }
 

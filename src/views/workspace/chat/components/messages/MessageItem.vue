@@ -73,6 +73,10 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
+  sessionId: {
+    type: String,
+    default: ''
+  },
   chatTheme: {
     type: Object,
     default: () => ({})
@@ -366,7 +370,7 @@ function setAllResponseCollapsed(nextCollapsed, { excludeIndex = null } = {}) {
   })
 }
 
-function onToggleResponseCollapse(messageIndex, event = null) {
+async function onToggleResponseCollapse(messageIndex, event = null) {
   const message = props.allMessages[messageIndex]
   if (!message || message.role !== 'user') {
     return
@@ -384,6 +388,24 @@ function onToggleResponseCollapse(messageIndex, event = null) {
   if (useGlobalMode) {
     setAllResponseCollapsed(nextCollapsed)
     return
+  }
+
+  if (!nextCollapsed && message.historyTurn?.turnId && !message.historyTurn.loaded) {
+    const ownerSession = props.sessionId
+      ? sessionStore.sessions.get(props.sessionId)
+      : (
+          sessionStore.currentSession?.messages === props.allMessages
+            ? sessionStore.currentSession
+            : Array.from(sessionStore.sessions.values()).find(session => session?.messages === props.allMessages)
+        )
+
+    if (ownerSession?.id) {
+      const result = await sessionStore.loadHistoryTurn(ownerSession.id, message.historyTurn.turnId)
+      if (!result?.success) {
+        return
+      }
+      return
+    }
   }
 
   toggleResponseCollapse(props.allMessages, messageIndex)

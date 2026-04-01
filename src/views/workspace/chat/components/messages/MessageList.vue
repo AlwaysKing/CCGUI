@@ -21,6 +21,10 @@ const props = defineProps({
   chatTheme: {
     type: Object,
     default: () => ({})
+  },
+  sessionId: {
+    type: String,
+    default: ''
   }
 })
 
@@ -72,6 +76,7 @@ function handleCopyQuestionContent({ index, content }) {
     :message="message"
     :message-index="index"
     :total-messages="messages.length"
+    :session-id="sessionId"
     :working-directory="workingDirectory"
     :current-time="currentTime"
     :chat-theme="chatTheme"

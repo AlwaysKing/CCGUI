@@ -1065,6 +1065,7 @@ export const useSessionStore = defineStore('session', () => {
   const executionAgentCards = computed(() => {
     const registryEntries = Array.from(currentAgentRegistry.value.values())
     const buckets = currentAgentBuckets.value
+    const hasLiveRuntime = Boolean(currentSession.value?.runtimeReady || currentSession.value?.envInfo?.providerPid)
 
     return registryEntries
       .filter(entry => entry?.agentKind === 'execution')
@@ -1080,17 +1081,6 @@ export const useSessionStore = defineStore('session', () => {
           spawnRequest?.toolInput?.instructions,
           spawnRequest?.toolInput?.description,
           entry.prompt
-        )
-        const latestResult = formatExecutionAgentResult(
-          entry.status === 'running' || entry.status === 'starting'
-            ? null
-            : pickFirstDefined(
-                spawnRequest?.result,
-                latestTaskComplete?.summary,
-                latestTaskComplete?.description,
-                entry.summary,
-                entry.description
-              )
         )
         const toolCalls = items
           .filter(message => (message?.role === 'tool_use' || message?.role === 'diff') && message?.toolName !== 'Agent')
@@ -1110,20 +1100,38 @@ export const useSessionStore = defineStore('session', () => {
           (message?.role === 'tool_use' || message?.role === 'diff') &&
           message?.toolName !== 'Agent'
         )
+        const activeTimelineItems = timelineItems.filter(message => message?.isExecuting)
+        const rawStatus = entry.status || 'running'
+        const resolvedStatus = (!hasLiveRuntime && (rawStatus === 'running' || rawStatus === 'starting') && activeTimelineItems.length === 0)
+          ? 'interrupted'
+          : rawStatus
         const completedToolCount = toolCalls.filter(toolCall => toolCall.status === 'completed').length
         const errorToolCount = toolCalls.filter(toolCall => toolCall.status === 'error').length
-        const activeTimelineItems = timelineItems.filter(message => message?.isExecuting)
         const displayTimelineItems = activeTimelineItems.length
           ? activeTimelineItems
           : (timelineItems.length ? [timelineItems[timelineItems.length - 1]] : [])
+        const latestResult = formatExecutionAgentResult(
+          resolvedStatus === 'running' || resolvedStatus === 'starting'
+            ? null
+            : pickFirstDefined(
+                spawnRequest?.result,
+                latestTaskComplete?.summary,
+                latestTaskComplete?.description,
+                entry.summary,
+                entry.description,
+                resolvedStatus === 'interrupted'
+                  ? '子代理在会话关闭时被中断，恢复历史后不会继续执行。'
+                  : null
+              )
+        )
         const aggregatedUsage = aggregateExecutionAgentUsage(items, entry)
-        const aggregatedDuration = aggregateExecutionAgentDuration(items, entry, entry.status)
+        const aggregatedDuration = aggregateExecutionAgentDuration(items, entry, resolvedStatus)
 
         return {
           agentId: entry.agentId,
           title: displayTitle,
           subtitle: entry.agentType || entry.model || null,
-          status: entry.status || 'running',
+          status: resolvedStatus,
           summary: promptText || latestResult,
           promptText,
           latestResult,
@@ -1949,14 +1957,96 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  function createHistoryReplaySession(baseSession) {
+    const replaySession = new SessionData(baseSession.id, baseSession.projectPath)
+    replaySession.mainAgentId = baseSession.mainAgentId
+    replaySession.permissionMode = baseSession.permissionMode
+    replaySession.envInfo = baseSession.envInfo
+    return replaySession
+  }
+
+  async function loadHistoryTurn(sessionId, turnId) {
+    const session = sessions.value.get(sessionId)
+    if (!session || !turnId) {
+      return { success: false, error: 'Session or turn not found' }
+    }
+
+    const anchorIndex = session.messages.findIndex(message => message?.historyTurn?.turnId === turnId)
+    if (anchorIndex === -1) {
+      return { success: false, error: 'Turn anchor message not found' }
+    }
+
+    const anchorMessage = session.messages[anchorIndex]
+    if (anchorMessage?.historyTurn?.loaded) {
+      return { success: true, cached: true }
+    }
+    if (anchorMessage?.historyTurn?.loading) {
+      return { success: true, loading: true }
+    }
+
+    anchorMessage.historyTurn.loading = true
+    anchorMessage.historyTurn.error = null
+
+    try {
+      const result = await window.electronAPI.loadSessionHistoryTurn({
+        sessionId,
+        turnId
+      })
+
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to load history turn')
+      }
+
+      const replaySession = createHistoryReplaySession(session)
+      const turnEvents = Array.isArray(result.events) ? result.events : []
+      for (const event of turnEvents) {
+        handleSessionEvent(event, replaySession)
+      }
+
+      const replayedMessages = Array.isArray(replaySession.messages) ? replaySession.messages : []
+      const replayedUserIndex = replayedMessages.findIndex(message =>
+        message?.role === 'user' && message?.id === anchorMessage.id
+      )
+      const replayedUserMessage = replayedUserIndex >= 0 ? replayedMessages[replayedUserIndex] : null
+      const insertedMessages = replayedMessages
+        .filter((message, index) => !(index === replayedUserIndex && message?.role === 'user'))
+        .map(message => reactive(message))
+
+      const refreshedTurn = {
+        ...(anchorMessage.historyTurn || {}),
+        ...(result.turn || {}),
+        turnId,
+        loaded: true,
+        loading: false,
+        hasResponse: Boolean(result.turn?.hasAssistantResponse ?? anchorMessage.historyTurn?.hasResponse)
+      }
+
+      const mergedUserMessage = reactive({
+        ...anchorMessage,
+        ...(replayedUserMessage || {}),
+        responseCollapsed: false,
+        historyTurn: refreshedTurn
+      })
+
+      session.messages.splice(anchorIndex, 1, mergedUserMessage, ...insertedMessages)
+      rebuildAgentSemanticState(session)
+
+      return { success: true, insertedCount: insertedMessages.length }
+    } catch (error) {
+      anchorMessage.historyTurn.loading = false
+      anchorMessage.historyTurn.error = error.message
+      return { success: false, error: error.message }
+    }
+  }
+
   /**
    * 处理从后端收到的事件
    */
-  function handleSessionEvent(event) {
+  function handleSessionEvent(event, explicitSession = null) {
     const { sessionId, eventType, data } = event
 
     // 获取对应的会话
-    const session = sessions.value.get(sessionId)
+    const session = explicitSession || sessions.value.get(sessionId)
     if (!session) {
       log('[SessionStore] Event for unknown session:', sessionId)
       return
@@ -2148,6 +2238,14 @@ export const useSessionStore = defineStore('session', () => {
    * 注意：对于 assistant 消息，需要检查是否已有流式创建的消息
    */
   function handleAddMessage(session, message) {
+    if (message?.id) {
+      const existingIndex = session.messages.findIndex(item => item?.id === message.id)
+      if (existingIndex >= 0) {
+        Object.assign(session.messages[existingIndex], message)
+        return
+      }
+    }
+
     // 如果是 assistant 消息，检查是否已有流式创建的消息
     if (message.role === 'assistant') {
       // 查找是否有正在流式传输的 assistant 消息
@@ -3428,6 +3526,7 @@ export const useSessionStore = defineStore('session', () => {
 
     // Actions
     initSession,
+    loadHistoryTurn,
     switchToSession,
     setActiveAgent,
     setFocusedPaneAgentId,

@@ -271,6 +271,44 @@ function isUuidLike(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim())
 }
 
+function buildHistoryUserMessageFromTurn(turn = {}) {
+  const timestamp = turn.createdAt || new Date().toISOString()
+  const normalizedContent = typeof turn.userText === 'string'
+    ? turn.userText
+    : (typeof turn.serializedContent === 'string' ? turn.serializedContent : '')
+
+  return {
+    id: turn.userMessageId || turn.turnId,
+    role: 'user',
+    content: normalizedContent,
+    serializedContent: typeof turn.serializedContent === 'string'
+      ? turn.serializedContent
+      : normalizedContent,
+    attachments: Array.isArray(turn.attachments) ? turn.attachments : [],
+    timestamp,
+    responseCollapsed: Boolean(turn.hasAssistantResponse),
+    historyTurn: {
+      turnId: turn.turnId,
+      streamFile: turn.streamFile || null,
+      status: turn.status || 'pending',
+      hasResponse: Boolean(turn.hasAssistantResponse),
+      eventCount: Number(turn.eventCount || 0),
+      loaded: false,
+      loading: false
+    }
+  }
+}
+
+function buildHistoryIndexMessage(entry = {}) {
+  if (entry?.entryType === 'message' && entry?.message && typeof entry.message === 'object') {
+    return {
+      ...entry.message
+    }
+  }
+
+  return buildHistoryUserMessageFromTurn(entry)
+}
+
 const SESSION_NOTIFICATION_TYPES = new Set([
   'runtime-exit',
   'runtime-stopped',
@@ -617,6 +655,8 @@ class SessionInstance {
     this.silentMessages = []
     this.taskEvents = []
     this.eventLog = []
+    this.historyTurns = []
+    this.currentHistoryTurnId = null
 
     // 流式消息处理状态
     this.currentStreamingAssistantId = null
@@ -675,9 +715,8 @@ class SessionInstance {
         })
       }
 
-      const ccguiMessages = historyManager.loadHistory(this.projectId, this.id)
+      const turnIndex = historyManager.loadTurnIndex(this.projectId, this.id)
       const semanticEvents = historyManager.loadSemanticEvents(this.projectId, this.id)
-      this.eventLog = historyManager.loadSessionEvents(this.projectId, this.id)
       this.silentMessages = semanticEvents
         .filter(event => event?.eventType === 'silent-message')
         .map(event => event.payload)
@@ -686,6 +725,41 @@ class SessionInstance {
         .filter(event => event?.eventType === 'task-event')
         .map(event => event.payload)
         .filter(Boolean)
+
+      if (turnIndex.length > 0) {
+        const legacyMessages = historyManager.loadHistory(this.projectId, this.id)
+        const indexedMessageIds = new Set(
+          turnIndex
+            .filter(entry => entry?.entryType === 'message' && entry?.messageId)
+            .map(entry => entry.messageId)
+        )
+
+        for (const message of legacyMessages) {
+          if (
+            message?.role === 'system_notification' &&
+            message?.scope === 'session' &&
+            message?.id &&
+            !indexedMessageIds.has(message.id)
+          ) {
+            historyManager.appendIndexMessage(this.projectId, this.id, message)
+          }
+        }
+
+        this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+        this.messages = this.historyTurns.map(buildHistoryIndexMessage)
+        this.inputHistory = mergeInputHistory(this.inputHistory, this.messages)
+        logger.info(`[SessionInstance] Loaded ${this.historyTurns.length} history index entries for session ${this.id}`)
+
+        for (const msg of this.messages) {
+          if (msg?.id) {
+            this.savedMessageIds.add(msg.id)
+          }
+        }
+        return
+      }
+
+      const ccguiMessages = historyManager.loadHistory(this.projectId, this.id)
+      this.eventLog = historyManager.loadSessionEvents(this.projectId, this.id)
 
       if (ccguiMessages.length > 0) {
         this.messages = ccguiMessages
@@ -736,6 +810,7 @@ class SessionInstance {
       silentMessages: this.silentMessages,
       taskEvents: this.taskEvents,
       eventLog: this.eventLog,
+      historyTurns: this.historyTurns,
       runtimeReady: this.runtimeManager?.isReady() || false,
       provider: this.provider,
       permissionMode: this.permissionMode
@@ -1044,6 +1119,10 @@ class SessionInstance {
 
     this.messages.push(message)
     this.saveMessageToHistory(message)
+    if (message.scope === 'session') {
+      historyManager.appendIndexMessage(this.projectId, this.id, message)
+      this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+    }
     return message
   }
 
@@ -1078,6 +1157,15 @@ class SessionInstance {
           data: pendingMessage.data,
           timestamp: pendingMessage.timestamp
         })
+        if (pendingMessage.scope === 'session') {
+          historyManager.updateIndexMessage(this.projectId, this.id, pendingMessage.id, {
+            notificationType: pendingMessage.notificationType,
+            scope: pendingMessage.scope,
+            data: pendingMessage.data,
+            timestamp: pendingMessage.timestamp
+          })
+          this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+        }
         return pendingMessage
       }
     }
@@ -1113,6 +1201,15 @@ class SessionInstance {
       data: pendingMessage.data,
       timestamp: pendingMessage.timestamp
     })
+    if (pendingMessage.scope === 'session') {
+      historyManager.updateIndexMessage(this.projectId, this.id, pendingMessage.id, {
+        notificationType: pendingMessage.notificationType,
+        scope: pendingMessage.scope,
+        data: pendingMessage.data,
+        timestamp: pendingMessage.timestamp
+      })
+      this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+    }
 
     return pendingMessage
   }
@@ -1131,6 +1228,20 @@ class SessionInstance {
       if (item.isExecuting) {
         item.isExecuting = false
         updates.isExecuting = false
+
+        if (item.role === 'tool_use' || item.role === 'diff') {
+          item.interrupted = true
+          item.isError = true
+          updates.interrupted = true
+          updates.isError = true
+
+          if (!String(item.result || '').trim()) {
+            item.result = item.toolName === 'Agent'
+              ? '子代理在 CCGUI 关闭时被中断，恢复历史后不会继续执行。'
+              : '工具调用在 CCGUI 关闭时被中断，恢复历史后不会继续执行。'
+            updates.result = item.result
+          }
+        }
       }
 
       if (!item.duration && item.startTime) {
@@ -2914,10 +3025,32 @@ class SessionInstance {
     }
     this.eventLog.push(event)
     historyManager.appendSessionEvent(this.projectId, this.id, event)
+    this.appendEventToTurnHistory(event)
 
     if (this.webContents && !this.webContents.isDestroyed()) {
       this.webContents.send('session-event', event)
     }
+  }
+
+  appendEventToTurnHistory(event) {
+    const payload = event?.data || null
+
+    if (event?.eventType === 'message' && payload?.role === 'user') {
+      const turnEntry = historyManager.appendTurn(this.projectId, this.id, payload)
+      this.currentHistoryTurnId = turnEntry?.turnId || payload?.id || null
+      this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+      if (this.currentHistoryTurnId) {
+        historyManager.appendTurnEvent(this.projectId, this.id, this.currentHistoryTurnId, event)
+      }
+      return
+    }
+
+    if (!this.currentHistoryTurnId) {
+      return
+    }
+
+    historyManager.appendTurnEvent(this.projectId, this.id, this.currentHistoryTurnId, event)
+    this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
   }
 
   buildQuestionMessage(controlRequest, answers = {}) {

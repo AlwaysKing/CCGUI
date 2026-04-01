@@ -255,6 +255,14 @@ const notificationContent = computed(() => {
     }
   }
 
+  if (notificationType === 'turn-interrupted') {
+    return {
+      icon: '✋',
+      title: '主动中断响应',
+      description: '已中断当前响应'
+    }
+  }
+
   if (notificationType === 'provider-message' || notificationType === 'provider-system-message') {
     const label = data.subtype || data.messageType || 'unknown'
     return {

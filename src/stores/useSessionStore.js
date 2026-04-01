@@ -1448,6 +1448,21 @@ export const useSessionStore = defineStore('session', () => {
         rebuildAgentSemanticState(sessionData)
       }
 
+      // 清理历史重放后仍处于 running 状态的 task（会话中断时未收到完成通知）
+      for (const [taskId, task] of sessionData.activeTasks) {
+        if (task.status === 'running') {
+          sessionData.activeTasks.delete(taskId)
+        }
+      }
+
+      // 清理历史重放后仍处于 running 状态的协作 agent（会话中断时未收到结束事件）
+      const mainId = sessionData.mainAgentId
+      for (const [agentId, entry] of sessionData.agentRegistry) {
+        if (agentId !== mainId && entry?.status === 'running') {
+          entry.status = 'stopped'
+        }
+      }
+
       // 设置为当前会话
       currentSessionId.value = sessionId
 
@@ -2903,7 +2918,8 @@ export const useSessionStore = defineStore('session', () => {
    * 处理中断
    */
   function handleInterrupt(session, data) {
-    session.isProcessing = false
+    // 中断只由 turn-interrupted system-notification 插入提示，
+    // isProcessing 由正常的 result 流程设置
   }
 
   /**
@@ -3135,6 +3151,22 @@ export const useSessionStore = defineStore('session', () => {
       }
     }
 
+    // 中断提示：不作为错误通知，显示为简短提示
+    if (data?.type === 'turn-interrupted') {
+      const interruptMsg = {
+        id: `interrupt-${Date.now()}`,
+        role: 'system_notification',
+        notificationType: 'turn-interrupted',
+        scope: 'turn',
+        data: {
+          message: data.message || '已中断响应'
+        },
+        timestamp: new Date()
+      }
+      session.messages.push(interruptMsg)
+      return
+    }
+
     // 创建系统通知消息
     const notificationMsg = {
       id: `system-notification-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -3220,6 +3252,7 @@ export const useSessionStore = defineStore('session', () => {
         startTime: Date.now(),
         usage: null,
         summary: null,
+        latestEvent: null,
         agentId,
         ccgui: data.ccgui || null
       }
@@ -3231,7 +3264,7 @@ export const useSessionStore = defineStore('session', () => {
       if (task) {
         task.usage = data.usage || task.usage
         task.summary = data.summary || task.summary
-        task.description = data.description || task.description
+        if (data.description) task.latestEvent = data.description
         task.agentId = task.agentId || resolveAgentIdFromCcguiPayload(data.ccgui)
         task.ccgui = data.ccgui || task.ccgui || null
         log('[SessionStore] Task progress:', taskId, data.summary)

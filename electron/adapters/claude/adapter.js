@@ -46,6 +46,7 @@ class ClaudeAdapter extends ClaudeClient {
     this.startedExecutionAgentIds = new Set()
     this.teamNameToTeamId = new Map()
     this.sidechainMessageIds = new Set()
+    this.turnInterrupted = false
   }
 
   getCollaborativeReadOnlyFields() {
@@ -729,6 +730,9 @@ class ClaudeAdapter extends ClaudeClient {
       return true
     }
     const subtype = String(resultMessage?.subtype || '').toLowerCase()
+    if (subtype === 'error_during_execution') {
+      return false
+    }
     return subtype.startsWith('error')
   }
 
@@ -878,14 +882,23 @@ class ClaudeAdapter extends ClaudeClient {
     }
 
     if (message.type === 'control_response') {
+      // 检测中断确认：control_response 的 request_id 以 interrupt_ 开头
+      const requestId = message?.response?.request_id || ''
+      if (requestId.startsWith('interrupt_')) {
+        this.turnInterrupted = true
+        this.emitProviderSystemNotification('turn-interrupted', {
+          message: '已中断响应'
+        })
+      }
       this.emit('control-response', message)
       return
     }
 
     if (message.type === 'control_cancel_request') {
-      this.currentAssistantMessage = null
-      this.clearPendingCollaborativePreAgents()
-      this.clearPendingAgentToolUses()
+      this.turnInterrupted = true
+      this.emitProviderSystemNotification('turn-interrupted', {
+        message: '已中断响应'
+      })
       this.emit('interrupt', message)
       return
     }
@@ -916,7 +929,11 @@ class ClaudeAdapter extends ClaudeClient {
     if (message.type === 'result') {
       this.clearPendingCollaborativePreAgents()
       this.clearPendingAgentToolUses()
-      if (this.shouldTreatAsErrorResult(message)) {
+      this.currentAssistantMessage = null
+      if (this.turnInterrupted) {
+        // 中断后的 result，吃掉所有 error/failed 通知
+        this.turnInterrupted = false
+      } else if (this.shouldTreatAsErrorResult(message)) {
         const subtype = message?.subtype || 'error'
         const errorText =
           message?.result ||

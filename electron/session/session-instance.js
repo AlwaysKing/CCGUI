@@ -323,6 +323,7 @@ const SESSION_NOTIFICATION_TYPES = new Set([
   'context_compacted',
   'model-rerouted',
   'turn-error',
+  'turn-interrupted',
   'thread-event',
   'turn-plan-updated',
   'provider-deprecation',
@@ -1743,8 +1744,6 @@ class SessionInstance {
 
     manager.on('interrupt', (message) => {
       this.currentStreamingAssistantId = null
-      this.isProcessing = false
-      this.emit('state-update', { isProcessing: false })
       this.emit('interrupt', message)
     })
 
@@ -3204,6 +3203,15 @@ class SessionInstance {
       }
       this.currentStreamingAssistantId = null
       this.finalizeActiveMessages()
+      if (reason !== 'restart-for-config') {
+        this.finalizePendingLifecycleNotification('runtime-stopped', {
+          provider: this.provider,
+          reason,
+          message: reason === 'project-close'
+            ? `${this.getProviderDisplayName()} 已随项目关闭停止`
+            : `${this.getProviderDisplayName()} 已停止运行`
+        })
+      }
       this.isProcessing = false
       this.emit('state-update', { isProcessing: false })
 

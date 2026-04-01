@@ -34,6 +34,8 @@ const activeTasks = computed(() => {
 // 每个任务的状态 (位置、折叠状态、粘性状态)
 const taskStates = ref(new Map())
 const resizeObserver = ref(null)
+const now = ref(Date.now())
+let timerHandle = null
 
 // 任务类型图标
 function getTaskIcon(taskType) {
@@ -47,7 +49,7 @@ function getTaskIcon(taskType) {
 // 格式化运行时间
 function formatRunningTime(startTime) {
   if (!startTime) return ''
-  const elapsed = Date.now() - startTime
+  const elapsed = now.value - startTime
   if (elapsed < 1000) return `${elapsed}ms`
   if (elapsed < 60000) return `${(elapsed / 1000).toFixed(1)}s`
   return `${(elapsed / 60000).toFixed(1)}min`
@@ -359,6 +361,11 @@ watch(() => props.contentBounds, () => {
 onMounted(() => {
   window.addEventListener('resize', resolveCollisions)
 
+  // 每秒刷新计时器
+  timerHandle = setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+
   // 监听 messages 容器大小变化
   const messagesContainer = document.querySelector('.chat-window .messages')
   if (messagesContainer) {
@@ -376,6 +383,10 @@ onUnmounted(() => {
   window.removeEventListener('resize', resolveCollisions)
   if (resizeObserver.value) {
     resizeObserver.value.disconnect()
+  }
+  if (timerHandle) {
+    clearInterval(timerHandle)
+    timerHandle = null
   }
 })
 </script>
@@ -396,6 +407,7 @@ onUnmounted(() => {
       <span class="task-icon">{{ getTaskIcon(task.taskType) }}</span>
       <div class="task-info">
         <div class="task-description">{{ task.description || '任务运行中...' }}</div>
+        <div v-if="task.latestEvent" class="task-latest-event">{{ task.latestEvent }}</div>
         <div class="task-meta">
           <!-- 进度 -->
           <template v-if="getTaskProgress(task)">
@@ -550,6 +562,15 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   letter-spacing: 0.01em;
+}
+
+.task-latest-event {
+  font-size: var(--font-size-xs);
+  color: #A1A1AA;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
 }
 
 .task-meta {

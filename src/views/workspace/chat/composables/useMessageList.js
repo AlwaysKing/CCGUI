@@ -9,20 +9,12 @@ const questionActiveTabs = ref({})
 const openActionMenuIndex = ref(-1)
 
 export function useMessageList() {
-  function isSkippableMessageBetweenUserAndAssistant(message) {
-    if (!message) return false
-    if (message.role === 'system_notification') return true
-    if (message.role === 'status') return true
-    return false
-  }
-
-  function isResponseMessage(message) {
-    if (!message) return false
-    if (message.role === 'assistant') return true
-    if (message.role === 'tool_use' && message.subtype === 'execution-card') return true
-    return false
-  }
-
+  /**
+   * 判断用户消息是否有回答
+   * 从用户消息向后扫描，跳过系统类消息（system_notification, status, system），
+   * 如果下一个有意义的消息又是 user → 没有回答；
+   * 否则（assistant, tool_use, diff 等）→ 有回答。
+   */
   function findAssistantResponse(messages, userMessageIndex) {
     if (!Array.isArray(messages) || userMessageIndex < 0) return null
     const userMessage = messages[userMessageIndex]
@@ -31,15 +23,26 @@ export function useMessageList() {
     for (let i = userMessageIndex + 1; i < messages.length; i += 1) {
       const message = messages[i]
       if (!message) continue
-      if (isResponseMessage(message)) {
-        return { message, index: i }
-      }
-      if (isSkippableMessageBetweenUserAndAssistant(message)) {
+
+      // 系统类消息，跳过
+      if (
+        message.role === 'system_notification' ||
+        message.role === 'status' ||
+        message.role === 'system'
+      ) {
         continue
       }
-      break
+
+      // 又遇到 user 消息 → 没有回答
+      if (message.role === 'user') {
+        return null
+      }
+
+      // 其它任何消息都算有回答
+      return { message, index: i }
     }
 
+    // 历史折叠 turn 还没加载，但记录有回答
     if (userMessage?.historyTurn?.hasResponse) {
       return {
         message: {

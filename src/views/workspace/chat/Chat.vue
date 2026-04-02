@@ -1909,10 +1909,12 @@ function handleToggleAgentRail() {
       :is-chat-collapsed="isCollapsedByPreview"
       :show-agent-rail-toggle="hasCollaborativeChildren"
       :is-agent-rail-visible="isAgentRailVisible"
+      :view-mode="agentWorkspaceState.collaborativeViewMode"
       @toggle-sidebar="emit('toggleSidebar')"
       @toggle-collapse="emit('toggleCollapse')"
       @pid-click="handlePidClick"
       @toggle-agent-rail="handleToggleAgentRail"
+      @toggle-view-mode="handleToggleAgentViewMode"
     />
     <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight } : {}">
       <AgentWorkspace

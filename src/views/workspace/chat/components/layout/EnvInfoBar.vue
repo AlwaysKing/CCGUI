@@ -43,10 +43,14 @@ const props = defineProps({
   isAgentRailVisible: {
     type: Boolean,
     default: true
+  },
+  viewMode: {
+    type: String,
+    default: 'single'
   }
 })
 
-const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode'])
 
 // 使用 useMessage composable
 const { formatMcpServers, formatSkills, copiedMessageIndex, copyToClipboard } = useMessage()
@@ -532,6 +536,35 @@ async function copySilentMessage(message, reverseIndex) {
           <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">
             {{ showEnvDetail ? '收起' : '详情' }}
           </button>
+          <div v-if="showAgentRailToggle" class="env-view-mode-toggle">
+            <button
+              class="env-view-mode-btn"
+              :class="{ active: viewMode === 'single' }"
+              type="button"
+              title="单视图"
+              aria-label="单视图"
+              @click="emit('toggleViewMode', 'single')"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="2.5" y="3" width="11" height="10" rx="2" stroke="currentColor" stroke-width="1.4" />
+                <path d="M5 6H11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                <path d="M5 8.5H11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button
+              class="env-view-mode-btn"
+              :class="{ active: viewMode === 'split' }"
+              type="button"
+              title="分屏"
+              aria-label="分屏"
+              @click="emit('toggleViewMode', 'split')"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="2.5" y="3" width="11" height="10" rx="2" stroke="currentColor" stroke-width="1.4" />
+                <path d="M8 3.8V12.2" stroke="currentColor" stroke-width="1.2" />
+              </svg>
+            </button>
+          </div>
           <button
             v-if="showAgentRailToggle"
             class="env-detail-btn env-detail-btn--icon"
@@ -1071,6 +1104,42 @@ async function copySilentMessage(message, reverseIndex) {
 .env-detail-btn:hover {
   background: var(--bg-hover);
   color: var(--text-secondary);
+}
+
+.env-view-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  background: rgba(39, 39, 42, 0.6);
+  border: 1px solid rgba(63, 63, 70, 0.6);
+  border-radius: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.env-view-mode-btn {
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #71717a;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.env-view-mode-btn:hover {
+  color: #d4d4d8;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.env-view-mode-btn.active {
+  color: #18181b;
+  background: #f59e0b;
 }
 
 .env-detail-btn--icon {

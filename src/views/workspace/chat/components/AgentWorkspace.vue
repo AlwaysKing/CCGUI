@@ -699,35 +699,6 @@ const shouldShowRail = computed(() => {
       <div class="agent-workspace__rail-header">
         <span>团队</span>
       </div>
-      <div v-if="hasCollaborativeChildren" class="agent-workspace__rail-segment">
-          <button
-            class="provider-tab"
-            :class="{ active: viewMode === 'single' }"
-            type="button"
-            title="单视图"
-            aria-label="单视图"
-            @click="toggleViewMode('single')"
-          >
-            <svg class="agent-workspace__mode-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <rect x="2.5" y="3" width="11" height="10" rx="2" stroke="currentColor" stroke-width="1.4" />
-              <path d="M5 6H11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-              <path d="M5 8.5H11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-            </svg>
-          </button>
-          <button
-            class="provider-tab"
-            :class="{ active: viewMode === 'split' }"
-            type="button"
-            title="分屏"
-            aria-label="分屏"
-            @click="toggleViewMode('split')"
-          >
-            <svg class="agent-workspace__mode-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <rect x="2.5" y="3" width="11" height="10" rx="2" stroke="currentColor" stroke-width="1.4" />
-              <path d="M8 3.8V12.2" stroke="currentColor" stroke-width="1.2" />
-            </svg>
-          </button>
-      </div>
       <button
         v-if="railMasterEntry"
         class="agent-workspace__rail-item agent-workspace__rail-item--simple"

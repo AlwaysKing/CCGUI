@@ -79,7 +79,7 @@ const inputTargetOptions = computed(() => {
   }
 
   return collaborativeAgentSessions.value
-    .filter(entry => entry.status !== 'deleted')
+    .filter(entry => entry.status !== 'deleted' && entry.registry?.agentType !== 'team')
     .map(entry => ({
       agentId: entry.agentId,
       label: entry.title || entry.name || (entry.isMain ? 'Master' : 'Agent'),

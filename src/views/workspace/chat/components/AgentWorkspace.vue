@@ -371,6 +371,7 @@ const railMasterEntry = computed(() => {
 
 const showDeletedTeams = ref(false)
 const expandedDeletedTeamId = ref(null)
+const hoveredRailAgentId = ref(null)
 
 const railTeamGroups = computed(() => {
   const teamEntriesById = new Map(
@@ -701,20 +702,26 @@ const shouldShowRail = computed(() => {
       </div>
       <button
         v-if="railMasterEntry"
-        class="agent-workspace__rail-item agent-workspace__rail-item--simple"
+        class="agent-workspace__rail-tab"
         :class="{
           active: activeSession?.agentId === railMasterEntry.agentId,
-          focused: focusedPaneAgentId === railMasterEntry.agentId,
-          readonly: railMasterEntry.canWrite === false
+          focused: focusedPaneAgentId === railMasterEntry.agentId
         }"
-        :style="railItemStyle(railMasterEntry)"
         type="button"
         @click="selectAgent(railMasterEntry.agentId)"
+        @mouseenter="hoveredRailAgentId = railMasterEntry.agentId"
+        @mouseleave="hoveredRailAgentId = null"
       >
-        <span class="agent-workspace__rail-simple-name">{{ railMasterEntry.title }}</span>
-        <span class="agent-workspace__rail-simple-type">{{ railItemTypeLabel(railMasterEntry) }}</span>
+        <span class="agent-workspace__rail-dot" :style="{ background: railMasterEntry.color || '#60A5FA' }"></span>
+        <span class="agent-workspace__rail-tab-name">{{ railMasterEntry.title }}</span>
+        <div v-if="hoveredRailAgentId === railMasterEntry.agentId" class="agent-workspace__rail-tooltip">
+          <span class="agent-workspace__rail-tooltip-title">{{ railMasterEntry.title }}</span>
+          <span class="agent-workspace__rail-tooltip-line">类型: {{ railItemTypeLabel(railMasterEntry) }}</span>
+          <span v-if="railMasterEntry.status" class="agent-workspace__rail-tooltip-line">状态: {{ railMasterEntry.status }}</span>
+        </div>
       </button>
-      <section
+
+      <div
         v-for="group in railActiveTeamGroups"
         :key="group.teamId"
         class="agent-workspace__rail-group"
@@ -723,85 +730,94 @@ const shouldShowRail = computed(() => {
         <button
           v-for="agentItem in group.members"
           :key="agentItem.agentId"
-          class="agent-workspace__rail-item agent-workspace__rail-item--simple"
+          class="agent-workspace__rail-tab"
           :class="{
             active: activeSession?.agentId === agentItem.agentId,
-            focused: focusedPaneAgentId === agentItem.agentId,
-            readonly: agentItem.canWrite === false
+            focused: focusedPaneAgentId === agentItem.agentId
           }"
-          :style="railItemStyle(agentItem)"
           type="button"
           :disabled="agentItem.canActivate === false"
           @click="selectAgent(agentItem.agentId)"
+          @mouseenter="hoveredRailAgentId = agentItem.agentId"
+          @mouseleave="hoveredRailAgentId = null"
         >
-          <span class="agent-workspace__rail-simple-name">{{ agentItem.title }}</span>
-          <span class="agent-workspace__rail-simple-type">{{ railItemTypeLabel(agentItem) }}</span>
+          <span class="agent-workspace__rail-dot" :style="{ background: agentItem.color || '#60A5FA' }"></span>
+          <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
+          <div v-if="hoveredRailAgentId === agentItem.agentId" class="agent-workspace__rail-tooltip">
+            <span class="agent-workspace__rail-tooltip-title">{{ agentItem.title }}</span>
+            <span class="agent-workspace__rail-tooltip-line">类型: {{ railItemTypeLabel(agentItem) }}</span>
+            <span v-if="agentItem.agentType" class="agent-workspace__rail-tooltip-line">AgentType: {{ agentItem.agentType }}</span>
+            <span v-if="agentItem.status" class="agent-workspace__rail-tooltip-line">状态: {{ agentItem.status }}</span>
+            <span v-if="agentItem.model" class="agent-workspace__rail-tooltip-line">模型: {{ agentItem.model }}</span>
+          </div>
         </button>
-      </section>
+      </div>
 
       <button
         v-for="agentItem in railStandaloneEntries"
         :key="agentItem.agentId"
-        class="agent-workspace__rail-item agent-workspace__rail-item--simple"
+        class="agent-workspace__rail-tab"
         :class="{
           active: activeSession?.agentId === agentItem.agentId,
-          focused: focusedPaneAgentId === agentItem.agentId,
-          readonly: agentItem.canWrite === false
+          focused: focusedPaneAgentId === agentItem.agentId
         }"
-        :style="railItemStyle(agentItem)"
         type="button"
         :disabled="agentItem.canActivate === false"
         @click="selectAgent(agentItem.agentId)"
+        @mouseenter="hoveredRailAgentId = agentItem.agentId"
+        @mouseleave="hoveredRailAgentId = null"
       >
-        <span class="agent-workspace__rail-simple-name">{{ agentItem.title }}</span>
-        <span class="agent-workspace__rail-simple-type">{{ railItemTypeLabel(agentItem) }}</span>
+        <span class="agent-workspace__rail-dot" :style="{ background: agentItem.color || '#60A5FA' }"></span>
+        <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
+        <div v-if="hoveredRailAgentId === agentItem.agentId" class="agent-workspace__rail-tooltip">
+          <span class="agent-workspace__rail-tooltip-title">{{ agentItem.title }}</span>
+          <span class="agent-workspace__rail-tooltip-line">类型: {{ railItemTypeLabel(agentItem) }}</span>
+          <span v-if="agentItem.agentType" class="agent-workspace__rail-tooltip-line">AgentType: {{ agentItem.agentType }}</span>
+          <span v-if="agentItem.status" class="agent-workspace__rail-tooltip-line">状态: {{ agentItem.status }}</span>
+        </div>
       </button>
 
       <div v-if="railDeletedTeamGroups.length > 0" class="agent-workspace__rail-deleted">
         <button
-          class="agent-workspace__rail-deleted-toggle"
+          class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
           type="button"
           @click="showDeletedTeams = !showDeletedTeams; if (!showDeletedTeams) expandedDeletedTeamId = null"
         >
-          {{ showDeletedTeams ? '隐藏已关闭' : `已关闭 ${railDeletedTeamGroups.length}` }}
+          <span class="agent-workspace__rail-dot agent-workspace__rail-dot--deleted"></span>
+          <span class="agent-workspace__rail-tab-name">{{ showDeletedTeams ? '收起' : `已关闭 ${railDeletedTeamGroups.length}` }}</span>
         </button>
 
-        <div v-if="showDeletedTeams">
+        <template v-if="showDeletedTeams">
           <div
             v-for="group in railDeletedTeamGroups"
             :key="`deleted-${group.teamId}`"
-            class="agent-workspace__rail-deleted-section"
+            class="agent-workspace__rail-deleted-group"
           >
             <button
-              class="agent-workspace__rail-deleted-team"
-              type="button"
+              class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
               :class="{ active: expandedDeletedTeamId === group.teamId }"
+              type="button"
               @click="toggleDeletedTeam(group.teamId)"
             >
-              <span class="agent-workspace__rail-deleted-team-name">{{ group.title }}</span>
+              <span class="agent-workspace__rail-dot agent-workspace__rail-dot--deleted"></span>
+              <span class="agent-workspace__rail-tab-name">{{ group.title }}</span>
             </button>
-
-            <div v-if="expandedDeletedTeamId === group.teamId" class="agent-workspace__rail-deleted-members">
+            <template v-if="expandedDeletedTeamId === group.teamId">
               <button
                 v-for="agentItem in group.members"
                 :key="agentItem.agentId"
-                class="agent-workspace__rail-item agent-workspace__rail-item--simple"
-                :class="{
-                  active: activeSession?.agentId === agentItem.agentId,
-                  focused: focusedPaneAgentId === agentItem.agentId,
-                  readonly: agentItem.canWrite === false
-                }"
-                :style="railItemStyle(agentItem)"
+                class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
+                :class="{ active: activeSession?.agentId === agentItem.agentId }"
                 type="button"
                 :disabled="agentItem.canActivate === false"
                 @click="selectAgent(agentItem.agentId)"
               >
-                <span class="agent-workspace__rail-simple-name">{{ agentItem.title }}</span>
-                <span class="agent-workspace__rail-simple-type">{{ railItemTypeLabel(agentItem) }}</span>
+                <span class="agent-workspace__rail-dot agent-workspace__rail-dot--deleted"></span>
+                <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
               </button>
-            </div>
+            </template>
           </div>
-        </div>
+        </template>
       </div>
     </aside>
   </div>
@@ -1043,8 +1059,8 @@ const shouldShowRail = computed(() => {
   min-height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 0;
+  gap: 4px;
+  padding: 4px 0;
   border-left: 1px solid rgba(63, 63, 70, 0.75);
   background: transparent;
 }
@@ -1053,193 +1069,133 @@ const shouldShowRail = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 0 6px;
-  color: #a1a1aa;
-  font-size: 11px;
+  padding: 2px 0 2px;
+  color: #71717a;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
   line-height: 1;
+  user-select: none;
 }
 
 .agent-workspace__rail-header span {
   display: inline;
 }
 
-.agent-workspace__rail-toplist {
+.agent-workspace__rail-tab {
+  position: relative;
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 4px;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-}
 
-.agent-workspace__rail-toplist::-webkit-scrollbar {
-  display: none;
-}
-
-.agent-workspace__rail-top-chip {
-  flex: 0 0 auto;
-  min-width: 44px;
-  padding: 6px 8px;
-  border: 1px solid rgba(63, 63, 70, 0.9);
-  border-radius: 14px;
-  background: rgba(39, 39, 42, 0.88);
-  color: #f4f4f5;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-
-.agent-workspace__rail-top-chip:hover {
-  border-color: rgba(96, 165, 250, 0.45);
-}
-
-.agent-workspace__rail-top-chip.active {
-  border-color: var(--agent-color, rgba(96, 165, 250, 0.62));
-  background: var(--agent-color, #3b82f6);
-  color: #ffffff;
-}
-
-.agent-workspace__rail-segment {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px;
-  background: #1F1F23;
-  border: 1px solid #34343A;
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.agent-workspace__rail-segment .provider-tab {
-  flex: 1;
+  width: 100%;
+  padding: 4px 4px;
   border: none;
+  border-radius: 4px;
   background: transparent;
-  color: #A1A1AA;
-  font-size: 13px;
-  font-weight: 600;
+  color: #a1a1aa;
+  font-size: 10px;
+  font-weight: 500;
   line-height: 1;
-  padding: 7px 0;
-  border-radius: 8px;
   cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
-.agent-workspace__rail-segment .provider-tab:hover {
-  color: #F4F4F5;
-  background: rgba(255, 255, 255, 0.05);
+.agent-workspace__rail-tab:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #d4d4d8;
 }
 
-.agent-workspace__rail-segment .provider-tab.active {
-  color: #18181B;
-  background: #F59E0B;
+.agent-workspace__rail-tab.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f4f4f5;
 }
 
-.agent-workspace__mode-icon {
-  width: 14px;
-  height: 14px;
+.agent-workspace__rail-tab--deleted {
+  opacity: 0.55;
+}
+
+.agent-workspace__rail-tab--deleted:hover {
+  opacity: 0.85;
+}
+
+.agent-workspace__rail-dot {
   flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #60A5FA;
+}
+
+.agent-workspace__rail-dot--deleted {
+  background: #71717a;
+}
+
+.agent-workspace__rail-tab-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+  line-height: 1.3;
 }
 
 .agent-workspace__rail-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px 4px;
-  border: 1px solid rgba(63, 63, 70, 0.7);
-  border-radius: 12px;
-  background: rgba(17, 24, 39, 0.18);
-}
-
-.agent-workspace__rail-group--deleted {
-  opacity: 0.75;
+  gap: 1px;
+  padding: 2px 4px;
+  border: 1px solid rgba(182, 182, 196, 0.55);
+  border-radius: 4px;
+  background: rgba(39, 39, 42, 0.28);
 }
 
 .agent-workspace__rail-group-title {
-  color: #a1a1aa;
-  font-size: 10px;
+  color: #71717a;
+  font-size: 9px;
   font-weight: 600;
   text-align: left;
-  padding: 0 6px;
+  padding: 2px 4px 1px;
+  border-bottom: 1px solid rgba(63, 63, 70, 0.35);
+  margin-bottom: 1px;
 }
 
-.agent-workspace__rail-item {
-  padding: 8px 6px;
-  border: 1px solid rgba(63, 63, 70, 0.9);
-  border-radius: 12px;
-  background: rgba(39, 39, 42, 0.88);
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
-}
-
-.agent-workspace__rail-item:hover {
-  border-color: rgba(96, 165, 250, 0.45);
-  transform: translateY(-1px);
-}
-
-.agent-workspace__rail-item.active,
-.agent-workspace__rail-item.focused {
-  border-color: var(--agent-color, rgba(96, 165, 250, 0.62));
-  background: var(--agent-color, #3b82f6);
-}
-
-.agent-workspace__rail-item.disabled {
-  cursor: default;
-  opacity: 0.8;
-}
-
-.agent-workspace__rail-item.disabled:hover {
-  transform: none;
-  border-color: rgba(63, 63, 70, 0.9);
-}
-
-.agent-workspace__rail-item--simple {
+.agent-workspace__rail-tooltip {
+  position: absolute;
+  left: calc(100% + 6px);
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 120px;
+  max-width: 220px;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
-  gap: 3px;
-  min-height: 58px;
-  padding: 8px 6px;
-  text-align: left;
-}
-
-.agent-workspace__rail-item--simple .agent-workspace__rail-title,
-.agent-workspace__rail-item--simple .agent-workspace__rail-subtitle,
-.agent-workspace__rail-item--simple .agent-workspace__rail-flags,
-.agent-workspace__rail-item--simple .agent-workspace__rail-status,
-.agent-workspace__rail-item--simple .agent-workspace__rail-item-top {
-  display: none;
-}
-
-.agent-workspace__rail-simple-name {
-  color: #f4f4f5;
-  font-size: 11px;
-  font-weight: 600;
-  width: 100%;
-  overflow: hidden;
-  line-height: 1.2;
-  white-space: normal;
-  word-break: break-word;
-}
-
-.agent-workspace__rail-simple-type {
-  color: #a1a1aa;
-  font-size: 9px;
-  line-height: 1.15;
-  width: 100%;
-  overflow: hidden;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(18, 18, 20, 0.98);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 40;
+  pointer-events: none;
   white-space: nowrap;
-  text-overflow: ellipsis;
+}
+
+.agent-workspace__rail-tooltip-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #FAFAFA;
+  margin-bottom: 2px;
+}
+
+.agent-workspace__rail-tooltip-line {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #A1A1AA;
 }
 
 .agent-workspace__rail-deleted {
@@ -1247,112 +1203,12 @@ const shouldShowRail = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding-top: 8px;
-  max-height: 220px;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  padding-top: 4px;
 }
 
-.agent-workspace__rail-deleted-toggle {
-  width: 100%;
-  padding: 6px 0 4px;
-  border: 1px solid rgba(63, 63, 70, 0.7);
-  border-radius: 0;
-  background: rgba(39, 39, 42, 0.52);
-  color: #a1a1aa;
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.agent-workspace__rail-deleted-toggle--top {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  min-height: 52px;
-  padding: 0;
-  line-height: 1;
-}
-
-.agent-workspace__rail-deleted-toggle:hover {
-  color: #e4e4e7;
-  border-color: rgba(96, 165, 250, 0.35);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.agent-workspace__rail-deleted-section {
+.agent-workspace__rail-deleted-group {
   display: flex;
   flex-direction: column;
-}
-
-.agent-workspace__rail-deleted-team {
-  width: 100%;
-  padding: 6px 0 4px;
-  border: none;
-  border-top: 1px solid rgba(63, 63, 70, 0.45);
-  background: transparent;
-  color: #a1a1aa;
-  font-size: 10px;
-  cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
-}
-
-.agent-workspace__rail-deleted-team:hover {
-  color: #e4e4e7;
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.agent-workspace__rail-deleted-team.active {
-  color: #f4f4f5;
-  background: rgba(59, 130, 246, 0.12);
-}
-
-.agent-workspace__rail-deleted-team-name {
-  display: block;
-  width: 100%;
-}
-
-.agent-workspace__rail-deleted-members {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 4px 0 6px;
-  border-top: 1px solid rgba(63, 63, 70, 0.3);
-}
-
-.agent-workspace__rail-item-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.agent-workspace__rail-title {
-  color: #f4f4f5;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.agent-workspace__rail-status {
-  color: #93c5fd;
-  font-size: 11px;
-}
-
-.agent-workspace__rail-subtitle {
-  margin-top: 6px;
-  color: #a1a1aa;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.agent-workspace__rail-flags {
-  margin-top: 8px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #bfdbfe;
-  font-size: 10px;
 }
 
 @media (max-width: 1320px) {
@@ -1372,53 +1228,41 @@ const shouldShowRail = computed(() => {
     min-height: 0;
     flex-direction: row;
     flex-wrap: wrap;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 0 0 8px;
+    align-items: center;
+    gap: 4px;
+    padding: 0 0 4px;
     border-left: none;
     border-bottom: 1px solid rgba(63, 63, 70, 0.75);
   }
 
   .agent-workspace__rail-header {
-    width: 100%;
+    width: auto;
     justify-content: flex-start;
-    padding: 0 0 2px;
+    padding: 0 6px 0 0;
   }
 
-  .agent-workspace__rail-segment {
-    flex: 0 0 auto;
-    align-self: center;
+  .agent-workspace__rail-tab {
+    width: auto;
+    padding: 2px 8px;
   }
 
   .agent-workspace__rail-group {
     flex: 0 0 auto;
     flex-direction: row;
-    align-items: stretch;
-    gap: 6px;
-    padding: 0;
-    border: none;
-    background: transparent;
+    align-items: center;
+    gap: 1px;
+    padding: 0 6px 0 0;
   }
 
   .agent-workspace__rail-group-title {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 6px 0 2px;
-    text-align: left;
+    padding: 0 4px 0 2px;
+    border-bottom: none;
+    margin-bottom: 0;
     white-space: nowrap;
   }
 
-  .agent-workspace__rail-item--simple {
-    min-height: 0;
-    min-width: 108px;
-    padding: 6px 8px;
-    gap: 2px;
-  }
-
-  .agent-workspace__rail-simple-name {
-    white-space: nowrap;
-    text-overflow: ellipsis;
+  .agent-workspace__rail-tooltip {
+    display: none;
   }
 
   .agent-workspace__rail-deleted {
@@ -1427,15 +1271,16 @@ const shouldShowRail = computed(() => {
     max-height: none;
     overflow: visible;
     flex: 0 0 auto;
-    min-width: 120px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 2px;
     padding-top: 0;
   }
 
-  .agent-workspace__rail-deleted-members {
+  .agent-workspace__rail-deleted-group {
     flex-direction: row;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 6px 0 0;
+    align-items: center;
+    gap: 2px;
   }
 }
 

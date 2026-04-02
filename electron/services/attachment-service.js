@@ -172,11 +172,19 @@ function finalizeAttachmentsForHistory(projectId, sessionId, attachments = []) {
       }
     }
 
-    if (!isManagedTempAttachment(attachment.path) || !fs.existsSync(attachment.path)) {
+    if (!isManagedTempAttachment(attachment.path)) {
+      // 非临时目录的图片附件（如桌面截图、文件拖入等），也需要复制到 history 目录
+      const extension = path.extname(attachment.path) || inferExtensionFromMimeType(attachment.mimeType) || '.png'
+      const targetName = `${attachment.id}${extension}`
+      const targetPath = path.join(historyDir, targetName)
+      fs.copyFileSync(attachment.path, targetPath)
+
       return {
         ...attachment,
-        mimeType: attachment.mimeType || inferMimeType(attachment.path),
-        size: Number.isFinite(attachment.size) ? attachment.size : getAttachmentSize(attachment.path)
+        path: targetPath,
+        name: attachment.name || targetName,
+        mimeType: attachment.mimeType || inferMimeType(targetPath),
+        size: Number.isFinite(attachment.size) ? attachment.size : getAttachmentSize(targetPath)
       }
     }
 

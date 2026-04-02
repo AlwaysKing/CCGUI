@@ -150,6 +150,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkProjectExists: (options) => ipcRenderer.invoke('check-project-exists', options),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   updateWindowTitle: (options) => ipcRenderer.invoke('update-window-title', options),
+  resizeWindow: (options) => ipcRenderer.invoke('resize-window', options),
   focusProjectWindow: (options) => ipcRenderer.invoke('focus-project-window', options),
   listProjectFiles: (options) => ipcRenderer.invoke('list-project-files', options),
   getProjectGitStatus: (options) => ipcRenderer.invoke('get-project-git-status', options),

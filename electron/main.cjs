@@ -1731,6 +1731,20 @@ ipcMain.handle('select-directory', async () => {
   return result
 })
 
+// Resize window (for welcome → project transition)
+ipcMain.handle('resize-window', async (event, { width, height, center = false }) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window) return { success: false }
+  const [currentWidth, currentHeight] = window.getSize()
+  const newWidth = width || currentWidth
+  const newHeight = height || currentHeight
+  window.setSize(newWidth, newHeight)
+  if (center) {
+    window.center()
+  }
+  return { success: true }
+})
+
 // Update window title and projectId
 ipcMain.handle('update-window-title', async (event, { title, projectId }) => {
   const window = BrowserWindow.fromWebContents(event.sender)

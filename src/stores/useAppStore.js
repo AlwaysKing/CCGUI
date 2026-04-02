@@ -548,6 +548,15 @@ export const useAppStore = defineStore('app', () => {
     sidebarCollapsed.value[type] = collapsed
   }
 
+  // 打开/关闭项目时自动调整窗口大小
+  watch(currentProject, (project) => {
+    if (project) {
+      window.electronAPI?.resizeWindow({ width: 1600, height: 1000, center: true }).catch(() => {})
+    } else {
+      window.electronAPI?.resizeWindow({ width: 1200, height: 800, center: true }).catch(() => {})
+    }
+  })
+
   return {
     // State
     projects,

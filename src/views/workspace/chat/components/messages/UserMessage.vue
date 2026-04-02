@@ -33,6 +33,17 @@ const emit = defineEmits(['copyContent'])
 const appStore = useAppStore()
 const fileBrowserStore = useFileBrowserStore()
 
+const userMessageStyle = computed(() => {
+  const style = {}
+  if (props.chatTheme?.userFontSize) {
+    style.fontSize = props.chatTheme.userFontSize + 'px'
+  }
+  if (props.chatTheme?.userFontColor) {
+    style.color = props.chatTheme.userFontColor
+  }
+  return style
+})
+
 // 是否已复制
 const isCopied = computed(() => props.copiedMessageIndex === props.messageIndex)
 const attachments = computed(() => Array.isArray(props.message.attachments) ? props.message.attachments : [])
@@ -71,7 +82,7 @@ function closeImagePreview() {
 <template>
   <div class="message-user-container" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]">
     <div class="message-content user-content">
-      <div class="message-text" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]">
+      <div class="message-text" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]" :style="userMessageStyle">
         <CopyButton
           :is-copied="isCopied"
           @copy="copyContent"

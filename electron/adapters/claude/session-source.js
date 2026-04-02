@@ -242,13 +242,20 @@ function loadClaudeSessionHistory({ projectId, sessionId }) {
 }
 
 function deleteClaudeSession({ projectId, sessionId }) {
-  const sessionFile = path.join(getClaudeProjectsDir(), projectId, `${sessionId}.jsonl`)
-  if (!fs.existsSync(sessionFile)) {
-    return
+  const claudeDir = getClaudeProjectsDir()
+  const projectDir = path.join(claudeDir, projectId)
+  const sessionFile = path.join(projectDir, `${sessionId}.jsonl`)
+  const sessionDir = path.join(projectDir, sessionId)
+
+  if (fs.existsSync(sessionFile)) {
+    fs.unlinkSync(sessionFile)
+    logger.info('[Sessions] Deleted Claude session file', { sessionId, projectId })
   }
 
-  fs.unlinkSync(sessionFile)
-  logger.info('[Sessions] Deleted Claude session file', { sessionId, projectId })
+  if (fs.existsSync(sessionDir)) {
+    fs.rmSync(sessionDir, { recursive: true })
+    logger.info('[Sessions] Deleted Claude session directory', { sessionId, projectId })
+  }
 }
 
 function deleteClaudeProject({ projectId }) {

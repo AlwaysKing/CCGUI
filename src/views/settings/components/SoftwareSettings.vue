@@ -66,6 +66,7 @@ const languageOptions = [
 const testingBark = ref(false)
 const savingBark = ref(false)
 const testingSound = ref(false)
+const testingAlertSound = ref(false)
 
 function updateSettings(nextSettings, autoSave = false) {
   emit('update:settings', nextSettings)
@@ -109,6 +110,20 @@ async function handleTestSound() {
     testingSound.value = false
   }
 }
+
+async function handleTestAlertSound() {
+  const sound = props.settings.alertSound || 'Glass'
+
+  testingAlertSound.value = true
+  try {
+    const result = await window.electronAPI.playSystemSound({ sound })
+    if (!result?.success) {
+      alert('播放提示音失败: ' + (result?.error || '未知错误'))
+    }
+  } finally {
+    testingAlertSound.value = false
+  }
+}
 </script>
 
 <template>
@@ -145,6 +160,31 @@ async function handleTestSound() {
           @update:model-value="updateSettings({ ...settings, notificationSound: $event }, true)"
         />
       </div>
+    </SettingItem>
+
+    <SettingItem title="弹窗提示音" description="权限请求和交互问答弹窗出现时播放提示音">
+      <div class="sound-setting-control">
+        <button class="btn-test" @click="handleTestAlertSound" :disabled="testingAlertSound">
+          {{ testingAlertSound ? '试听中...' : '试听' }}
+        </button>
+        <label class="toggle-switch">
+          <input type="checkbox" :checked="settings.alertSoundEnabled !== false" @change="updateSettings({ ...settings, alertSoundEnabled: $event.target.checked }, true)">
+          <span class="toggle-slider"></span>
+        </label>
+        <AppSelect
+          :model-value="settings.alertSound || 'Glass'"
+          class="setting-select"
+          :groups="systemSoundGroups"
+          @update:model-value="updateSettings({ ...settings, alertSound: $event }, true)"
+        />
+      </div>
+    </SettingItem>
+
+    <SettingItem title="发送时折叠" description="发送新消息时自动折叠之前的回答">
+      <label class="toggle-switch">
+        <input type="checkbox" :checked="settings.collapseOnSend !== false" @change="updateSettings({ ...settings, collapseOnSend: $event.target.checked }, true)">
+        <span class="toggle-slider"></span>
+      </label>
     </SettingItem>
 
     <!-- Bark 通知设置 -->
@@ -246,6 +286,49 @@ async function handleTestSound() {
 .btn-save:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: #3F3F46;
+  border-radius: 20px;
+  transition: background 0.2s;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: #F97316;
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
 }
 
 .setting-item {

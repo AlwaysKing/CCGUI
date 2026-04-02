@@ -2866,11 +2866,50 @@ export const useSessionStore = defineStore('session', () => {
     if (toolName === 'AskUserQuestion' || hasQuestions) {
       log('[SessionStore] Setting pendingQuestion, request_id:', mergedRequestData.request_id)
       session.pendingQuestion = mergedRequestData
+    } else if (session.permissionMode === 'bypassPermissions') {
+      // bypass 模式下自动批准，不弹窗
+      log('[SessionStore] Auto-approving in bypass mode, toolName:', toolName, 'request_id:', mergedRequestData.request_id)
+      autoApproveControlRequest(session, mergedRequestData)
     } else {
       // 添加到队列而不是覆盖
       log('[SessionStore] Adding to pendingControlRequests queue, toolName:', toolName, 'request_id:', mergedRequestData.request_id)
       session.pendingControlRequests.push(mergedRequestData)
     }
+  }
+
+  /**
+   * bypass 模式下自动批准权限请求（不弹窗，直接回复）
+   */
+  function autoApproveControlRequest(session, requestData) {
+    const requestId = requestData.request_id
+    const options = {}
+
+    if (requestData.tool_use_id) {
+      options.toolUseID = requestData.tool_use_id
+    }
+
+    // 传递 permission_suggestions 以便 CLI 记住规则
+    if (requestData.permission_suggestions && requestData.permission_suggestions.length > 0) {
+      options.permissionRules = JSON.parse(JSON.stringify(requestData.permission_suggestions))
+    }
+
+    // 传递工具输入参数
+    const toolInput = requestData.input || requestData.tool_input || requestData.toolInput
+    if (toolInput) {
+      options.updatedInput = typeof toolInput === 'string' ? JSON.parse(toolInput) : JSON.parse(JSON.stringify(toolInput))
+    }
+    if (!options.updatedInput) {
+      options.updatedInput = {}
+    }
+
+    window.electronAPI.sendControlResponse({
+      sessionId: session.id,
+      requestId,
+      approved: true,
+      options
+    }).catch(error => {
+      log('[SessionStore] Auto-approve failed:', error?.message || String(error))
+    })
   }
 
   function removePendingPermission(session, requestId) {
@@ -3242,6 +3281,14 @@ export const useSessionStore = defineStore('session', () => {
 
     if (eventType === 'started') {
       const agentId = resolveAgentIdFromCcguiPayload(data.ccgui)
+      // 协作型 subagent 不创建 activeTask（浮动窗口），只有执行型才创建
+      if (agentId) {
+        const registryEntry = session.agentRegistry.get(agentId)
+        if (registryEntry?.agentKind === 'collaborative') {
+          log('[SessionStore] Skipping activeTask for collaborative agent:', agentId)
+          return
+        }
+      }
       // 任务开始：添加到活跃任务列表
       const taskData = {
         id: taskId,
@@ -3307,6 +3354,41 @@ export const useSessionStore = defineStore('session', () => {
         session.activeTasks.delete(taskId)
         rebuildAgentSemanticState(session)
         log('[SessionStore] Task completed:', taskId)
+      } else {
+        // collaborative agent 的 task 不在 activeTasks 中，但仍需推送 task_complete 消息
+        const agentId = resolveAgentIdFromCcguiPayload(data.ccgui)
+        const registryEntry = agentId ? session.agentRegistry.get(agentId) : null
+        if (registryEntry?.agentKind === 'collaborative') {
+          const existingTaskComplete = session.messages.find(message =>
+            message?.role === 'task_complete' && message?.taskId === taskId
+          )
+          if (!existingTaskComplete) {
+            const taskCcgui = agentId
+              ? {
+                  ...(data.ccgui || {}),
+                  attribution: {
+                    ...((data.ccgui || {}).attribution || {}),
+                    agentId,
+                    actorId: agentId
+                  }
+                }
+              : (data.ccgui || null)
+            session.messages.push({
+              id: `task-complete-${taskId}`,
+              role: 'task_complete',
+              taskId,
+              taskType: data.taskType || null,
+              description: data.description || null,
+              summary: data.summary || null,
+              usage: data.usage || null,
+              ccgui: taskCcgui,
+              duration: data.duration || 0,
+              timestamp: new Date()
+            })
+            rebuildAgentSemanticState(session)
+            log('[SessionStore] Collaborative task completed (no activeTask):', taskId)
+          }
+        }
       }
     }
   }

@@ -547,6 +547,7 @@ function handleShortcutEvent(event) {
             :visible="terminalPanelVisible"
             :project-path="store.currentProject?.path || ''"
             @running-change="handleTerminalRunningChange"
+            @hide="toggleTerminalPanel"
           />
         </div>
       </main>

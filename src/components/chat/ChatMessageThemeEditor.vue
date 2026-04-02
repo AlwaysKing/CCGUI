@@ -292,6 +292,21 @@ function updateField(field, value) {
   })
 }
 
+function handleFontSizeChange(field, event) {
+  const raw = event.target.value.trim()
+  if (!raw) {
+    updateField(field, '')
+    return
+  }
+  let num = parseInt(raw, 10)
+  if (isNaN(num)) {
+    updateField(field, '')
+    return
+  }
+  num = Math.max(12, Math.min(22, num))
+  updateField(field, String(num))
+}
+
 onMounted(() => {
   if (!props.showPreview) {
     return
@@ -402,6 +417,96 @@ onUnmounted(() => {
               :options="fieldOptions.messageSpacing"
               @update:model-value="updateField('messageSpacing', $event)"
             />
+          </div>
+        </div>
+
+        <div v-if="canEditTheme" class="theme-font-section">
+          <div class="theme-font-row">
+            <span class="font-group-label">用户消息</span>
+            <label class="field-label">字体大小</label>
+            <div class="font-size-control">
+              <button type="button" class="spinner-btn" :disabled="disabled || !themeConfig.userFontSize" @click="updateField('userFontSize', String(Math.max(12, Number(themeConfig.userFontSize || 14) - 1)))">−</button>
+              <input
+                type="number"
+                class="spinner-input"
+                :value="themeConfig.userFontSize || ''"
+                min="12"
+                max="22"
+                step="1"
+                placeholder="默认"
+                :disabled="disabled"
+                @change="handleFontSizeChange('userFontSize', $event)"
+              >
+              <button type="button" class="spinner-btn" :disabled="disabled || !themeConfig.userFontSize" @click="updateField('userFontSize', String(Math.min(22, Number(themeConfig.userFontSize || 14) + 1)))">+</button>
+              <button
+                v-if="themeConfig.userFontSize"
+                type="button"
+                class="font-size-reset"
+                :disabled="disabled"
+                @click="updateField('userFontSize', '')"
+              >重置</button>
+            </div>
+            <label class="field-label">字体颜色</label>
+            <div class="color-control">
+              <input
+                type="color"
+                class="color-picker"
+                :value="themeConfig.userFontColor || '#E4E4E7'"
+                :disabled="disabled"
+                @input="updateField('userFontColor', $event.target.value)"
+              >
+              <button
+                v-if="themeConfig.userFontColor"
+                type="button"
+                class="font-size-reset"
+                :disabled="disabled"
+                @click="updateField('userFontColor', '')"
+              >重置</button>
+            </div>
+          </div>
+
+          <div class="theme-font-row">
+            <span class="font-group-label">助手消息</span>
+            <label class="field-label">字体大小</label>
+            <div class="font-size-control">
+              <button type="button" class="spinner-btn" :disabled="disabled || !themeConfig.assistantFontSize" @click="updateField('assistantFontSize', String(Math.max(12, Number(themeConfig.assistantFontSize || 14) - 1)))">−</button>
+              <input
+                type="number"
+                class="spinner-input"
+                :value="themeConfig.assistantFontSize || ''"
+                min="12"
+                max="22"
+                step="1"
+                placeholder="默认"
+                :disabled="disabled"
+                @change="handleFontSizeChange('assistantFontSize', $event)"
+              >
+              <button type="button" class="spinner-btn" :disabled="disabled || !themeConfig.assistantFontSize" @click="updateField('assistantFontSize', String(Math.min(22, Number(themeConfig.assistantFontSize || 14) + 1)))">+</button>
+              <button
+                v-if="themeConfig.assistantFontSize"
+                type="button"
+                class="font-size-reset"
+                :disabled="disabled"
+                @click="updateField('assistantFontSize', '')"
+              >重置</button>
+            </div>
+            <label class="field-label">字体颜色</label>
+            <div class="color-control">
+              <input
+                type="color"
+                class="color-picker"
+                :value="themeConfig.assistantFontColor || '#E4E4E7'"
+                :disabled="disabled"
+                @input="updateField('assistantFontColor', $event.target.value)"
+              >
+              <button
+                v-if="themeConfig.assistantFontColor"
+                type="button"
+                class="font-size-reset"
+                :disabled="disabled"
+                @click="updateField('assistantFontColor', '')"
+              >重置</button>
+            </div>
           </div>
         </div>
 
@@ -522,6 +627,141 @@ onUnmounted(() => {
   margin: 0;
   font-size: 12px;
   color: #8B8E98;
+}
+
+.theme-font-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.theme-font-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.font-group-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #D4D4D8;
+  white-space: nowrap;
+  min-width: 52px;
+}
+
+.theme-font-row .field-label {
+  white-space: nowrap;
+}
+
+.font-size-control,
+.color-control {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1;
+}
+
+.spinner-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #A1A1AA;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.spinner-btn:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.spinner-input + .spinner-btn {
+  border-radius: 0 6px 6px 0;
+  border-left: none;
+}
+
+.spinner-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #E4E4E7;
+}
+
+.spinner-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.spinner-input {
+  width: 48px;
+  height: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.06);
+  color: #E4E4E7;
+  font-size: 12px;
+  text-align: center;
+  outline: none;
+  -moz-appearance: textfield;
+}
+
+.spinner-input::-webkit-inner-spin-button,
+.spinner-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.spinner-input::placeholder {
+  color: #71717A;
+  font-size: 11px;
+}
+
+.spinner-input:focus {
+  border-color: rgba(249, 115, 22, 0.4);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.font-size-reset {
+  margin-left: 6px;
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  background: transparent;
+  color: #A1A1AA;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.font-size-reset:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #E4E4E7;
+}
+
+.color-picker {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.color-picker::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.color-picker::-webkit-color-swatch {
+  border: none;
+  border-radius: 3px;
 }
 
 .theme-preview-pane {

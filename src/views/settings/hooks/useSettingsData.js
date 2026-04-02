@@ -92,6 +92,8 @@ export function useSettingsData(emit) {
     terminalFontFamily: 'Menlo, Monaco, "Courier New", monospace',
     customTerminalThemeText: '',
     notificationSound: 'Glass',
+    alertSound: 'Glass',
+    collapseOnSend: true,
     barkUrl: '',
     chatMessageThemePreset: 'classic',
     chatMessageTheme: buildChatMessageThemeFromPreset('classic')

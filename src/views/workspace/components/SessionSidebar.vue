@@ -781,6 +781,15 @@ function getProjectName(path) {
   return parts[parts.length - 1] || '会话'
 }
 
+async function openProjectInFinder() {
+  if (!props.projectPath) return
+  try {
+    await window.electronAPI.openPathInFinder({ targetPath: props.projectPath, mode: 'open' })
+  } catch (error) {
+    console.error('[SessionSidebar] Failed to open project in Finder:', error)
+  }
+}
+
 function startFileSplitResize(event) {
   event.preventDefault()
   isDraggingFileSplit.value = true
@@ -928,6 +937,16 @@ watch([showConfigPanel, fileSectionHeight], () => {
         >
           {{ terminalRunningCount > 9 ? '9+' : terminalRunningCount }}
         </span>
+      </IconButton>
+      <IconButton
+        class="file-toggle-btn finder-btn"
+        size="sm"
+        title="在 Finder 中打开项目"
+        @click="openProjectInFinder"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>
+        </svg>
       </IconButton>
     </div>
 
@@ -1257,6 +1276,10 @@ watch([showConfigPanel, fileSectionHeight], () => {
   gap: 8px;
   flex-shrink: 0;
   -webkit-app-region: no-drag;
+}
+
+.sidebar-toolbar-row .finder-btn {
+  margin-left: auto;
 }
 
 .home-btn {

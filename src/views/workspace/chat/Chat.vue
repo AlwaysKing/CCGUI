@@ -654,6 +654,17 @@ watch(
   { immediate: true }
 )
 
+// 监听弹窗出现，播放提示音
+watch(
+  () => !!(pendingPermission.value || pendingControlRequest.value || pendingQuestion.value),
+  (hasDialog, prev) => {
+    if (hasDialog && !prev && appConfig.value?.settings?.alertSoundEnabled !== false) {
+      const sound = appConfig.value?.settings?.alertSound || 'Glass'
+      window.electronAPI?.playSystemSound?.({ sound })?.catch?.(() => {})
+    }
+  }
+)
+
 onMounted(async () => {
   // 启动 SessionStore 的事件监听器（监听后端的 session-event 统一通道）
   sessionStore.startEventListener()
@@ -669,6 +680,9 @@ onMounted(async () => {
 
   // 监听窗口大小变化，将高度变化全部作用到 messages 区域
   window.addEventListener('resize', handleWindowResize)
+
+  // 右键菜单：点击空白处关闭
+  window.addEventListener('pointerdown', handleGlobalPointerDownForContextMenu, true)
 
   // 监听聊天容器高度变化
   if (messagesContainer.value) {
@@ -747,6 +761,7 @@ onUnmounted(() => {
   document.removeEventListener('click', handleClickOutsidePermissionMenu)
   // 清理窗口大小变化监听器
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('pointerdown', handleGlobalPointerDownForContextMenu, true)
   window.removeEventListener('ccgui-session-complete', handleSessionComplete)
   window.removeEventListener('ccgui-shortcut', handleChatShortcut)
   // 清理 chat-panel 大小变化监听器
@@ -1086,6 +1101,15 @@ function handleMessageClick(event, message) {
   }
 }
 
+function handleMessagesMouseDown(event) {
+  const selection = window.getSelection()
+  if (!selection || selection.type !== 'Range') return
+  // 只有点击在文本内容区域内才保留选区（允许拖拽调整）
+  const textEl = event.target.closest?.('.markdown-content, .message-text, .assistant-message, .user-message, INPUT, TEXTAREA, [contenteditable]')
+  if (textEl) return
+  selection.removeAllRanges()
+}
+
 // 处理 PID 点击（启动/关闭运行时）
 function handlePidClick() {
   const currentSession = sessionStore.currentSession
@@ -1170,11 +1194,13 @@ async function handleSendMessage(userText) {
   }
 
   // 折叠之前所有用户消息的回答
-  messages.value.forEach(msg => {
-    if (msg.role === 'user') {
-      msg.responseCollapsed = true
-    }
-  })
+  if (appConfig.value?.settings?.collapseOnSend !== false) {
+    messages.value.forEach(msg => {
+      if (msg.role === 'user') {
+        msg.responseCollapsed = true
+      }
+    })
+  }
 
   inputMessage.value = ''
   scrollToBottom(true) // 用户发送消息时强制滚动
@@ -1879,6 +1905,42 @@ function handleToggleAgentViewMode(mode) {
 
 const isAgentRailVisible = ref(true)
 
+const contextMenuState = ref({ show: false, x: 0, y: 0 })
+let contextMenuText = ''
+
+function handleContextMenu(event) {
+  const selection = window.getSelection()
+  const text = selection?.toString()?.trim()
+  if (!text) return
+
+  event.preventDefault()
+  contextMenuText = text
+  contextMenuState.value = { show: true, x: event.clientX, y: event.clientY }
+}
+
+function closeContextMenu() {
+  contextMenuState.value = { ...contextMenuState.value, show: false }
+  contextMenuText = ''
+}
+
+async function copySelectedText() {
+  const text = contextMenuText
+  closeContextMenu()
+  if (text) {
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch (e) {
+      console.error('Failed to copy:', e)
+    }
+  }
+}
+
+function handleGlobalPointerDownForContextMenu(event) {
+  if (!contextMenuState.value.show) return
+  if (event.target?.closest?.('.chat-context-menu')) return
+  closeContextMenu()
+}
+
 watch(hasCollaborativeChildren, (hasChildren) => {
   if (!hasChildren) {
     isAgentRailVisible.value = true
@@ -1897,7 +1959,7 @@ function handleToggleAgentRail() {
 </script>
 
 <template>
-  <div class="chat-window" v-bind="attrs">
+  <div class="chat-window" v-bind="attrs" @contextmenu="handleContextMenu">
     <!-- Top Bar: Environment Bar -->
     <EnvInfoBar
       :env-info="envInfo"
@@ -1916,7 +1978,7 @@ function handleToggleAgentRail() {
       @toggle-agent-rail="handleToggleAgentRail"
       @toggle-view-mode="handleToggleAgentViewMode"
     />
-    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" :style="messagesHeight ? { height: messagesHeight } : {}">
+    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" @mousedown="handleMessagesMouseDown" :style="messagesHeight ? { height: messagesHeight } : {}">
       <AgentWorkspace
         :timeline-blocks="mainTimelineBlocks"
         :has-collaborative-children="hasCollaborativeChildren"
@@ -2250,6 +2312,17 @@ function handleToggleAgentRail() {
           </button>
         </div>
       </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="contextMenuState.show"
+      class="chat-context-menu"
+      :style="{ left: `${contextMenuState.x}px`, top: `${contextMenuState.y}px` }"
+      @click.stop
+    >
+      <button class="chat-context-menu-item" @click="copySelectedText">复制选中内容</button>
     </div>
   </Teleport>
 </template>
@@ -3626,6 +3699,35 @@ function handleToggleAgentRail() {
 .rewind-btn.confirm:hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
+.chat-context-menu {
+  position: fixed;
+  min-width: 140px;
+  padding: 4px 0;
+  background: #1E1E1E;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.5);
+  z-index: 1200;
+}
+
+.chat-context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: #E4E4E7;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chat-context-menu-item:hover {
+  background: rgba(249, 115, 22, 0.12);
+  color: #FED7AA;
 }
 
 </style>

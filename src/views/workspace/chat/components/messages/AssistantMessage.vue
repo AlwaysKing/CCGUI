@@ -32,6 +32,18 @@ const emit = defineEmits(['copyContent'])
 const isCopied = computed(() => props.copiedMessageIndex === props.messageIndex)
 const isFloatingStatus = computed(() => props.chatTheme?.statusStyle === 'floating')
 const showStreamingPlaceholder = computed(() => isFloatingStatus.value && props.message.isStreaming && !props.message.content)
+
+const assistantMessageStyle = computed(() => {
+  const style = {}
+  if (props.chatTheme?.assistantFontSize) {
+    style.fontSize = props.chatTheme.assistantFontSize + 'px'
+  }
+  if (props.chatTheme?.assistantFontColor) {
+    style.color = props.chatTheme.assistantFontColor
+  }
+  return style
+})
+
 const changedFilesSummary = computed(() => {
   const summary = props.message?.changedFilesSummary
   if (!summary || !Array.isArray(summary.files) || summary.files.length === 0) {
@@ -55,7 +67,7 @@ function copyContent() {
     </div>
 
     <!-- 消息内容（单独气泡） -->
-    <div v-if="message.content" class="message-text" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]">
+    <div v-if="message.content" class="message-text" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]" :style="assistantMessageStyle">
       <CopyButton
         :is-copied="isCopied"
         @copy="copyContent"

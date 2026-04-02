@@ -33,8 +33,11 @@ export function useMessageList() {
         continue
       }
 
-      // 又遇到 user 消息 → 没有回答
+      // 又遇到 user 消息 → 没有回答（但如果当前 turn 未加载，可能中间有未加载的 assistant 回复）
       if (message.role === 'user') {
+        if (userMessage?.historyTurn?.hasResponse) {
+          break // 跳出循环，走 historyTurn fallback
+        }
         return null
       }
 

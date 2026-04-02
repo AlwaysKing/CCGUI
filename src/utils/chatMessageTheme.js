@@ -2,14 +2,22 @@ export const CHAT_MESSAGE_THEME_FIELDS = [
   'avatarMode',
   'statusStyle',
   'messageSurface',
-  'messageSpacing'
+  'messageSpacing',
+  'userFontSize',
+  'userFontColor',
+  'assistantFontSize',
+  'assistantFontColor'
 ]
 
 export const CHAT_MESSAGE_THEME_DEFAULTS = {
   avatarMode: 'large',
   statusStyle: 'compact',
   messageSurface: 'bubble',
-  messageSpacing: 'large'
+  messageSpacing: 'large',
+  userFontSize: '',
+  userFontColor: '',
+  assistantFontSize: '',
+  assistantFontColor: ''
 }
 
 export const CHAT_MESSAGE_THEME_PRESETS = {

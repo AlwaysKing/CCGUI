@@ -2689,18 +2689,20 @@ class SessionInstance {
       throw error
     }
 
-    try {
-      // 如果 provider 已启动，发送 control_request
-      if (this.runtimeManager && this.runtimeManager.isReady()) {
-        if (typeof this.runtimeManager.setPermissionMode === 'function') {
-          await this.runtimeManager.setPermissionMode(normalizedMode)
-          logger.info(`[SessionInstance] Applied permission mode via adapter: ${normalizedMode}`)
-          return
-        }
+    // 所有权限模式（包括 bypassPermissions）均通过控制请求热切换，无需重启
+    const runtimeStarted = Boolean(this.runtimeManager?.isReady?.())
 
-        logger.info(`[SessionInstance] Provider has no live permission mode handler, will apply on next turn: ${normalizedMode}`)
+    if (!runtimeStarted) {
+      logger.info(`[SessionInstance] Provider not ready, will apply permission mode on start: ${normalizedMode}`)
+      return
+    }
+
+    try {
+      if (typeof this.runtimeManager.setPermissionMode === 'function') {
+        await this.runtimeManager.setPermissionMode(normalizedMode)
+        logger.info(`[SessionInstance] Applied permission mode via adapter: ${normalizedMode}`)
       } else {
-        logger.info(`[SessionInstance] Provider not ready, will apply permission mode on start: ${normalizedMode}`)
+        logger.info(`[SessionInstance] Provider has no live permission mode handler, will apply on next turn: ${normalizedMode}`)
       }
     } catch (error) {
       this.permissionMode = previousMode

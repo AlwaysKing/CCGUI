@@ -72,9 +72,9 @@ if [ "$ONLY_BUILD" = true ]; then
     exit 0
 fi
 
-# 打包 Electron 应用
-echo -e "${YELLOW}[3/3] 打包 Electron 应用...${NC}"
-npx electron-builder --mac
+# 打包 Electron 应用（只打 .app，不打包 dmg）
+echo -e "${YELLOW}[3/4] 打包 Electron 应用...${NC}"
+npx electron-builder --mac --config.mac.target=dir
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}✓ 应用打包完成${NC}"
 else
@@ -89,6 +89,6 @@ echo -e "${GREEN}   ✓ 重新编译打包完成！${NC}"
 echo -e "${GREEN}═══════════════════════════════════════${NC}"
 echo ""
 echo -e "${BLUE}应用位置:${NC}"
-ls -lh dist/*.dmg 2>/dev/null || ls -lh dist/mac*/CCGUI.app 2>/dev/null || echo "dist/"
+ls -lh output/mac*/CCGUI.app 2>/dev/null || echo "output/"
 echo ""
-echo -e "${BLUE}提示: 运行 'open dist/mac-arm64/CCGUI.app' 启动应用${NC}"
+echo -e "${BLUE}提示: 运行 'open output/mac-arm64/CCGUI.app' 启动应用${NC}"

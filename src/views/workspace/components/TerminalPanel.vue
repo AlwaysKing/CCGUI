@@ -15,7 +15,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['running-change'])
+const emit = defineEmits(['running-change', 'hide'])
 
 const terminals = ref([])
 const activeTerminalId = ref('')
@@ -626,12 +626,19 @@ defineExpose({
     ></div>
 
     <aside class="terminal-sidebar" :style="terminalSidebarStyle">
-      <button class="terminal-sidebar-btn terminal-add-btn" title="新建终端" @click="createTerminal">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="5" x2="12" y2="19"/>
-          <line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-      </button>
+      <div class="terminal-sidebar-top">
+        <button class="terminal-top-btn terminal-hide-btn" title="隐藏终端" @click="emit('hide')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <button class="terminal-top-btn terminal-add-btn" title="新建终端" @click="createTerminal">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </button>
+      </div>
 
       <div class="terminal-sidebar-list">
         <button
@@ -817,6 +824,37 @@ defineExpose({
   align-items: center;
   justify-content: center;
   background: transparent;
+}
+
+.terminal-sidebar-top {
+  display: flex;
+  border-bottom: 1px solid #27272A;
+}
+
+.terminal-top-btn {
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: #A1A1AA;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.terminal-hide-btn {
+  width: 26px;
+  flex-shrink: 0;
+  border-right: 1px solid #27272A;
+}
+
+.terminal-sidebar-top .terminal-add-btn {
+  flex: 1;
+}
+
+.terminal-top-btn:hover {
+  background: rgba(255, 255, 255, 0.055);
+  color: #F4F4F5;
 }
 
 .terminal-tab-main {

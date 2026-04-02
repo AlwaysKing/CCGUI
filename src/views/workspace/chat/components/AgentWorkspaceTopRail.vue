@@ -52,19 +52,34 @@ function railItemTypeLabel(agentItem) {
 const visibleGroups = computed(() => props.activeTeamGroups.filter(group => Array.isArray(group.members) && group.members.length > 0))
 
 const hoveredAgentId = ref(null)
+const tooltipPosition = ref({ top: 0, left: 0 })
+
+const hoveredAgent = computed(() => {
+  if (!hoveredAgentId.value) return null
+  if (props.masterEntry?.agentId === hoveredAgentId.value) return props.masterEntry
+  for (const group of props.activeTeamGroups) {
+    for (const member of group.members) {
+      if (member.agentId === hoveredAgentId.value) return member
+    }
+  }
+  for (const group of props.deletedTeamGroups) {
+    for (const member of (group.members || [])) {
+      if (member.agentId === hoveredAgentId.value) return member
+    }
+  }
+  return null
+})
+
+function onTabEnter(event) {
+  const rect = event.currentTarget.getBoundingClientRect()
+  tooltipPosition.value = {
+    top: rect.bottom + 6,
+    left: rect.left + rect.width / 2
+  }
+}
 
 function agentDotColor(agentItem) {
   return agentItem?.color || '#60A5FA'
-}
-
-function agentTooltipInfo(agentItem) {
-  if (!agentItem) return null
-  const parts = []
-  parts.push(railItemTypeLabel(agentItem))
-  if (agentItem.agentType) parts.push(`类型: ${agentItem.agentType}`)
-  if (agentItem.status) parts.push(`状态: ${agentItem.status}`)
-  if (agentItem.model) parts.push(`模型: ${agentItem.model}`)
-  return parts.join('\n')
 }
 </script>
 
@@ -79,7 +94,7 @@ function agentTooltipInfo(agentItem) {
         :class="{ active: activeSession?.agentId === masterEntry.agentId }"
         type="button"
         @click="selectAgent(masterEntry.agentId)"
-        @mouseenter="hoveredAgentId = masterEntry.agentId"
+        @mouseenter="hoveredAgentId = masterEntry.agentId; onTabEnter($event)"
         @mouseleave="hoveredAgentId = null"
       >
         <span class="top-rail__dot" :style="{ background: agentDotColor(masterEntry) }"></span>
@@ -95,18 +110,11 @@ function agentTooltipInfo(agentItem) {
           :class="{ active: activeSession?.agentId === agentItem.agentId }"
           type="button"
           @click="selectAgent(agentItem.agentId)"
-          @mouseenter="hoveredAgentId = agentItem.agentId"
+          @mouseenter="hoveredAgentId = agentItem.agentId; onTabEnter($event)"
           @mouseleave="hoveredAgentId = null"
         >
           <span class="top-rail__dot" :style="{ background: agentDotColor(agentItem) }"></span>
           <span class="top-rail__name">{{ agentItem.title }}</span>
-          <div v-if="hoveredAgentId === agentItem.agentId" class="top-rail__tooltip">
-            <span class="top-rail__tooltip-title">{{ agentItem.title }}</span>
-            <span class="top-rail__tooltip-line">类型: {{ railItemTypeLabel(agentItem) }}</span>
-            <span v-if="agentItem.agentType" class="top-rail__tooltip-line">AgentType: {{ agentItem.agentType }}</span>
-            <span v-if="agentItem.status" class="top-rail__tooltip-line">状态: {{ agentItem.status }}</span>
-            <span v-if="agentItem.model" class="top-rail__tooltip-line">模型: {{ agentItem.model }}</span>
-          </div>
         </button>
       </span>
 
@@ -118,7 +126,7 @@ function agentTooltipInfo(agentItem) {
           class="top-rail__tab top-rail__tab--deleted"
           type="button"
           @click="selectAgent(group.members?.[0]?.agentId)"
-          @mouseenter="hoveredAgentId = 'deleted-' + group.teamId"
+          @mouseenter="hoveredAgentId = 'deleted-' + group.teamId; onTabEnter($event)"
           @mouseleave="hoveredAgentId = null"
         >
           <span class="top-rail__dot top-rail__dot--deleted"></span>
@@ -126,6 +134,24 @@ function agentTooltipInfo(agentItem) {
         </button>
       </template>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="hoveredAgent"
+        class="top-rail-tooltip"
+        :style="{
+          position: 'fixed',
+          top: tooltipPosition.top + 'px',
+          left: tooltipPosition.left + 'px',
+          transform: 'translateX(-50%)'
+        }"
+      >
+        <span class="top-rail-tooltip__title">{{ hoveredAgent.title }}</span>
+        <span class="top-rail-tooltip__line">类型: {{ railItemTypeLabel(hoveredAgent) }}</span>
+        <span v-if="hoveredAgent.status" class="top-rail-tooltip__line">状态: {{ hoveredAgent.status }}</span>
+        <span v-if="hoveredAgent.model" class="top-rail-tooltip__line">模型: {{ hoveredAgent.model }}</span>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -251,35 +277,33 @@ function agentTooltipInfo(agentItem) {
   background: rgba(63, 63, 70, 0.7);
   margin: 0 4px;
 }
+</style>
 
-.top-rail__tooltip {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+<style>
+.top-rail-tooltip {
   min-width: 120px;
-  max-width: 220px;
+  max-width: 260px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   background: rgba(18, 18, 20, 0.98);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  z-index: 40;
+  z-index: 9999;
   pointer-events: none;
   white-space: nowrap;
 }
 
-.top-rail__tooltip-title {
+.top-rail-tooltip__title {
   font-size: 12px;
   font-weight: 600;
   color: #FAFAFA;
   margin-bottom: 2px;
 }
 
-.top-rail__tooltip-line {
+.top-rail-tooltip__line {
   font-size: 11px;
   line-height: 1.4;
   color: #A1A1AA;

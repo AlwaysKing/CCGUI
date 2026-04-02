@@ -372,6 +372,29 @@ const railMasterEntry = computed(() => {
 const showDeletedTeams = ref(false)
 const expandedDeletedTeamId = ref(null)
 const hoveredRailAgentId = ref(null)
+const railTooltipPosition = ref({ top: 0, left: 0 })
+
+const hoveredRailAgent = computed(() => {
+  if (!hoveredRailAgentId.value) return null
+  if (railMasterEntry.value?.agentId === hoveredRailAgentId.value) return railMasterEntry.value
+  for (const group of railActiveTeamGroups.value) {
+    for (const member of group.members) {
+      if (member.agentId === hoveredRailAgentId.value) return member
+    }
+  }
+  for (const entry of railStandaloneEntries.value) {
+    if (entry.agentId === hoveredRailAgentId.value) return entry
+  }
+  return null
+})
+
+function onRailTabEnter(event) {
+  const rect = event.currentTarget.getBoundingClientRect()
+  railTooltipPosition.value = {
+    top: rect.top + rect.height / 2,
+    left: rect.left - 6
+  }
+}
 
 const railTeamGroups = computed(() => {
   const teamEntriesById = new Map(
@@ -709,16 +732,11 @@ const shouldShowRail = computed(() => {
         }"
         type="button"
         @click="selectAgent(railMasterEntry.agentId)"
-        @mouseenter="hoveredRailAgentId = railMasterEntry.agentId"
+        @mouseenter="hoveredRailAgentId = railMasterEntry.agentId; onRailTabEnter($event)"
         @mouseleave="hoveredRailAgentId = null"
       >
         <span class="agent-workspace__rail-dot" :style="{ background: railMasterEntry.color || '#60A5FA' }"></span>
         <span class="agent-workspace__rail-tab-name">{{ railMasterEntry.title }}</span>
-        <div v-if="hoveredRailAgentId === railMasterEntry.agentId" class="agent-workspace__rail-tooltip">
-          <span class="agent-workspace__rail-tooltip-title">{{ railMasterEntry.title }}</span>
-          <span class="agent-workspace__rail-tooltip-line">类型: {{ railItemTypeLabel(railMasterEntry) }}</span>
-          <span v-if="railMasterEntry.status" class="agent-workspace__rail-tooltip-line">状态: {{ railMasterEntry.status }}</span>
-        </div>
       </button>
 
       <div
@@ -738,18 +756,11 @@ const shouldShowRail = computed(() => {
           type="button"
           :disabled="agentItem.canActivate === false"
           @click="selectAgent(agentItem.agentId)"
-          @mouseenter="hoveredRailAgentId = agentItem.agentId"
+          @mouseenter="hoveredRailAgentId = agentItem.agentId; onRailTabEnter($event)"
           @mouseleave="hoveredRailAgentId = null"
         >
           <span class="agent-workspace__rail-dot" :style="{ background: agentItem.color || '#60A5FA' }"></span>
           <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
-          <div v-if="hoveredRailAgentId === agentItem.agentId" class="agent-workspace__rail-tooltip">
-            <span class="agent-workspace__rail-tooltip-title">{{ agentItem.title }}</span>
-            <span class="agent-workspace__rail-tooltip-line">类型: {{ railItemTypeLabel(agentItem) }}</span>
-            <span v-if="agentItem.agentType" class="agent-workspace__rail-tooltip-line">AgentType: {{ agentItem.agentType }}</span>
-            <span v-if="agentItem.status" class="agent-workspace__rail-tooltip-line">状态: {{ agentItem.status }}</span>
-            <span v-if="agentItem.model" class="agent-workspace__rail-tooltip-line">模型: {{ agentItem.model }}</span>
-          </div>
         </button>
       </div>
 
@@ -764,18 +775,30 @@ const shouldShowRail = computed(() => {
         type="button"
         :disabled="agentItem.canActivate === false"
         @click="selectAgent(agentItem.agentId)"
-        @mouseenter="hoveredRailAgentId = agentItem.agentId"
+        @mouseenter="hoveredRailAgentId = agentItem.agentId; onRailTabEnter($event)"
         @mouseleave="hoveredRailAgentId = null"
       >
         <span class="agent-workspace__rail-dot" :style="{ background: agentItem.color || '#60A5FA' }"></span>
         <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
-        <div v-if="hoveredRailAgentId === agentItem.agentId" class="agent-workspace__rail-tooltip">
-          <span class="agent-workspace__rail-tooltip-title">{{ agentItem.title }}</span>
-          <span class="agent-workspace__rail-tooltip-line">类型: {{ railItemTypeLabel(agentItem) }}</span>
-          <span v-if="agentItem.agentType" class="agent-workspace__rail-tooltip-line">AgentType: {{ agentItem.agentType }}</span>
-          <span v-if="agentItem.status" class="agent-workspace__rail-tooltip-line">状态: {{ agentItem.status }}</span>
-        </div>
       </button>
+
+      <Teleport to="body">
+        <div
+          v-if="hoveredRailAgent"
+          class="rail-tooltip"
+          :style="{
+            position: 'fixed',
+            top: railTooltipPosition.top + 'px',
+            left: railTooltipPosition.left + 'px',
+            transform: 'translate(-100%, -50%)'
+          }"
+        >
+          <span class="rail-tooltip__title">{{ hoveredRailAgent.title }}</span>
+          <span class="rail-tooltip__line">类型: {{ railItemTypeLabel(hoveredRailAgent) }}</span>
+          <span v-if="hoveredRailAgent.status" class="rail-tooltip__line">状态: {{ hoveredRailAgent.status }}</span>
+          <span v-if="hoveredRailAgent.model" class="rail-tooltip__line">模型: {{ hoveredRailAgent.model }}</span>
+        </div>
+      </Teleport>
 
       <div v-if="railDeletedTeamGroups.length > 0" class="agent-workspace__rail-deleted">
         <button
@@ -1165,39 +1188,6 @@ const shouldShowRail = computed(() => {
   margin-bottom: 1px;
 }
 
-.agent-workspace__rail-tooltip {
-  position: absolute;
-  left: calc(100% + 6px);
-  top: 50%;
-  transform: translateY(-50%);
-  min-width: 120px;
-  max-width: 220px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  background: rgba(18, 18, 20, 0.98);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  z-index: 40;
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-.agent-workspace__rail-tooltip-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #FAFAFA;
-  margin-bottom: 2px;
-}
-
-.agent-workspace__rail-tooltip-line {
-  font-size: 11px;
-  line-height: 1.4;
-  color: #A1A1AA;
-}
-
 .agent-workspace__rail-deleted {
   margin-top: auto;
   display: flex;
@@ -1261,10 +1251,6 @@ const shouldShowRail = computed(() => {
     white-space: nowrap;
   }
 
-  .agent-workspace__rail-tooltip {
-    display: none;
-  }
-
   .agent-workspace__rail-deleted {
     margin-top: 0;
     margin-left: auto;
@@ -1306,5 +1292,36 @@ const shouldShowRail = computed(() => {
 
 .agent-workspace__content::-webkit-scrollbar-thumb:active {
   background: #A1A1AA;
+}
+</style>
+
+<style>
+.rail-tooltip {
+  min-width: 120px;
+  max-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(18, 18, 20, 0.98);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 9999;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.rail-tooltip__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #FAFAFA;
+  margin-bottom: 2px;
+}
+
+.rail-tooltip__line {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #A1A1AA;
 }
 </style>

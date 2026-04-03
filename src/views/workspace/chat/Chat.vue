@@ -78,8 +78,15 @@ const inputTargetOptions = computed(() => {
     return []
   }
 
+  const deletedTeamIds = new Set(
+    collaborativeAgentSessions.value
+      .filter(entry => entry.registry?.agentType === 'team' && entry.status === 'deleted')
+      .map(entry => entry.agentId)
+  )
+
   return collaborativeAgentSessions.value
     .filter(entry => entry.status !== 'deleted' && entry.registry?.agentType !== 'team')
+    .filter(entry => !entry.registry?.teamId || !deletedTeamIds.has(entry.registry.teamId))
     .map(entry => ({
       agentId: entry.agentId,
       label: entry.title || entry.name || (entry.isMain ? 'Master' : 'Agent'),
@@ -338,11 +345,16 @@ const AUTO_SCROLL_NEAR_BOTTOM_PX = 5
 const STREAMING_NEAR_BOTTOM_PX = 52
 const SYSTEM_NEAR_BOTTOM_PX = 44
 
-const showConversationWave = computed(() => {
-  if (isProcessing.value) {
-    return true
-  }
+const hasActiveConversationActivity = computed(() => {
   return messages.value.some(message => message?.isStreaming || message?.isExecuting)
+})
+
+const showInterruptButton = computed(() => {
+  return isProcessing.value || hasActiveConversationActivity.value
+})
+
+const showConversationWave = computed(() => {
+  return showInterruptButton.value
 })
 
 const queuedMessagesBySession = ref({})
@@ -2147,7 +2159,7 @@ function handleToggleAgentRail() {
         :class="{ 'resizable-expanded': !!messagesHeight }"
         v-model="inputMessage"
         v-model:attachments="inputAttachments"
-        :is-processing="isProcessing"
+        :is-processing="showInterruptButton"
         :toolbar-locked="toolbarLocked"
         :session-controls-switching="isSwitchingSessionControls"
         :has-permission="pendingPermission !== null || pendingControlRequest !== null"

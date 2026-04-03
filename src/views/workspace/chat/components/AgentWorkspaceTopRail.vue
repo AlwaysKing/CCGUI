@@ -51,6 +51,8 @@ function railItemTypeLabel(agentItem) {
 
 const visibleGroups = computed(() => props.activeTeamGroups.filter(group => Array.isArray(group.members) && group.members.length > 0))
 
+const showDeletedTeams = ref(false)
+const expandedDeletedTeamId = ref(null)
 const hoveredAgentId = ref(null)
 const tooltipPosition = ref({ top: 0, left: 0 })
 
@@ -80,6 +82,10 @@ function onTabEnter(event) {
 
 function agentDotColor(agentItem) {
   return agentItem?.color || '#60A5FA'
+}
+
+function toggleDeletedTeam(teamId) {
+  expandedDeletedTeamId.value = expandedDeletedTeamId.value === teamId ? null : teamId
 }
 </script>
 
@@ -119,19 +125,49 @@ function agentDotColor(agentItem) {
       </span>
 
       <template v-if="deletedTeamGroups.length > 0">
-        <span class="top-rail__separator"></span>
+        <span class="top-rail__spacer"></span>
         <button
-          v-for="group in deletedTeamGroups"
-          :key="'deleted-' + group.teamId"
           class="top-rail__tab top-rail__tab--deleted"
           type="button"
-          @click="selectAgent(group.members?.[0]?.agentId)"
-          @mouseenter="hoveredAgentId = 'deleted-' + group.teamId; onTabEnter($event)"
-          @mouseleave="hoveredAgentId = null"
+          @click="showDeletedTeams = !showDeletedTeams; if (!showDeletedTeams) { expandedDeletedTeamId = null; if (masterEntry) selectAgent(masterEntry.agentId) }"
+          @mouseenter="hoveredAgentId = null"
         >
-          <span class="top-rail__dot top-rail__dot--deleted"></span>
-          <span class="top-rail__name">{{ group.title }}</span>
+          <span class="top-rail__name">{{ showDeletedTeams ? '收起' : `已关闭 ${deletedTeamGroups.length}` }}</span>
         </button>
+
+        <template v-if="showDeletedTeams">
+          <span
+            v-for="group in deletedTeamGroups"
+            :key="'deleted-' + group.teamId"
+            class="top-rail__group top-rail__group--deleted"
+          >
+            <button
+              class="top-rail__group-name top-rail__group-name--toggle"
+              :class="{ active: expandedDeletedTeamId === group.teamId }"
+              type="button"
+              @click="toggleDeletedTeam(group.teamId)"
+              @mouseenter="hoveredAgentId = null"
+            >
+              <span class="top-rail__dot top-rail__dot--deleted"></span>
+              {{ group.title }}
+            </button>
+            <template v-if="expandedDeletedTeamId === group.teamId">
+              <button
+                v-for="agentItem in group.members"
+                :key="agentItem.agentId"
+                class="top-rail__tab top-rail__tab--deleted"
+                :class="{ active: activeSession?.agentId === agentItem.agentId }"
+                type="button"
+                @click="selectAgent(agentItem.agentId)"
+                @mouseenter="hoveredAgentId = agentItem.agentId; onTabEnter($event)"
+                @mouseleave="hoveredAgentId = null"
+              >
+                <span class="top-rail__dot top-rail__dot--deleted"></span>
+                <span class="top-rail__name">{{ agentItem.title }}</span>
+              </button>
+            </template>
+          </span>
+        </template>
       </template>
     </div>
 
@@ -270,12 +306,39 @@ function agentDotColor(agentItem) {
   user-select: none;
 }
 
+.top-rail__group--deleted {
+  opacity: 0.55;
+  border-color: rgba(113, 113, 122, 0.35);
+}
+
+.top-rail__group--deleted:hover {
+  opacity: 0.85;
+}
+
+.top-rail__group-name--toggle {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  gap: 4px;
+  padding: 0 6px;
+  transition: opacity 0.12s ease;
+}
+
+.top-rail__group-name--toggle.active {
+  color: #a1a1aa;
+}
+
 .top-rail__separator {
   flex: 0 0 auto;
   width: 1px;
   height: 14px;
   background: rgba(63, 63, 70, 0.7);
   margin: 0 4px;
+}
+
+.top-rail__spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
 }
 </style>
 

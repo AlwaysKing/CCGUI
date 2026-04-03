@@ -1,3 +1,5 @@
+const fs = require('fs')
+const path = require('path')
 const { ClaudeClient } = require('./client')
 const attachmentService = require('../../services/attachment-service')
 const {
@@ -683,6 +685,40 @@ class ClaudeAdapter extends ClaudeClient {
       targetId: teamId
     })
     this.emitAgentSilent(teamDelete, rawMessage)
+
+    // Team 删除时清理 subagents 目录下所有文件
+    this.cleanupSubagentsDirectory()
+  }
+
+  cleanupSubagentsDirectory() {
+    const subagentsDir = this.getSubagentsDirectory()
+    if (!subagentsDir || !fs.existsSync(subagentsDir)) {
+      return
+    }
+
+    try {
+      const files = fs.readdirSync(subagentsDir)
+      let cleanedCount = 0
+      for (const file of files) {
+        const filePath = path.join(subagentsDir, file)
+        try {
+          fs.unlinkSync(filePath)
+          cleanedCount += 1
+        } catch (e) {
+          // 忽略单个文件删除失败
+        }
+      }
+      logger.info(`[ClaudeAdapter] Cleaned up subagents directory: ${cleanedCount} files removed from ${subagentsDir}`)
+
+      // 重置 sidechain 监控状态
+      this.sidechainFileState.clear()
+      this.sidechainSeenEntryIds.clear()
+      this.sidechainFileAgents.clear()
+      this.sidechainAgentFiles.clear()
+      this.watchedSidechainAgents.clear()
+    } catch (error) {
+      logger.warn(`[ClaudeAdapter] Failed to cleanup subagents directory: ${error.message}`)
+    }
   }
 
   emitProviderSystemNotification(type, payload = {}) {
@@ -1734,6 +1770,15 @@ class ClaudeAdapter extends ClaudeClient {
       }
 
       this.clearCollaborativePreAgent(nextPreAgent || preAgent)
+
+      // 注册 sidechain 文件监听，文件可能延迟出现，resolveUnboundSidechainAgents 会持续尝试匹配
+      this.watchSidechainAgent({
+        agentId,
+        name: toolResult.name || candidate?.name || null,
+        agentType: toolResult.name || candidate?.name || null,
+        teamId,
+        prompt: candidate?.prompt || candidate?.description || null
+      })
     } else if (isTeamMember && preAgent) {
       this.updateCollaborativePreAgent(preAgent, {
         taskId: preAgent.taskId || null,

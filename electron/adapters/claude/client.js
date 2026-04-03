@@ -221,6 +221,9 @@ class ClaudeClient {
       return
     }
 
+    // 启动时清理上一轮残留的 subagents 文件
+    this.cleanupSubagentsOnStart()
+
     try {
       this.claudePath = this.detectClaudePath()
     } catch (error) {
@@ -855,6 +858,35 @@ class ClaudeClient {
     this.watchedSidechainAgents.clear()
   }
 
+  cleanupSubagentsOnStart() {
+    const subagentsDir = this.getSubagentsDirectory()
+    if (!subagentsDir || !fs.existsSync(subagentsDir)) {
+      return
+    }
+
+    try {
+      const files = fs.readdirSync(subagentsDir)
+      if (files.length === 0) {
+        return
+      }
+      let cleanedCount = 0
+      for (const file of files) {
+        const filePath = path.join(subagentsDir, file)
+        try {
+          fs.unlinkSync(filePath)
+          cleanedCount += 1
+        } catch {
+          // 忽略单个文件删除失败
+        }
+      }
+      if (cleanedCount > 0) {
+        logger.info(`[ClaudeClient] Cleaned up ${cleanedCount} residual subagents files on session start: ${subagentsDir}`)
+      }
+    } catch (error) {
+      logger.warn(`[ClaudeClient] Failed to cleanup subagents on start: ${error.message}`)
+    }
+  }
+
   watchSidechainAgent(agentInfo) {
     const normalizedAgentId = String(
       typeof agentInfo === 'string'
@@ -878,11 +910,15 @@ class ClaudeClient {
       name: normalizedName,
       prompt: normalizedPrompt,
       teamId: normalizedTeamId,
-      agentType: normalizedAgentType
+      agentType: normalizedAgentType,
+      registeredAt: Date.now()
     })
 
     if (normalizedFilePath) {
       this.bindSidechainFile(normalizedAgentId, normalizedFilePath)
+    } else {
+      // 文件路径未知，启动 monitor 等待文件出现后自动匹配
+      this.startSidechainMonitor()
     }
   }
 
@@ -893,15 +929,103 @@ class ClaudeClient {
       return
     }
 
-    const existingFilePath = this.sidechainAgentFiles.get(normalizedAgentId) || null
-    if (existingFilePath && existingFilePath !== normalizedFilePath) {
-      this.sidechainFileAgents.delete(existingFilePath)
-      this.sidechainFileState.delete(existingFilePath)
+    // 支持 agentId → 多个文件的映射（team 场景下每轮都是新文件）
+    const existingFiles = this.sidechainAgentFiles.get(normalizedAgentId) || new Set()
+    if (existingFiles.has(normalizedFilePath)) {
+      return
     }
 
+    existingFiles.add(normalizedFilePath)
+    this.sidechainAgentFiles.set(normalizedAgentId, existingFiles)
     this.sidechainFileAgents.set(normalizedFilePath, normalizedAgentId)
-    this.sidechainAgentFiles.set(normalizedAgentId, normalizedFilePath)
     this.startSidechainMonitor()
+  }
+
+  /**
+   * 扫描 subagents 目录，通过 meta.json 的 agentType 将文件映射到已注册的 agent。
+   * 支持 team 场景下每轮问答产生新文件：同名 agentType 的多个文件都归入同一个 agentId。
+   */
+  discoverSidechainFiles(subagentsDir) {
+    const watchedAgents = Array.from(this.watchedSidechainAgents.values())
+    if (watchedAgents.length === 0) {
+      return
+    }
+
+    const alreadyBoundFiles = new Set(this.sidechainFileAgents.keys())
+
+    let dirEntries
+    try {
+      dirEntries = fs.readdirSync(subagentsDir)
+    } catch {
+      return
+    }
+
+    // 收集所有未绑定的 meta.json 文件
+    const unboundMetaFiles = dirEntries.filter(fileName =>
+      fileName.startsWith('agent-') &&
+      fileName.endsWith('.meta.json')
+    )
+
+    if (unboundMetaFiles.length === 0) {
+      return
+    }
+
+    // 构建 agentType → agentId 的映射
+    const typeToAgentId = new Map()
+    for (const info of watchedAgents) {
+      const lookupKey = (info.agentType || info.name || '').trim()
+      if (lookupKey) {
+        typeToAgentId.set(lookupKey, info.agentId)
+      }
+    }
+
+    for (const metaFileName of unboundMetaFiles) {
+      const metaPath = path.join(subagentsDir, metaFileName)
+      const jsonlName = metaFileName.replace('.meta.json', '.jsonl')
+      const jsonlPath = path.join(subagentsDir, jsonlName)
+
+      // 已绑定过就跳过
+      if (alreadyBoundFiles.has(jsonlPath)) {
+        continue
+      }
+
+      // jsonl 文件不存在则跳过
+      if (!fs.existsSync(jsonlPath)) {
+        continue
+      }
+
+      let meta
+      try {
+        meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'))
+      } catch {
+        continue
+      }
+
+      const agentType = (meta.agentType || '').trim()
+      if (!agentType) {
+        continue
+      }
+
+      // 精确匹配 agentType → agentId
+      const matchedAgentId = typeToAgentId.get(agentType)
+      if (matchedAgentId) {
+        this.bindSidechainFile(matchedAgentId, jsonlPath)
+        alreadyBoundFiles.add(jsonlPath)
+        logger.info(`[ClaudeClient] Discovered sidechain file for ${matchedAgentId} (agentType=${agentType}): ${jsonlName}`)
+        continue
+      }
+
+      // 模糊匹配：如果 agentType 和 agent name 相似
+      for (const info of watchedAgents) {
+        const normalizedName = (info.name || '').trim()
+        if (normalizedName && agentType.includes(normalizedName)) {
+          this.bindSidechainFile(info.agentId, jsonlPath)
+          alreadyBoundFiles.add(jsonlPath)
+          logger.info(`[ClaudeClient] Discovered sidechain file for ${info.agentId} (fuzzy match ${agentType}~${normalizedName}): ${jsonlName}`)
+          break
+        }
+      }
+    }
   }
 
   emitAgentUpdate(payload = {}) {
@@ -938,7 +1062,14 @@ class ClaudeClient {
 
   pollSidechainEntries() {
     const subagentsDir = this.getSubagentsDirectory()
-    if (!subagentsDir || !fs.existsSync(subagentsDir) || this.sidechainFileAgents.size === 0) {
+    if (!subagentsDir || !fs.existsSync(subagentsDir)) {
+      return
+    }
+
+    // 每次先扫描目录，发现新文件并归类
+    this.discoverSidechainFiles(subagentsDir)
+
+    if (this.sidechainFileAgents.size === 0) {
       return
     }
 

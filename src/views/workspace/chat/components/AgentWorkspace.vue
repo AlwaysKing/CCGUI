@@ -804,9 +804,8 @@ const shouldShowRail = computed(() => {
         <button
           class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
           type="button"
-          @click="showDeletedTeams = !showDeletedTeams; if (!showDeletedTeams) expandedDeletedTeamId = null"
+          @click="showDeletedTeams = !showDeletedTeams; if (!showDeletedTeams) { expandedDeletedTeamId = null; selectAgent(railMasterEntry.agentId) }"
         >
-          <span class="agent-workspace__rail-dot agent-workspace__rail-dot--deleted"></span>
           <span class="agent-workspace__rail-tab-name">{{ showDeletedTeams ? '收起' : `已关闭 ${railDeletedTeamGroups.length}` }}</span>
         </button>
 
@@ -1194,6 +1193,10 @@ const shouldShowRail = computed(() => {
   flex-direction: column;
   gap: 0;
   padding-top: 4px;
+}
+
+.agent-workspace__rail-deleted > .agent-workspace__rail-tab .agent-workspace__rail-tab-name {
+  text-align: center;
 }
 
 .agent-workspace__rail-deleted-group {

@@ -1459,7 +1459,12 @@ export const useSessionStore = defineStore('session', () => {
       const mainId = sessionData.mainAgentId
       for (const [agentId, entry] of sessionData.agentRegistry) {
         if (agentId !== mainId && entry?.status === 'running') {
-          entry.status = 'stopped'
+          // team 相关的协作 agent 标记为 deleted（session 中断后 team 已不存在）
+          if (entry.agentKind === 'collaborative' && (entry.agentType === 'team' || entry.teamId)) {
+            entry.status = 'deleted'
+          } else {
+            entry.status = 'stopped'
+          }
         }
       }
 
@@ -3051,26 +3056,7 @@ export const useSessionStore = defineStore('session', () => {
   function handleAbnormalExit(session, data) {
     log('[SessionStore] handleAbnormalExit:', data)
 
-    // 停止所有正在流式传输的消息
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]
-
-      // 停止流式传输的 assistant 消息
-      if (msg.isStreaming) {
-        msg.isStreaming = false
-        if (msg.startTime && !msg.duration) {
-          msg.duration = Date.now() - msg.startTime
-        }
-      }
-
-      // 停止正在执行的工具
-      if (msg.isExecuting) {
-        msg.isExecuting = false
-        if (msg.startTime && !msg.duration) {
-          msg.duration = Date.now() - msg.startTime
-        }
-      }
-    }
+    finalizeSessionRuntimeActivity(session, { markInterruptedTools: true })
 
     // 停止处理状态
     session.isProcessing = false
@@ -3097,26 +3083,7 @@ export const useSessionStore = defineStore('session', () => {
    * 处理正常退出（用户手动停止）
    */
   function handleNormalExit(session, data) {
-    // 停止所有正在执行的工具和流式传输
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]
-
-      // 停止流式传输的 assistant 消息
-      if (msg.isStreaming) {
-        msg.isStreaming = false
-        if (msg.startTime && !msg.duration) {
-          msg.duration = Date.now() - msg.startTime
-        }
-      }
-
-      // 停止正在执行的工具
-      if (msg.isExecuting) {
-        msg.isExecuting = false
-        if (msg.startTime && !msg.duration) {
-          msg.duration = Date.now() - msg.startTime
-        }
-      }
-    }
+    finalizeSessionRuntimeActivity(session, { markInterruptedTools: true })
 
     // 停止处理状态
     session.isProcessing = false
@@ -3149,6 +3116,14 @@ export const useSessionStore = defineStore('session', () => {
       session.runtimeReady = false
     } else if (data?.type === 'session-runtime-ready') {
       session.runtimeReady = true
+    } else if (data?.type === 'runtime-stopped') {
+      finalizeSessionRuntimeActivity(session, { markInterruptedTools: true })
+      session.isProcessing = false
+      session.runtimeReady = false
+    } else if (data?.type === 'runtime-exit') {
+      finalizeSessionRuntimeActivity(session, { markInterruptedTools: true })
+      session.isProcessing = false
+      session.runtimeReady = false
     }
 
     const operationId = typeof data?.operationId === 'string' ? data.operationId : ''
@@ -3217,6 +3192,41 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     session.messages.push(notificationMsg)
+  }
+
+  function finalizeSessionRuntimeActivity(session, options = {}) {
+    if (!session) {
+      return
+    }
+
+    const markInterruptedTools = options.markInterruptedTools !== false
+    const now = Date.now()
+
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      const msg = session.messages[i]
+
+      if (msg.isStreaming) {
+        msg.isStreaming = false
+      }
+
+      if (msg.isExecuting) {
+        msg.isExecuting = false
+
+        if (
+          markInterruptedTools &&
+          (msg.role === 'tool_use' || msg.role === 'diff')
+        ) {
+          msg.interrupted = true
+          if (!msg.isError) {
+            msg.isError = true
+          }
+        }
+      }
+
+      if (msg.startTime && !msg.duration) {
+        msg.duration = now - msg.startTime
+      }
+    }
   }
 
   const HANDLED_SILENT_MESSAGE_TYPES = new Set([

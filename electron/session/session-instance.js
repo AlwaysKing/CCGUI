@@ -1739,6 +1739,22 @@ class SessionInstance {
     })
 
     manager.on('control-response', (message) => {
+      const requestId = message?.response?.request_id || message?.request_id || null
+      const pendingRequest = this.consumePendingControlRequest(requestId)
+      const payload = this.extractControlResponsePayload(message)
+
+      if (pendingRequest && payload && !payload.error) {
+        if (
+          (pendingRequest?.subtype === 'rewind' || pendingRequest?.subtype === 'rewind_files') &&
+          pendingRequest?.user_message_id &&
+          pendingRequest?.dry_run !== true
+        ) {
+          this.applyRewindLocally(pendingRequest.user_message_id, payload)
+        }
+
+        this.appendControlOutcomeMessage(pendingRequest, message)
+      }
+
       this.emit('control-response', message)
     })
 
@@ -2640,8 +2656,16 @@ class SessionInstance {
     }
 
     if (this.runtimeManager.sendControlRequest) {
+      if (this.provider === 'claude') {
+        this.trackPendingControlRequest(normalizedRequest)
+      }
+
       const response = await this.runtimeManager.sendControlRequest(normalizedRequest)
       if (response) {
+        if (this.provider === 'claude') {
+          const responseRequestId = response?.response?.request_id || response?.request_id || null
+          this.consumePendingControlRequest(responseRequestId)
+        }
         if (normalizedRequest?.subtype === 'rewind_and_fork' && normalizedRequest?.user_message_id) {
           this.applyRewindLocally(normalizedRequest.user_message_id, this.extractControlResponsePayload(response) || {})
         }

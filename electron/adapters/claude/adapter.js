@@ -49,6 +49,10 @@ class ClaudeAdapter extends ClaudeClient {
     this.teamNameToTeamId = new Map()
     this.sidechainMessageIds = new Set()
     this.turnInterrupted = false
+    // rewind 预获取状态：实际还原前先发 dry_run=true，拿到文件数据后再执行并注入响应
+    this.rewindPreviewStage = null  // null | 'fetching' | 'pending'
+    this.rewindPreviewData = null   // { files, insertions, deletions }
+    this.pendingRewindRequest = null
   }
 
   getCollaborativeReadOnlyFields() {
@@ -926,6 +930,57 @@ class ClaudeAdapter extends ClaudeClient {
           message: '已中断响应'
         })
       }
+
+      // rewind 预获取流程：先收到 dry_run=true 响应，再发实际 rewind_files，再收到执行响应
+      const payload = message?.response?.response || {}
+      if (this.rewindPreviewStage === 'fetching') {
+        if (payload?.error) {
+          this.rewindPreviewStage = null
+          this.rewindPreviewData = null
+          this.pendingRewindRequest = null
+          this.emit('control-response', message)
+          return
+        }
+
+        this.rewindPreviewData = {
+          files: payload.changed_files || payload.filesChanged || payload.restored_files || [],
+          insertions: payload.insertions || payload.lines_added || 0,
+          deletions: payload.deletions || payload.lines_removed || 0
+        }
+        this.rewindPreviewStage = 'pending'
+        const pendingRequest = this.pendingRewindRequest
+        this.pendingRewindRequest = null
+        if (pendingRequest) {
+          super.sendControlRequest(pendingRequest)
+          return
+        }
+
+        this.rewindPreviewStage = null
+        this.rewindPreviewData = null
+      }
+      if (this.rewindPreviewStage === 'pending') {
+        // rewind_files 执行响应：注入预获取的文件数据，对上层屏蔽 provider 差异
+        const preview = this.rewindPreviewData || {}
+        const responseFiles = payload.changed_files || payload.filesChanged || payload.restored_files || []
+        const enriched = {
+          ...message,
+          response: {
+            ...message.response,
+            response: {
+              ...payload,
+              changed_files: responseFiles.length > 0 ? responseFiles : (preview.files || []),
+              restored_files: responseFiles.length > 0 ? responseFiles : (preview.files || []),
+              insertions: payload.insertions || payload.lines_added || preview.insertions || 0,
+              deletions: payload.deletions || payload.lines_removed || preview.deletions || 0
+            }
+          }
+        }
+        this.rewindPreviewStage = null
+        this.rewindPreviewData = null
+        this.emit('control-response', enriched)
+        return
+      }
+
       this.emit('control-response', message)
       return
     }
@@ -1026,6 +1081,19 @@ class ClaudeAdapter extends ClaudeClient {
           model: String(request.model)
         })
       }
+      return
+    }
+
+    // rewind_files 实际还原前，先发 dry_run=true 获取文件列表与统计
+    // provider 对外始终吐统一的 rewind 响应，屏蔽 Claude CLI 的返回差异
+    if (request?.subtype === 'rewind_files' && !request?.dry_run && request?.user_message_id) {
+      this.rewindPreviewStage = 'fetching'
+      this.rewindPreviewData = null
+      this.pendingRewindRequest = request
+      super.sendControlRequest({
+        ...request,
+        dry_run: true
+      })
       return
     }
 

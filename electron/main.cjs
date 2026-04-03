@@ -10,6 +10,7 @@ const appService = require('./services/app-service')
 const projectService = require('./services/project-service')
 const attachmentService = require('./services/attachment-service')
 const historyManager = require('./storage/history-manager')
+const processRegistry = require('./services/process-registry')
 
 const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -3143,6 +3144,9 @@ function createNewWindow() {
 // App lifecycle
 
 app.whenReady().then(() => {
+  // 清理上次异常退出残留的 provider 进程
+  processRegistry.cleanupStaleInstances()
+
   appStartupStartedAt = Date.now()
   // Update isDev flag now that app is ready
   isDev = process.env.NODE_ENV === 'development' || !app.isPackaged

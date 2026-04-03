@@ -12,6 +12,7 @@ const appConfigManager = require('../storage/app-config-manager')
 const { findProviderModel } = require('../adapters/shared/model-config')
 const attachmentService = require('../services/attachment-service')
 const { stripAttachmentTokens } = require('../adapters/shared/ccgui-attachments')
+const processRegistry = require('../services/process-registry')
 
 function pickFirstDefined(...values) {
   for (const value of values) {
@@ -634,7 +635,6 @@ class SessionInstance {
     this.pendingControlRequest = null  // 待处理的控制请求（AskUserQuestion 等）
     this.pendingControlRequests = new Map()
     this.pendingToolResults = new Map() // 待处理的工具结果
-
     // 运行时 provider 实例（懒加载）
     this.runtimeManager = null
     this.provider = 'claude'
@@ -990,6 +990,15 @@ class SessionInstance {
       // 启动成功后立即更新 envInfo 并发送到前端
       const pid = this.runtimeManager.getPid()
       logger.info(`[SessionInstance] Provider PID: ${pid}, current envInfo:`, this.envInfo)
+
+      // 注册进程实例，用于异常退出时清理孤儿进程
+      const exePath = this.runtimeManager.claudePath || this.runtimeManager.codexPath || ''
+      processRegistry.register(this.id, {
+        pid,
+        provider: this.provider,
+        exePath,
+        projectPath: this.projectPath
+      })
 
       if (this.envInfo) {
         this.envInfo = applySessionEnvInfoPatch({
@@ -3256,6 +3265,7 @@ class SessionInstance {
       // resume with a stale thread binding.
       this.persistRuntimeSessionSettingsPatch()
 
+      processRegistry.unregister(this.id)
       this.runtimeManager.stop()
       this.runtimeManager = null
     }

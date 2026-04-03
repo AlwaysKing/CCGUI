@@ -284,6 +284,11 @@ function isMessageHiddenByResponseCollapse(messages, messageIndex) {
   return false
 }
 
+function isActivityGroupHiddenByResponseCollapse(messages, renderBlock) {
+  const index = renderBlock.assistantBlock?.displayIndex ?? renderBlock.foldableBlocks?.[0]?.displayIndex
+  return isMessageHiddenByResponseCollapse(messages, index)
+}
+
 function buildRenderableTimeline(blocks) {
   const renderBlocks = []
   let pendingActivities = []
@@ -505,7 +510,7 @@ const shouldShowRail = computed(() => {
         <template v-if="activeSession?.isMain">
           <template v-for="renderBlock in renderableMainTimelineBlocks" :key="renderBlock.key">
             <template v-if="renderBlock.type === 'activity-group'">
-              <template v-if="!renderBlock.assistantBlock || !isMessageHiddenByResponseCollapse(mainStageDisplayMessages, renderBlock.assistantBlock.displayIndex)">
+              <template v-if="!isActivityGroupHiddenByResponseCollapse(mainStageDisplayMessages, renderBlock)">
               <div class="activity-group" :class="{ collapsed: resolveActivityGroupCollapsed(renderBlock) }">
                 <div class="activity-group__foldable">
                   <button
@@ -886,6 +891,8 @@ const shouldShowRail = computed(() => {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 20px 6px 20px 20px;
+  border-right: 4px solid transparent;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: #52525B transparent;
 }

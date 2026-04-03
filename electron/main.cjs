@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, dialog, shell, protocol } = require('electron')
+const { app, BrowserWindow, ipcMain, session, dialog, shell, protocol, screen: electronScreen } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -1732,15 +1732,30 @@ ipcMain.handle('select-directory', async () => {
 })
 
 // Resize window (for welcome → project transition)
-ipcMain.handle('resize-window', async (event, { width, height, center = false }) => {
-  const window = BrowserWindow.fromWebContents(event.sender)
-  if (!window) return { success: false }
-  const [currentWidth, currentHeight] = window.getSize()
+ipcMain.handle('resize-window', async (event, { width, height, center = false, anchor = false }) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return { success: false }
+  const [currentWidth, currentHeight] = win.getSize()
   const newWidth = width || currentWidth
   const newHeight = height || currentHeight
-  window.setSize(newWidth, newHeight)
-  if (center) {
-    window.center()
+
+  if (anchor) {
+    const [x, y] = win.getPosition()
+    const [curW, curH] = [currentWidth, currentHeight]
+    const cx = x + curW / 2
+    const cy = y + curH / 2
+    let newX = Math.round(cx - newWidth / 2)
+    let newY = Math.round(cy - newHeight / 2)
+    const display = electronScreen.getDisplayMatching(win.getBounds())
+    const { x: wx, y: wy, width: sw, height: sh } = display.workArea
+    newX = Math.max(wx, Math.min(newX, wx + sw - newWidth))
+    newY = Math.max(wy, Math.min(newY, wy + sh - newHeight))
+    win.setBounds({ x: newX, y: newY, width: newWidth, height: newHeight })
+  } else {
+    win.setSize(newWidth, newHeight)
+    if (center) {
+      win.center()
+    }
   }
   return { success: true }
 })

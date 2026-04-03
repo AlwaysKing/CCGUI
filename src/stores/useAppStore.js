@@ -551,9 +551,9 @@ export const useAppStore = defineStore('app', () => {
   // 打开/关闭项目时自动调整窗口大小
   watch(currentProject, (project) => {
     if (project) {
-      window.electronAPI?.resizeWindow({ width: 1600, height: 1000, center: true }).catch(() => {})
+      window.electronAPI?.resizeWindow({ width: 1600, height: 1000, anchor: true }).catch(() => {})
     } else {
-      window.electronAPI?.resizeWindow({ width: 1200, height: 800, center: true }).catch(() => {})
+      window.electronAPI?.resizeWindow({ width: 1200, height: 800, anchor: true }).catch(() => {})
     }
   })
 

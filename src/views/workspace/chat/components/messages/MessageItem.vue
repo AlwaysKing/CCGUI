@@ -4,7 +4,7 @@
  * 封装消息的通用结构：头像、统计信息、思考过程、点击处理、折叠占位符
  * 具体内容通过插槽或子组件渲染
  */
-import { computed, onMounted, onUnmounted, useSlots } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, useSlots, watch } from 'vue'
 import MessageStats from './MessageStats.vue'
 import ToolUseMessage from './ToolUseMessage.vue'
 import DiffMessage from './DiffMessage.vue'
@@ -98,6 +98,8 @@ const emit = defineEmits([
 ])
 
 const slots = useSlots()
+const toolbarMenuTrigger = ref(null)
+const toolbarMenuStyle = ref({})
 
 // 使用 composables
 const {
@@ -429,22 +431,61 @@ function onToggleActionMenu(index) {
   toggleActionMenu(index)
 }
 
+function setToolbarMenuTrigger(el) {
+  toolbarMenuTrigger.value = el || null
+}
+
+function updateToolbarMenuPosition() {
+  const trigger = toolbarMenuTrigger.value
+  if (!trigger || openActionMenuIndex.value === -1) {
+    return
+  }
+
+  const rect = trigger.getBoundingClientRect()
+  toolbarMenuStyle.value = {
+    top: `${rect.bottom + 8}px`,
+    left: `${rect.left + rect.width / 2}px`
+  }
+}
+
 // 点击外部关闭菜单
 function handleGlobalClick(event) {
   if (openActionMenuIndex.value === -1) return
   const target = event.target
   const menuWrapper = target.closest('.action-menu-wrapper')
-  if (!menuWrapper) {
+  const teleportedMenu = target.closest('.action-dropdown-menu--toolbar')
+  if (!menuWrapper && !teleportedMenu) {
     closeActionMenu()
   }
 }
 
+function handleViewportChange() {
+  if (openActionMenuIndex.value === -1) {
+    return
+  }
+  updateToolbarMenuPosition()
+}
+
+watch(() => openActionMenuIndex.value, async (nextIndex) => {
+  if (nextIndex === -1) {
+    toolbarMenuStyle.value = {}
+    return
+  }
+
+  await nextTick()
+  updateToolbarMenuPosition()
+})
+
 onMounted(() => {
   document.addEventListener('click', handleGlobalClick)
+  window.addEventListener('resize', handleViewportChange)
+  window.addEventListener('scroll', handleViewportChange, true)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleGlobalClick)
+  window.removeEventListener('resize', handleViewportChange)
+  window.removeEventListener('scroll', handleViewportChange, true)
 })
 </script>
 
@@ -631,6 +672,7 @@ onUnmounted(() => {
 
               <div v-if="showResponseToolbarRewindBtn" class="action-menu-wrapper" @click.stop>
                 <button
+                  :ref="setToolbarMenuTrigger"
                   class="icon-action-btn rewind-btn response-toolbar-btn"
                   :class="{ active: openActionMenuIndex === responseToolbarTarget.index }"
                   @click="onToggleActionMenu(responseToolbarTarget.index)"
@@ -641,7 +683,14 @@ onUnmounted(() => {
                     <path d="M3 3v5h5"></path>
                   </svg>
                 </button>
-                <div v-if="openActionMenuIndex === responseToolbarTarget.index" class="action-dropdown-menu action-dropdown-menu--toolbar">
+              </div>
+              <Teleport to="body">
+                <div
+                  v-if="openActionMenuIndex === responseToolbarTarget.index"
+                  class="action-dropdown-menu action-dropdown-menu--toolbar"
+                  :style="toolbarMenuStyle"
+                  @click.stop
+                >
                   <button class="menu-item rewind-item" @click="handleRewind(responseToolbarTarget.message.id, responseToolbarTarget.index)">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
@@ -673,7 +722,7 @@ onUnmounted(() => {
                     <span class="menu-hint">保存并回滚</span>
                   </button>
                 </div>
-              </div>
+              </Teleport>
             </template>
             <span v-else class="response-toolbar-hint">没有回答</span>
           </div>
@@ -909,7 +958,6 @@ onUnmounted(() => {
 
 .response-toolbar {
   position: relative;
-  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -961,9 +1009,14 @@ onUnmounted(() => {
 }
 
 .action-dropdown-menu--toolbar {
-  top: calc(100% + 8px);
-  right: 50%;
-  transform: translateX(50%);
+  position: fixed;
+  top: 0;
+  left: 0;
+  transform: translateX(-50%);
+  z-index: 9999;
+  min-width: 220px;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 24px));
 }
 
 .menu-item {

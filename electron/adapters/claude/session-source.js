@@ -1,11 +1,52 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const { decodeProjectPath } = require('../../project-paths')
+const { decodeProjectPath, encodeProjectPath } = require('../../project-paths')
 const logger = require('../../logger')
 
 function getClaudeProjectsDir() {
   return path.join(os.homedir(), '.claude', 'projects')
+}
+
+function hasNonAsciiPath(projectPath) {
+  return /[^\x00-\x7F]/.test(String(projectPath || ''))
+}
+
+function getSanitizedClaudeProjectId(projectPath) {
+  if (!projectPath) {
+    return null
+  }
+  return encodeProjectPath(projectPath).replace(/[^A-Za-z0-9._-]/g, '-')
+}
+
+function resolveClaudeProjectPaths(projectId) {
+  const projectPath = decodeProjectPath(projectId)
+  const sourceProjectDir = path.join(getClaudeProjectsDir(), projectId)
+  const sanitizedProjectId = hasNonAsciiPath(projectPath)
+    ? getSanitizedClaudeProjectId(projectPath)
+    : projectId
+  const sanitizedProjectDir = path.join(getClaudeProjectsDir(), sanitizedProjectId)
+
+  return {
+    projectPath,
+    sourceProjectDir,
+    sanitizedProjectId,
+    sanitizedProjectDir
+  }
+}
+
+function resolveSessionFilePath(projectId, sessionId) {
+  const { sourceProjectDir, sanitizedProjectDir } = resolveClaudeProjectPaths(projectId)
+  const sourceFile = path.join(sourceProjectDir, `${sessionId}.jsonl`)
+  const sanitizedFile = path.join(sanitizedProjectDir, `${sessionId}.jsonl`)
+
+  if (fs.existsSync(sourceFile)) {
+    return sourceFile
+  }
+  if (sanitizedFile !== sourceFile && fs.existsSync(sanitizedFile)) {
+    return sanitizedFile
+  }
+  return sourceFile
 }
 
 function scanClaudeProjects() {
@@ -22,10 +63,32 @@ function scanClaudeProjects() {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
 
-    const projectPath = decodeProjectPath(entry.name)
     const fullProjectDir = path.join(projectsDir, entry.name)
+    const projectPath = decodeProjectPath(entry.name)
     const files = fs.readdirSync(fullProjectDir)
-    const sessionFiles = files.filter(file => file.endsWith('.jsonl') && !fs.statSync(path.join(fullProjectDir, file)).isDirectory())
+    const sessionFiles = files.filter((file) => {
+      if (!file.endsWith('.jsonl')) {
+        return false
+      }
+
+      const filePath = path.join(fullProjectDir, file)
+      let lstat
+      try {
+        lstat = fs.lstatSync(filePath)
+      } catch {
+        return false
+      }
+
+      if (lstat.isDirectory()) {
+        return false
+      }
+
+      try {
+        return !fs.statSync(filePath).isDirectory()
+      } catch {
+        return false
+      }
+    })
 
     let lastActiveAt = null
     try {
@@ -60,8 +123,7 @@ function scanClaudeProjects() {
 }
 
 function listClaudeSessions({ projectId }) {
-  const projectsDir = getClaudeProjectsDir()
-  const projectDir = path.join(projectsDir, projectId)
+  const { sourceProjectDir: projectDir } = resolveClaudeProjectPaths(projectId)
   const sessions = []
 
   if (!fs.existsSync(projectDir)) {
@@ -73,7 +135,21 @@ function listClaudeSessions({ projectId }) {
     if (!file.endsWith('.jsonl')) continue
 
     const filePath = path.join(projectDir, file)
-    const stat = fs.statSync(filePath)
+    let lstat
+    try {
+      lstat = fs.lstatSync(filePath)
+    } catch {
+      continue
+    }
+    if (lstat.isDirectory()) {
+      continue
+    }
+    let stat
+    try {
+      stat = fs.statSync(filePath)
+    } catch {
+      continue
+    }
     const sessionId = file.replace('.jsonl', '')
     let preview = ''
     let messageCount = 0
@@ -131,7 +207,7 @@ function listClaudeSessions({ projectId }) {
 }
 
 function createClaudeSession({ projectId, sessionId }) {
-  const projectDir = path.join(getClaudeProjectsDir(), projectId)
+  const { sourceProjectDir: projectDir } = resolveClaudeProjectPaths(projectId)
   fs.mkdirSync(projectDir, { recursive: true })
   const sessionFile = path.join(projectDir, `${sessionId}.jsonl`)
   if (!fs.existsSync(sessionFile)) {
@@ -203,7 +279,7 @@ function convertClaudeHistoryEntry(entry, index) {
 }
 
 function loadClaudeSessionHistory({ projectId, sessionId }) {
-  const sessionFile = path.join(getClaudeProjectsDir(), projectId, `${sessionId}.jsonl`)
+  const sessionFile = resolveSessionFilePath(projectId, sessionId)
   if (!fs.existsSync(sessionFile)) {
     return []
   }
@@ -242,29 +318,52 @@ function loadClaudeSessionHistory({ projectId, sessionId }) {
 }
 
 function deleteClaudeSession({ projectId, sessionId }) {
-  const claudeDir = getClaudeProjectsDir()
-  const projectDir = path.join(claudeDir, projectId)
-  const sessionFile = path.join(projectDir, `${sessionId}.jsonl`)
-  const sessionDir = path.join(projectDir, sessionId)
+  const { sourceProjectDir, sanitizedProjectDir } = resolveClaudeProjectPaths(projectId)
+  const pathsToDelete = [
+    path.join(sourceProjectDir, `${sessionId}.jsonl`),
+    path.join(sourceProjectDir, sessionId),
+    path.join(sanitizedProjectDir, `${sessionId}.jsonl`),
+    path.join(sanitizedProjectDir, sessionId)
+  ]
 
-  if (fs.existsSync(sessionFile)) {
-    fs.unlinkSync(sessionFile)
-    logger.info('[Sessions] Deleted Claude session file', { sessionId, projectId })
+  for (const targetPath of new Set(pathsToDelete)) {
+    let lstat = null
+    try {
+      lstat = fs.lstatSync(targetPath)
+    } catch {
+      continue
+    }
+
+    if (lstat.isSymbolicLink()) {
+      try {
+        const realTarget = fs.realpathSync(targetPath)
+        if (fs.existsSync(realTarget)) {
+          fs.rmSync(realTarget, { recursive: true, force: true })
+        }
+      } catch {
+        // Ignore broken target cleanup failure.
+      }
+      fs.unlinkSync(targetPath)
+      continue
+    }
+
+    fs.rmSync(targetPath, { recursive: true, force: true })
   }
 
-  if (fs.existsSync(sessionDir)) {
-    fs.rmSync(sessionDir, { recursive: true })
-    logger.info('[Sessions] Deleted Claude session directory', { sessionId, projectId })
-  }
+  logger.info('[Sessions] Deleted Claude session artifacts', { sessionId, projectId })
 }
 
 function deleteClaudeProject({ projectId }) {
-  const projectDir = path.join(getClaudeProjectsDir(), projectId)
-  if (!fs.existsSync(projectDir)) {
-    return
+  const { sourceProjectDir, sanitizedProjectDir } = resolveClaudeProjectPaths(projectId)
+  const targets = new Set([sourceProjectDir, sanitizedProjectDir])
+
+  for (const projectDir of targets) {
+    if (!fs.existsSync(projectDir)) {
+      continue
+    }
+    fs.rmSync(projectDir, { recursive: true, force: true })
   }
 
-  fs.rmSync(projectDir, { recursive: true })
   logger.info('[Projects] Removed Claude project data', { projectId })
 }
 

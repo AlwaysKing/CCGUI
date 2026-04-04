@@ -7,18 +7,33 @@ const appConfigManager = require('../../storage/app-config-manager')
 const { findProviderModel, getDefaultCredential } = require('../shared/model-config')
 const { buildDeveloperInstructions } = require('../shared/developer-instructions')
 
-// Helper to calculate project ID from path (same as SessionInstance)
-function calculateProjectId(projectPath) {
+function encodeProjectPathForClaude(projectPath, { replaceNonAscii = false } = {}) {
   let encodedPath = projectPath
   if (process.platform === 'win32') {
     encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
   } else {
     encodedPath = encodedPath.replace(/\//g, '-')
   }
+  if (replaceNonAscii) {
+    encodedPath = encodedPath.replace(/[^A-Za-z0-9._-]/g, '-')
+  }
   if (encodedPath.startsWith('-')) {
     encodedPath = encodedPath.slice(1)
   }
   return '-' + encodedPath
+}
+
+// Helper to calculate project ID from path (same as SessionInstance)
+function calculateProjectId(projectPath) {
+  return encodeProjectPathForClaude(projectPath)
+}
+
+function calculateSanitizedProjectId(projectPath) {
+  return encodeProjectPathForClaude(projectPath, { replaceNonAscii: true })
+}
+
+function hasNonAsciiPath(projectPath) {
+  return /[^\x00-\x7F]/.test(String(projectPath || ''))
 }
 
 /**
@@ -44,6 +59,7 @@ class ClaudeClient {
     this.sidechainFileAgents = new Map()
     this.watchedSidechainAgents = new Map()
     this.sidechainAgentFiles = new Map()
+    this.shouldLinkSanitizedSessionArtifacts = false
   }
 
   /**
@@ -62,23 +78,35 @@ class ClaudeClient {
    */
   getSessionFilePath() {
     if (!this.sessionId || !this.workingDirectory) return null
-
-    // Encode path to match Claude's format
-    let encodedPath = this.workingDirectory
-    if (process.platform === 'win32') {
-      encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
-    } else {
-      encodedPath = encodedPath.replace(/\//g, '-')
-    }
-    if (encodedPath.startsWith('-')) {
-      encodedPath = encodedPath.slice(1)
-    }
-    const projectId = '-' + encodedPath
+    const projectId = calculateProjectId(this.workingDirectory)
 
     return path.join(os.homedir(), '.claude', 'projects', projectId, `${this.sessionId}.jsonl`)
   }
 
+  getPrimaryProjectId() {
+    if (!this.workingDirectory) {
+      return null
+    }
+    return calculateProjectId(this.workingDirectory)
+  }
+
+  getSanitizedProjectId() {
+    if (!this.workingDirectory || !hasNonAsciiPath(this.workingDirectory)) {
+      return this.getPrimaryProjectId()
+    }
+    return calculateSanitizedProjectId(this.workingDirectory)
+  }
+
+  getProjectDirectory({ sanitized = false } = {}) {
+    const projectId = sanitized ? this.getSanitizedProjectId() : this.getPrimaryProjectId()
+    if (!projectId) {
+      return null
+    }
+    return path.join(os.homedir(), '.claude', 'projects', projectId)
+  }
+
   resolveSessionMode() {
+    this.shouldLinkSanitizedSessionArtifacts = false
     const sessionFile = this.getSessionFilePath()
     if (!sessionFile || !fs.existsSync(sessionFile)) {
       return 'new'
@@ -88,10 +116,75 @@ class ClaudeClient {
     if (stat.size === 0) {
       logger.info(`[ClaudeClient] Empty session file found, deleting: ${sessionFile}`)
       fs.unlinkSync(sessionFile)
+      this.shouldLinkSanitizedSessionArtifacts = hasNonAsciiPath(this.workingDirectory)
       return 'new'
     }
 
     return 'resume'
+  }
+
+  ensureSessionArtifactLinks() {
+    if (!this.shouldLinkSanitizedSessionArtifacts || !this.sessionId) {
+      return
+    }
+
+    const primaryProjectDir = this.getProjectDirectory()
+    const sanitizedProjectDir = this.getProjectDirectory({ sanitized: true })
+    if (!primaryProjectDir || !sanitizedProjectDir || primaryProjectDir === sanitizedProjectDir) {
+      return
+    }
+
+    fs.mkdirSync(primaryProjectDir, { recursive: true })
+    fs.mkdirSync(sanitizedProjectDir, { recursive: true })
+
+    const links = [
+      {
+        linkPath: path.join(primaryProjectDir, `${this.sessionId}.jsonl`),
+        targetPath: path.join(sanitizedProjectDir, `${this.sessionId}.jsonl`),
+        type: 'file'
+      }
+    ]
+
+    for (const { linkPath, targetPath, type } of links) {
+      let existingStat = null
+      try {
+        existingStat = fs.lstatSync(linkPath)
+      } catch {
+        // 链接不存在时继续创建
+      }
+
+      if (existingStat) {
+        if (!existingStat.isSymbolicLink()) {
+          continue
+        }
+
+        try {
+          const rawTarget = fs.readlinkSync(linkPath)
+          const resolvedTarget = path.isAbsolute(rawTarget)
+            ? rawTarget
+            : path.resolve(path.dirname(linkPath), rawTarget)
+          if (resolvedTarget === targetPath) {
+            continue
+          }
+        } catch {
+          // 读取失败则重建 link
+        }
+
+        try {
+          fs.unlinkSync(linkPath)
+        } catch (error) {
+          logger.warn(`[ClaudeClient] Failed to replace Claude session artifact link ${linkPath}: ${error.message}`)
+          continue
+        }
+      }
+
+      try {
+        fs.symlinkSync(targetPath, linkPath, type)
+        logger.info(`[ClaudeClient] Linked Claude session artifact: ${linkPath} -> ${targetPath}`)
+      } catch (error) {
+        logger.warn(`[ClaudeClient] Failed to link Claude session artifact ${linkPath}: ${error.message}`)
+      }
+    }
   }
 
   /**
@@ -324,6 +417,8 @@ class ClaudeClient {
           reject(new Error(`Claude CLI exited with code ${code}`))
         })
       })
+
+      this.ensureSessionArtifactLinks()
 
       // Emit init event after process starts with current working directory
       this.handleMessage({
@@ -831,7 +926,7 @@ class ClaudeClient {
       return null
     }
 
-    const projectId = calculateProjectId(this.workingDirectory)
+    const projectId = this.getSanitizedProjectId()
     return path.join(os.homedir(), '.claude', 'projects', projectId, this.sessionId, 'subagents')
   }
 

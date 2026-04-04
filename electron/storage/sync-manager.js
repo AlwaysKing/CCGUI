@@ -58,7 +58,32 @@ function encodeProjectPath(projectPath) {
 }
 
 /**
+ * 将目录名中的非 ASCII 字符替换为 -（模拟 Claude 的 sanitization）
+ */
+function sanitizeDirName(name) {
+  return String(name || '').replace(/[^A-Za-z0-9._-]/g, '-')
+}
+
+/**
+ * 在 Claude projects 目录中查找与 projectId 匹配的目录
+ * 优先匹配原始目录名（保留中文），其次匹配 sanitized 目录名
+ */
+function resolveClaudeProjectDir(claudeDir, ccguiProjectId) {
+  const primaryDir = path.join(claudeDir, ccguiProjectId)
+  if (fs.existsSync(primaryDir)) {
+    return primaryDir
+  }
+  const sanitizedDir = path.join(claudeDir, sanitizeDirName(ccguiProjectId))
+  if (sanitizedDir !== primaryDir && fs.existsSync(sanitizedDir)) {
+    return sanitizedDir
+  }
+  return primaryDir
+}
+
+/**
  * 扫描 Claude 项目目录
+ * 跳过 Claude 因中文路径创建的 sanitized 别名目录，
+ * 始终使用 encodeProjectPath(真实路径) 作为 CCGUI 的 project ID
  * @returns {Array} Claude 项目列表
  */
 function scanClaudeProjects() {
@@ -70,19 +95,37 @@ function scanClaudeProjects() {
       return []
     }
 
-    const entries = fs.readdirSync(claudeDir, { withFileTypes: true })
+    const dirEntries = fs.readdirSync(claudeDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+
+    // 第一轮：识别非 ASCII 目录名的 sanitized 别名
+    // Claude 服务端会对非 ASCII 路径做替换（如 中文→-），在 ~/.claude/projects/ 下
+    // 同时创建原始目录和 sanitized 目录，后者是冗余的
+    const sanitizedAliases = new Set()
+    for (const entry of dirEntries) {
+      if (/[^\x00-\x7F]/.test(entry.name)) {
+        sanitizedAliases.add(sanitizeDirName(entry.name))
+      }
+    }
+
+    // 第二轮：构建项目列表，跳过已知的 sanitized 别名
     const projects = []
+    const seenPaths = new Set()
 
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
+    for (const entry of dirEntries) {
+      if (sanitizedAliases.has(entry.name)) {
+        continue
+      }
 
-      const projectId = entry.name
-      const projectPath = decodeProjectPath(projectId)
-      const fullDir = path.join(claudeDir, projectId)
+      const projectPath = decodeProjectPath(entry.name)
+      if (seenPaths.has(projectPath)) {
+        continue
+      }
+      seenPaths.add(projectPath)
 
-      // 获取会话文件列表
+      const fullDir = path.join(claudeDir, entry.name)
       const files = fs.readdirSync(fullDir)
-      const sessionFiles = files.filter(f => 
+      const sessionFiles = files.filter(f =>
         f.endsWith('.jsonl') && !fs.statSync(path.join(fullDir, f)).isDirectory()
       )
 
@@ -95,7 +138,7 @@ function scanClaudeProjects() {
       }
 
       projects.push({
-        id: projectId,
+        id: encodeProjectPath(projectPath),
         path: projectPath,
         name: path.basename(projectPath),
         sessionCount: sessionFiles.length,
@@ -121,7 +164,7 @@ function scanClaudeProjects() {
 function getClaudeSessions(projectId) {
   try {
     const claudeDir = getClaudeProjectsDir()
-    const projectDir = path.join(claudeDir, projectId)
+    const projectDir = resolveClaudeProjectDir(claudeDir, projectId)
 
     if (!fs.existsSync(projectDir)) {
       return []
@@ -164,7 +207,8 @@ function getClaudeSessions(projectId) {
 function importClaudeHistory(projectId, sessionId) {
   try {
     const claudeDir = getClaudeProjectsDir()
-    const sessionFile = path.join(claudeDir, projectId, `${sessionId}.jsonl`)
+    const projectDir = resolveClaudeProjectDir(claudeDir, projectId)
+    const sessionFile = path.join(projectDir, `${sessionId}.jsonl`)
 
     if (!fs.existsSync(sessionFile)) {
       logger.warn('[SyncManager] Claude session file not found', { projectId, sessionId })

@@ -939,13 +939,12 @@ watch(() => messages.value, async (newMessages) => {
   const container = getScrollContainer()
   if (!container) return
 
-  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
-
   // 等待 DOM 更新
   await nextTick()
 
-  // 如果用户之前在底部，自动滚动到底部
-  if (wasNearBottom) {
+  // nextTick 后重新检查：用户可能在等待期间已向上滚动
+  const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
+  if (isNearBottom) {
     scrollToBottom(true)
   }
 }, { deep: true, immediate: false })
@@ -1142,6 +1141,7 @@ const showRewindDialog = ref(false)
 const rewindPreviewData = ref(null)
 const rewindTargetMessageId = ref(null)
 const rewindTargetMessageIndex = ref(null)
+const rewindPreviewLoading = ref(false)
 
 // 复制粘性窗口内容
 const stickyCopied = ref(false)
@@ -1265,6 +1265,7 @@ function getScrollContainer() {
 }
 
 // 滚动到底部
+let pendingScrollRAF = null
 function scrollToBottom(forceScroll = false) {
   const container = getScrollContainer()
   if (!container) return
@@ -1287,8 +1288,12 @@ function scrollToBottom(forceScroll = false) {
   // 重置用户滚动标记
   userScrolledAway = false
 
-  // 使用 requestAnimationFrame 确保在下一帧渲染后滚动
-  // 这能更好地处理高高度元素的异步渲染
+  // 取消上一次待处理的 RAF 滚动，避免流式更新时重叠
+  if (pendingScrollRAF) {
+    cancelAnimationFrame(pendingScrollRAF)
+    pendingScrollRAF = null
+  }
+
   const doScroll = () => {
     const activeContainer = getScrollContainer()
     if (activeContainer) {
@@ -1301,13 +1306,9 @@ function scrollToBottom(forceScroll = false) {
 
   // 等待 DOM 完全更新后再滚动一次（处理异步渲染的高高度元素）
   nextTick(() => {
-    requestAnimationFrame(() => {
+    pendingScrollRAF = requestAnimationFrame(() => {
+      pendingScrollRAF = null
       doScroll()
-
-      // 再延迟一点时间，确保所有内容都已渲染完成
-      setTimeout(() => {
-        doScroll()
-      }, 100)
     })
   })
 }
@@ -1665,35 +1666,37 @@ async function handlePermissionApproveAll(requestId) {
 
 // 处理代码还原 - 接收 MessageList 发出的事件对象
 async function handleRewind({ messageId, messageIndex }) {
-  // 先显示对话框（用于测试）
   rewindTargetMessageId.value = messageId
   rewindTargetMessageIndex.value = messageIndex
-  rewindPreviewData.value = {
-    files: [],
-    insertions: 0,
-    deletions: 0
-  }
-
+  rewindPreviewData.value = null
+  rewindPreviewLoading.value = true
   showRewindDialog.value = true
 
   try {
-    // 调用 dry_run: true 获取预览
     const previewResponse = await sessionStore.sendControlRequest({
       subtype: 'changed_files',
       user_message_id: messageId
     })
-    // 更新预览数据
+
     let data = null
     if (previewResponse && previewResponse.response) {
       data = previewResponse.response.response || previewResponse.response
-
-      rewindPreviewData.value = {
-        files: data?.changed_files || data?.filesChanged || data?.restored_files || [],
-        insertions: data?.insertions || data?.lines_added || 0,
-        deletions: data?.deletions || data?.lines_removed || 0
-      }
+    } else {
+      data = previewResponse || null
     }
 
+    const responseFiles = data?.changed_files || data?.filesChanged || data?.restored_files || []
+    const normalizedResponseFiles = Array.isArray(responseFiles)
+      ? responseFiles
+          .map(file => (typeof file === 'string' ? file.trim() : null))
+          .filter(Boolean)
+      : []
+
+    rewindPreviewData.value = {
+      files: Array.from(new Set(normalizedResponseFiles)),
+      insertions: data?.insertions || data?.lines_added || 0,
+      deletions: data?.deletions || data?.lines_removed || 0
+    }
   } catch (error) {
     console.error('[Rewind] Preview error:', error)
     showRewindDialog.value = false
@@ -1701,11 +1704,17 @@ async function handleRewind({ messageId, messageIndex }) {
     rewindTargetMessageId.value = null
     rewindTargetMessageIndex.value = null
     notifyTurnError(`获取还原预览失败: ${error.message || error}`)
+  } finally {
+    rewindPreviewLoading.value = false
   }
 }
 
 // 确认执行还原
 async function confirmRewind() {
+  if (rewindPreviewLoading.value) {
+    return
+  }
+
   showRewindDialog.value = false
 
   try {
@@ -1728,6 +1737,7 @@ async function confirmRewind() {
 function cancelRewind() {
   showRewindDialog.value = false
   rewindPreviewData.value = null
+  rewindPreviewLoading.value = false
   rewindTargetMessageId.value = null
   rewindTargetMessageIndex.value = null
 }
@@ -2252,8 +2262,15 @@ function handleToggleAgentRail() {
         </div>
 
         <div class="rewind-dialog-content">
+          <div v-if="rewindPreviewLoading" class="rewind-dialog-section">
+            <div class="rewind-dialog-section-empty">
+              <span class="empty-icon">⏳</span>
+              正在获取还原预览...
+            </div>
+          </div>
+
           <!-- 文件变更 -->
-          <div v-if="rewindPreviewData?.files?.length > 0" class="rewind-dialog-section">
+          <div v-else-if="rewindPreviewData?.files?.length > 0" class="rewind-dialog-section">
             <div class="rewind-dialog-section-title">
               <span class="section-icon">📄</span>
               将还原 {{ rewindPreviewData.files.length }} 个文件
@@ -2277,7 +2294,7 @@ function handleToggleAgentRail() {
           </div>
 
           <!-- 行数统计 -->
-          <div v-if="rewindPreviewData?.deletions > 0 || rewindPreviewData?.insertions > 0" class="rewind-dialog-section">
+          <div v-if="!rewindPreviewLoading && (rewindPreviewData?.deletions > 0 || rewindPreviewData?.insertions > 0)" class="rewind-dialog-section">
             <div class="rewind-stats-box">
               <div class="stat-item deletions">
                 <span class="stat-label">删除</span>
@@ -2319,8 +2336,8 @@ function handleToggleAgentRail() {
           <button class="rewind-btn cancel" @click="cancelRewind">
             取消
           </button>
-          <button class="rewind-btn confirm" @click="confirmRewind">
-            确认还原
+          <button class="rewind-btn confirm" :disabled="rewindPreviewLoading" @click="confirmRewind">
+            {{ rewindPreviewLoading ? '获取预览中...' : '确认还原' }}
           </button>
         </div>
       </div>

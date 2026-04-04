@@ -1,3 +1,6 @@
+const fs = require('fs')
+const path = require('path')
+const { execSync } = require('child_process')
 const {
   CodexClient,
   normalizeToolName,
@@ -17,12 +20,22 @@ const logger = require('../../logger')
  * CCGUI 统一语义事件。
  */
 class CodexAdapter extends CodexClient {
-  constructor(...args) {
-    super(...args)
+  constructor(workingDirectory = null, sessionId = null, isNewSession = true, permissionMode = 'default', projectSettings = null, options = {}) {
+    super(workingDirectory, sessionId, isNewSession, permissionMode, projectSettings, options)
     this.turnDiffMessageMap = new Map()
     this.agentRegistry = new Map()
     this.threadIdToAgentId = new Map()
     this.pendingSpawnItems = new Map()
+    this.sessionStoragePath = options.sessionStoragePath || null
+    this.pendingUserMessageUuid = null
+  }
+
+  async sendMessage(message) {
+    const uuid = message?.uuid || null
+    if (uuid) {
+      this.pendingUserMessageUuid = uuid
+    }
+    return super.sendMessage(message)
   }
 
   sanitizeSemanticId(value, fallback = 'agent') {
@@ -229,6 +242,209 @@ class CodexAdapter extends CodexClient {
     }
   }
 
+  collectDiffStats(diffText = '') {
+    if (typeof diffText !== 'string' || !diffText.trim()) {
+      return { insertions: 0, deletions: 0 }
+    }
+
+    let insertions = 0
+    let deletions = 0
+    for (const line of diffText.split('\n')) {
+      if (!line) continue
+      if (
+        line.startsWith('+++') ||
+        line.startsWith('---') ||
+        line.startsWith('@@') ||
+        line.startsWith('diff --git')
+      ) {
+        continue
+      }
+      if (line === '\\ No newline at end of file') {
+        continue
+      }
+      if (line.startsWith('+')) {
+        insertions += 1
+      } else if (line.startsWith('-')) {
+        deletions += 1
+      }
+    }
+
+    return { insertions, deletions }
+  }
+
+  collectRollbackPreviewFromThread(thread = null, numTurns = 0) {
+    const turns = Array.isArray(thread?.turns) ? thread.turns : []
+    if (turns.length === 0 || !Number.isFinite(numTurns) || numTurns <= 0) {
+      return {
+        files: [],
+        insertions: 0,
+        deletions: 0
+      }
+    }
+
+    const targetTurns = turns.slice(-numTurns)
+    const files = new Set()
+    let insertions = 0
+    let deletions = 0
+
+    for (const turn of targetTurns) {
+      const items = Array.isArray(turn?.items) ? turn.items : []
+      for (const item of items) {
+        if (item?.type !== 'fileChange') {
+          continue
+        }
+
+        const changes = Array.isArray(item.changes) ? item.changes : []
+        for (const change of changes) {
+          const filePath = typeof change?.path === 'string' ? change.path.trim() : ''
+          if (filePath) {
+            files.add(filePath)
+          }
+
+          const stats = this.collectDiffStats(change?.diff || '')
+          insertions += stats.insertions
+          deletions += stats.deletions
+        }
+      }
+    }
+
+    return {
+      files: Array.from(files),
+      insertions,
+      deletions
+    }
+  }
+
+  collectRollbackPreviewFromSessionLog(numTurns = 0, sessionLogPath = this.currentThreadPath) {
+    if (!Number.isFinite(numTurns) || numTurns <= 0 || typeof sessionLogPath !== 'string' || !sessionLogPath.trim()) {
+      return {
+        files: [],
+        insertions: 0,
+        deletions: 0
+      }
+    }
+
+    let rawContent = ''
+    try {
+      rawContent = fs.readFileSync(sessionLogPath, 'utf8')
+    } catch (error) {
+      logger.warn('[CodexAdapter] Failed to read session log for rollback preview', {
+        path: sessionLogPath,
+        error: error.message
+      })
+      return {
+        files: [],
+        insertions: 0,
+        deletions: 0
+      }
+    }
+
+    const activeTurnIds = []
+    const turnSummaries = new Map()
+
+    const ensureTurnSummary = (turnId) => {
+      if (!turnId) {
+        return null
+      }
+      if (!turnSummaries.has(turnId)) {
+        turnSummaries.set(turnId, {
+          files: new Set(),
+          insertions: 0,
+          deletions: 0
+        })
+      }
+      return turnSummaries.get(turnId)
+    }
+
+    for (const line of rawContent.split(/\r?\n/)) {
+      if (!line.trim()) {
+        continue
+      }
+
+      let entry = null
+      try {
+        entry = JSON.parse(line)
+      } catch (error) {
+        continue
+      }
+
+      const payload = entry?.payload
+      if (!payload || entry?.type !== 'event_msg') {
+        continue
+      }
+
+      if (payload.type === 'task_started') {
+        const turnId = typeof payload.turn_id === 'string' ? payload.turn_id : ''
+        if (!turnId) {
+          continue
+        }
+        ensureTurnSummary(turnId)
+        if (!activeTurnIds.includes(turnId)) {
+          activeTurnIds.push(turnId)
+        }
+        continue
+      }
+
+      if (payload.type === 'patch_apply_end') {
+        const turnId = typeof payload.turn_id === 'string' ? payload.turn_id : ''
+        const summary = ensureTurnSummary(turnId)
+        if (!summary) {
+          continue
+        }
+
+        const changes = payload.changes && typeof payload.changes === 'object'
+          ? payload.changes
+          : {}
+
+        for (const [filePath, change] of Object.entries(changes)) {
+          const normalizedPath = typeof filePath === 'string' ? filePath.trim() : ''
+          if (normalizedPath) {
+            summary.files.add(normalizedPath)
+          }
+
+          const diffText = typeof change?.unified_diff === 'string'
+            ? change.unified_diff
+            : ''
+          const stats = this.collectDiffStats(diffText)
+          summary.insertions += stats.insertions
+          summary.deletions += stats.deletions
+        }
+        continue
+      }
+
+      if (payload.type === 'thread_rolled_back') {
+        const rollbackCount = Number(payload.num_turns || payload.numTurns || 0)
+        if (!Number.isFinite(rollbackCount) || rollbackCount <= 0) {
+          continue
+        }
+        activeTurnIds.splice(Math.max(0, activeTurnIds.length - rollbackCount), rollbackCount)
+      }
+    }
+
+    const targetTurnIds = activeTurnIds.slice(-numTurns)
+    const files = new Set()
+    let insertions = 0
+    let deletions = 0
+
+    for (const turnId of targetTurnIds) {
+      const summary = turnSummaries.get(turnId)
+      if (!summary) {
+        continue
+      }
+      for (const filePath of summary.files) {
+        files.add(filePath)
+      }
+      insertions += summary.insertions
+      deletions += summary.deletions
+    }
+
+    return {
+      files: Array.from(files),
+      insertions,
+      deletions
+    }
+  }
+
   normalizeRollbackResponse(result = {}, options = {}) {
     const turnDiff = result?.turnDiff || result?.turn_diff || null
     const rawChanges = Array.isArray(result?.changes)
@@ -236,6 +452,16 @@ class CodexAdapter extends CodexClient {
       : Array.isArray(turnDiff?.changes)
         ? turnDiff.changes
         : []
+    const resultThread = result?.thread || null
+    const resultThreadHasTurns = Array.isArray(resultThread?.turns) && resultThread.turns.length > 0
+    const threadPreview = this.collectRollbackPreviewFromThread(
+      resultThreadHasTurns ? resultThread : (options.fallbackThread || resultThread || null),
+      options.numTurns || 0
+    )
+    const sessionLogPreview = this.collectRollbackPreviewFromSessionLog(
+      options.numTurns || 0,
+      options.sessionLogPath || this.currentThreadPath || null
+    )
 
     const files = Array.from(new Set(
       rawChanges
@@ -251,14 +477,21 @@ class CodexAdapter extends CodexClient {
     ))
 
     const changedFiles = result?.changed_files || result?.filesChanged || result?.restored_files || files
+    const normalizedChangedFiles = Array.isArray(changedFiles) && changedFiles.length > 0
+      ? changedFiles
+      : (
+          sessionLogPreview.files.length > 0
+            ? sessionLogPreview.files
+            : threadPreview.files
+        )
 
     return {
       ...result,
-      changed_files: changedFiles,
-      filesChanged: changedFiles,
-      restored_files: result?.restored_files || changedFiles,
-      insertions: result?.insertions || result?.linesAdded || result?.lines_added || turnDiff?.insertions || 0,
-      deletions: result?.deletions || result?.linesRemoved || result?.lines_removed || turnDiff?.deletions || 0,
+      changed_files: normalizedChangedFiles,
+      filesChanged: normalizedChangedFiles,
+      restored_files: result?.restored_files || normalizedChangedFiles,
+      insertions: result?.insertions || result?.linesAdded || result?.lines_added || turnDiff?.insertions || sessionLogPreview.insertions || threadPreview.insertions || 0,
+      deletions: result?.deletions || result?.linesRemoved || result?.lines_removed || turnDiff?.deletions || sessionLogPreview.deletions || threadPreview.deletions || 0,
       dry_run: options.dryRun === true
     }
   }
@@ -294,6 +527,8 @@ class CodexAdapter extends CodexClient {
         this.currentAssistantMessageId = null
         this.turnMessageMap.set(params.turn.id, null)
         this.turnAssistantState.delete(params.turn.id)
+        // pendingUserMessageUuid 在 turn 勾结束（turn/completed 或 diff 更新时）前持续保留
+        // 不在这里清除，由 handleTurnDiffUpdated 和 turn/completed 消费
         this.turnStats.set(params.turn.id, {
           numTurns: 0,
           usage: createEmptyTurnUsage()
@@ -318,6 +553,8 @@ class CodexAdapter extends CodexClient {
 
       case 'turn/completed': {
         this.currentTurnId = params.turn.id
+        const completedUserMessageUuid = this.pendingUserMessageUuid
+        this.pendingUserMessageUuid = null
         const turnStats = this.turnStats.get(params.turn.id) || null
         const diffMessageId = this.turnDiffMessageMap.get(params.turn.id)
         if (diffMessageId) {
@@ -369,6 +606,9 @@ class CodexAdapter extends CodexClient {
             metadata: error
           })
         }
+
+        // turn 结束后推送文件变更统计
+        this.emitFileChangeSummary(completedUserMessageUuid)
         break
       }
 
@@ -773,6 +1013,9 @@ class CodexAdapter extends CodexClient {
     if (!turnId || !diffText.trim()) {
       return
     }
+
+    // 写 patch 文件
+    this.savePatchForTurn(diffText)
 
     const messageId = this.turnDiffMessageMap.get(turnId)
     const rawMessage = { method: 'turn/diff/updated', params }
@@ -1475,33 +1718,52 @@ class CodexAdapter extends CodexClient {
 
   async sendControlRequest(request) {
     if (request?.subtype === 'changed_files' || request?.subtype === 'rewind_files') {
-      await this.ensureInitialized()
+      // 从 patch 文件读取预览，不走 thread/rollback(dryRun)
+      const userMessageUuid = request.user_message_id || null
+      const diffText = userMessageUuid ? this.readPatchFile(userMessageUuid) : null
 
-      const result = await this.request('thread/rollback', {
-        threadId: this.currentThreadId,
-        numTurns: request.numTurns,
-        dryRun: true
-      })
+      if (diffText) {
+        const { files, insertions, deletions } = this.parseDiffInfo(diffText)
+        return this.buildControlResponse(
+          `codex-rewind-preview-${Date.now()}`,
+          {
+            changed_files: files,
+            filesChanged: files,
+            restored_files: files,
+            insertions,
+            deletions,
+            dry_run: true
+          }
+        )
+      }
 
-      return this.buildControlResponse(
-        `codex-rewind-${Date.now()}`,
-        this.normalizeRollbackResponse(result, { dryRun: true })
-      )
+      // fallback：没有 patch 文件时走原来的 thread/rollback
+      return super.sendControlRequest(request)
     }
 
     if (request?.subtype === 'rewind') {
-      await this.ensureInitialized()
+      // 从 patch 文件反向应用，不走 thread/rollback
+      const userMessageUuid = request.user_message_id || null
+      const diffText = userMessageUuid ? this.readPatchFile(userMessageUuid) : null
 
-      const result = await this.request('thread/rollback', {
-        threadId: this.currentThreadId,
-        numTurns: request.numTurns,
-        dryRun: false
-      })
+      if (diffText) {
+        const { files, insertions, deletions } = this.parseDiffInfo(diffText)
+        await this.applyReversePatch(userMessageUuid)
+        return this.buildControlResponse(
+          `codex-rewind-${Date.now()}`,
+          {
+            changed_files: files,
+            filesChanged: files,
+            restored_files: files,
+            insertions,
+            deletions,
+            dry_run: false
+          }
+        )
+      }
 
-      return this.buildControlResponse(
-        `codex-rewind-${Date.now()}`,
-        this.normalizeRollbackResponse(result, { dryRun: false })
-      )
+      // fallback：没有 patch 文件时走原来的 thread/rollback
+      return super.sendControlRequest(request)
     }
 
     if (request?.subtype === 'rewind_and_fork') {
@@ -1533,6 +1795,194 @@ class CodexAdapter extends CodexClient {
 
     return super.sendControlRequest(request)
   }
+
+  // ─── Patch 文件管理 ───────────────────────────────────────
+
+  getDiffDir() {
+    if (!this.sessionStoragePath) {
+      return null
+    }
+    return path.join(this.sessionStoragePath, 'diffs')
+  }
+
+  ensureDiffDir() {
+    const diffDir = this.getDiffDir()
+    if (!diffDir) {
+      return null
+    }
+    if (!fs.existsSync(diffDir)) {
+      fs.mkdirSync(diffDir, { recursive: true })
+    }
+    return diffDir
+  }
+
+  resolvePatchFilePath(userMessageUuid) {
+    const diffDir = this.ensureDiffDir()
+    if (!diffDir || !userMessageUuid) {
+      return null
+    }
+    return path.join(diffDir, `${userMessageUuid}.patch`)
+  }
+
+  savePatchForTurn(diffText) {
+    const userMessageUuid = this.pendingUserMessageUuid
+    if (!userMessageUuid || !diffText?.trim()) {
+      return
+    }
+    const patchFilePath = this.resolvePatchFilePath(userMessageUuid)
+    if (!patchFilePath) {
+      return
+    }
+    try {
+      fs.writeFileSync(patchFilePath, diffText, 'utf8')
+      logger.debug('[CodexAdapter] Saved patch for turn', { userMessageUuid, size: diffText.length })
+    } catch (error) {
+      logger.warn('[CodexAdapter] Failed to save patch', { userMessageUuid, error: error.message })
+    }
+  }
+
+  readPatchFile(userMessageUuid) {
+    const patchFilePath = this.resolvePatchFilePath(userMessageUuid)
+    if (!patchFilePath || !fs.existsSync(patchFilePath)) {
+      return null
+    }
+    try {
+      return fs.readFileSync(patchFilePath, 'utf8')
+    } catch (error) {
+      logger.warn('[CodexAdapter] Failed to read patch', { userMessageUuid, error: error.message })
+      return null
+    }
+  }
+
+  parseDiffInfo(diffText) {
+    if (!diffText?.trim()) {
+      return { files: [], insertions: 0, deletions: 0 }
+    }
+
+    const files = new Set()
+    let insertions = 0
+    let deletions = 0
+    let inHunk = false
+
+    for (const line of diffText.split('\n')) {
+      // 匹配 diff --git a/path b/path
+      const gitMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/)
+      if (gitMatch) {
+        files.add(gitMatch[2])
+        inHunk = false
+        continue
+      }
+      // 跳过元数据行
+      if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('@@') || line.startsWith('\\ ')) {
+        if (line.startsWith('@@')) {
+          inHunk = true
+        }
+        continue
+      }
+      if (!inHunk) {
+        continue
+      }
+      if (line.startsWith('+')) {
+        insertions += 1
+      } else if (line.startsWith('-')) {
+        deletions += 1
+      }
+    }
+
+    return {
+      files: Array.from(files),
+      insertions,
+      deletions
+    }
+  }
+
+  async applyReversePatch(userMessageUuid) {
+    const diffText = this.readPatchFile(userMessageUuid)
+    if (!diffText?.trim()) {
+      throw new Error(`No patch found for message: ${userMessageUuid}`)
+    }
+
+    const { execSync } = require('child_process')
+    const patchFilePath = this.resolvePatchFilePath(userMessageUuid)
+
+    try {
+      execSync(`git apply -R --allow-empty "${patchFilePath}"`, {
+        cwd: this.workingDirectory,
+        timeout: 30000,
+        encoding: 'utf8'
+      })
+      logger.info('[CodexAdapter] Applied reverse patch', { userMessageUuid })
+      return true
+    } catch (error) {
+      logger.error('[CodexAdapter] Failed to apply reverse patch', {
+        userMessageUuid,
+        error: error.message,
+        stderr: error.stderr?.toString?.() || ''
+      })
+      throw new Error(`Failed to apply reverse patch: ${error.message}`)
+    }
+  }
+
+  // ─── 文件变更统计 ────────────────────────────────────────
+
+  parseDiffFileStats(diffText = '') {
+    if (typeof diffText !== 'string' || !diffText.trim()) {
+      return { files: [], totalInsertions: 0, totalDeletions: 0 }
+    }
+
+    const fileMap = new Map()
+    let currentFile = null
+    let inHunk = false
+
+    for (const line of diffText.split('\n')) {
+      const gitMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/)
+      if (gitMatch) {
+        currentFile = gitMatch[2]
+        inHunk = false
+        continue
+      }
+      if (line.startsWith('---') || line.startsWith('+++')) continue
+      if (line.startsWith('@@')) { inHunk = true; continue }
+      if (line.startsWith('\\ ')) continue
+      if (!inHunk || !currentFile) continue
+
+      if (!fileMap.has(currentFile)) {
+        fileMap.set(currentFile, { path: currentFile, insertions: 0, deletions: 0 })
+      }
+      const stats = fileMap.get(currentFile)
+      if (line.startsWith('+')) stats.insertions += 1
+      else if (line.startsWith('-')) stats.deletions += 1
+    }
+
+    const files = Array.from(fileMap.values())
+    return {
+      files,
+      totalInsertions: files.reduce((sum, f) => sum + f.insertions, 0),
+      totalDeletions: files.reduce((sum, f) => sum + f.deletions, 0)
+    }
+  }
+
+  emitFileChangeSummary(userMessageUuid) {
+    if (!userMessageUuid) return
+    const diffText = this.readPatchFile(userMessageUuid)
+    if (!diffText?.trim()) return
+
+    const stats = this.parseDiffFileStats(diffText)
+    if (stats.files.length === 0) return
+
+    this.emit('file-change-summary', {
+      id: `file-change-summary-${Date.now()}`,
+      role: 'file_change_summary',
+      files: stats.files,
+      totalFiles: stats.files.length,
+      totalInsertions: stats.totalInsertions,
+      totalDeletions: stats.totalDeletions,
+      userMessageId: userMessageUuid,
+      timestamp: new Date()
+    })
+  }
+
+  // ─── Control Request（rewind via patch） ─────────────────
 
   getSessionIdentifier() {
     return this.getThreadId?.() || this.sessionId || null

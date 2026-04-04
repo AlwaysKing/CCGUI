@@ -49,6 +49,10 @@ function resolveSessionFilePath(projectId, sessionId) {
   return sourceFile
 }
 
+function sanitizeDirName(name) {
+  return String(name || '').replace(/[^A-Za-z0-9._-]/g, '-')
+}
+
 function scanClaudeProjects() {
   const projectsDir = getClaudeProjectsDir()
 
@@ -57,14 +61,28 @@ function scanClaudeProjects() {
     return []
   }
 
-  const entries = fs.readdirSync(projectsDir, { withFileTypes: true })
-  const projects = []
+  const dirEntries = fs.readdirSync(projectsDir, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
+  // 识别 Claude 因非 ASCII 路径创建的 sanitized 别名目录
+  const sanitizedAliases = new Set()
+  for (const entry of dirEntries) {
+    if (/[^\x00-\x7F]/.test(entry.name)) {
+      sanitizedAliases.add(sanitizeDirName(entry.name))
+    }
+  }
+
+  const projects = []
+  const seenPaths = new Set()
+
+  for (const entry of dirEntries) {
+    if (sanitizedAliases.has(entry.name)) continue
+
+    const projectPath = decodeProjectPath(entry.name)
+    if (seenPaths.has(projectPath)) continue
+    seenPaths.add(projectPath)
 
     const fullProjectDir = path.join(projectsDir, entry.name)
-    const projectPath = decodeProjectPath(entry.name)
     const files = fs.readdirSync(fullProjectDir)
     const sessionFiles = files.filter((file) => {
       if (!file.endsWith('.jsonl')) {

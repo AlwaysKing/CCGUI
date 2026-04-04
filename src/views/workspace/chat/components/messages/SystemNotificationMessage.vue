@@ -42,6 +42,7 @@ const notificationTypeClass = computed(() => {
   if (
     notificationType === 'runtime-exit' ||
     notificationType === 'turn-error' ||
+    notificationType === 'mcp-server-error' ||
     (notificationType === 'account-login-completed' && props.message.data?.success === false) ||
     (notificationType === 'hook-event' && props.message.data?.errorMessage)
   ) {
@@ -55,6 +56,12 @@ const notificationTypeClass = computed(() => {
     (notificationType === 'account-login-completed' && props.message.data?.success === true)
   ) {
     return 'notification-success'
+  }
+  if (
+    notificationType === 'mcp-server-starting' ||
+    notificationType === 'mcp-server-ready'
+  ) {
+    return 'notification-mcp'
   }
   return 'notification-warning'
 })
@@ -324,6 +331,34 @@ const notificationContent = computed(() => {
     }
   }
 
+  if (notificationType === 'mcp-server-starting') {
+    const serverName = data.name || 'MCP Server'
+    return {
+      icon: '🧩',
+      title: `${serverName} 启动中`,
+      description: elapsedText ? `MCP 服务正在启动，已用时 ${elapsedText}` : 'MCP 服务正在启动'
+    }
+  }
+
+  if (notificationType === 'mcp-server-ready') {
+    const serverName = data.name || 'MCP Server'
+    return {
+      icon: '🧩',
+      title: `${serverName} 启动完成`,
+      description: elapsedText ? `MCP 服务已就绪，耗时 ${elapsedText}` : 'MCP 服务已就绪'
+    }
+  }
+
+  if (notificationType === 'mcp-server-error') {
+    const serverName = data.name || 'MCP Server'
+    const errorText = data.error?.message || data.error || 'MCP 服务启动失败'
+    return {
+      icon: '🧩',
+      title: `${serverName} 启动失败`,
+      description: String(errorText)
+    }
+  }
+
   if (notificationType === 'session-config-applied' || notificationType === 'session-effort-changed') {
     const changeType = data.changeType || 'effort'
     const modelText = data.model || '系统'
@@ -504,5 +539,13 @@ const notificationContent = computed(() => {
 
 .system-notification.notification-success .notification-description {
   color: #f4f4f5;
+}
+
+.system-notification.notification-mcp .notification-title {
+  color: #fbbf24;
+}
+
+.system-notification.notification-mcp .notification-description {
+  color: #fde68a;
 }
 </style>

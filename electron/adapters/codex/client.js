@@ -412,6 +412,7 @@ class CodexClient {
     this.pendingRequests = new Map()
     this.pendingServerRequests = new Map()
     this.currentThreadId = null
+    this.currentThreadPath = null
     this.currentTurnId = null
     this.currentAssistantMessageId = null
     this.currentCollaborationMode = null
@@ -607,6 +608,7 @@ class CodexClient {
   updateThreadSelectionFromResponse(response, fallbackSelection = null, options = {}) {
     const preferFallback = options.preferFallback === true
     const resolvedThreadId = response?.thread?.id || this.currentThreadId || this.resumeThreadId || null
+    const resolvedThreadPath = response?.thread?.path || this.currentThreadPath || null
     const resolvedModel =
       preferFallback
         ? (
@@ -653,6 +655,7 @@ class CodexClient {
           )
 
     this.currentThreadId = resolvedThreadId
+    this.currentThreadPath = resolvedThreadPath
     this.currentThreadConfigOverride = {
       model: resolvedModel,
       modelProvider: resolvedModelProvider,
@@ -1365,6 +1368,7 @@ class CodexClient {
     }
     this.initialized = false
     this.currentThreadId = null
+    this.currentThreadPath = null
     this.currentTurnId = null
     this.currentAssistantMessageId = null
     this.clearAuthTokenCache()

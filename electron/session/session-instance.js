@@ -1,8 +1,5 @@
 const path = require('path')
-const fs = require('fs')
-const os = require('os')
 const crypto = require('crypto')
-const { execFileSync } = require('child_process')
 const { ClaudeAdapter } = require('../adapters/claude/adapter')
 const { CodexAdapter } = require('../adapters/codex/adapter')
 const logger = require('../logger')
@@ -316,6 +313,9 @@ const SESSION_NOTIFICATION_TYPES = new Set([
   'session-runtime-starting',
   'session-runtime-restarting',
   'session-runtime-ready',
+  'mcp-server-starting',
+  'mcp-server-ready',
+  'mcp-server-error',
   'session-config-applied',
   'session-effort-changed',
   'permission-mode-change',
@@ -341,6 +341,64 @@ function normalizeLegacyManagerEvent(message = {}, provider = 'unknown') {
   }
 
   const normalizedProvider = message.provider || provider || 'unknown'
+  const method = typeof message.method === 'string' ? message.method.trim() : ''
+  if (method === 'mcpServer/startupStatus/updated') {
+    const params = isPlainObject(message.params) ? message.params : {}
+    const serverName = typeof params.name === 'string' ? params.name.trim() : ''
+    const status = typeof params.status === 'string' ? params.status.trim() : ''
+    const operationId = serverName
+      ? `mcp-startup:${normalizedProvider}:${serverName}`
+      : ''
+
+    if (status === 'starting') {
+      return {
+        eventType: 'system-notification',
+        data: {
+          type: 'mcp-server-starting',
+          provider: normalizedProvider,
+          name: serverName || 'unknown',
+          status,
+          operationId,
+          startedAt: Date.now(),
+          rawMessage: message,
+          error: params.error ?? null
+        }
+      }
+    }
+
+    if (status === 'ready') {
+      return {
+        eventType: 'system-notification',
+        data: {
+          type: 'mcp-server-ready',
+          provider: normalizedProvider,
+          name: serverName || 'unknown',
+          status,
+          operationId,
+          completedAt: Date.now(),
+          rawMessage: message,
+          error: params.error ?? null
+        }
+      }
+    }
+
+    if (status === 'error' || params.error) {
+      return {
+        eventType: 'system-notification',
+        data: {
+          type: 'mcp-server-error',
+          provider: normalizedProvider,
+          name: serverName || 'unknown',
+          status: status || 'error',
+          operationId,
+          completedAt: Date.now(),
+          rawMessage: message,
+          error: params.error ?? null
+        }
+      }
+    }
+  }
+
   const notificationType = typeof message.type === 'string' ? message.type.trim() : ''
   if (notificationType && SESSION_NOTIFICATION_TYPES.has(notificationType)) {
     return {
@@ -505,42 +563,6 @@ function collectChangedFilePaths(value, bucket) {
   }
 }
 
-function extractChangedFilesFromToolMessage(message = {}) {
-  if (message?.role !== 'tool_use' && message?.role !== 'diff') {
-    return []
-  }
-
-  const normalizedToolName = String(message.toolName || '').toLowerCase()
-  const candidateToolInput = message.toolInput || {}
-  const files = new Set()
-
-  const supportsFileTracking =
-    normalizedToolName === 'write' ||
-    normalizedToolName === 'edit' ||
-    normalizedToolName === 'multiedit' ||
-    normalizedToolName === 'applypatch' ||
-    normalizedToolName === 'apply_patch' ||
-    normalizedToolName === 'diff'
-
-  if (!supportsFileTracking) {
-    return []
-  }
-
-  collectChangedFilePaths(candidateToolInput, files)
-
-  if (files.size === 0 && typeof message.result === 'string') {
-    collectChangedFilePaths(message.result, files)
-  }
-
-  if (files.size === 0 && Array.isArray(message.rawMessages)) {
-    for (const rawMessage of message.rawMessages) {
-      collectChangedFilePaths(rawMessage, files)
-    }
-  }
-
-  return Array.from(files)
-}
-
 function extractChangedFilesFromControlResponse(message = {}) {
   const response = message?.response?.response || message?.response || {}
   const files = response?.changed_files || response?.filesChanged || response?.restored_files || []
@@ -553,53 +575,6 @@ function extractChangedFilesFromControlResponse(message = {}) {
       .map(file => (typeof file === 'string' ? file.trim() : null))
       .filter(Boolean)
   ))
-}
-
-function extractDiffTextFromMessage(message = {}) {
-  if (!message || message.role !== 'diff') {
-    return ''
-  }
-
-  if (typeof message.toolInput?.diff === 'string' && message.toolInput.diff.trim()) {
-    return message.toolInput.diff
-  }
-
-  if (Array.isArray(message.rawMessages)) {
-    for (let index = message.rawMessages.length - 1; index >= 0; index -= 1) {
-      const rawMessage = message.rawMessages[index]
-      const diffText = rawMessage?.params?.diff
-      if (typeof diffText === 'string' && diffText.trim()) {
-        return diffText
-      }
-    }
-  }
-
-  return ''
-}
-
-function collectUnifiedDiffStats(diffText = '') {
-  if (typeof diffText !== 'string' || !diffText.trim()) {
-    return { insertions: 0, deletions: 0 }
-  }
-
-  let insertions = 0
-  let deletions = 0
-  for (const line of diffText.split('\n')) {
-    if (!line) continue
-    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('diff --git')) {
-      continue
-    }
-    if (line === '\\ No newline at end of file') {
-      continue
-    }
-    if (line.startsWith('+')) {
-      insertions += 1
-    } else if (line.startsWith('-')) {
-      deletions += 1
-    }
-  }
-
-  return { insertions, deletions }
 }
 
 /**
@@ -667,7 +642,6 @@ class SessionInstance {
     this.currentTurnNumber = 0
     this.hasSeenToolUseInCurrentTurn = false
     this.activeResponseUserMessageId = null
-    this.currentTurnChangedFiles = new Set()
   }
 
   /**
@@ -944,6 +918,7 @@ class SessionInstance {
     }
 
     if (this.provider === 'codex') {
+      const sessionStoragePath = path.dirname(historyManager.getSessionHistoryDir(this.projectId, this.id))
       this.runtimeManager = new CodexAdapter(
         this.projectPath,
         this.id,
@@ -952,7 +927,8 @@ class SessionInstance {
         settings,
         {
           resumeThreadId: this.sessionSettings.codexThreadId || null,
-          debug: this.sessionSettings.debug === true
+          debug: this.sessionSettings.debug === true,
+          sessionStoragePath
         }
       )
     } else {
@@ -1108,6 +1084,9 @@ class SessionInstance {
       type === 'session-runtime-starting' ||
       type === 'session-runtime-restarting' ||
       type === 'session-runtime-ready' ||
+      type === 'mcp-server-starting' ||
+      type === 'mcp-server-ready' ||
+      type === 'mcp-server-error' ||
       type === 'session-config-applied' ||
       type === 'session-effort-changed'
     ) {
@@ -1161,12 +1140,18 @@ class SessionInstance {
       operationId && (
         notificationType === 'session-runtime-ready' ||
         notificationType === 'session-config-applied' ||
-        notificationType === 'session-effort-changed'
+        notificationType === 'session-effort-changed' ||
+        notificationType === 'mcp-server-ready' ||
+        notificationType === 'mcp-server-error'
       )
     ) {
       const pendingMessage = [...this.messages].reverse().find(message =>
         message.role === 'system_notification' &&
-        (message.notificationType === 'session-runtime-starting' || message.notificationType === 'session-runtime-restarting') &&
+        (
+          message.notificationType === 'session-runtime-starting' ||
+          message.notificationType === 'session-runtime-restarting' ||
+          message.notificationType === 'mcp-server-starting'
+        ) &&
         message.data?.operationId === operationId
       )
 
@@ -1506,8 +1491,6 @@ class SessionInstance {
       latestAssistantMessage.isStreaming = false
       latestAssistantMessage.duration = latestAssistantMessage.duration || enrichedResult.duration_ms
       latestAssistantMessage.usage = enrichedResult.usage || latestAssistantMessage.usage || null
-      this.appendChangedFilesSummaryMessage(latestAssistantMessage)
-      this.refreshChangedFilesSummary(latestUserMessage, latestAssistantMessage)
     }
 
     this.currentStreamingAssistantId = null
@@ -1516,7 +1499,6 @@ class SessionInstance {
     this.pendingControlRequests.clear()
     this.pendingPermission = null
     this.pendingControlRequestResult = null
-    this.currentTurnChangedFiles = new Set()
 
     for (const item of this.messages) {
       if (item.isStreaming) {
@@ -1590,7 +1572,6 @@ class SessionInstance {
     manager.on('message-start', (message) => {
       const normalizedMessage = attachExistingCcgui(message)
       this.messages.push(normalizedMessage)
-      this.registerChangedFilesFromToolMessage(normalizedMessage)
       this.emit('message-start', normalizedMessage)
     })
 
@@ -1626,7 +1607,6 @@ class SessionInstance {
         if (normalizedUpdates.ccgui) {
           msg.ccgui = normalizedUpdates.ccgui
         }
-        this.registerChangedFilesFromToolMessage(msg)
         if ((normalizedUpdates.isStreaming === false || normalizedUpdates.isExecuting === false) && !msg.duration && msg.startTime) {
           msg.duration = Date.now() - msg.startTime
         }
@@ -1650,7 +1630,6 @@ class SessionInstance {
         if (normalizedReplacement.ccgui) {
           msg.ccgui = normalizedReplacement.ccgui
         }
-        this.registerChangedFilesFromToolMessage(msg)
         historyManager.updateMessage(this.projectId, this.id, messageId, normalizedReplacement)
       }
       this.emit('message-replace', { messageId, replacement: normalizedReplacement })
@@ -1682,7 +1661,6 @@ class SessionInstance {
       const msg = msgIndex >= 0 ? this.messages[msgIndex] : null
       if (msg) {
         Object.assign(msg, updates)
-        this.registerChangedFilesFromToolMessage(msg)
         if (!msg.duration && msg.startTime) {
           msg.duration = Date.now() - msg.startTime
         }
@@ -1862,6 +1840,14 @@ class SessionInstance {
       this.emit('fast-mode-change', state)
     })
 
+    // 文件变更统计（provider 构造好消息体，这里纯透传）
+    manager.on('file-change-summary', (summary) => {
+      if (!summary?.files?.length) return
+      this.messages.push(summary)
+      this.saveMessageToHistory(summary)
+      this.emit('message', summary)
+    })
+
     // CLI status
     manager.on('cli-status', (message) => {
       this.emit('cli-status', message)
@@ -1871,6 +1857,9 @@ class SessionInstance {
     manager.on('unknown_message', (message) => {
       const normalizedEvent = normalizeLegacyManagerEvent(message, this.provider)
       if (normalizedEvent) {
+        if (normalizedEvent.eventType === 'system-notification' && normalizedEvent.data?.type) {
+          this.syncSystemNotificationMessage(normalizedEvent.data.type, normalizedEvent.data)
+        }
         this.emit(normalizedEvent.eventType, normalizedEvent.data)
         return
       }
@@ -2009,7 +1998,6 @@ class SessionInstance {
     this.messages.push(displayMessage)
     this.rawMessages.push(userMessage)
     this.activeResponseUserMessageId = displayMessage.id
-    this.currentTurnChangedFiles = new Set()
 
     const msgToSave = { ...displayMessage }
     delete msgToSave.startTime
@@ -2129,77 +2117,6 @@ class SessionInstance {
     }
   }
 
-  collectCodexRewindPayload(userMessageId) {
-    const targetIndex = this.messages.findIndex(item => item.role === 'user' && item.id === userMessageId)
-    if (targetIndex === -1) {
-      throw new Error('Target user message not found')
-    }
-
-    const patches = []
-    const changedFiles = new Set()
-    let insertions = 0
-    let deletions = 0
-
-    for (let index = targetIndex + 1; index < this.messages.length; index += 1) {
-      const message = this.messages[index]
-      const diffText = extractDiffTextFromMessage(message)
-      if (!diffText) {
-        continue
-      }
-
-      patches.push({
-        messageId: message.id || `diff-${index}`,
-        diff: diffText
-      })
-
-      for (const filePath of parseUnifiedDiffPaths(diffText)) {
-        changedFiles.add(filePath)
-      }
-
-      const stats = collectUnifiedDiffStats(diffText)
-      insertions += stats.insertions
-      deletions += stats.deletions
-    }
-
-    return {
-      targetIndex,
-      files: Array.from(changedFiles),
-      insertions,
-      deletions,
-      patches
-    }
-  }
-
-  runReversePatchCheck(patches = [], { dryRun = false } = {}) {
-    if (!Array.isArray(patches) || patches.length === 0) {
-      return
-    }
-
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgui-rewind-'))
-
-    try {
-      const patchPath = path.join(tempDir, 'rewind.patch')
-      const combinedPatch = patches
-        .slice()
-        .reverse()
-        .map(patch => patch.diff)
-        .join('\n')
-      fs.writeFileSync(patchPath, combinedPatch, 'utf8')
-
-      const args = ['-R', '-p1', '-i', patchPath, '-s']
-      if (dryRun) {
-        args.unshift('--dry-run')
-      }
-
-      execFileSync('patch', args, {
-        cwd: this.projectPath,
-        stdio: 'pipe'
-      })
-    } finally {
-      fs.rmSync(tempDir, { recursive: true, force: true })
-    }
-  }
-
   applyRewindLocally(userMessageId, rewindData = {}) {
     const targetIndex = this.messages.findIndex(item => item.role === 'user' && item.id === userMessageId)
     if (targetIndex === -1) {
@@ -2235,7 +2152,6 @@ class SessionInstance {
     this.messages.push(rewindNotice)
 
     this.activeResponseUserMessageId = null
-    this.currentTurnChangedFiles = new Set()
     this.pendingControlRequest = null
     this.pendingControlRequests.clear()
 
@@ -2311,19 +2227,13 @@ class SessionInstance {
     const normalizedRequest = { ...request }
 
     if (normalizedRequest?.subtype === 'changed_files') {
-      if (this.provider === 'claude') {
-        normalizedRequest.subtype = 'rewind_files'
-      }
       normalizedRequest.dry_run = true
     } else if (normalizedRequest?.subtype === 'rewind') {
-      if (this.provider === 'claude') {
-        normalizedRequest.subtype = 'rewind_files'
-      }
       normalizedRequest.dry_run = false
     }
 
     if (
-      this.provider === 'codex' &&
+      normalizedRequest?.user_message_id &&
       (
         normalizedRequest?.subtype === 'changed_files' ||
         normalizedRequest?.subtype === 'rewind' ||
@@ -2337,73 +2247,6 @@ class SessionInstance {
     return normalizedRequest
   }
 
-  registerChangedFilesFromToolMessage(message) {
-    if (!this.activeResponseUserMessageId || !this.isProcessing) {
-      return
-    }
-
-    for (const filePath of extractChangedFilesFromToolMessage(message)) {
-      this.currentTurnChangedFiles.add(filePath)
-    }
-  }
-
-  appendChangedFilesSummaryMessage(assistantMessage) {
-    if (!assistantMessage || this.currentTurnChangedFiles.size === 0) {
-      return
-    }
-
-    const files = Array.from(this.currentTurnChangedFiles)
-    assistantMessage.changedFilesSummary = {
-      count: files.length,
-      files
-    }
-
-    historyManager.updateMessage(this.projectId, this.id, assistantMessage.id, {
-      changedFilesSummary: assistantMessage.changedFilesSummary
-    })
-  }
-
-  applyChangedFilesSummaryMessage(assistantMessage, files = []) {
-    if (!assistantMessage) {
-      return
-    }
-
-    const normalizedFiles = Array.from(new Set(
-      (Array.isArray(files) ? files : [])
-        .map(file => (typeof file === 'string' ? file.trim() : null))
-        .filter(Boolean)
-    ))
-
-    if (normalizedFiles.length === 0) {
-      delete assistantMessage.changedFilesSummary
-      historyManager.updateMessage(this.projectId, this.id, assistantMessage.id, {
-        changedFilesSummary: null
-      })
-      this.emit('message-update', {
-        messageId: assistantMessage.id,
-        updates: {
-          changedFilesSummary: null
-        }
-      })
-      return
-    }
-
-    assistantMessage.changedFilesSummary = {
-      count: normalizedFiles.length,
-      files: normalizedFiles
-    }
-
-    historyManager.updateMessage(this.projectId, this.id, assistantMessage.id, {
-      changedFilesSummary: assistantMessage.changedFilesSummary
-    })
-    this.emit('message-update', {
-      messageId: assistantMessage.id,
-      updates: {
-        changedFilesSummary: assistantMessage.changedFilesSummary
-      }
-    })
-  }
-
   async requestChangedFilesForQuestion(userMessageId) {
     if (!userMessageId) {
       return []
@@ -2415,29 +2258,6 @@ class SessionInstance {
     })
 
     return extractChangedFilesFromControlResponse(response)
-  }
-
-  refreshChangedFilesSummary(userMessage, assistantMessage) {
-    if (!userMessage?.id || !assistantMessage?.id) {
-      return
-    }
-
-    this.requestChangedFilesForQuestion(userMessage.id)
-      .then((files) => {
-        const targetAssistantMessage = this.getAssistantMessageById(assistantMessage.id)
-        if (!targetAssistantMessage) {
-          return
-        }
-        this.applyChangedFilesSummaryMessage(targetAssistantMessage, files)
-      })
-      .catch((error) => {
-        logger.warn('[SessionInstance] Failed to refresh changed_files summary', {
-          sessionId: this.id,
-          userMessageId: userMessage.id,
-          assistantMessageId: assistantMessage.id,
-          error: error?.message || String(error)
-        })
-      })
   }
 
   trackPendingControlRequest(controlRequest) {
@@ -2613,72 +2433,34 @@ class SessionInstance {
 
     const normalizedRequest = this.normalizeControlRequestForProvider(request)
 
-    if (this.provider === 'codex' && normalizedRequest?.subtype === 'changed_files') {
-      const payload = this.collectCodexRewindPayload(normalizedRequest.user_message_id)
-      const response = this.buildSyntheticControlResponse('success', {
-        changed_files: payload.files,
-        filesChanged: payload.files,
-        restored_files: payload.files,
-        insertions: payload.insertions,
-        deletions: payload.deletions,
-        dry_run: true
-      })
-      this.emit('control-response', response)
-      return response
-    }
-
-    if (this.provider === 'codex' && normalizedRequest?.subtype === 'rewind') {
-      const payload = this.collectCodexRewindPayload(normalizedRequest.user_message_id)
-      this.runReversePatchCheck(payload.patches, { dryRun: true })
-
-      const response = this.runtimeManager.sendControlRequest
-        ? await this.runtimeManager.sendControlRequest(normalizedRequest)
-        : null
-
-      if (response?.response?.error) {
-        this.emit('control-response', response)
-        return response
-      }
-
-      this.runReversePatchCheck(payload.patches, { dryRun: false })
-      this.applyRewindLocally(normalizedRequest.user_message_id, {
-        changed_files: payload.files,
-        restored_files: payload.files,
-        insertions: payload.insertions,
-        deletions: payload.deletions
-      })
-
-      if (response) {
-        this.emit('control-response', response)
-        return response
-      }
-
-      const syntheticResponse = this.buildSyntheticControlResponse('success', {
-        changed_files: payload.files,
-        restored_files: payload.files,
-        insertions: payload.insertions,
-        deletions: payload.deletions,
-        dry_run: false
-      })
-      this.emit('control-response', syntheticResponse)
-      return syntheticResponse
-    }
-
     if (this.runtimeManager.sendControlRequest) {
-      if (this.provider === 'claude') {
-        this.trackPendingControlRequest(normalizedRequest)
-      }
+      this.trackPendingControlRequest(normalizedRequest)
 
       const response = await this.runtimeManager.sendControlRequest(normalizedRequest)
       if (response) {
-        if (this.provider === 'claude') {
-          const responseRequestId = response?.response?.request_id || response?.request_id || null
-          this.consumePendingControlRequest(responseRequestId)
+        const responseRequestId = response?.response?.request_id || response?.request_id || null
+        const pendingRequest = this.consumePendingControlRequest(responseRequestId) || normalizedRequest
+        const payload = this.extractControlResponsePayload(response)
+
+        if (
+          pendingRequest &&
+          payload &&
+          !payload.error &&
+          (
+            pendingRequest?.subtype === 'rewind' ||
+            pendingRequest?.subtype === 'rewind_files'
+          ) &&
+          pendingRequest?.user_message_id &&
+          pendingRequest?.dry_run !== true
+        ) {
+          this.applyRewindLocally(pendingRequest.user_message_id, payload)
         }
-        if (normalizedRequest?.subtype === 'rewind_and_fork' && normalizedRequest?.user_message_id) {
-          this.applyRewindLocally(normalizedRequest.user_message_id, this.extractControlResponsePayload(response) || {})
+
+        if (pendingRequest?.subtype === 'rewind_and_fork' && pendingRequest?.user_message_id) {
+          this.applyRewindLocally(pendingRequest.user_message_id, payload || {})
         }
-        this.appendControlOutcomeMessage(normalizedRequest, response)
+
+        this.appendControlOutcomeMessage(pendingRequest, response)
         this.emit('control-response', response)
         return response
       }

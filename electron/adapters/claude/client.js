@@ -845,10 +845,17 @@ class ClaudeClient {
    * Send control request (主动请求，如切换权限模式)
    */
   sendControlRequest(request) {
+    const normalizedRequest = { ...(request || {}) }
+    const requestId =
+      normalizedRequest.__ccguiRequestId ||
+      `control_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+    delete normalizedRequest.__ccguiRequestId
+
     const controlRequestMessage = {
       type: 'control_request',
-      request: request,
-      request_id: `control_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      request: normalizedRequest,
+      request_id: requestId
     }
     this.sendMessage(controlRequestMessage)
   }

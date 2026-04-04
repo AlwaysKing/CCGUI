@@ -16,6 +16,7 @@ import RewindNoticeMessage from './RewindNoticeMessage.vue'
 import PermissionResultMessage from './PermissionResultMessage.vue'
 import UnknownMessage from './UnknownMessage.vue'
 import SystemNotificationMessage from './SystemNotificationMessage.vue'
+import FileChangeSummaryMessage from './FileChangeSummaryMessage.vue'
 import TaskCompleteMessage from './TaskCompleteMessage.vue'
 import { useMessageList } from '../../composables/useMessageList'
 import { useMessage } from '../../composables/useMessage'
@@ -132,7 +133,8 @@ const shouldHide = computed(() => {
   }
   if (
     props.message.role === 'status' ||
-    props.message.role === 'task_complete'
+    props.message.role === 'task_complete' ||
+    props.message.role === 'file_change_summary'
   ) {
     return false
   }
@@ -219,7 +221,8 @@ const showAvatar = computed(() => {
   return props.message.role !== 'status' &&
          props.message.role !== 'system' &&
          props.message.role !== 'system_notification' &&
-         props.message.role !== 'task_complete'
+         props.message.role !== 'task_complete' &&
+         props.message.role !== 'file_change_summary'
 })
 
 // 权限结果是否是拒绝
@@ -272,7 +275,9 @@ const messageSpacing = computed(() => props.chatTheme?.messageSpacing || 'large'
 const isFloatingStatus = computed(() => statusStyle.value === 'floating')
 
 const showMessageStats = computed(() => {
-  return props.message.role !== 'system_notification' && statusStyle.value !== 'hidden'
+  return props.message.role !== 'system_notification' &&
+         props.message.role !== 'file_change_summary' &&
+         statusStyle.value !== 'hidden'
 })
 
 const showTopStats = computed(() => showMessageStats.value && !isFloatingStatus.value)
@@ -599,6 +604,11 @@ onUnmounted(() => {
       <!-- System notification 消息 -->
       <template v-else-if="message.role === 'system_notification'">
         <SystemNotificationMessage :message="message" />
+      </template>
+
+      <!-- File change summary 消息 -->
+      <template v-else-if="message.role === 'file_change_summary'">
+        <FileChangeSummaryMessage :message="message" />
       </template>
 
       <!-- Task complete 消息 -->

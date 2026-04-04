@@ -49,10 +49,14 @@ class ClaudeAdapter extends ClaudeClient {
     this.teamNameToTeamId = new Map()
     this.sidechainMessageIds = new Set()
     this.turnInterrupted = false
+    this.currentTurnUserMessageId = null
     // rewind 预获取状态：实际还原前先发 dry_run=true，拿到文件数据后再执行并注入响应
     this.rewindPreviewStage = null  // null | 'fetching' | 'pending'
     this.rewindPreviewData = null   // { files, insertions, deletions }
     this.pendingRewindRequest = null
+    this.pendingRewindExecuteRequestId = null
+    // dry_run 请求分流：rewind 预获取 / FileChangeSummary 都走 rewind_files + dry_run
+    this.pendingDryRunRequests = new Map()
   }
 
   getCollaborativeReadOnlyFields() {
@@ -878,6 +882,10 @@ class ClaudeAdapter extends ClaudeClient {
   }
 
   async sendMessage(message) {
+    if (message?.type === 'user') {
+      this.currentTurnUserMessageId = message.uuid || message.user_message_id || this.currentTurnUserMessageId || null
+    }
+
     if (message?.type === 'user' && Array.isArray(message?.attachments)) {
       const transformed = {
         ...message,
@@ -924,6 +932,9 @@ class ClaudeAdapter extends ClaudeClient {
     if (message.type === 'control_response') {
       // 检测中断确认：control_response 的 request_id 以 interrupt_ 开头
       const requestId = message?.response?.request_id || ''
+      const requestContext = requestId
+        ? (this.pendingDryRunRequests.get(requestId) || null)
+        : null
       if (requestId.startsWith('interrupt_')) {
         this.turnInterrupted = true
         this.emitProviderSystemNotification('turn-interrupted', {
@@ -933,7 +944,8 @@ class ClaudeAdapter extends ClaudeClient {
 
       // rewind 预获取流程：先收到 dry_run=true 响应，再发实际 rewind_files，再收到执行响应
       const payload = message?.response?.response || {}
-      if (this.rewindPreviewStage === 'fetching') {
+      if (this.rewindPreviewStage === 'fetching' && requestContext?.kind === 'rewind-preview') {
+        this.pendingDryRunRequests.delete(requestId)
         if (payload?.error) {
           this.rewindPreviewStage = null
           this.rewindPreviewData = null
@@ -951,14 +963,19 @@ class ClaudeAdapter extends ClaudeClient {
         const pendingRequest = this.pendingRewindRequest
         this.pendingRewindRequest = null
         if (pendingRequest) {
-          super.sendControlRequest(pendingRequest)
+          const executeRequestId = `control_rewind_execute_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+          this.pendingRewindExecuteRequestId = executeRequestId
+          super.sendControlRequest({
+            ...pendingRequest,
+            __ccguiRequestId: executeRequestId
+          })
           return
         }
 
         this.rewindPreviewStage = null
         this.rewindPreviewData = null
       }
-      if (this.rewindPreviewStage === 'pending') {
+      if (this.rewindPreviewStage === 'pending' && requestId === this.pendingRewindExecuteRequestId) {
         // rewind_files 执行响应：注入预获取的文件数据，对上层屏蔽 provider 差异
         const preview = this.rewindPreviewData || {}
         const responseFiles = payload.changed_files || payload.filesChanged || payload.restored_files || []
@@ -977,8 +994,30 @@ class ClaudeAdapter extends ClaudeClient {
         }
         this.rewindPreviewStage = null
         this.rewindPreviewData = null
+        this.pendingRewindExecuteRequestId = null
         this.emit('control-response', enriched)
         return
+      }
+
+      // 文件变更摘要：拦截 changed_files（rewind_files dry_run）响应，提取文件数据后向上发出
+      if (requestContext?.kind === 'file-change-summary') {
+        this.pendingDryRunRequests.delete(requestId)
+        const files = payload.changed_files || payload.filesChanged || payload.restored_files || []
+        // Claude 的 changed_files 复用 rewind_files dry_run，
+        // 返回的是“回滚将会如何变更”的统计，需要翻转回“本轮实际修改”的方向。
+        const insertions = payload.deletions || payload.lines_removed || 0
+        const deletions = payload.insertions || payload.lines_added || 0
+        if (Array.isArray(files) && files.length > 0) {
+          this.emit('file-change-summary', {
+            id: `file-change-summary-${Date.now()}`,
+            role: 'file_change_summary',
+            files: files.map(f => typeof f === 'string' ? { path: f } : f),
+            totalFiles: files.length,
+            totalInsertions: insertions,
+            totalDeletions: deletions,
+            timestamp: new Date()
+          })
+        }
       }
 
       this.emit('control-response', message)
@@ -1018,6 +1057,7 @@ class ClaudeAdapter extends ClaudeClient {
     }
 
     if (message.type === 'result') {
+      const completedUserMessageId = this.currentTurnUserMessageId
       this.clearPendingCollaborativePreAgents()
       this.clearPendingAgentToolUses()
       this.currentAssistantMessage = null
@@ -1036,7 +1076,13 @@ class ClaudeAdapter extends ClaudeClient {
           message: String(errorText),
           metadata: message
         })
+      } else if (completedUserMessageId) {
+        this.sendControlRequest({
+          subtype: 'changed_files',
+          user_message_id: completedUserMessageId
+        })
       }
+      this.currentTurnUserMessageId = null
       this.emit('result', message)
       return
     }
@@ -1060,25 +1106,44 @@ class ClaudeAdapter extends ClaudeClient {
     })
   }
 
+  // ─── 文件变更统计（通过 changed_files 请求的响应）──────────────
+
   sendControlRequest(request) {
-    if (request?.subtype === 'set_session_submodel' && request.model) {
+    const normalizedRequest = { ...request }
+
+    if (normalizedRequest?.subtype === 'changed_files') {
+      const requestId = `control_file_change_summary_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+      this.pendingDryRunRequests.set(requestId, {
+        kind: 'file-change-summary'
+      })
+      normalizedRequest.__ccguiRequestId = requestId
+      normalizedRequest.subtype = 'rewind_files'
+      normalizedRequest.dry_run = true
+    } else if (normalizedRequest?.subtype === 'rewind') {
+      normalizedRequest.subtype = 'rewind_files'
+      normalizedRequest.dry_run = false
+    }
+
+    delete normalizedRequest.numTurns
+
+    if (normalizedRequest?.subtype === 'set_session_submodel' && normalizedRequest.model) {
       super.sendControlRequest({
         subtype: 'set_model',
-        model: String(request.model)
+        model: String(normalizedRequest.model)
       })
 
       this.envInfo = {
         ...this.envInfo,
-        model: String(request.model),
+        model: String(normalizedRequest.model),
         provider: 'claude',
         providerPid: this.getPid() || null
       }
       this.emit('env-info', this.envInfo)
-      if (request?.silent !== true) {
+      if (normalizedRequest?.silent !== true) {
         this.emit('system-notification', {
           type: 'session-model-changed',
           provider: 'claude',
-          model: String(request.model)
+          model: String(normalizedRequest.model)
         })
       }
       return
@@ -1086,32 +1151,38 @@ class ClaudeAdapter extends ClaudeClient {
 
     // rewind_files 实际还原前，先发 dry_run=true 获取文件列表与统计
     // provider 对外始终吐统一的 rewind 响应，屏蔽 Claude CLI 的返回差异
-    if (request?.subtype === 'rewind_files' && !request?.dry_run && request?.user_message_id) {
+    if (normalizedRequest?.subtype === 'rewind_files' && !normalizedRequest?.dry_run && normalizedRequest?.user_message_id) {
       this.rewindPreviewStage = 'fetching'
       this.rewindPreviewData = null
-      this.pendingRewindRequest = request
+      this.pendingRewindExecuteRequestId = null
+      this.pendingRewindRequest = normalizedRequest
+      const previewRequestId = `control_rewind_preview_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+      this.pendingDryRunRequests.set(previewRequestId, {
+        kind: 'rewind-preview'
+      })
       super.sendControlRequest({
-        ...request,
-        dry_run: true
+        ...normalizedRequest,
+        dry_run: true,
+        __ccguiRequestId: previewRequestId
       })
       return
     }
 
-    super.sendControlRequest(request)
+    super.sendControlRequest(normalizedRequest)
 
-    if (request?.subtype === 'set_model' && request.model) {
+    if (normalizedRequest?.subtype === 'set_model' && normalizedRequest.model) {
       this.envInfo = {
         ...this.envInfo,
-        model: String(request.model),
+        model: String(normalizedRequest.model),
         provider: 'claude',
         providerPid: this.getPid() || null
       }
       this.emit('env-info', this.envInfo)
-      if (request?.silent !== true) {
+      if (normalizedRequest?.silent !== true) {
         this.emit('system-notification', {
           type: 'session-model-changed',
           provider: 'claude',
-          model: String(request.model)
+          model: String(normalizedRequest.model)
         })
       }
     }

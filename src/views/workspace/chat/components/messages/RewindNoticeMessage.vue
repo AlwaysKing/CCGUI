@@ -22,6 +22,7 @@ const props = defineProps({
 
 const emit = defineEmits(['toggleCollapse', 'jumpToMessage'])
 const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
+const restoredFilesCount = computed(() => props.message.restoredFilesCount ?? props.message.restoredFiles?.length ?? 0)
 
 // 预览文本
 const previewText = computed(() => {
@@ -54,30 +55,77 @@ function jumpToMessage(event) {
       <template v-if="isTextStyle">
         <div class="rewind-ghost-shell">
           <div class="rewind-ghost-header" @click="toggleCollapse">
-            <span class="rewind-title ghost">还原文件 ({{ message.restoredFilesCount ?? message.restoredFiles?.length ?? 0 }})</span>
-            <span class="rewind-collapse-btn ghost">{{ isCollapsed ? '▶' : '▼' }}</span>
-            <span class="rewind-preview-text ghost">{{ previewText }}</span>
-            <span
-              class="rewind-hint ghost"
-              @click="jumpToMessage"
-              title="跳转到原消息"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
-                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
-              </svg>
-            </span>
+            <div class="rewind-ghost-info">
+              <span class="rewind-title ghost">还原文件 ({{ restoredFilesCount }})</span>
+              <span class="rewind-collapse-btn ghost" aria-hidden="true">
+                <svg v-if="isCollapsed" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M4.5 3.25L7.75 6L4.5 8.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M3.25 4.5L6 7.75L8.75 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <span v-if="isCollapsed" class="rewind-preview-text ghost">{{ previewText }}</span>
+              <span
+                v-if="isCollapsed"
+                class="rewind-hint ghost"
+                @click="jumpToMessage"
+                title="跳转到原消息"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                </svg>
+              </span>
+            </div>
           </div>
 
           <div v-if="!isCollapsed" class="rewind-ghost-body">
-            <div class="rewind-ghost-divider"></div>
-            <div v-if="message.restoredFiles && message.restoredFiles.length > 0" class="rewind-ghost-files">
-              <div
-                v-for="(file, fileIndex) in message.restoredFiles"
-                :key="`ghost-${fileIndex}`"
-                class="rewind-ghost-file"
-              >
-                {{ file }}
+            <div class="rewind-ghost-card">
+              <div class="rewind-tool-section">
+                <div class="rewind-section-label">原消息</div>
+                <div class="rewind-section-content">
+                  <div class="rewind-message-box">
+                    <button
+                      class="rewind-inline-action ghost in-box"
+                      type="button"
+                      @click="jumpToMessage"
+                      title="跳转到原消息"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                      </svg>
+                    </button>
+                    <div class="rewind-message-box-text">
+                      {{ messageContent }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rewind-tool-section">
+                <div class="rewind-section-label">
+                  变更内容
+                  <span class="rewind-inline-stats">
+                    <span class="stat-mini deletions">-{{ message.deletions || 0 }}</span>
+                    <span class="stat-mini separator">/</span>
+                    <span class="stat-mini insertions">+{{ message.insertions || 0 }}</span>
+                    <span class="stat-unit">行</span>
+                  </span>
+                </div>
+                <div v-if="message.restoredFiles && message.restoredFiles.length > 0" class="rewind-section-content">
+                  <div class="rewind-files-list">
+                    <div
+                      v-for="(file, fileIndex) in message.restoredFiles"
+                      :key="`ghost-${fileIndex}`"
+                      class="rewind-file-item"
+                    >
+                      <span class="file-icon">📝</span>
+                      <span class="file-path">{{ file }}</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -224,49 +272,54 @@ function jumpToMessage(event) {
 .rewind-ghost-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: flex-start;
   min-width: 0;
   cursor: pointer;
-  line-height: 1.2;
   margin: 0;
   padding: 0;
+  background: transparent;
+  position: relative;
+}
+
+.rewind-ghost-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 20px;
 }
 
 .rewind-ghost-body {
-  margin-top: 0;
+  margin-top: 8px;
   padding-top: 0;
+  padding-left: 24px;
 }
 
-.rewind-ghost-divider {
-  height: 1px;
-  background: rgba(245, 158, 11, 0.16);
-  margin: 2px 0 4px 0;
-}
-
-.rewind-ghost-files {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.rewind-ghost-file {
-  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
-  font-size: 12px;
-  color: #d4d4d8;
-  line-height: 1.5;
-  word-break: break-all;
+.rewind-ghost-card {
+  background: linear-gradient(135deg, #1E1E2E 0%, #18181B 100%);
+  border: 1px solid #F59E0B;
+  border-left: 3px solid #F59E0B;
+  border-radius: 8px;
+  overflow: hidden;
+  padding: 12px 14px;
 }
 
 .rewind-title.ghost {
+  display: inline-flex;
+  align-items: center;
   font-size: 12px;
   font-weight: 500;
   color: #f59e0b;
+  line-height: 20px;
   flex-shrink: 0;
 }
 
 .rewind-preview-text.ghost {
-  flex: 0 1 auto;
   min-width: 0;
+  flex: 1 1 auto;
+  color: #8B93A7;
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -278,9 +331,18 @@ function jumpToMessage(event) {
 }
 
 .rewind-collapse-btn.ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
   font-size: 10px;
   color: #888;
   flex-shrink: 0;
+}
+
+.rewind-collapse-btn.ghost svg {
+  display: block;
 }
 
 .rewind-notice.rewind-collapsed {
@@ -439,6 +501,10 @@ function jumpToMessage(event) {
   border-top: 1px solid rgba(245, 158, 11, 0.12);
 }
 
+.rewind-notice.surface-ghost .rewind-section-label {
+  color: #a1a1aa;
+}
+
 .rewind-tool-section {
   margin-top: 10px;
 }
@@ -469,7 +535,44 @@ function jumpToMessage(event) {
 }
 
 .rewind-notice.surface-ghost .rewind-message-box {
-  background: rgba(245, 158, 11, 0.04);
+  background: #18181B;
+  color: #a1a1aa;
+}
+
+.rewind-message-box {
+  position: relative;
+  padding-right: 32px;
+}
+
+.rewind-inline-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.rewind-inline-action:hover {
+  color: #F59E0B;
+}
+
+.rewind-inline-action.in-box {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.rewind-message-box-text {
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .rewind-inline-stats {
@@ -491,7 +594,7 @@ function jumpToMessage(event) {
 }
 
 .rewind-notice.surface-ghost .rewind-files-list {
-  background: rgba(245, 158, 11, 0.04);
+  background: #18181B;
 }
 
 .rewind-file-item {

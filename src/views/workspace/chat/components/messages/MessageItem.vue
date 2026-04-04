@@ -125,6 +125,9 @@ const sessionStore = useSessionStore()
 
 // 是否因为前面的用户消息回答被折叠而应该隐藏
 const shouldHide = computed(() => {
+  if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
+    return false
+  }
   if (
     props.message.role === 'status' ||
     props.message.role === 'task_complete'

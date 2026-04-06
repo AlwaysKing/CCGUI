@@ -300,7 +300,9 @@ function buildHistoryUserMessageFromTurn(turn = {}) {
       : normalizedContent,
     attachments: Array.isArray(turn.attachments) ? turn.attachments : [],
     timestamp,
-    ...(turn.fileChangeSummary ? { fileChangeSummary: turn.fileChangeSummary } : {}),
+    ...(Number.isFinite(turn.duration) ? { duration: turn.duration } : {}),
+    ...(Number.isFinite(turn.numTurns) ? { numTurns: turn.numTurns } : {}),
+    ...(turn.usage ? { usage: turn.usage } : {}),
     responseCollapsed: Boolean(turn.hasAssistantResponse),
     historyTurn: {
       turnId: turn.turnId,
@@ -324,36 +326,20 @@ function buildHistoryIndexMessage(entry = {}) {
   return buildHistoryUserMessageFromTurn(entry)
 }
 
-function buildFileChangeSummaryForUserMessage(summary = {}) {
-  const files = Array.isArray(summary?.files)
-    ? summary.files
-        .map(file => {
-          if (typeof file === 'string') {
-            const trimmed = file.trim()
-            return trimmed ? { path: trimmed } : null
-          }
-          if (file && typeof file === 'object' && typeof file.path === 'string' && file.path.trim()) {
-            return {
-              path: file.path.trim(),
-              ...(Number.isFinite(file.insertions) ? { insertions: file.insertions } : {}),
-              ...(Number.isFinite(file.deletions) ? { deletions: file.deletions } : {})
-            }
-          }
-          return null
-        })
-        .filter(Boolean)
-    : []
-
-  if (files.length === 0) {
-    return null
+function isIndexVisibleMessage(message = null) {
+  if (!message || typeof message !== 'object') {
+    return false
   }
 
-  return {
-    files,
-    totalFiles: Number(summary?.totalFiles) || files.length,
-    totalInsertions: Number(summary?.totalInsertions) || 0,
-    totalDeletions: Number(summary?.totalDeletions) || 0
+  if (message.role === 'file_change_summary') {
+    return true
   }
+
+  if (message.role === 'system_notification' && message.scope === 'session') {
+    return true
+  }
+
+  return message.role === 'system' && message.subtype === 'rewind-notice'
 }
 
 const SESSION_NOTIFICATION_TYPES = new Set([
@@ -766,8 +752,7 @@ class SessionInstance {
 
         for (const message of legacyMessages) {
           if (
-            message?.role === 'system_notification' &&
-            message?.scope === 'session' &&
+            isIndexVisibleMessage(message) &&
             message?.id &&
             !indexedMessageIds.has(message.id)
           ) {
@@ -1156,12 +1141,17 @@ class SessionInstance {
       return false
     }
 
+    const payload = event.data || null
+
+    if (event.eventType === 'message' && isIndexVisibleMessage(payload)) {
+      return false
+    }
+
     if (event.eventType === 'normal-exit' || event.eventType === 'abnormal-exit') {
       return false
     }
 
     if (event.eventType === 'system-notification') {
-      const payload = event.data || null
       if (this.resolveNotificationScope(payload?.type, payload) === 'session') {
         return false
       }
@@ -1319,7 +1309,14 @@ class SessionInstance {
       }
 
       if (Object.keys(updates).length > 0 && item.id) {
-        historyManager.updateMessage(this.projectId, this.id, item.id, updates)
+        if (item.role === 'user') {
+          historyManager.updateTurn(this.projectId, this.id, item.id, updates)
+        } else {
+          this.emit('message-update', {
+            messageId: item.id,
+            updates
+          })
+        }
       }
     }
   }
@@ -1535,7 +1532,7 @@ class SessionInstance {
       latestUserMessage.duration = enrichedResult.duration_ms
       latestUserMessage.numTurns = enrichedResult.num_turns
       latestUserMessage.usage = enrichedResult.usage
-      historyManager.updateMessage(this.projectId, this.id, latestUserMessage.id, {
+      historyManager.updateTurn(this.projectId, this.id, latestUserMessage.id, {
         duration: latestUserMessage.duration,
         numTurns: latestUserMessage.numTurns,
         usage: latestUserMessage.usage
@@ -1899,28 +1896,11 @@ class SessionInstance {
     // 文件变更统计（provider 构造好消息体，这里纯透传）
     manager.on('file-change-summary', (summary) => {
       if (!summary?.files?.length) return
-      const userMessageId = typeof summary?.userMessageId === 'string' ? summary.userMessageId : null
-      const fileChangeSummary = buildFileChangeSummaryForUserMessage(summary)
-
-      if (userMessageId && fileChangeSummary) {
-        historyManager.updateTurn(this.projectId, this.id, userMessageId, {
-          fileChangeSummary
-        })
-        const targetUserMessage = this.messages.find(message => message?.role === 'user' && message?.id === userMessageId)
-        if (targetUserMessage) {
-          targetUserMessage.fileChangeSummary = fileChangeSummary
-          this.emit('message-update', {
-            messageId: targetUserMessage.id,
-            updates: {
-              fileChangeSummary
-            }
-          })
-        }
-        this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
-      }
 
       this.messages.push(summary)
       this.saveMessageToHistory(summary)
+      historyManager.appendIndexMessage(this.projectId, this.id, summary)
+      this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
       this.emit('message', summary)
     })
 
@@ -2075,10 +2055,7 @@ class SessionInstance {
     this.rawMessages.push(userMessage)
     this.activeResponseUserMessageId = displayMessage.id
 
-    const msgToSave = { ...displayMessage }
-    delete msgToSave.startTime
-    historyManager.appendMessage(this.projectId, this.id, msgToSave)
-    this.savedMessageIds.add(displayMessage.id)
+    this.saveMessageToHistory(displayMessage)
 
     this.emit('message', displayMessage)
 
@@ -2106,16 +2083,7 @@ class SessionInstance {
     let savedCount = 0
     for (const msg of this.messages) {
       if (!this.savedMessageIds.has(msg.id)) {
-        // 准备保存的消息副本
-        const msgToSave = { ...msg }
-
-        // 移除不需要保存的运行时字段
-        delete msgToSave.isStreaming
-        delete msgToSave.isExecuting
-        delete msgToSave.startTime
-
-        historyManager.appendMessage(this.projectId, this.id, msgToSave)
-        this.savedMessageIds.add(msg.id)
+        this.saveMessageToHistory(msg)
         savedCount++
       }
     }
@@ -2133,19 +2101,7 @@ class SessionInstance {
       return // 已经保存过了
     }
 
-    // 准备保存的消息副本
-    const msgToSave = { ...message }
-
-    // 移除不需要保存的运行时字段
-    delete msgToSave.isStreaming
-    delete msgToSave.isExecuting
-    delete msgToSave.startTime
-    delete msgToSave.toolInputBuffer  // 工具输入缓冲区，完整输入已在 toolInput 中
-
-    historyManager.appendMessage(this.projectId, this.id, msgToSave)
     this.savedMessageIds.add(message.id)
-
-    logger.debug(`[SessionInstance] Saved message ${message.id} to history`)
   }
 
   getLatestUserMessage() {
@@ -2235,6 +2191,8 @@ class SessionInstance {
     this.pendingControlRequests.clear()
 
     this.saveMessageToHistory(rewindNotice)
+    historyManager.appendIndexMessage(this.projectId, this.id, rewindNotice)
+    this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
     this.emit('message', rewindNotice)
 
     return this.messages

@@ -3131,24 +3131,37 @@ export const useSessionStore = defineStore('session', () => {
       operationId && (
         data.type === 'session-runtime-ready' ||
         data.type === 'session-config-applied' ||
-        data.type === 'session-effort-changed'
+        data.type === 'session-effort-changed' ||
+        data.type === 'mcp-server-ready' ||
+        data.type === 'mcp-server-error'
       )
     ) {
       const pendingMessage = [...session.messages].reverse().find(message =>
         message.role === 'system_notification' &&
-        (message.notificationType === 'session-runtime-starting' || message.notificationType === 'session-runtime-restarting') &&
+        (
+          message.notificationType === 'session-runtime-starting' ||
+          message.notificationType === 'session-runtime-restarting' ||
+          message.notificationType === 'mcp-server-starting'
+        ) &&
         message.data?.operationId === operationId
       )
 
       if (pendingMessage) {
         const applyUpdate = () => {
+          const startedAt = pendingMessage.data?.startedAt || pendingMessage.timestamp?.getTime?.() || Date.now()
+          const resolvedDurationMs = Number.isFinite(data.durationMs)
+            ? data.durationMs
+            : Number.isFinite(pendingMessage.data?.durationMs)
+              ? pendingMessage.data.durationMs
+              : Math.max(0, Date.now() - startedAt)
+
           pendingMessage.notificationType = data.type
           pendingMessage.scope = resolveNotificationScope(data.type, data)
           pendingMessage.data = {
             ...pendingMessage.data,
             ...data,
             completedAt: Date.now(),
-            durationMs: data.durationMs ?? pendingMessage.data?.durationMs ?? null
+            durationMs: resolvedDurationMs
           }
           pendingMessage.timestamp = new Date()
         }

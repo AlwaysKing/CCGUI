@@ -127,6 +127,7 @@ function closeImagePreview() {
 <style scoped>
 .message-user-container {
   display: flex;
+  width: 100%;
   flex-direction: column;
   align-items: flex-end;
   max-width: 100%;
@@ -134,26 +135,30 @@ function closeImagePreview() {
 
 .message-content.user-content {
   width: fit-content;
-  max-width: 100%;
+  max-width: calc(100% - 100px);
 }
 
 .message-text {
+  max-width: 100%;
   padding: 12px 16px;
   border-radius: 12px;
   line-height: 1.5;
-  overflow-x: auto;
   position: relative;
   cursor: text;
   white-space: pre-wrap;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   background: #3F3F46;
   color: #E4E4E7;
 }
 
 .message-text.surface-ghost {
-  padding: 0;
+  padding: 12px 16px;
   background: transparent;
   color: #E4E4E7;
-  border-radius: 0;
+  border: 1px solid rgba(228, 228, 231, 0.2);
+  border-radius: 12px;
 }
 
 .user-attachments {

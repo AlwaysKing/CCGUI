@@ -3,7 +3,7 @@
  * RewindNoticeMessage - 还原消息通知组件
  * 从 ChatWindow.vue 提取
  */
-import { computed } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 const props = defineProps({
   message: {
@@ -21,6 +21,16 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['toggleCollapse', 'jumpToMessage'])
+const wrapperRef = ref(null)
+const connectorPath = ref('')
+const connectorVisible = ref(false)
+let connectorFrame = 0
+let resizeObserver = null
+let mutationObserver = null
+let observedSource = null
+let observedTarget = null
+let observedContainer = null
+
 const isTextStyle = computed(() => false)
 const restoredFilesCount = computed(() => props.message.restoredFilesCount ?? props.message.restoredFiles?.length ?? 0)
 const rewindMode = computed(() => props.message.rewindMode === 'patch' ? 'patch' : 'reset')
@@ -52,10 +62,160 @@ function jumpToMessage(event) {
   event.stopPropagation()
   emit('jumpToMessage', props.message.rewindToMessageId)
 }
+
+function scheduleConnectorUpdate() {
+  if (connectorFrame) return
+  connectorFrame = window.requestAnimationFrame(() => {
+    connectorFrame = 0
+    updateConnector()
+  })
+}
+
+function resolveTargetElements() {
+  const source = wrapperRef.value
+  const targetId = String(props.message?.rewindToMessageId || '').trim()
+  if (!source || !targetId) {
+    return {
+      source: null,
+      target: null,
+      targetAnchor: null,
+      messagesContainer: null
+    }
+  }
+
+  const target = document.querySelector(`[data-message-id="${CSS.escape(targetId)}"]`)
+  const targetAnchor =
+    target?.querySelector('.message-user-container .message-text') ||
+    target?.querySelector('.message-user-container .message-content') ||
+    target ||
+    null
+  const messagesContainer = source.closest('.messages') || document.querySelector('.chat-window .messages')
+
+  return {
+    source,
+    target,
+    targetAnchor,
+    messagesContainer
+  }
+}
+
+function syncConnectorObservers() {
+  if (!resizeObserver) return
+
+  const { source, targetAnchor, messagesContainer } = resolveTargetElements()
+
+  if (observedSource !== source) {
+    if (observedSource) resizeObserver.unobserve(observedSource)
+    observedSource = source
+    if (observedSource) resizeObserver.observe(observedSource)
+  }
+
+  if (observedTarget !== targetAnchor) {
+    if (observedTarget) resizeObserver.unobserve(observedTarget)
+    observedTarget = targetAnchor
+    if (observedTarget) resizeObserver.observe(observedTarget)
+  }
+
+  if (observedContainer !== messagesContainer) {
+    if (observedContainer) resizeObserver.unobserve(observedContainer)
+    observedContainer = messagesContainer
+    if (observedContainer) resizeObserver.observe(observedContainer)
+  }
+}
+
+function updateConnector() {
+  const { source, target, targetAnchor, messagesContainer } = resolveTargetElements()
+  if (!source || !target || !targetAnchor) {
+    connectorVisible.value = false
+    connectorPath.value = ''
+    return
+  }
+
+  const containerRect = messagesContainer?.getBoundingClientRect?.()
+  const sourceRect = source.getBoundingClientRect()
+  const targetRect = targetAnchor.getBoundingClientRect()
+  const sourceVisible = !containerRect || (sourceRect.bottom >= containerRect.top && sourceRect.top <= containerRect.bottom)
+  const targetVisible = !containerRect || (targetRect.bottom >= containerRect.top && targetRect.top <= containerRect.bottom)
+
+  if (containerRect) {
+    if (!sourceVisible && !targetVisible) {
+      connectorVisible.value = false
+      connectorPath.value = ''
+      return
+    }
+  }
+
+  const visibleTop = containerRect ? containerRect.top + 8 : 0
+  const visibleBottom = containerRect ? containerRect.bottom - 8 : window.innerHeight
+  const clampY = (value) => Math.max(visibleTop, Math.min(value, visibleBottom))
+
+  const sourceX = sourceRect.right
+  const rawSourceY = sourceRect.top + Math.min(44, sourceRect.height * 0.5)
+  const sourceY = clampY(rawSourceY)
+  const targetX = targetRect.right + 6
+  const rawTargetY = targetRect.top + targetRect.height * 0.5
+  const targetY = clampY(rawTargetY)
+  const railOffset = 69
+  const maxRailX = containerRect ? containerRect.right - 11 : Math.max(sourceX, targetX) + railOffset
+  const railX = Math.min(Math.max(sourceX, targetX) + railOffset, maxRailX)
+
+  if (sourceVisible && targetVisible) {
+    connectorPath.value = `M ${sourceX} ${sourceY} L ${railX} ${sourceY} L ${railX} ${targetY} L ${targetX} ${targetY}`
+  } else if (sourceVisible) {
+    connectorPath.value = `M ${sourceX} ${sourceY} L ${railX} ${sourceY} L ${railX} ${targetY}`
+  } else {
+    connectorPath.value = `M ${railX} ${sourceY} L ${railX} ${targetY} L ${targetX} ${targetY}`
+  }
+  connectorVisible.value = true
+  syncConnectorObservers()
+}
+
+onMounted(() => {
+  resizeObserver = new ResizeObserver(() => {
+    scheduleConnectorUpdate()
+  })
+  mutationObserver = new MutationObserver(() => {
+    scheduleConnectorUpdate()
+  })
+
+  nextTick(() => {
+    scheduleConnectorUpdate()
+    mutationObserver?.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['style', 'class']
+    })
+  })
+  window.addEventListener('resize', scheduleConnectorUpdate)
+  window.addEventListener('scroll', scheduleConnectorUpdate, true)
+})
+
+onUnmounted(() => {
+  if (connectorFrame) {
+    window.cancelAnimationFrame(connectorFrame)
+    connectorFrame = 0
+  }
+  if (observedSource && resizeObserver) resizeObserver.unobserve(observedSource)
+  if (observedTarget && resizeObserver) resizeObserver.unobserve(observedTarget)
+  if (observedContainer && resizeObserver) resizeObserver.unobserve(observedContainer)
+  resizeObserver?.disconnect()
+  mutationObserver?.disconnect()
+  window.removeEventListener('resize', scheduleConnectorUpdate)
+  window.removeEventListener('scroll', scheduleConnectorUpdate, true)
+})
+
+watch(
+  () => [props.message?.rewindToMessageId, props.message?.id, props.isCollapsed],
+  async () => {
+    await nextTick()
+    scheduleConnectorUpdate()
+  }
+)
 </script>
 
 <template>
-  <div class="rewind-message-wrapper">
+  <div ref="wrapperRef" class="rewind-message-wrapper">
     <!-- 气泡 -->
     <div
       class="rewind-notice"
@@ -239,6 +399,11 @@ function jumpToMessage(event) {
       </template>
     </div>
   </div>
+  <Teleport to="body">
+    <svg v-if="connectorVisible" class="rewind-connector-overlay" aria-hidden="true">
+      <path :d="connectorPath" class="rewind-connector-path" />
+    </svg>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -247,6 +412,24 @@ function jumpToMessage(event) {
   width: 100%;
   max-width: min(100%, 600px);
   margin: 20px auto;
+}
+
+.rewind-connector-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 20;
+  overflow: visible;
+}
+
+.rewind-connector-path {
+  fill: none;
+  stroke: rgba(245, 158, 11, 0.42);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* Rewind notice 气泡 - 和参考项目保持一致 */

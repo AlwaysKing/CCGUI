@@ -1693,7 +1693,8 @@ async function handleRewind({ messageId, messageIndex, rewindMode = 'reset' }) {
   try {
     const previewResponse = await sessionStore.sendControlRequest({
       subtype: 'changed_files',
-      user_message_id: messageId
+      user_message_id: messageId,
+      preview_only: true
     })
 
     let data = null

@@ -1131,7 +1131,7 @@ class ClaudeAdapter extends ClaudeClient {
     if (normalizedRequest?.subtype === 'changed_files') {
       const requestId = `control_file_change_summary_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
       this.pendingDryRunRequests.set(requestId, {
-        kind: 'file-change-summary',
+        kind: normalizedRequest.preview_only === true ? 'file-change-preview' : 'file-change-summary',
         userMessageId: normalizedRequest.user_message_id || null
       })
       normalizedRequest.__ccguiRequestId = requestId
@@ -1146,6 +1146,7 @@ class ClaudeAdapter extends ClaudeClient {
     }
 
     delete normalizedRequest.numTurns
+    delete normalizedRequest.preview_only
 
     if (normalizedRequest?.subtype === 'set_session_submodel' && normalizedRequest.model) {
       super.sendControlRequest({

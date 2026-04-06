@@ -137,14 +137,6 @@ function updateConnector() {
   const sourceVisible = !containerRect || (sourceRect.bottom >= containerRect.top && sourceRect.top <= containerRect.bottom)
   const targetVisible = !containerRect || (targetRect.bottom >= containerRect.top && targetRect.top <= containerRect.bottom)
 
-  if (containerRect) {
-    if (!sourceVisible && !targetVisible) {
-      connectorVisible.value = false
-      connectorPath.value = ''
-      return
-    }
-  }
-
   const visibleTop = containerRect ? containerRect.top + 8 : 0
   const visibleBottom = containerRect ? containerRect.bottom - 8 : window.innerHeight
   const clampY = (value) => Math.max(visibleTop, Math.min(value, visibleBottom))
@@ -158,14 +150,19 @@ function updateConnector() {
   const railOffset = 69
   const maxRailX = containerRect ? containerRect.right - 11 : Math.max(sourceX, targetX) + railOffset
   const railX = Math.min(Math.max(sourceX, targetX) + railOffset, maxRailX)
+  const segments = []
 
-  if (sourceVisible && targetVisible) {
-    connectorPath.value = `M ${sourceX} ${sourceY} L ${railX} ${sourceY} L ${railX} ${targetY} L ${targetX} ${targetY}`
-  } else if (sourceVisible) {
-    connectorPath.value = `M ${sourceX} ${sourceY} L ${railX} ${sourceY} L ${railX} ${targetY}`
-  } else {
-    connectorPath.value = `M ${railX} ${sourceY} L ${railX} ${targetY} L ${targetX} ${targetY}`
+  if (sourceVisible) {
+    segments.push(`M ${sourceX} ${sourceY} L ${railX} ${sourceY}`)
   }
+
+  segments.push(`M ${railX} ${sourceY} L ${railX} ${targetY}`)
+
+  if (targetVisible) {
+    segments.push(`M ${railX} ${targetY} L ${targetX} ${targetY}`)
+  }
+
+  connectorPath.value = segments.join(' ')
   connectorVisible.value = true
   syncConnectorObservers()
 }

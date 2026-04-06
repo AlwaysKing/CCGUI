@@ -299,6 +299,13 @@ const showResponseToolbar = computed(() => {
 })
 
 const showResponseToolbarCollapseBtn = computed(() => Boolean(responseToolbarTarget.value?.response))
+const isResponseCollapsed = computed(() => Boolean(responseToolbarTarget.value?.message?.responseCollapsed))
+const responseToolbarLabel = computed(() => {
+  if (!showResponseToolbarCollapseBtn.value) {
+    return '没有回答'
+  }
+  return isResponseCollapsed.value ? '回答已折叠' : '折叠回答'
+})
 
 const sessionEnvInfo = computed(() => {
   if (!props.sessionId) {
@@ -691,107 +698,98 @@ onUnmounted(() => {
           :chat-theme="chatTheme"
           @copyContent="copyMessageContent"
         />
+        <div v-if="showResponseToolbarRewindBtn" class="user-action-row">
+          <div class="action-menu-wrapper" @click.stop>
+            <button
+              :ref="setToolbarMenuTrigger"
+              class="icon-action-btn rewind-btn user-action-btn"
+              :class="{ active: openActionMenuIndex === responseToolbarTarget.index }"
+              @click="onToggleActionMenu(responseToolbarTarget.index)"
+              title="更多操作"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                <path d="M3 3v5h5"></path>
+              </svg>
+            </button>
+          </div>
+          <Teleport to="body">
+            <div
+              v-if="openActionMenuIndex === responseToolbarTarget.index"
+              class="action-dropdown-menu action-dropdown-menu--toolbar"
+              :style="toolbarMenuStyle"
+              @click.stop
+            >
+              <button
+                class="menu-item rewind-item"
+                :disabled="!rewindCapabilities.reset"
+                :class="{ disabled: !rewindCapabilities.reset }"
+                @click="handleRewind(responseToolbarTarget.message.id, responseToolbarTarget.index, 'reset')"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                  <path d="M3 3v5h5"></path>
+                </svg>
+                重置文件
+                <span class="menu-hint">回到该次提问前</span>
+              </button>
+              <button
+                class="menu-item rewind-item"
+                :disabled="!rewindCapabilities.patch"
+                :class="{ disabled: !rewindCapabilities.patch }"
+                @click="handleRewind(responseToolbarTarget.message.id, responseToolbarTarget.index, 'patch')"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                  <path d="M3 3v5h5"></path>
+                </svg>
+                撤销本次修改
+                <span class="menu-hint">仅撤销本轮补丁</span>
+              </button>
+              <button class="menu-item fork-item" @click="handleFork(responseToolbarTarget.message.id, responseToolbarTarget.index)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="6" y1="3" x2="6" y2="15"></line>
+                  <circle cx="18" cy="6" r="3"></circle>
+                  <circle cx="6" cy="18" r="3"></circle>
+                  <path d="M18 9a9 9 0 0 1-9 9"></path>
+                </svg>
+                创建分支
+                <span class="menu-hint">保留当前状态</span>
+              </button>
+              <button
+                class="menu-item rewind-fork-item"
+                :disabled="!rewindCapabilities.forkReset"
+                :class="{ disabled: !rewindCapabilities.forkReset }"
+                @click="handleRewindAndFork(responseToolbarTarget.message.id, responseToolbarTarget.index, 'reset')"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                  <path d="M3 3v5h5"></path>
+                  <line x1="6" y1="8" x2="6" y2="16"></line>
+                  <circle cx="16" cy="10" r="3"></circle>
+                  <circle cx="6" cy="18" r="3"></circle>
+                  <path d="M16 13a6 6 0 0 1-6 5"></path>
+                </svg>
+                重置文件并创建分支
+                <span class="menu-hint">保存当前状态后重置</span>
+              </button>
+            </div>
+          </Teleport>
+        </div>
         <div class="response-toolbar-row">
           <span class="response-toolbar-line" aria-hidden="true"></span>
           <div class="response-toolbar">
-            <template v-if="showResponseToolbarCollapseBtn">
-              <button
-                class="icon-action-btn response-toolbar-btn"
-                @click.stop="onToggleResponseCollapse(responseToolbarTarget.index, $event)"
-                :title="responseToolbarTarget.message.responseCollapsed ? '展开回答' : '折叠回答'"
-              >
-                <svg v-if="responseToolbarTarget.message.responseCollapsed" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="15 3 21 3 21 9"></polyline>
-                  <polyline points="9 21 3 21 3 15"></polyline>
-                  <line x1="21" y1="3" x2="14" y2="10"></line>
-                  <line x1="3" y1="21" x2="10" y2="14"></line>
-                </svg>
-                <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="4 14 10 14 10 20"></polyline>
-                  <polyline points="20 10 14 10 14 4"></polyline>
-                  <line x1="14" y1="10" x2="21" y2="3"></line>
-                  <line x1="3" y1="21" x2="10" y2="14"></line>
-                </svg>
-              </button>
-
-              <div v-if="showResponseToolbarRewindBtn" class="action-menu-wrapper" @click.stop>
-                <button
-                  :ref="setToolbarMenuTrigger"
-                  class="icon-action-btn rewind-btn response-toolbar-btn"
-                  :class="{ active: openActionMenuIndex === responseToolbarTarget.index }"
-                  @click="onToggleActionMenu(responseToolbarTarget.index)"
-                  title="更多操作"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                    <path d="M3 3v5h5"></path>
-                  </svg>
-                </button>
-              </div>
-              <Teleport to="body">
-                <div
-                  v-if="openActionMenuIndex === responseToolbarTarget.index"
-                  class="action-dropdown-menu action-dropdown-menu--toolbar"
-                  :style="toolbarMenuStyle"
-                  @click.stop
-                >
-                  <button
-                    class="menu-item rewind-item"
-                    :disabled="!rewindCapabilities.reset"
-                    :class="{ disabled: !rewindCapabilities.reset }"
-                    @click="handleRewind(responseToolbarTarget.message.id, responseToolbarTarget.index, 'reset')"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                      <path d="M3 3v5h5"></path>
-                    </svg>
-                    重置文件
-                    <span class="menu-hint">回到该次提问前</span>
-                  </button>
-                  <button
-                    class="menu-item rewind-item"
-                    :disabled="!rewindCapabilities.patch"
-                    :class="{ disabled: !rewindCapabilities.patch }"
-                    @click="handleRewind(responseToolbarTarget.message.id, responseToolbarTarget.index, 'patch')"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                      <path d="M3 3v5h5"></path>
-                    </svg>
-                    撤销本次修改
-                    <span class="menu-hint">仅撤销本轮补丁</span>
-                  </button>
-                  <button class="menu-item fork-item" @click="handleFork(responseToolbarTarget.message.id, responseToolbarTarget.index)">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <line x1="6" y1="3" x2="6" y2="15"></line>
-                      <circle cx="18" cy="6" r="3"></circle>
-                      <circle cx="6" cy="18" r="3"></circle>
-                      <path d="M18 9a9 9 0 0 1-9 9"></path>
-                    </svg>
-                    创建分支
-                    <span class="menu-hint">保留当前状态</span>
-                  </button>
-                  <button
-                    class="menu-item rewind-fork-item"
-                    :disabled="!rewindCapabilities.forkReset"
-                    :class="{ disabled: !rewindCapabilities.forkReset }"
-                    @click="handleRewindAndFork(responseToolbarTarget.message.id, responseToolbarTarget.index, 'reset')"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                      <path d="M3 3v5h5"></path>
-                      <line x1="6" y1="8" x2="6" y2="16"></line>
-                      <circle cx="16" cy="10" r="3"></circle>
-                      <circle cx="6" cy="18" r="3"></circle>
-                      <path d="M16 13a6 6 0 0 1-6 5"></path>
-                    </svg>
-                    重置文件并创建分支
-                    <span class="menu-hint">保存当前状态后重置</span>
-                  </button>
-                </div>
-              </Teleport>
+            <button
+              v-if="showResponseToolbarCollapseBtn"
+              class="response-toolbar-toggle"
+              @click.stop="onToggleResponseCollapse(responseToolbarTarget.index, $event)"
+              :title="responseToolbarLabel"
+            >
+              {{ responseToolbarLabel }}
+            </button>
+            <template v-else>
+              <span class="response-toolbar-hint">{{ responseToolbarLabel }}</span>
             </template>
-            <span v-else class="response-toolbar-hint">没有回答</span>
           </div>
           <span class="response-toolbar-line" aria-hidden="true"></span>
         </div>
@@ -1008,6 +1006,37 @@ onUnmounted(() => {
   position: relative;
 }
 
+.user-action-row {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  margin: 6px 0 0;
+}
+
+.user-action-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(24, 24, 27, 0.5);
+  border: 1px solid rgba(82, 82, 91, 0.35);
+  color: rgba(113, 113, 122, 0.5);
+  box-shadow: 0 0 0 4px rgba(24, 24, 27, 0.5);
+  transition: all 0.15s ease;
+}
+
+.message:hover .user-action-btn {
+  background: #18181B;
+  border-color: rgba(82, 82, 91, 0.75);
+  color: #71717A;
+  box-shadow: 0 0 0 4px rgba(24, 24, 27, 0.92);
+}
+
+.message:hover .user-action-btn:hover {
+  background: #232329;
+  border-color: rgba(113, 113, 122, 0.95);
+  color: #D4D4D8;
+}
+
 .response-toolbar-row {
   display: flex;
   align-items: center;
@@ -1035,6 +1064,26 @@ onUnmounted(() => {
   font-size: 11px;
   color: #52525B;
   user-select: none;
+}
+
+.response-toolbar-toggle {
+  padding: 0;
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #6b7280;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+
+.message:hover .response-toolbar-toggle {
+  color: #9ca3af;
+}
+
+.response-toolbar-toggle:hover {
+  color: #d4d4d8;
 }
 
 .response-toolbar-btn {

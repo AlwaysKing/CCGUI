@@ -87,6 +87,12 @@ const codexProxyDraft = ref('')
 
 // 复制成功状态
 const copiedKeys = ref(new Set())
+const codexAuthDebugLoading = ref(new Set())
+const codexAuthDebugDialog = ref({
+  visible: false,
+  title: '',
+  content: ''
+})
 
 // 检查是否有任何模型映射（不包括通用模型）
 const hasAnyModelMapping = computed(() => {
@@ -271,8 +277,7 @@ const sortedCodexModels = computed(() => {
 })
 
 const sortedCodexAccounts = computed(() => {
-  const accounts = Array.isArray(props.codexConfig?.accounts) ? props.codexConfig.accounts : []
-  return sortSelectedFirst(accounts, props.codexConfig?.selectedAccountId || null)
+  return Array.isArray(props.codexConfig?.accounts) ? props.codexConfig.accounts : []
 })
 
 function getModelCredentials(model) {
@@ -343,20 +348,135 @@ function formatUsagePercent(value) {
   return `${Math.round(value)}%`
 }
 
+function formatResetAtDate(timestamp) {
+  if (!timestamp || typeof timestamp !== 'number') return null
+  const date = new Date(timestamp * 1000)
+  if (isNaN(date.getTime())) return null
+  return {
+    date: `${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`,
+    time: date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  }
+}
+
 function getCodexAccountUsageBadges(account) {
+  if (getCodexAccountUsageError(account)) {
+    return []
+  }
+
   const badges = []
   const usage = account?.usage || null
   const primary = formatUsagePercent(usage?.primaryWindow?.usedPercent)
   const secondary = formatUsagePercent(usage?.secondaryWindow?.usedPercent)
 
   if (primary) {
-    badges.push(`5h ${primary}`)
+    badges.push({ key: '5h', percent: primary, reset: formatResetAtDate(usage?.primaryWindow?.resetAt) })
   }
   if (secondary) {
-    badges.push(`7d ${secondary}`)
+    badges.push({ key: '7d', percent: secondary, reset: formatResetAtDate(usage?.secondaryWindow?.resetAt) })
   }
 
   return badges
+}
+
+function getCodexAccountUsageError(account) {
+  const error = account?.usageError
+  if (!error || typeof error !== 'object') {
+    return null
+  }
+
+  const code = typeof error.code === 'string' ? error.code.trim() : ''
+  const message = typeof error.message === 'string' ? error.message.trim() : ''
+  const status = Number(error.status || 0) || null
+
+  if (!code && !message && !status) {
+    return null
+  }
+
+  return {
+    code: code || null,
+    message: message || null,
+    status,
+    label: code === 'token_expired'
+      ? `token过期 ${code}`
+      : `刷新失败 ${code || status || ''}`.trim()
+  }
+}
+
+function collectUrlLikeEntries(value, path = 'result', entries = []) {
+  if (value === null || value === undefined) {
+    return entries
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (/^(https?:\/\/|[a-z][a-z0-9+.-]*:\/\/)/i.test(trimmed)) {
+      entries.push(`${path}: ${trimmed}`)
+    }
+    return entries
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectUrlLikeEntries(item, `${path}[${index}]`, entries))
+    return entries
+  }
+
+  if (typeof value === 'object') {
+    Object.entries(value).forEach(([key, item]) => {
+      collectUrlLikeEntries(item, `${path}.${key}`, entries)
+    })
+  }
+
+  return entries
+}
+
+async function inspectCodexAuthResult(account) {
+  const accountId = account?.id || account?.accountId || 'codex-account'
+  if (codexAuthDebugLoading.value.has(accountId)) {
+    return
+  }
+
+  codexAuthDebugLoading.value.add(accountId)
+  try {
+    const response = await window.electronAPI.refreshCodexAuthToken()
+    const result = response || null
+    const urlEntries = collectUrlLikeEntries(result)
+    const lines = [
+      `账号: ${account?.name || account?.email || account?.accountId || '未命名账号'}`,
+      `success: ${response?.success === true ? 'true' : 'false'}`
+    ]
+
+    if (urlEntries.length > 0) {
+      lines.push('', '检测到的地址字段:', ...urlEntries)
+    } else {
+      lines.push('', '没有在返回里检测到 URL 字段。')
+    }
+
+    lines.push('', '完整返回:', JSON.stringify(result, null, 2))
+
+    console.log('[CodexAuthDebug] refreshCodexAuthToken result', response)
+    codexAuthDebugDialog.value = {
+      visible: true,
+      title: `Codex 调试返回 · ${account?.name || account?.email || account?.accountId || '未命名账号'}`,
+      content: lines.join('\n')
+    }
+  } catch (error) {
+    console.error('[CodexAuthDebug] Failed to inspect auth result', error)
+    codexAuthDebugDialog.value = {
+      visible: true,
+      title: 'Codex 调试返回失败',
+      content: `查看 Codex 返回失败: ${error?.message || '未知错误'}`
+    }
+  } finally {
+    codexAuthDebugLoading.value.delete(accountId)
+  }
+}
+
+function closeCodexAuthDebugDialog() {
+  codexAuthDebugDialog.value = {
+    visible: false,
+    title: '',
+    content: ''
+  }
 }
 
 // 复制到剪贴板
@@ -865,10 +985,21 @@ function toggleSectionCollapse(section) {
                 {{ account.name || '未命名账号' }}
                 <span
                   v-for="badge in getCodexAccountUsageBadges(account)"
-                  :key="`${account.id}-${badge}`"
+                  :key="`${account.id}-${badge.key}`"
                   class="account-usage-badge"
+                  :class="{ 'account-usage-badge--multiline': !!badge.reset }"
                 >
-                  {{ badge }}
+                  <span>{{ badge.key }} {{ badge.percent }}</span>
+                  <span v-if="badge.reset" class="account-usage-reset">{{ badge.reset.date }} {{ badge.reset.time }}</span>
+                </span>
+                <span
+                  v-if="getCodexAccountUsageError(account)"
+                  class="account-usage-badge account-usage-badge--error"
+                  :title="getCodexAccountUsageError(account).message || getCodexAccountUsageError(account).label"
+                  :class="{ 'is-loading': codexAuthDebugLoading.has(account.id || account.accountId || 'codex-account') }"
+                  @click.stop="inspectCodexAuthResult(account)"
+                >
+                  {{ getCodexAccountUsageError(account).label }}
                 </span>
               </h4>
               <div class="model-actions">
@@ -901,7 +1032,7 @@ function toggleSectionCollapse(section) {
               <DetailRow label="账号名称">
                 <span>{{ account.name || '未命名账号' }}</span>
               </DetailRow>
-              <DetailRow v-if="account.usage?.planType" label="套餐">
+              <DetailRow v-if="account.usage?.planType && !getCodexAccountUsageError(account)" label="套餐">
                 <span>{{ account.usage.planType }}</span>
               </DetailRow>
               <DetailRow label="账号 ID">
@@ -1276,6 +1407,35 @@ function toggleSectionCollapse(section) {
       </div>
     </div>
   </SettingsSection>
+
+  <div
+    v-if="codexAuthDebugDialog.visible"
+    class="debug-dialog-overlay"
+    @click="closeCodexAuthDebugDialog"
+  >
+    <div class="debug-dialog" @click.stop>
+      <div class="debug-dialog-header">
+        <h4>{{ codexAuthDebugDialog.title }}</h4>
+        <div class="debug-dialog-actions">
+          <button
+            type="button"
+            class="debug-dialog-copy"
+            @click="copyToClipboard(codexAuthDebugDialog.content, 'codex-auth-debug')"
+          >
+            {{ copiedKeys.has('codex-auth-debug') ? '已复制' : '复制' }}
+          </button>
+          <button
+            type="button"
+            class="debug-dialog-close"
+            @click="closeCodexAuthDebugDialog"
+          >
+            关闭
+          </button>
+        </div>
+      </div>
+      <pre class="debug-dialog-content">{{ codexAuthDebugDialog.content }}</pre>
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -1485,6 +1645,105 @@ function toggleSectionCollapse(section) {
   font-weight: 600;
   line-height: 1.2;
   vertical-align: middle;
+}
+
+.account-usage-badge--multiline {
+  flex-direction: column;
+  align-items: flex-start;
+  border-radius: 8px;
+  padding: 2px 8px;
+  gap: 1px;
+}
+
+.account-usage-reset {
+  font-size: 10px;
+  font-weight: 400;
+  color: #A1A1AA;
+}
+
+.account-usage-badge--error {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(127, 29, 29, 0.22);
+  color: #FCA5A5;
+  cursor: pointer;
+}
+
+.account-usage-badge--error.is-loading {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.debug-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 9, 11, 0.72);
+  padding: 24px;
+}
+
+.debug-dialog {
+  width: min(960px, 100%);
+  max-height: min(80vh, 900px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: #141418;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.debug-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.debug-dialog-header h4 {
+  margin: 0;
+  color: #F4F4F5;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.debug-dialog-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.debug-dialog-copy,
+.debug-dialog-close {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #23232A;
+  color: #F4F4F5;
+  font-size: 12px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.debug-dialog-copy:hover,
+.debug-dialog-close:hover {
+  background: #2D2D36;
+}
+
+.debug-dialog-content {
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #E4E4E7;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: Menlo, Monaco, "Courier New", monospace;
 }
 
 .model-header {

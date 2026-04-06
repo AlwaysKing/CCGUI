@@ -2674,6 +2674,19 @@ ipcMain.handle('refresh-codex-auth-token', async () => {
   }
 })
 
+ipcMain.handle('start-codex-chatgpt-login', async () => {
+  try {
+    const result = await appService.startCodexChatGptLogin()
+    return {
+      success: true,
+      result: result || null
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to start ChatGPT login', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 // Update Codex settings to ~/.codex/config.toml
 ipcMain.handle('update-codex-settings', async (event, { updates }) => {
   try {

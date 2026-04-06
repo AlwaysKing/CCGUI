@@ -15,7 +15,8 @@ const {
   listCodexModels: loadCodexModels,
   setCodexDefaultModel: applyCodexDefaultModel,
   getCodexUsageStatus: loadCodexUsageStatus,
-  refreshCodexAuthToken: runCodexAuthRefresh
+  refreshCodexAuthToken: runCodexAuthRefresh,
+  startCodexChatGptLogin: runCodexChatGptLoginStart
 } = require('../adapters/codex/provider-api')
 
 let codexUsagePollTimer = null
@@ -635,15 +636,12 @@ async function setCodexDefaultModel(options = {}) {
 
 async function refreshCodexAuthToken() {
   const refreshResult = await runCodexAuthRefresh()
-  const config = syncCodexAccountsWithAuthConfig()
-  const tokens = loadCodexAuthTokens()
+  syncCodexAccountsWithAuthConfig()
+  return refreshResult || null
+}
 
-  return {
-    authMethod: refreshResult?.authMethod || null,
-    authToken: refreshResult?.authToken || null,
-    tokens,
-    config
-  }
+async function startCodexChatGptLogin() {
+  return runCodexChatGptLoginStart()
 }
 
 async function refreshCodexAccountUsage(account = null) {
@@ -664,27 +662,43 @@ async function refreshAllCodexAccountUsage() {
   const refreshedAccounts = await Promise.all(accounts.map(async account => {
     try {
       const usage = await refreshCodexAccountUsage(account)
-      if (!usage) {
-        return account
-      }
-
       const nextAccount = {
         ...account,
-        email: usage.email || account.email || '',
-        usage
+        email: usage?.email || account.email || '',
+        usage: usage || null,
+        usageError: null
       }
 
-      if (JSON.stringify(account.usage || null) !== JSON.stringify(usage)) {
+      if (
+        JSON.stringify(account.usage || null) !== JSON.stringify(nextAccount.usage)
+        || JSON.stringify(account.usageError || null) !== JSON.stringify(nextAccount.usageError)
+      ) {
         changed = true
       }
 
       return nextAccount
     } catch (error) {
+      const nextError = {
+        code: error?.code || error?.type || null,
+        message: error?.message || 'Codex usage refresh failed',
+        status: Number(error?.statusCode || 0) || null
+      }
+      const nextAccount = {
+        ...account,
+        usageError: nextError
+      }
+
+      if (JSON.stringify(account.usageError || null) !== JSON.stringify(nextError)) {
+        changed = true
+      }
+
       logger.warn('[CodexSettings] Failed to refresh codex account usage', {
         accountId: account?.accountId || account?.id || '',
-        error: error.message
+        error: error.message,
+        code: error?.code || error?.type || null,
+        statusCode: error?.statusCode || null
       })
-      return account
+      return nextAccount
     }
   }))
 
@@ -731,6 +745,7 @@ module.exports = {
   refreshAllCodexAccountUsage,
   refreshCodexAccountUsage,
   refreshCodexAuthToken,
+  startCodexChatGptLogin,
   resolveCodexModelRuntime,
   saveAppConfig,
   startCodexAccountUsagePolling,

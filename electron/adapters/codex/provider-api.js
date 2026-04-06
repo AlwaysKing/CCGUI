@@ -7,7 +7,8 @@ const {
   extractChatGptAccountId,
   buildDesktopUserAgent,
   buildProxyAgent,
-  requestJson
+  requestJson,
+  buildCodexUsageRequestError
 } = require('./client')
 
 async function withCodexProviderClient(task, options = {}) {
@@ -57,11 +58,7 @@ async function requestUsageWithAccount(account = {}) {
   })
 
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    const error = new Error(
-      `Codex usage request failed: ${response.statusCode} ${response.body || ''}`.trim()
-    )
-    error.statusCode = response.statusCode
-    throw error
+    throw buildCodexUsageRequestError(response)
   }
 
   return response.json || null
@@ -77,6 +74,10 @@ async function getCodexUsageStatus(options = {}) {
 
 async function refreshCodexAuthToken(options = {}) {
   return withCodexProviderClient(client => client.refreshAuthToken(), options)
+}
+
+async function startCodexChatGptLogin(options = {}) {
+  return withCodexProviderClient(client => client.startChatGptLogin(), options)
 }
 
 function normalizeReasoningEffortOption(option = null) {
@@ -228,5 +229,6 @@ module.exports = {
   listCodexReasoningCapabilities,
   setCodexDefaultModel,
   getCodexUsageStatus,
-  refreshCodexAuthToken
+  refreshCodexAuthToken,
+  startCodexChatGptLogin
 }

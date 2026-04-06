@@ -129,17 +129,44 @@ function buildCodexEnvRateLimits(usage = null, accountName = '') {
       ? {
           label: '5小时',
           used: primary.usedPercent,
-          resetAfter: primary.resetAfterSeconds || null
+          resetAfter: primary.resetAfterSeconds || null,
+          resetAt: primary.resetAt || null
         }
       : null,
     secondary: hasSecondary
       ? {
           label: '1周',
           used: secondary.usedPercent,
-          resetAfter: secondary.resetAfterSeconds || null
+          resetAfter: secondary.resetAfterSeconds || null,
+          resetAt: secondary.resetAt || null
         }
       : null
   }
+}
+
+function buildCodexUsageRequestError(response = null) {
+  if (!response || typeof response !== 'object') {
+    return null
+  }
+
+  const errorBody = response.json?.error
+  const status = Number(response.statusCode || 0) || null
+  const code = typeof errorBody?.code === 'string' && errorBody.code.trim()
+    ? errorBody.code.trim()
+    : null
+  const type = typeof errorBody?.type === 'string' && errorBody.type.trim()
+    ? errorBody.type.trim()
+    : null
+  const message = typeof errorBody?.message === 'string' && errorBody.message.trim()
+    ? errorBody.message.trim()
+    : `Codex usage request failed: ${status || 'unknown'}`
+
+  const error = new Error(message)
+  error.statusCode = status
+  error.code = code
+  error.type = type
+  error.responseBody = response.body || ''
+  return error
 }
 
 function isMissingCodexThreadError(error) {
@@ -160,7 +187,7 @@ function resolveActiveCodexAccountUsage() {
       || accounts.find(account => account?.id === selectedAccountId)
       || null
 
-    if (!matchedAccount?.usage) {
+    if (!matchedAccount?.usage && !matchedAccount?.usageError) {
       return null
     }
 
@@ -174,6 +201,7 @@ function resolveActiveCodexAccountUsage() {
       accountId: matchedAccount.accountId || authAccountId || '',
       accountName,
       usage: matchedAccount.usage,
+      usageError: matchedAccount.usageError || null,
       rateLimits: buildCodexEnvRateLimits(matchedAccount.usage, accountName)
     }
   } catch (error) {
@@ -677,7 +705,8 @@ class CodexClient {
       model: resolvedModel,
       model_reasoning_effort: resolvedReasoningEffort,
       providerPid: this.getPid(),
-      rate_limits: activeCodexAccountUsage?.rateLimits || null
+      rate_limits: activeCodexAccountUsage?.rateLimits || null,
+      codex_usage_error: activeCodexAccountUsage?.usageError || null
     }, {
       provider: 'codex',
       providerPid: this.getPid()
@@ -867,7 +896,8 @@ class CodexClient {
 
     this.envInfo = applyCodexEnvInfoPatch({
       ...this.envInfo,
-      rate_limits: activeCodexAccountUsage.rateLimits || null
+      rate_limits: activeCodexAccountUsage.rateLimits || null,
+      codex_usage_error: activeCodexAccountUsage.usageError || null
     }, {
       provider: 'codex',
       providerPid: this.getPid()
@@ -1239,6 +1269,13 @@ class CodexClient {
     }
   }
 
+  async startChatGptLogin() {
+    await this.ensureInitialized()
+    return this.request('account/login/start', {
+      type: 'chatgpt'
+    })
+  }
+
   async getUsageStatus() {
     await this.ensureInitialized()
 
@@ -1279,9 +1316,7 @@ class CodexClient {
     }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw new Error(
-        `Codex usage request failed: ${response.statusCode} ${response.body || ''}`.trim()
-      )
+      throw buildCodexUsageRequestError(response)
     }
 
     return response.json || null
@@ -1405,5 +1440,6 @@ module.exports = {
   extractChatGptAccountId,
   buildDesktopUserAgent,
   buildProxyAgent,
-  requestJson
+  requestJson,
+  buildCodexUsageRequestError
 }

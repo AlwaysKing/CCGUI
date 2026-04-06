@@ -114,6 +114,32 @@ const runtimePid = computed(() => {
   return props.envInfo?.providerPid || null
 })
 
+const codexUsageError = computed(() => {
+  const error = props.envInfo?.codex_usage_error
+  if (!error || typeof error !== 'object') {
+    return null
+  }
+
+  const code = typeof error.code === 'string' ? error.code.trim() : ''
+  const message = typeof error.message === 'string' ? error.message.trim() : ''
+  const status = Number(error.status || 0) || null
+
+  if (!code && !message && !status) {
+    return null
+  }
+
+  const label = code === 'token_expired'
+    ? `token过期 ${code}`
+    : `用量刷新失败 ${code || status || ''}`.trim()
+
+  return {
+    code: code || null,
+    message: message || null,
+    status,
+    label
+  }
+})
+
 const silentMessageCount = computed(() => props.silentMessages?.length || 0)
 
 function formatCompactNumber(value) {
@@ -308,6 +334,16 @@ const rateLimitSummary = computed(() => {
   }
 })
 
+function formatResetAt(timestamp) {
+  if (!timestamp || typeof timestamp !== 'number') return null
+  const date = new Date(timestamp * 1000)
+  if (isNaN(date.getTime())) return null
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const time = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  return `${month}-${day} ${time}`
+}
+
 const codexUsageSummary = computed(() => {
   const rateLimits = props.envInfo?.rate_limits
   if (!rateLimits) {
@@ -317,8 +353,12 @@ const codexUsageSummary = computed(() => {
   const primaryUsed = Number(rateLimits.primary?.used)
   const secondaryUsed = Number(rateLimits.secondary?.used)
   const candidates = [
-    Number.isFinite(primaryUsed) ? { key: 'primary', label: '5小时', used: primaryUsed } : null,
-    Number.isFinite(secondaryUsed) ? { key: 'secondary', label: '1周', used: secondaryUsed } : null
+    Number.isFinite(primaryUsed)
+      ? { key: 'primary', label: '5小时', used: primaryUsed, resetAt: formatResetAt(rateLimits.primary?.resetAt) }
+      : null,
+    Number.isFinite(secondaryUsed)
+      ? { key: 'secondary', label: '1周', used: secondaryUsed, resetAt: formatResetAt(rateLimits.secondary?.resetAt) }
+      : null
   ].filter(Boolean)
 
   if (candidates.length === 0) {
@@ -340,7 +380,11 @@ const codexUsageTitle = computed(() => {
   }
 
   return summary.items
-    .map(item => `${item.label} 已使用 ${Math.round(item.used)}%`)
+    .map(item => {
+      const parts = [`${item.label} 已使用 ${Math.round(item.used)}%`]
+      if (item.resetAt) parts.push(`到期 ${item.resetAt}`)
+      return parts.join(' · ')
+    })
     .join('\n')
 })
 
@@ -434,6 +478,14 @@ async function copySilentMessage(message, reverseIndex) {
           <span v-if="envInfo.model" class="env-item">
             <span class="env-icon">🤖</span>
             <span class="env-label">{{ envInfo.model }}</span>
+          </span>
+          <span
+            v-if="codexUsageError"
+            class="env-item env-item-highlight env-item-error"
+            :title="codexUsageError.message || codexUsageError.label"
+          >
+            <span class="env-icon">⚠️</span>
+            <span class="env-label">{{ codexUsageError.label }}</span>
           </span>
           <span v-if="envInfo.tools?.length" class="env-item">
             <span class="env-icon">🔧</span>
@@ -530,6 +582,7 @@ async function copySilentMessage(message, reverseIndex) {
                 class="env-usage-tooltip-line"
               >
                 {{ item.label }} 已使用 {{ Math.round(item.used) }}%
+                <span v-if="item.resetAt" class="env-usage-tooltip-summary"> · 到期 {{ item.resetAt }}</span>
               </span>
             </span>
           </span>
@@ -633,6 +686,13 @@ async function copySilentMessage(message, reverseIndex) {
         <div v-if="envInfo.model" class="env-detail-row">
           <span class="env-detail-label">模型</span>
           <span class="env-detail-value">{{ envInfo.model }}</span>
+        </div>
+        <div v-if="codexUsageError" class="env-detail-row">
+          <span class="env-detail-label">账号状态</span>
+          <span class="env-detail-value env-detail-value-error">
+            {{ codexUsageError.label }}
+            <span v-if="codexUsageError.message"> · {{ codexUsageError.message }}</span>
+          </span>
         </div>
         <div v-if="envInfo.session_id" class="env-detail-row">
           <span class="env-detail-label">会话 ID</span>
@@ -919,6 +979,15 @@ async function copySilentMessage(message, reverseIndex) {
   font-weight: var(--font-weight-medium);
 }
 
+.env-item-error {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.env-item-error .env-label {
+  color: #FCA5A5;
+}
+
 .env-item-clickable {
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -1202,5 +1271,9 @@ async function copySilentMessage(message, reverseIndex) {
   background: rgba(251, 191, 36, 0.1);
   padding: 2px 6px;
   border-radius: 3px;
+}
+
+.env-detail-value-error {
+  color: #FCA5A5;
 }
 </style>

@@ -230,6 +230,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listCodexModels: (options) => ipcRenderer.invoke('list-codex-models', options),
   setCodexDefaultModel: (options) => ipcRenderer.invoke('set-codex-default-model', options),
   refreshCodexAuthToken: () => ipcRenderer.invoke('refresh-codex-auth-token'),
+  startCodexChatGptLogin: () => ipcRenderer.invoke('start-codex-chatgpt-login'),
 
   // ============================================
   // Session target API

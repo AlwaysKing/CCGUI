@@ -642,7 +642,7 @@ onUnmounted(() => {
 
       <!-- File change summary 消息 -->
       <template v-else-if="message.role === 'file_change_summary'">
-        <FileChangeSummaryMessage :message="message" />
+        <FileChangeSummaryMessage :message="message" :chat-theme="chatTheme" />
       </template>
 
       <!-- Task complete 消息 -->

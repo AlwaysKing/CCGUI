@@ -15,6 +15,15 @@ const props = defineProps({
   messageIndex: {
     type: Number,
     default: -1
+  },
+  rewindCapabilities: {
+    type: Object,
+    default: () => ({
+      reset: true,
+      patch: false,
+      forkReset: true,
+      forkPatch: false
+    })
   }
 })
 
@@ -24,16 +33,25 @@ function toggleMenu() {
   emit('toggle', props.messageIndex)
 }
 
-function handleRewind() {
-  emit('rewind', props.messageId, props.messageIndex)
+function handleRewind(rewindMode = 'reset') {
+  if ((rewindMode === 'reset' && !props.rewindCapabilities?.reset) || (rewindMode === 'patch' && !props.rewindCapabilities?.patch)) {
+    return
+  }
+  emit('rewind', props.messageId, props.messageIndex, rewindMode)
 }
 
 function handleFork() {
   emit('fork', props.messageId, props.messageIndex)
 }
 
-function handleRewindAndFork() {
-  emit('rewindAndFork', props.messageId, props.messageIndex)
+function handleRewindAndFork(rewindMode = 'reset') {
+  if (
+    rewindMode !== 'reset' ||
+    !props.rewindCapabilities?.forkReset
+  ) {
+    return
+  }
+  emit('rewindAndFork', props.messageId, props.messageIndex, rewindMode)
 }
 </script>
 
@@ -52,13 +70,21 @@ function handleRewindAndFork() {
     </button>
     <!-- 下拉菜单 -->
     <div v-if="isOpen" class="action-dropdown-menu">
-      <button class="menu-item rewind-item" @click="handleRewind">
+      <button class="menu-item rewind-item" :disabled="!rewindCapabilities.reset" :class="{ disabled: !rewindCapabilities.reset }" @click="handleRewind('reset')">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
           <path d="M3 3v5h5"></path>
         </svg>
-        还原
-        <span class="menu-hint">撤销后续修改</span>
+        重置文件
+        <span class="menu-hint">回到该次提问前</span>
+      </button>
+      <button class="menu-item rewind-item" :disabled="!rewindCapabilities.patch" :class="{ disabled: !rewindCapabilities.patch }" @click="handleRewind('patch')">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+          <path d="M3 3v5h5"></path>
+        </svg>
+        撤销本次修改
+        <span class="menu-hint">仅撤销本轮补丁</span>
       </button>
       <button class="menu-item fork-item" @click="handleFork">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -70,7 +96,7 @@ function handleRewindAndFork() {
         创建分支
         <span class="menu-hint">保留当前状态</span>
       </button>
-      <button class="menu-item rewind-fork-item" @click="handleRewindAndFork">
+      <button class="menu-item rewind-fork-item" :disabled="!rewindCapabilities.forkReset" :class="{ disabled: !rewindCapabilities.forkReset }" @click="handleRewindAndFork('reset')">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
           <path d="M3 3v5h5"></path>
@@ -79,8 +105,8 @@ function handleRewindAndFork() {
           <circle cx="6" cy="18" r="3"></circle>
           <path d="M16 13a6 6 0 0 1-6 5"></path>
         </svg>
-        还原并创建分支
-        <span class="menu-hint">保存并回滚</span>
+        重置文件并创建分支
+        <span class="menu-hint">保存当前状态后重置</span>
       </button>
     </div>
   </div>
@@ -144,6 +170,19 @@ function handleRewindAndFork() {
 .menu-item:hover {
   background: #3F3F46;
   color: #E4E4E7;
+}
+
+.menu-item.disabled,
+.menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.menu-item.disabled:hover,
+.menu-item:disabled:hover {
+  background: transparent;
+  color: #A1A1AA;
 }
 
 .menu-hint {

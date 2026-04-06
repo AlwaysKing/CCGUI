@@ -261,6 +261,22 @@ function applySessionEnvInfoPatch(envInfo = {}, options = {}) {
   }
 }
 
+function isResetSubtype(subtype = '') {
+  return subtype === 'reset_files' || subtype === 'rewind_files'
+}
+
+function isPatchSubtype(subtype = '') {
+  return subtype === 'undo_patch'
+}
+
+function isRestoreActionSubtype(subtype = '') {
+  return isResetSubtype(subtype) || isPatchSubtype(subtype)
+}
+
+function isRestoreAndForkSubtype(subtype = '') {
+  return subtype === 'reset_files_and_fork' || subtype === 'undo_patch_and_fork'
+}
+
 function isUuidLike(value) {
   if (typeof value !== 'string') {
     return false
@@ -284,6 +300,7 @@ function buildHistoryUserMessageFromTurn(turn = {}) {
       : normalizedContent,
     attachments: Array.isArray(turn.attachments) ? turn.attachments : [],
     timestamp,
+    ...(turn.fileChangeSummary ? { fileChangeSummary: turn.fileChangeSummary } : {}),
     responseCollapsed: Boolean(turn.hasAssistantResponse),
     historyTurn: {
       turnId: turn.turnId,
@@ -305,6 +322,38 @@ function buildHistoryIndexMessage(entry = {}) {
   }
 
   return buildHistoryUserMessageFromTurn(entry)
+}
+
+function buildFileChangeSummaryForUserMessage(summary = {}) {
+  const files = Array.isArray(summary?.files)
+    ? summary.files
+        .map(file => {
+          if (typeof file === 'string') {
+            const trimmed = file.trim()
+            return trimmed ? { path: trimmed } : null
+          }
+          if (file && typeof file === 'object' && typeof file.path === 'string' && file.path.trim()) {
+            return {
+              path: file.path.trim(),
+              ...(Number.isFinite(file.insertions) ? { insertions: file.insertions } : {}),
+              ...(Number.isFinite(file.deletions) ? { deletions: file.deletions } : {})
+            }
+          }
+          return null
+        })
+        .filter(Boolean)
+    : []
+
+  if (files.length === 0) {
+    return null
+  }
+
+  return {
+    files,
+    totalFiles: Number(summary?.totalFiles) || files.length,
+    totalInsertions: Number(summary?.totalInsertions) || 0,
+    totalDeletions: Number(summary?.totalDeletions) || 0
+  }
 }
 
 const SESSION_NOTIFICATION_TYPES = new Set([
@@ -626,7 +675,13 @@ class SessionInstance {
       cwd: projectPath,
       session_id: sessionId,
       providerPid: null,
-      provider: 'claude'
+      provider: 'claude',
+      rewindCapabilities: {
+        reset: true,
+        patch: false,
+        forkReset: true,
+        forkPatch: false
+      }
     }
     this.silentMessages = []
     this.taskEvents = []
@@ -1732,11 +1787,12 @@ class SessionInstance {
 
       if (pendingRequest && payload && !payload.error) {
         if (
-          (pendingRequest?.subtype === 'rewind' || pendingRequest?.subtype === 'rewind_files') &&
+          isRestoreActionSubtype(pendingRequest?.subtype) &&
           pendingRequest?.user_message_id &&
           pendingRequest?.dry_run !== true
         ) {
-          this.applyRewindLocally(pendingRequest.user_message_id, payload)
+          const rewindMode = isPatchSubtype(pendingRequest?.subtype) ? 'patch' : 'reset'
+          this.applyRewindLocally(pendingRequest.user_message_id, payload, { mode: rewindMode })
         }
 
         this.appendControlOutcomeMessage(pendingRequest, message)
@@ -1843,6 +1899,26 @@ class SessionInstance {
     // 文件变更统计（provider 构造好消息体，这里纯透传）
     manager.on('file-change-summary', (summary) => {
       if (!summary?.files?.length) return
+      const userMessageId = typeof summary?.userMessageId === 'string' ? summary.userMessageId : null
+      const fileChangeSummary = buildFileChangeSummaryForUserMessage(summary)
+
+      if (userMessageId && fileChangeSummary) {
+        historyManager.updateTurn(this.projectId, this.id, userMessageId, {
+          fileChangeSummary
+        })
+        const targetUserMessage = this.messages.find(message => message?.role === 'user' && message?.id === userMessageId)
+        if (targetUserMessage) {
+          targetUserMessage.fileChangeSummary = fileChangeSummary
+          this.emit('message-update', {
+            messageId: targetUserMessage.id,
+            updates: {
+              fileChangeSummary
+            }
+          })
+        }
+        this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+      }
+
       this.messages.push(summary)
       this.saveMessageToHistory(summary)
       this.emit('message', summary)
@@ -2117,13 +2193,14 @@ class SessionInstance {
     }
   }
 
-  applyRewindLocally(userMessageId, rewindData = {}) {
+  applyRewindLocally(userMessageId, rewindData = {}, options = {}) {
     const targetIndex = this.messages.findIndex(item => item.role === 'user' && item.id === userMessageId)
     if (targetIndex === -1) {
       throw new Error('Target user message not found')
     }
 
     const targetMessage = this.messages[targetIndex] || null
+    const mode = options?.mode === 'patch' ? 'patch' : 'reset'
     const changedFiles = Array.from(new Set(
       (rewindData?.changed_files || rewindData?.filesChanged || rewindData?.restored_files || [])
         .filter(file => typeof file === 'string' && file.trim())
@@ -2134,14 +2211,16 @@ class SessionInstance {
     const previewText = typeof targetMessage?.content === 'string' && targetMessage.content.trim()
       ? targetMessage.content.trim()
       : '未知消息'
+    const actionText = mode === 'patch' ? '已撤销本次修改' : '已重置到提问前文件状态'
 
     const rewindNotice = {
       id: `rewind-${Date.now()}`,
       role: 'system',
       subtype: 'rewind-notice',
-      content: `已还原到「${previewText.substring(0, 30)}${previewText.length > 30 ? '...' : ''}」前的文件状态`,
+      content: `${actionText}：「${previewText.substring(0, 30)}${previewText.length > 30 ? '...' : ''}」`,
       rewindToMessageId: userMessageId,
       originalMessageContent: previewText,
+      rewindMode: mode,
       restoredFilesCount: changedFiles.length,
       restoredFiles: changedFiles,
       insertions,
@@ -2199,18 +2278,19 @@ class SessionInstance {
       return message
     }
 
-    if (subtype === 'rewind_and_fork') {
+    if (isRestoreAndForkSubtype(subtype)) {
       const newSessionId = payload.new_session_id || payload.session_id || '已生成'
       const restoredCount = (payload.changed_files || payload.restored_files || payload.filesChanged || []).length || 0
+      const isPatchMode = subtype === 'undo_patch_and_fork'
       const message = {
         id: `rewind-fork-${Date.now()}`,
         role: 'system',
         subtype: 'rewind-and-fork-notice',
         content:
-          `✅ 已还原并创建分支\n\n` +
+          `✅ ${isPatchMode ? '已撤销本次修改并创建分支' : '已重置文件并创建分支'}\n\n` +
           `📦 新分支 ID: ${newSessionId}\n` +
           ` (已保存当前状态)\n` +
-          `🔄 还原了 ${restoredCount} 个文件\n\n` +
+          `🔄 ${isPatchMode ? '撤销了' : '重置了'} ${restoredCount} 个文件\n\n` +
           `您可以在项目列表中找到新分支继续探索`,
         timestamp: new Date()
       }
@@ -2226,9 +2306,15 @@ class SessionInstance {
   normalizeControlRequestForProvider(request = {}) {
     const normalizedRequest = { ...request }
 
+    if (normalizedRequest?.subtype === 'rewind') {
+      normalizedRequest.subtype = 'reset_files'
+    } else if (normalizedRequest?.subtype === 'rewind_and_fork') {
+      normalizedRequest.subtype = 'reset_files_and_fork'
+    }
+
     if (normalizedRequest?.subtype === 'changed_files') {
       normalizedRequest.dry_run = true
-    } else if (normalizedRequest?.subtype === 'rewind') {
+    } else if (normalizedRequest?.subtype === 'reset_files' || normalizedRequest?.subtype === 'undo_patch') {
       normalizedRequest.dry_run = false
     }
 
@@ -2236,9 +2322,9 @@ class SessionInstance {
       normalizedRequest?.user_message_id &&
       (
         normalizedRequest?.subtype === 'changed_files' ||
-        normalizedRequest?.subtype === 'rewind' ||
+        normalizedRequest?.subtype === 'reset_files' ||
         normalizedRequest?.subtype === 'rewind_files' ||
-        normalizedRequest?.subtype === 'rewind_and_fork'
+        normalizedRequest?.subtype === 'reset_files_and_fork'
       )
     ) {
       normalizedRequest.numTurns = this.resolveCodexRollbackTurnCount(normalizedRequest.user_message_id)
@@ -2446,18 +2532,17 @@ class SessionInstance {
           pendingRequest &&
           payload &&
           !payload.error &&
-          (
-            pendingRequest?.subtype === 'rewind' ||
-            pendingRequest?.subtype === 'rewind_files'
-          ) &&
+          isRestoreActionSubtype(pendingRequest?.subtype) &&
           pendingRequest?.user_message_id &&
           pendingRequest?.dry_run !== true
         ) {
-          this.applyRewindLocally(pendingRequest.user_message_id, payload)
+          const rewindMode = isPatchSubtype(pendingRequest?.subtype) ? 'patch' : 'reset'
+          this.applyRewindLocally(pendingRequest.user_message_id, payload, { mode: rewindMode })
         }
 
-        if (pendingRequest?.subtype === 'rewind_and_fork' && pendingRequest?.user_message_id) {
-          this.applyRewindLocally(pendingRequest.user_message_id, payload || {})
+        if (isRestoreAndForkSubtype(pendingRequest?.subtype) && pendingRequest?.user_message_id) {
+          const rewindMode = pendingRequest?.subtype === 'undo_patch_and_fork' ? 'patch' : 'reset'
+          this.applyRewindLocally(pendingRequest.user_message_id, payload || {}, { mode: rewindMode })
         }
 
         this.appendControlOutcomeMessage(pendingRequest, response)

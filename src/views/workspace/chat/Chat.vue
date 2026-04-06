@@ -1142,6 +1142,15 @@ const rewindPreviewData = ref(null)
 const rewindTargetMessageId = ref(null)
 const rewindTargetMessageIndex = ref(null)
 const rewindPreviewLoading = ref(false)
+const rewindActionMode = ref('reset')
+
+const rewindActionTitle = computed(() => rewindActionMode.value === 'patch' ? '确认撤销本次修改' : '确认重置文件')
+const rewindActionPreviewText = computed(() => rewindActionMode.value === 'patch' ? '将撤销' : '将重置')
+const rewindActionEmptyText = computed(() => rewindActionMode.value === 'patch' ? '没有本次修改需要撤销' : '没有文件需要重置')
+const rewindActionLoadingText = computed(() => rewindActionMode.value === 'patch' ? '正在获取撤销预览...' : '正在获取重置预览...')
+const rewindActionConfirmText = computed(() => rewindPreviewLoading.value
+  ? (rewindActionMode.value === 'patch' ? '获取预览中...' : '获取预览中...')
+  : (rewindActionMode.value === 'patch' ? '确认撤销' : '确认重置'))
 
 // 复制粘性窗口内容
 const stickyCopied = ref(false)
@@ -1665,9 +1674,18 @@ async function handlePermissionApproveAll(requestId) {
 }
 
 // 处理代码还原 - 接收 MessageList 发出的事件对象
-async function handleRewind({ messageId, messageIndex }) {
+function buildRewindRequestSubtype(mode, withFork = false) {
+  const normalizedMode = mode === 'patch' ? 'patch' : 'reset'
+  if (withFork) {
+    return normalizedMode === 'patch' ? 'undo_patch_and_fork' : 'reset_files_and_fork'
+  }
+  return normalizedMode === 'patch' ? 'undo_patch' : 'reset_files'
+}
+
+async function handleRewind({ messageId, messageIndex, rewindMode = 'reset' }) {
   rewindTargetMessageId.value = messageId
   rewindTargetMessageIndex.value = messageIndex
+  rewindActionMode.value = rewindMode === 'patch' ? 'patch' : 'reset'
   rewindPreviewData.value = null
   rewindPreviewLoading.value = true
   showRewindDialog.value = true
@@ -1703,7 +1721,7 @@ async function handleRewind({ messageId, messageIndex }) {
     rewindPreviewData.value = null
     rewindTargetMessageId.value = null
     rewindTargetMessageIndex.value = null
-    notifyTurnError(`获取还原预览失败: ${error.message || error}`)
+    notifyTurnError(`获取预览失败: ${error.message || error}`)
   } finally {
     rewindPreviewLoading.value = false
   }
@@ -1718,9 +1736,8 @@ async function confirmRewind() {
   showRewindDialog.value = false
 
   try {
-    // 执行实际还原
     const response = await sessionStore.sendControlRequest({
-      subtype: 'rewind',
+      subtype: buildRewindRequestSubtype(rewindActionMode.value, false),
       user_message_id: rewindTargetMessageId.value
     })
 
@@ -1729,7 +1746,7 @@ async function confirmRewind() {
     }
   } catch (error) {
     console.error('[Rewind] Error:', error)
-    notifyTurnError(`还原失败: ${error.message || error}`)
+    notifyTurnError(`${rewindActionMode.value === 'patch' ? '撤销本次修改' : '重置文件'}失败: ${error.message || error}`)
   }
 }
 
@@ -1740,6 +1757,7 @@ function cancelRewind() {
   rewindPreviewLoading.value = false
   rewindTargetMessageId.value = null
   rewindTargetMessageIndex.value = null
+  rewindActionMode.value = 'reset'
 }
 
 useDialogStack(computed(() => showRewindDialog.value), cancelRewind)
@@ -1774,25 +1792,24 @@ async function handleFork({ messageId, messageIndex }) {
 }
 
 // 处理还原并创建分支 - 接收 MessageList 发出的事件对象
-async function handleRewindAndFork({ messageId, messageIndex }) {
+async function handleRewindAndFork({ messageId, messageIndex, rewindMode = 'reset' }) {
+  const normalizedMode = rewindMode === 'patch' ? 'patch' : 'reset'
   const confirmed = confirm(
-    '确定要还原并创建分支吗？\n\n' +
+    `确定要${normalizedMode === 'patch' ? '撤销本次修改并创建分支' : '重置文件并创建分支'}吗？\n\n` +
     '这将：\n' +
     '• 先将当前状态保存到新分支\n' +
-    '• 然后将文件状态还原到此次提问之前\n' +
+    `• 然后${normalizedMode === 'patch' ? '撤销本次提问产生的补丁修改' : '将文件状态重置到此次提问之前'}\n` +
     '• 保留完整消息历史，不删除任何消息\n' +
     '• 此操作无法撤销\n\n' +
-    '适用于：想保留当前进度，同时回滚代码探索其他方案'
+    `适用于：想保留当前进度，同时${normalizedMode === 'patch' ? '撤销这一轮修改' : '回到该提问前继续探索'}`
   )
 
   if (!confirmed) return
 
   try {
-    // 后端会自动处理运行时启动（如果需要）
     const response = await sessionStore.sendControlRequest({
-      subtype: 'rewind_and_fork',
-      user_message_id: messageId,
-      dry_run: false
+      subtype: buildRewindRequestSubtype(normalizedMode, true),
+      user_message_id: messageId
     })
 
     if (response && response.response) {
@@ -1800,7 +1817,7 @@ async function handleRewindAndFork({ messageId, messageIndex }) {
     }
   } catch (error) {
     console.error('[RewindAndFork] Error:', error)
-    notifyTurnError(`还原并创建分支失败: ${error.message || error}`)
+    notifyTurnError(`${normalizedMode === 'patch' ? '撤销本次修改并创建分支' : '重置文件并创建分支'}失败: ${error.message || error}`)
   }
 }
 
@@ -2255,17 +2272,17 @@ function handleToggleAgentRail() {
   <!-- Rewind Confirmation Dialog -->
   <Teleport to="body">
     <div v-if="showRewindDialog" class="rewind-dialog-overlay">
-      <div class="rewind-dialog">
+        <div class="rewind-dialog">
         <div class="rewind-dialog-header">
           <div class="rewind-dialog-icon">↩️</div>
-          <h3 class="rewind-dialog-title">确认还原</h3>
+          <h3 class="rewind-dialog-title">{{ rewindActionTitle }}</h3>
         </div>
 
         <div class="rewind-dialog-content">
           <div v-if="rewindPreviewLoading" class="rewind-dialog-section">
             <div class="rewind-dialog-section-empty">
               <span class="empty-icon">⏳</span>
-              正在获取还原预览...
+              {{ rewindActionLoadingText }}
             </div>
           </div>
 
@@ -2273,7 +2290,7 @@ function handleToggleAgentRail() {
           <div v-else-if="rewindPreviewData?.files?.length > 0" class="rewind-dialog-section">
             <div class="rewind-dialog-section-title">
               <span class="section-icon">📄</span>
-              将还原 {{ rewindPreviewData.files.length }} 个文件
+              {{ rewindActionPreviewText }} {{ rewindPreviewData.files.length }} 个文件
             </div>
             <div class="rewind-files-list">
               <div
@@ -2289,7 +2306,7 @@ function handleToggleAgentRail() {
           <div v-else class="rewind-dialog-section">
             <div class="rewind-dialog-section-empty">
               <span class="empty-icon">ℹ️</span>
-              没有文件需要还原
+              {{ rewindActionEmptyText }}
             </div>
           </div>
 
@@ -2313,7 +2330,7 @@ function handleToggleAgentRail() {
             <div class="rewind-dialog-warnings">
               <div class="warning-item">
                 <span class="warning-icon">•</span>
-                <span>撤销此次提问后的所有代码修改</span>
+                <span>{{ rewindActionMode === 'patch' ? '仅撤销此次提问对应的补丁修改' : '将文件重置到此次提问之前的状态' }}</span>
               </div>
               <div class="warning-item">
                 <span class="warning-icon">•</span>
@@ -2337,7 +2354,7 @@ function handleToggleAgentRail() {
             取消
           </button>
           <button class="rewind-btn confirm" :disabled="rewindPreviewLoading" @click="confirmRewind">
-            {{ rewindPreviewLoading ? '获取预览中...' : '确认还原' }}
+            {{ rewindActionConfirmText }}
           </button>
         </div>
       </div>

@@ -300,11 +300,36 @@ const showResponseToolbar = computed(() => {
 
 const showResponseToolbarCollapseBtn = computed(() => Boolean(responseToolbarTarget.value?.response))
 
+const sessionEnvInfo = computed(() => {
+  if (!props.sessionId) {
+    return sessionStore.currentSession?.envInfo || null
+  }
+  return sessionStore.sessions?.get(props.sessionId)?.envInfo || sessionStore.currentSession?.envInfo || null
+})
+
+const rewindCapabilities = computed(() => {
+  const provider = sessionEnvInfo.value?.provider || 'claude'
+  const fallbackCapabilities = provider === 'codex'
+    ? { reset: false, patch: true, forkReset: false, forkPatch: false }
+    : { reset: true, patch: false, forkReset: true, forkPatch: false }
+  const capabilities = sessionEnvInfo.value?.rewindCapabilities || fallbackCapabilities
+  return {
+    reset: capabilities.reset === true,
+    patch: capabilities.patch === true,
+    forkReset: capabilities.forkReset === true,
+    forkPatch: capabilities.forkPatch === true
+  }
+})
+
+const hasRewindAction = computed(() => rewindCapabilities.value.reset || rewindCapabilities.value.patch)
+const hasForkedRewindAction = computed(() => rewindCapabilities.value.forkReset)
+
 const showResponseToolbarRewindBtn = computed(() => {
   const target = responseToolbarTarget.value
   if (!target) return false
   if (target.index >= props.totalMessages - 1) return false
   if (!target.message?.id) return false
+  if (!hasRewindAction.value && !hasForkedRewindAction.value) return false
   return !sessionStore.isProcessing
 })
 
@@ -316,9 +341,12 @@ function handleMessageClick(event) {
   emit('messageClick', { event, message: props.message })
 }
 
-function handleRewind(messageId, messageIndex) {
+function handleRewind(messageId, messageIndex, rewindMode = 'reset') {
+  if ((rewindMode === 'reset' && !rewindCapabilities.value.reset) || (rewindMode === 'patch' && !rewindCapabilities.value.patch)) {
+    return
+  }
   closeActionMenu()
-  emit('rewind', { messageId, messageIndex })
+  emit('rewind', { messageId, messageIndex, rewindMode })
 }
 
 function handleFork(messageId, messageIndex) {
@@ -326,9 +354,15 @@ function handleFork(messageId, messageIndex) {
   emit('fork', { messageId, messageIndex })
 }
 
-function handleRewindAndFork(messageId, messageIndex) {
+function handleRewindAndFork(messageId, messageIndex, rewindMode = 'reset') {
+  if (
+    rewindMode !== 'reset' ||
+    !rewindCapabilities.value.forkReset
+  ) {
+    return
+  }
   closeActionMenu()
-  emit('rewindAndFork', { messageId, messageIndex })
+  emit('rewindAndFork', { messageId, messageIndex, rewindMode })
 }
 
 function handleRewindNoticeClick(rewindToMessageId) {
@@ -701,13 +735,31 @@ onUnmounted(() => {
                   :style="toolbarMenuStyle"
                   @click.stop
                 >
-                  <button class="menu-item rewind-item" @click="handleRewind(responseToolbarTarget.message.id, responseToolbarTarget.index)">
+                  <button
+                    class="menu-item rewind-item"
+                    :disabled="!rewindCapabilities.reset"
+                    :class="{ disabled: !rewindCapabilities.reset }"
+                    @click="handleRewind(responseToolbarTarget.message.id, responseToolbarTarget.index, 'reset')"
+                  >
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
                       <path d="M3 3v5h5"></path>
                     </svg>
-                    还原
-                    <span class="menu-hint">撤销后续修改</span>
+                    重置文件
+                    <span class="menu-hint">回到该次提问前</span>
+                  </button>
+                  <button
+                    class="menu-item rewind-item"
+                    :disabled="!rewindCapabilities.patch"
+                    :class="{ disabled: !rewindCapabilities.patch }"
+                    @click="handleRewind(responseToolbarTarget.message.id, responseToolbarTarget.index, 'patch')"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                      <path d="M3 3v5h5"></path>
+                    </svg>
+                    撤销本次修改
+                    <span class="menu-hint">仅撤销本轮补丁</span>
                   </button>
                   <button class="menu-item fork-item" @click="handleFork(responseToolbarTarget.message.id, responseToolbarTarget.index)">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -719,7 +771,12 @@ onUnmounted(() => {
                     创建分支
                     <span class="menu-hint">保留当前状态</span>
                   </button>
-                  <button class="menu-item rewind-fork-item" @click="handleRewindAndFork(responseToolbarTarget.message.id, responseToolbarTarget.index)">
+                  <button
+                    class="menu-item rewind-fork-item"
+                    :disabled="!rewindCapabilities.forkReset"
+                    :class="{ disabled: !rewindCapabilities.forkReset }"
+                    @click="handleRewindAndFork(responseToolbarTarget.message.id, responseToolbarTarget.index, 'reset')"
+                  >
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
                       <path d="M3 3v5h5"></path>
@@ -728,8 +785,8 @@ onUnmounted(() => {
                       <circle cx="6" cy="18" r="3"></circle>
                       <path d="M16 13a6 6 0 0 1-6 5"></path>
                     </svg>
-                    还原并创建分支
-                    <span class="menu-hint">保存并回滚</span>
+                    重置文件并创建分支
+                    <span class="menu-hint">保存当前状态后重置</span>
                   </button>
                 </div>
               </Teleport>
@@ -1047,6 +1104,19 @@ onUnmounted(() => {
 .menu-item:hover {
   background: #3F3F46;
   color: #E4E4E7;
+}
+
+.menu-item.disabled,
+.menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.menu-item.disabled:hover,
+.menu-item:disabled:hover {
+  background: transparent;
+  color: #A1A1AA;
 }
 
 .menu-hint {

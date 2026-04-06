@@ -47,6 +47,13 @@ const userMessageStyle = computed(() => {
 // 是否已复制
 const isCopied = computed(() => props.copiedMessageIndex === props.messageIndex)
 const attachments = computed(() => Array.isArray(props.message.attachments) ? props.message.attachments : [])
+const fileChangeSummary = computed(() => {
+  const summary = props.message?.fileChangeSummary
+  if (!summary || !Array.isArray(summary.files) || summary.files.length === 0) {
+    return null
+  }
+  return summary
+})
 const imagePreviewUrl = ref('')
 const imagePreviewTitle = ref('')
 
@@ -108,6 +115,14 @@ function closeImagePreview() {
           </div>
         </div>
         {{ message.content }}
+        <div v-if="fileChangeSummary" class="user-file-change-summary">
+          <span class="summary-label">文件变更</span>
+          <span class="summary-value">
+            {{ fileChangeSummary.totalFiles || fileChangeSummary.files.length }} 个文件
+            <template v-if="fileChangeSummary.totalInsertions > 0"> +{{ fileChangeSummary.totalInsertions }}</template>
+            <template v-if="fileChangeSummary.totalDeletions > 0"> -{{ fileChangeSummary.totalDeletions }}</template>
+          </span>
+        </div>
       </div>
     </div>
   </div>
@@ -159,6 +174,26 @@ function closeImagePreview() {
   color: #E4E4E7;
   border: 1px solid rgba(228, 228, 231, 0.2);
   border-radius: 12px;
+}
+
+.user-file-change-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(228, 228, 231, 0.12);
+  font-size: 11px;
+  color: #d4d4d8;
+}
+
+.summary-label {
+  color: #a1a1aa;
+}
+
+.summary-value {
+  font-family: monospace;
+  color: #e4e4e7;
 }
 
 .user-attachments {

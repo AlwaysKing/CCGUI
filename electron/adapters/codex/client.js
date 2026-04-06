@@ -427,7 +427,13 @@ class CodexClient {
       session_id: this.resumeThreadId || this.sessionId,
       provider: 'codex',
       providerPid: null,
-      tools: []
+      tools: [],
+      rewindCapabilities: {
+        reset: false,
+        patch: true,
+        forkReset: false,
+        forkPatch: false
+      }
     }
     this.initialized = false
     this.authTokenCache = null

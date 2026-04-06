@@ -23,6 +23,9 @@ const props = defineProps({
 const emit = defineEmits(['toggleCollapse', 'jumpToMessage'])
 const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
 const restoredFilesCount = computed(() => props.message.restoredFilesCount ?? props.message.restoredFiles?.length ?? 0)
+const rewindMode = computed(() => props.message.rewindMode === 'patch' ? 'patch' : 'reset')
+const rewindTitle = computed(() => rewindMode.value === 'patch' ? '已撤销本次修改' : '已重置文件')
+const rewindTitleGhost = computed(() => rewindMode.value === 'patch' ? '撤销修改' : '重置文件')
 
 // 预览文本
 const previewText = computed(() => {
@@ -56,7 +59,7 @@ function jumpToMessage(event) {
         <div class="rewind-ghost-shell">
           <div class="rewind-ghost-header" @click="toggleCollapse">
             <div class="rewind-ghost-info">
-              <span class="rewind-title ghost">还原文件 ({{ restoredFilesCount }})</span>
+              <span class="rewind-title ghost">{{ rewindTitleGhost }} ({{ restoredFilesCount }})</span>
               <span class="rewind-collapse-btn ghost" aria-hidden="true">
                 <svg v-if="isCollapsed" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none">
                   <path d="M4.5 3.25L7.75 6L4.5 8.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -137,7 +140,7 @@ function jumpToMessage(event) {
         <div class="rewind-header-collapsed" @click="toggleCollapse">
           <div class="rewind-header-row-1">
             <span class="rewind-icon">↩️</span>
-            <span class="rewind-title">已还原到消息</span>
+            <span class="rewind-title">{{ rewindTitle }}</span>
             <!-- 文件数徽章 -->
             <span class="rewind-stat-badge files">
               {{ message.restoredFilesCount !== null ? message.restoredFilesCount : 0 }} 文件
@@ -172,7 +175,7 @@ function jumpToMessage(event) {
       <template v-else>
         <div class="rewind-header" @click="toggleCollapse">
           <span class="rewind-icon">↩️</span>
-          <span class="rewind-title">已还原到消息</span>
+          <span class="rewind-title">{{ rewindTitle }}</span>
           <span class="rewind-spacer"></span>
           <!-- 链接图标 -->
           <span

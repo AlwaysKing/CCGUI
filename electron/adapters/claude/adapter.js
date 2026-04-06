@@ -34,7 +34,13 @@ class ClaudeAdapter extends ClaudeClient {
       cwd: this.workingDirectory,
       session_id: this.sessionId,
       provider: 'claude',
-      providerPid: null
+      providerPid: null,
+      rewindCapabilities: {
+        reset: true,
+        patch: false,
+        forkReset: true,
+        forkPatch: false
+      }
     }
     this.pendingAgentToolUses = new Map()
     this.pendingCollaborativePreAgentsByToolUseId = new Map()
@@ -1015,6 +1021,7 @@ class ClaudeAdapter extends ClaudeClient {
             totalFiles: files.length,
             totalInsertions: insertions,
             totalDeletions: deletions,
+            userMessageId: requestContext?.userMessageId || null,
             timestamp: new Date()
           })
         }
@@ -1111,16 +1118,30 @@ class ClaudeAdapter extends ClaudeClient {
   sendControlRequest(request) {
     const normalizedRequest = { ...request }
 
+    if (normalizedRequest?.subtype === 'rewind') {
+      normalizedRequest.subtype = 'reset_files'
+    } else if (normalizedRequest?.subtype === 'rewind_and_fork') {
+      normalizedRequest.subtype = 'reset_files_and_fork'
+    }
+
+    if (normalizedRequest?.subtype === 'undo_patch' || normalizedRequest?.subtype === 'undo_patch_and_fork') {
+      throw new Error('Claude provider does not support patch-based undo')
+    }
+
     if (normalizedRequest?.subtype === 'changed_files') {
       const requestId = `control_file_change_summary_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
       this.pendingDryRunRequests.set(requestId, {
-        kind: 'file-change-summary'
+        kind: 'file-change-summary',
+        userMessageId: normalizedRequest.user_message_id || null
       })
       normalizedRequest.__ccguiRequestId = requestId
       normalizedRequest.subtype = 'rewind_files'
       normalizedRequest.dry_run = true
-    } else if (normalizedRequest?.subtype === 'rewind') {
+    } else if (normalizedRequest?.subtype === 'reset_files') {
       normalizedRequest.subtype = 'rewind_files'
+      normalizedRequest.dry_run = false
+    } else if (normalizedRequest?.subtype === 'reset_files_and_fork') {
+      normalizedRequest.subtype = 'rewind_and_fork'
       normalizedRequest.dry_run = false
     }
 

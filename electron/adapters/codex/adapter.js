@@ -1717,6 +1717,18 @@ class CodexAdapter extends CodexClient {
   }
 
   async sendControlRequest(request) {
+    if (request?.subtype === 'rewind') {
+      request = {
+        ...request,
+        subtype: 'undo_patch'
+      }
+    } else if (request?.subtype === 'rewind_and_fork') {
+      request = {
+        ...request,
+        subtype: 'undo_patch_and_fork'
+      }
+    }
+
     if (request?.subtype === 'changed_files' || request?.subtype === 'rewind_files') {
       // 从 patch 文件读取预览，不走 thread/rollback(dryRun)
       const userMessageUuid = request.user_message_id || null
@@ -1741,7 +1753,7 @@ class CodexAdapter extends CodexClient {
       return super.sendControlRequest(request)
     }
 
-    if (request?.subtype === 'rewind') {
+    if (request?.subtype === 'undo_patch') {
       // 从 patch 文件反向应用，不走 thread/rollback
       const userMessageUuid = request.user_message_id || null
       const diffText = userMessageUuid ? this.readPatchFile(userMessageUuid) : null
@@ -1766,31 +1778,12 @@ class CodexAdapter extends CodexClient {
       return super.sendControlRequest(request)
     }
 
-    if (request?.subtype === 'rewind_and_fork') {
-      await this.ensureInitialized()
+    if (request?.subtype === 'reset_files' || request?.subtype === 'reset_files_and_fork') {
+      throw new Error('Codex provider does not support reset-based file restore')
+    }
 
-      const forkResult = await this.request('thread/fork', {
-        threadId: this.currentThreadId
-      })
-
-      const rollbackResult = await this.request('thread/rollback', {
-        threadId: this.currentThreadId,
-        numTurns: request.numTurns,
-        dryRun: false
-      })
-
-      return this.buildControlResponse(
-        `codex-rewind-fork-${Date.now()}`,
-        {
-          ...this.normalizeRollbackResponse(rollbackResult, { dryRun: false }),
-          new_session_id: (
-            forkResult?.thread?.id ||
-            forkResult?.newThreadId ||
-            forkResult?.threadId ||
-            null
-          )
-        }
-      )
+    if (request?.subtype === 'undo_patch_and_fork') {
+      throw new Error('Codex provider does not support patch undo with fork')
     }
 
     return super.sendControlRequest(request)

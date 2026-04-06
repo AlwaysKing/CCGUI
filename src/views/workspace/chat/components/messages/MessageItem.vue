@@ -208,7 +208,7 @@ const showAvatar = computed(() => {
   }
   // rewind-notice 需要显示头像
   if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
-    return true
+    return false
   }
   // interrupt 需要显示头像
   if (props.message.role === 'system' && props.message.subtype === 'interrupt') {
@@ -277,6 +277,7 @@ const isFloatingStatus = computed(() => statusStyle.value === 'floating')
 const showMessageStats = computed(() => {
   return props.message.role !== 'system_notification' &&
          props.message.role !== 'file_change_summary' &&
+         !(props.message.role === 'system' && props.message.subtype === 'rewind-notice') &&
          statusStyle.value !== 'hidden'
 })
 
@@ -1291,6 +1292,14 @@ onUnmounted(() => {
 
 .message.system .message-avatar {
   background: #6366F1;
+}
+
+.message.system.rewind-notice {
+  justify-content: center;
+}
+
+.message.system.rewind-notice .message-body {
+  align-items: center;
 }
 
 .message.rewind-notice .message-avatar {

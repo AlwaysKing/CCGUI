@@ -21,11 +21,17 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['toggleCollapse', 'jumpToMessage'])
-const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
+const isTextStyle = computed(() => false)
 const restoredFilesCount = computed(() => props.message.restoredFilesCount ?? props.message.restoredFiles?.length ?? 0)
 const rewindMode = computed(() => props.message.rewindMode === 'patch' ? 'patch' : 'reset')
 const rewindTitle = computed(() => rewindMode.value === 'patch' ? '已撤销本次修改' : '已重置文件')
 const rewindTitleGhost = computed(() => rewindMode.value === 'patch' ? '撤销修改' : '重置文件')
+const formattedTime = computed(() => {
+  if (!props.message?.timestamp) return ''
+  const date = new Date(props.message.timestamp)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+})
 
 // 预览文本
 const previewText = computed(() => {
@@ -152,6 +158,7 @@ function jumpToMessage(event) {
               <span class="stat-mini insertions">+{{ message.insertions || 0 }}</span>
             </span>
             <span class="rewind-spacer"></span>
+            <span v-if="formattedTime" class="rewind-meta-time">{{ formattedTime }}</span>
             <!-- 链接图标 -->
             <span
               class="rewind-hint"
@@ -177,6 +184,7 @@ function jumpToMessage(event) {
           <span class="rewind-icon">↩️</span>
           <span class="rewind-title">{{ rewindTitle }}</span>
           <span class="rewind-spacer"></span>
+          <span v-if="formattedTime" class="rewind-meta-time">{{ formattedTime }}</span>
           <!-- 链接图标 -->
           <span
             class="rewind-hint"
@@ -235,12 +243,10 @@ function jumpToMessage(event) {
 
 <style scoped>
 .rewind-message-wrapper {
-  flex: 1;
-  max-width: 70%;
-}
-
-.rewind-message-wrapper:has(.rewind-notice.surface-ghost) {
-  margin: 0;
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: min(100%, 600px);
+  margin: 20px auto;
 }
 
 /* Rewind notice 气泡 - 和参考项目保持一致 */
@@ -396,6 +402,13 @@ function jumpToMessage(event) {
   user-select: none;
   min-width: 0;
   transition: background 0.2s ease;
+}
+
+.rewind-meta-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #71717A;
+  line-height: 1;
 }
 
 .rewind-notice.surface-ghost .rewind-header {

@@ -141,7 +141,7 @@ function closeImagePreview() {
 .message-text {
   max-width: 100%;
   padding: 12px 16px;
-  border-radius: 12px;
+  border-radius: 8px;
   line-height: 1.5;
   position: relative;
   cursor: text;
@@ -158,7 +158,7 @@ function closeImagePreview() {
   background: transparent;
   color: #E4E4E7;
   border: 1px solid rgba(228, 228, 231, 0.2);
-  border-radius: 12px;
+  border-radius: 8px;
 }
 
 .user-attachments {

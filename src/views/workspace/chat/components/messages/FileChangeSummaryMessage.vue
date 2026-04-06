@@ -114,7 +114,7 @@ function toggleExpand() {
   max-width: 600px;
   background: linear-gradient(180deg, rgba(27, 30, 36, 0.94) 0%, rgba(22, 24, 29, 0.96) 100%);
   border: 1px solid rgba(120, 136, 168, 0.16);
-  border-radius: 16px;
+  border-radius: 8px;
   overflow: hidden;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 8px 24px rgba(3, 8, 20, 0.16);
 }
@@ -142,6 +142,7 @@ function toggleExpand() {
   justify-content: space-between;
   gap: 10px;
   padding: 12px 16px;
+  border-radius: 8px 8px 0 0;
   color: #e7edf8;
   opacity: 1;
   font-size: 15px;

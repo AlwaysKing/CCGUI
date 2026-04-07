@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "highlight.js": "^11.11.1",
+    "https-proxy-agent": "^7.0.5",
     "marked": "^17.0.3",
     "monaco-editor": "^0.55.1",
     "node-pty": "^1.0.0",

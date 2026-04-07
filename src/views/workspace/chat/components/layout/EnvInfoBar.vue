@@ -373,7 +373,8 @@ const codexUsageSummary = computed(() => {
   return {
     dominant,
     items: candidates,
-    planType: rateLimits.planType || null
+    planType: rateLimits.planType || null,
+    limitName: rateLimits.limitName || null
   }
 })
 
@@ -390,10 +391,16 @@ const codexUsageTitle = computed(() => {
   }
 
   if (summary) {
+    if (summary.limitName) {
+      parts.push(summary.limitName)
+    }
+    if (summary.planType) {
+      parts.push(`套餐 ${summary.planType}`)
+    }
     parts.push(...summary.items
     .map(item => {
       const lineParts = [`${item.label} 已使用 ${Math.round(item.used)}%`]
-      if (item.resetAt) lineParts.push(`到期 ${item.resetAt}`)
+      if (item.resetAt) lineParts.push(item.resetAt)
       return lineParts.join(' · ')
     }))
   }
@@ -594,17 +601,20 @@ async function copySilentMessage(message, reverseIndex) {
               <span v-if="codexUsageError" class="env-usage-tooltip-line env-usage-tooltip-warn">
                 刷新失败
               </span>
-              <span v-if="codexUsageSummary.planType" class="env-usage-tooltip-line">
+              <span v-if="codexUsageSummary?.limitName" class="env-usage-tooltip-line">
+                {{ codexUsageSummary.limitName }}
+              </span>
+              <span v-if="codexUsageSummary?.planType" class="env-usage-tooltip-line">
                 套餐 {{ codexUsageSummary.planType }}
               </span>
               <span
                 v-if="codexUsageSummary"
                 v-for="item in codexUsageSummary.items"
                 :key="item.key"
-                class="env-usage-tooltip-line"
+                class="env-usage-tooltip-line env-usage-tooltip-line-multiline"
               >
-                {{ item.label }} 已使用 {{ Math.round(item.used) }}%
-                <span v-if="item.resetAt" class="env-usage-tooltip-summary"> · 到期 {{ item.resetAt }}</span>
+                <span>{{ item.label }} 已使用 {{ Math.round(item.used) }}%</span>
+                <span v-if="item.resetAt" class="env-usage-tooltip-summary env-usage-tooltip-reset">{{ item.resetAt }}</span>
               </span>
             </span>
           </button>
@@ -978,6 +988,7 @@ async function copySilentMessage(message, reverseIndex) {
   max-width: 260px;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 4px;
   padding: 10px 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -987,6 +998,7 @@ async function copySilentMessage(message, reverseIndex) {
   color: #F4F4F5;
   z-index: 40;
   white-space: normal;
+  text-align: left;
   -webkit-app-region: no-drag;
   pointer-events: none;
 }
@@ -1003,12 +1015,23 @@ async function copySilentMessage(message, reverseIndex) {
   color: #D4D4D8;
 }
 
+.env-usage-tooltip-line-multiline {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
 .env-usage-tooltip-warn {
   color: #FBBF24;
 }
 
 .env-usage-tooltip-summary {
   color: #A1A1AA;
+}
+
+.env-usage-tooltip-reset {
+  padding-left: 0;
 }
 
 .env-rate-part + .env-rate-part {

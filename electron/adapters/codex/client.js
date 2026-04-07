@@ -169,6 +169,30 @@ function buildCodexUsageRequestError(response = null) {
   return error
 }
 
+function buildCodexUsageStateError(errorLike = null, fallbackMessage = 'Codex usage refresh failed') {
+  if (!errorLike || typeof errorLike !== 'object') {
+    return {
+      code: 'unknown',
+      message: fallbackMessage,
+      status: null
+    }
+  }
+
+  const code = typeof errorLike.code === 'string' && errorLike.code.trim()
+    ? errorLike.code.trim()
+    : (typeof errorLike.type === 'string' && errorLike.type.trim() ? errorLike.type.trim() : null)
+  const message = typeof errorLike.message === 'string' && errorLike.message.trim()
+    ? errorLike.message.trim()
+    : fallbackMessage
+  const status = Number(errorLike.status || errorLike.statusCode || 0) || null
+
+  return {
+    code: code || 'unknown',
+    message,
+    status
+  }
+}
+
 function isMissingCodexThreadError(error) {
   const message = typeof error?.message === 'string' ? error.message.toLowerCase() : ''
   return message.includes('thread not found') || message.includes('conversation not found')
@@ -283,7 +307,7 @@ function normalizeCodexUsage(tokenUsage = {}, scope = 'total') {
 }
 
 function buildSessionUsageSummary(tokenUsage = {}, previousSummary = null) {
-  const usage = normalizeCodexUsage(tokenUsage)
+  const usage = normalizeCodexUsage(tokenUsage, 'last')
   return {
     ...previousSummary,
     total_tokens: usage.total_tokens,
@@ -705,7 +729,7 @@ class CodexClient {
       model: resolvedModel,
       model_reasoning_effort: resolvedReasoningEffort,
       providerPid: this.getPid(),
-      rate_limits: activeCodexAccountUsage?.rateLimits || null,
+      rate_limits: activeCodexAccountUsage?.rateLimits || this.envInfo?.rate_limits || null,
       codex_usage_error: activeCodexAccountUsage?.usageError || null
     }, {
       provider: 'codex',
@@ -890,13 +914,28 @@ class CodexClient {
 
   refreshOpenAiAccountUsageEnvInfo() {
     const activeCodexAccountUsage = resolveActiveCodexAccountUsage()
-    if (!activeCodexAccountUsage || !this.envInfo) {
+    if (!this.envInfo) {
+      return
+    }
+
+    if (!activeCodexAccountUsage) {
+      this.envInfo = applyCodexEnvInfoPatch({
+        ...this.envInfo,
+        codex_usage_error: buildCodexUsageStateError(
+          { code: 'usage_unavailable', message: 'Active Codex account usage is unavailable' },
+          'Active Codex account usage is unavailable'
+        )
+      }, {
+        provider: 'codex',
+        providerPid: this.getPid()
+      })
+      this.emit('env-info', this.envInfo)
       return
     }
 
     this.envInfo = applyCodexEnvInfoPatch({
       ...this.envInfo,
-      rate_limits: activeCodexAccountUsage.rateLimits || null,
+      rate_limits: activeCodexAccountUsage.rateLimits || this.envInfo.rate_limits || null,
       codex_usage_error: activeCodexAccountUsage.usageError || null
     }, {
       provider: 'codex',

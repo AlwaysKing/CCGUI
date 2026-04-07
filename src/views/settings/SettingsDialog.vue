@@ -87,6 +87,7 @@ const {
   handleSaveCodexAccount,
   handleDeleteCodexAccount,
   handleApplyCodexAccount,
+  handleRefreshCodexAccountUsage,
   handleAddPrompt,
   handleEditPrompt,
   handleDeletePrompt,
@@ -193,6 +194,7 @@ useDialogStack(computed(() => true), handleClose)
               @edit-codex-account="handleEditCodexAccount"
               @delete-codex-account="handleDeleteCodexAccount"
               @apply-codex-account="handleApplyCodexAccount"
+              @refresh-codex-account-usage="handleRefreshCodexAccountUsage"
               @select-claude-model="handleSelectClaudeModel"
               @select-codex-model="handleSelectCodexModel"
               @edit-claude-model="handleEditClaudeModel"

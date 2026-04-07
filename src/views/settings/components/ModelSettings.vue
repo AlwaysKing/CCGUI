@@ -54,6 +54,7 @@ const emit = defineEmits([
   'edit-codex-account',
   'delete-codex-account',
   'apply-codex-account',
+  'refresh-codex-account-usage',
   'select-claude-model',
   'select-codex-model',
   'edit-claude-model',
@@ -402,33 +403,6 @@ function getCodexAccountUsageError(account) {
   }
 }
 
-function collectUrlLikeEntries(value, path = 'result', entries = []) {
-  if (value === null || value === undefined) {
-    return entries
-  }
-
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    if (/^(https?:\/\/|[a-z][a-z0-9+.-]*:\/\/)/i.test(trimmed)) {
-      entries.push(`${path}: ${trimmed}`)
-    }
-    return entries
-  }
-
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => collectUrlLikeEntries(item, `${path}[${index}]`, entries))
-    return entries
-  }
-
-  if (typeof value === 'object') {
-    Object.entries(value).forEach(([key, item]) => {
-      collectUrlLikeEntries(item, `${path}.${key}`, entries)
-    })
-  }
-
-  return entries
-}
-
 async function inspectCodexAuthResult(account) {
   const accountId = account?.id || account?.accountId || 'codex-account'
   if (codexAuthDebugLoading.value.has(accountId)) {
@@ -437,34 +411,13 @@ async function inspectCodexAuthResult(account) {
 
   codexAuthDebugLoading.value.add(accountId)
   try {
-    const response = await window.electronAPI.refreshCodexAuthToken()
-    const result = response || null
-    const urlEntries = collectUrlLikeEntries(result)
-    const lines = [
-      `账号: ${account?.name || account?.email || account?.accountId || '未命名账号'}`,
-      `success: ${response?.success === true ? 'true' : 'false'}`
-    ]
-
-    if (urlEntries.length > 0) {
-      lines.push('', '检测到的地址字段:', ...urlEntries)
-    } else {
-      lines.push('', '没有在返回里检测到 URL 字段。')
-    }
-
-    lines.push('', '完整返回:', JSON.stringify(result, null, 2))
-
-    console.log('[CodexAuthDebug] refreshCodexAuthToken result', response)
-    codexAuthDebugDialog.value = {
-      visible: true,
-      title: `Codex 调试返回 · ${account?.name || account?.email || account?.accountId || '未命名账号'}`,
-      content: lines.join('\n')
-    }
+    await emit('refresh-codex-account-usage', account)
   } catch (error) {
-    console.error('[CodexAuthDebug] Failed to inspect auth result', error)
+    console.error('[CodexUsageRefresh] Failed to refresh usage from settings list', error)
     codexAuthDebugDialog.value = {
       visible: true,
-      title: 'Codex 调试返回失败',
-      content: `查看 Codex 返回失败: ${error?.message || '未知错误'}`
+      title: 'Codex 用量刷新失败',
+      content: `刷新账号用量失败: ${error?.message || '未知错误'}`
     }
   } finally {
     codexAuthDebugLoading.value.delete(accountId)

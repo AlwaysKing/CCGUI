@@ -39,12 +39,13 @@ function buildUsageWindow(window = null) {
   }
 }
 
-function mapCodexUsageSnapshot(usage = null) {
+function mapCodexUsageSnapshot(usage = null, metadata = {}) {
   if (!usage || typeof usage !== 'object') {
     return null
   }
 
   return {
+    accountName: metadata.accountName || '',
     email: usage.email || '',
     userId: usage.user_id || '',
     accountId: usage.account_id || '',
@@ -608,9 +609,57 @@ function applyCodexAccount(account = {}) {
   }
 }
 
+function resolveActiveCodexAccount() {
+  const config = getAppConfig()
+  const settings = config.settings || {}
+  const accounts = Array.isArray(settings.codexAccounts) ? settings.codexAccounts : []
+  const authTokens = loadCodexAuthTokens()
+  const authAccountId = authTokens.accountId || ''
+  const selectedAccountId = settings.selectedCodexAccountId || null
+
+  let activeAccount =
+    accounts.find(account => account?.accountId && account.accountId === authAccountId) ||
+    accounts.find(account => account?.id && account.id === selectedAccountId) ||
+    null
+
+  if (activeAccount) {
+    return activeAccount
+  }
+
+  if (!authTokens.accessToken) {
+    return null
+  }
+
+  return {
+    id: selectedAccountId || authAccountId || 'active-codex-account',
+    name: 'Codex 当前账号',
+    email: '',
+    accountId: authTokens.accountId || '',
+    idToken: authTokens.idToken || '',
+    accessToken: authTokens.accessToken || '',
+    refreshToken: authTokens.refreshToken || '',
+    lastRefresh: authTokens.lastRefresh || ''
+  }
+}
+
+function getActiveCodexAccountUsageSnapshot() {
+  const activeAccount = resolveActiveCodexAccount()
+  return {
+    accountId: activeAccount?.id || null,
+    accountName: activeAccount?.name || activeAccount?.email || activeAccount?.accountId || null,
+    usage: activeAccount?.usage || null,
+    usageError: activeAccount?.usageError || null
+  }
+}
+
 async function getCodexUsageStatus() {
-  const usage = await loadCodexUsageStatus()
-  return mapCodexUsageSnapshot(usage)
+  const activeAccount = resolveActiveCodexAccount()
+  const usage = activeAccount
+    ? await loadCodexUsageStatus({ account: activeAccount })
+    : await loadCodexUsageStatus()
+  return mapCodexUsageSnapshot(usage, {
+    accountName: activeAccount?.name || activeAccount?.email || activeAccount?.accountId || ''
+  })
 }
 
 async function listClaudeModels(options = {}) {
@@ -646,7 +695,13 @@ async function startCodexChatGptLogin() {
 
 async function refreshCodexAccountUsage(account = null) {
   const usage = await loadCodexUsageStatus(account ? { account } : {})
-  return mapCodexUsageSnapshot(usage)
+  return mapCodexUsageSnapshot(usage, {
+    accountName: account?.name || account?.email || account?.accountId || ''
+  })
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 async function refreshAllCodexAccountUsage() {
@@ -659,13 +714,35 @@ async function refreshAllCodexAccountUsage() {
   }
 
   let changed = false
-  const refreshedAccounts = await Promise.all(accounts.map(async account => {
+  const refreshedAccounts = []
+
+  for (const account of accounts) {
     try {
       const usage = await refreshCodexAccountUsage(account)
+      if (!usage) {
+        const nextError = {
+          code: 'empty_usage',
+          message: 'Codex usage refresh returned empty data',
+          status: null
+        }
+        const nextAccount = {
+          ...account,
+          usageError: nextError
+        }
+
+        if (JSON.stringify(account.usageError || null) !== JSON.stringify(nextError)) {
+          changed = true
+        }
+
+        refreshedAccounts.push(nextAccount)
+        await sleep(150)
+        continue
+      }
+
       const nextAccount = {
         ...account,
         email: usage?.email || account.email || '',
-        usage: usage || null,
+        usage,
         usageError: null
       }
 
@@ -676,7 +753,7 @@ async function refreshAllCodexAccountUsage() {
         changed = true
       }
 
-      return nextAccount
+      refreshedAccounts.push(nextAccount)
     } catch (error) {
       const nextError = {
         code: error?.code || error?.type || null,
@@ -698,9 +775,11 @@ async function refreshAllCodexAccountUsage() {
         code: error?.code || error?.type || null,
         statusCode: error?.statusCode || null
       })
-      return nextAccount
+      refreshedAccounts.push(nextAccount)
     }
-  }))
+
+    await sleep(150)
+  }
 
   if (!changed) {
     return config
@@ -738,6 +817,7 @@ module.exports = {
   listCodexModels,
   setCodexDefaultModel,
   getCodexConfigPath,
+  getActiveCodexAccountUsageSnapshot,
   getCodexUsageStatus,
   loadCodexAuthTokens,
   readCodexAuthFile,

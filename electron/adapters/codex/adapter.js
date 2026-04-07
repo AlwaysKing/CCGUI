@@ -13,6 +13,30 @@ const {
 } = require('./client')
 const logger = require('../../logger')
 
+function buildCodexUsageStateError(errorLike = null, fallbackMessage = 'Codex usage refresh failed') {
+  if (!errorLike || typeof errorLike !== 'object') {
+    return {
+      code: 'unknown',
+      message: fallbackMessage,
+      status: null
+    }
+  }
+
+  const code = typeof errorLike.code === 'string' && errorLike.code.trim()
+    ? errorLike.code.trim()
+    : (typeof errorLike.type === 'string' && errorLike.type.trim() ? errorLike.type.trim() : null)
+  const message = typeof errorLike.message === 'string' && errorLike.message.trim()
+    ? errorLike.message.trim()
+    : fallbackMessage
+  const status = Number(errorLike.status || errorLike.statusCode || 0) || null
+
+  return {
+    code: code || 'unknown',
+    message,
+    status
+  }
+}
+
 /**
  * CodexAdapter
  *
@@ -757,7 +781,16 @@ class CodexAdapter extends CodexClient {
       case 'account/rateLimits/updated':
         this.envInfo = applyCodexEnvInfoPatch({
           ...this.envInfo,
-          rate_limits: params.rateLimits || null
+          rate_limits: params.rateLimits || this.envInfo?.rate_limits || null,
+          codex_usage_error: params.rateLimits
+            ? null
+            : buildCodexUsageStateError(
+                params.error || {
+                  code: 'empty_usage',
+                  message: 'Codex rate limit refresh returned empty data'
+                },
+                'Codex rate limit refresh returned empty data'
+              )
         }, {
           provider: 'codex',
           providerPid: this.getPid()

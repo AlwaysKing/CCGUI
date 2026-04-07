@@ -673,6 +673,51 @@ export function useSettingsData(emit) {
     await loadSettings()
   }
 
+  async function handleRefreshCodexAccountUsage(account) {
+    if (!account?.id) return
+
+    const accounts = Array.isArray(codexConfig.value.accounts) ? [...codexConfig.value.accounts] : []
+    const index = accounts.findIndex(item => item.id === account.id)
+    if (index === -1) return
+
+    const targetAccount = { ...accounts[index] }
+
+    try {
+      const result = await window.electronAPI.getCodexUsageStatus({ account: toDeepPlain(targetAccount) })
+      if (!result?.success || !result?.usage) {
+        const usageError = {
+          code: result?.usage ? null : 'empty_usage',
+          message: result?.error || (result?.usage ? 'Codex usage refresh failed' : 'Codex usage refresh returned empty data'),
+          status: null
+        }
+
+        accounts[index] = {
+          ...targetAccount,
+          usageError
+        }
+      } else {
+        accounts[index] = {
+          ...targetAccount,
+          email: result.usage.email || targetAccount.email || '',
+          usage: result.usage,
+          usageError: null
+        }
+      }
+    } catch (error) {
+      accounts[index] = {
+        ...targetAccount,
+        usageError: {
+          code: error?.code || null,
+          message: error?.message || 'Codex usage refresh failed',
+          status: Number(error?.statusCode || 0) || null
+        }
+      }
+    }
+
+    codexConfig.value.accounts = accounts
+    await saveAppConfig()
+  }
+
   function handleAddPrompt() {
     editingPrompt.value = null
     showPromptDialog.value = true
@@ -901,6 +946,7 @@ export function useSettingsData(emit) {
     handleSaveCodexAccount,
     handleDeleteCodexAccount,
     handleApplyCodexAccount,
+    handleRefreshCodexAccountUsage,
     handleAddPrompt,
     handleEditPrompt,
     handleDeletePrompt,

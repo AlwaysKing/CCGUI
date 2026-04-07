@@ -1091,6 +1091,11 @@ watch(() => sessionStore.currentSessionId, async (newSessionId, oldSessionId) =>
     if (currentSession) {
       permissionMode.value = currentSession.permissionMode || 'default'
       console.log('[Chat] ✅ Synced permission mode from session:', permissionMode.value)
+
+      if (currentSession.envInfo?.provider === 'codex') {
+        await syncStoredCodexUsageForSession(currentSession)
+        refreshCodexUsageForSession(currentSession)
+      }
     } else {
       permissionMode.value = 'default'
       console.log('[Chat] ❌ No current session, using default permission mode')
@@ -1161,7 +1166,7 @@ function buildCodexRateLimitsFromUsage(usage) {
 
   return {
     planType: usage.planType || null,
-    limitName: usage.email || usage.accountId || null,
+    limitName: usage.accountName || usage.email || usage.accountId || null,
     primary: hasPrimary
       ? {
           label: '5小时',
@@ -1181,19 +1186,65 @@ function buildCodexRateLimitsFromUsage(usage) {
   }
 }
 
-async function handleRefreshCodexUsage() {
-  const currentSession = sessionStore.currentSession
-  if (!currentSession || currentSession.envInfo?.provider !== 'codex' || codexUsageRefreshing.value) {
+async function syncStoredCodexUsageForSession(targetSession) {
+  if (!targetSession || targetSession.envInfo?.provider !== 'codex') {
+    return
+  }
+
+  try {
+    const result = await window.electronAPI.getActiveCodexAccountUsageSnapshot()
+    if (!result?.success) {
+      return
+    }
+
+    const currentEnvInfo = targetSession.envInfo || {}
+    const snapshotUsage = result.usage
+      ? {
+          ...result.usage,
+          accountName: result.usage.accountName || result.accountName || ''
+        }
+      : null
+    const nextRateLimits = buildCodexRateLimitsFromUsage(snapshotUsage)
+    const nextUsageError = result.usageError || null
+
+    if (!nextRateLimits && !nextUsageError) {
+      return
+    }
+
+    targetSession.envInfo = {
+      ...currentEnvInfo,
+      rate_limits: nextRateLimits || currentEnvInfo.rate_limits || null,
+      codex_usage_error: nextRateLimits ? null : nextUsageError
+    }
+  } catch (error) {
+    logger.warn('[Chat] Failed to apply stored codex usage snapshot', error?.message || String(error))
+  }
+}
+
+async function refreshCodexUsageForSession(targetSession) {
+  if (!targetSession || targetSession.envInfo?.provider !== 'codex' || codexUsageRefreshing.value) {
     return
   }
 
   codexUsageRefreshing.value = true
   try {
     const result = await window.electronAPI.getCodexUsageStatus()
-    const currentEnvInfo = currentSession.envInfo || {}
+    const currentEnvInfo = targetSession.envInfo || {}
 
     if (result?.success) {
-      currentSession.envInfo = {
+      if (!result.usage) {
+        targetSession.envInfo = {
+          ...currentEnvInfo,
+          codex_usage_error: {
+            code: 'empty_usage',
+            message: 'Codex usage refresh returned empty data',
+            status: null
+          }
+        }
+        return
+      }
+
+      targetSession.envInfo = {
         ...currentEnvInfo,
         rate_limits: buildCodexRateLimitsFromUsage(result.usage),
         codex_usage_error: null
@@ -1201,7 +1252,7 @@ async function handleRefreshCodexUsage() {
       return
     }
 
-    currentSession.envInfo = {
+    targetSession.envInfo = {
       ...currentEnvInfo,
       codex_usage_error: {
         code: null,
@@ -1210,8 +1261,8 @@ async function handleRefreshCodexUsage() {
       }
     }
   } catch (error) {
-    const currentEnvInfo = currentSession.envInfo || {}
-    currentSession.envInfo = {
+    const currentEnvInfo = targetSession.envInfo || {}
+    targetSession.envInfo = {
       ...currentEnvInfo,
       codex_usage_error: {
         code: error?.code || null,
@@ -1222,6 +1273,11 @@ async function handleRefreshCodexUsage() {
   } finally {
     codexUsageRefreshing.value = false
   }
+}
+
+async function handleRefreshCodexUsage() {
+  await syncStoredCodexUsageForSession(sessionStore.currentSession)
+  await refreshCodexUsageForSession(sessionStore.currentSession)
 }
 
 // Rewind 确认对话框状态

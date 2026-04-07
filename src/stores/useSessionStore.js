@@ -2145,8 +2145,8 @@ export const useSessionStore = defineStore('session', () => {
         break
 
       case 'env-info':
-        session.envInfo = data
-        session.runtimeReady = Boolean(data?.providerPid)
+        mergeSessionEnvInfo(session, data)
+        session.runtimeReady = Boolean(session.envInfo?.providerPid)
         break
 
       case 'silent-message':

@@ -2636,6 +2636,18 @@ ipcMain.handle('get-codex-usage-status', async (event, options = {}) => {
   }
 })
 
+ipcMain.handle('get-active-codex-account-usage-snapshot', async () => {
+  try {
+    return {
+      success: true,
+      ...appService.getActiveCodexAccountUsageSnapshot()
+    }
+  } catch (error) {
+    logger.error('[CodexSettings] Failed to load active codex account usage snapshot', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 ipcMain.handle('list-codex-models', async (event, options = {}) => {
   try {
     const result = await appService.listCodexModels(options || {})

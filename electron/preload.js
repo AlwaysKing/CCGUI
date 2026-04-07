@@ -227,6 +227,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadCodexAuthTokens: () => ipcRenderer.invoke('load-codex-auth-tokens'),
   applyCodexAccount: (options) => ipcRenderer.invoke('apply-codex-account', options),
   getCodexUsageStatus: (options) => ipcRenderer.invoke('get-codex-usage-status', options),
+  getActiveCodexAccountUsageSnapshot: () => ipcRenderer.invoke('get-active-codex-account-usage-snapshot'),
   listCodexModels: (options) => ipcRenderer.invoke('list-codex-models', options),
   setCodexDefaultModel: (options) => ipcRenderer.invoke('set-codex-default-model', options),
   refreshCodexAuthToken: () => ipcRenderer.invoke('refresh-codex-auth-token'),

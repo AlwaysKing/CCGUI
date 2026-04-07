@@ -909,13 +909,15 @@ function handleClickOutsidePermissionMenu(event) {
 // 使用 sync flush 在 DOM 更新前记录状态
 let wasNearBottomBeforeStreaming = true
 watch(() => {
-  // 检查是否有正在流式更新的消息
+  // 检查是否有正在流式更新的消息，并返回一个会在内容变化时改变的值
   if (!messages.value) return null
-  const hasStreaming = messages.value.some(m => m.isStreaming)
-  return hasStreaming
-}, (hasStreaming) => {
+  const streamingMsg = messages.value.find(m => m.isStreaming || m.isExecuting)
+  if (!streamingMsg) return null
+  // 返回消息 ID + 内容长度，确保内容变化时能触发 watch
+  return `${streamingMsg.id}:${streamingMsg.content?.length || 0}`
+}, () => {
   const container = getScrollContainer()
-  if (hasStreaming && container) {
+  if (container) {
     // 在 DOM 更新前检查滚动位置
     wasNearBottomBeforeStreaming = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
   }
@@ -923,40 +925,19 @@ watch(() => {
 
 // 在 DOM 更新后处理流式更新的滚动
 watch(() => {
-  // 检查是否有正在流式更新的消息
+  // 检查是否有正在流式更新的消息，并返回一个会在内容变化时改变的值
   if (!messages.value) return null
-  const hasStreaming = messages.value.some(m => m.isStreaming)
-  return hasStreaming
-}, async (hasStreaming) => {
-  if (hasStreaming && wasNearBottomBeforeStreaming) {
+  const streamingMsg = messages.value.find(m => m.isStreaming || m.isExecuting)
+  if (!streamingMsg) return null
+  return `${streamingMsg.id}:${streamingMsg.content?.length || 0}`
+}, async () => {
+  if (wasNearBottomBeforeStreaming) {
     // 等待 DOM 更新
     await nextTick()
     // 如果之前在底部，强制滚动
     scrollToBottom(true)
   }
-}, { immediate: false, deep: true })
-
-// 监听消息内容变化（流式更新），处理高度变化
-watch(() => messages.value, async (newMessages) => {
-  if (!newMessages || newMessages.length === 0) return
-
-  // 检查是否有正在流式更新的消息
-  const hasStreamingMessage = newMessages.some(m => m.isStreaming || m.isExecuting)
-  if (!hasStreamingMessage) return
-
-  // 在 DOM 更新前检查用户是否在底部
-  const container = getScrollContainer()
-  if (!container) return
-
-  // 等待 DOM 更新
-  await nextTick()
-
-  // nextTick 后重新检查：用户可能在等待期间已向上滚动
-  const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
-  if (isNearBottom) {
-    scrollToBottom(true)
-  }
-}, { deep: true, immediate: false })
+}, { immediate: false })
 
 watch(
   () => [
@@ -1488,6 +1469,8 @@ function handleRewindNoticeClick(rewindToMessageId) {
 
 // 记录用户是否主动滚动离开底部
 let userScrolledAway = false
+// 程序化滚动计数器（用于忽略程序化滚动触发的 scroll 事件）
+let programmaticScrollCounter = 0
 
 function notifyTurnError(message, options = {}) {
   if (options.asDialog) {
@@ -1524,7 +1507,7 @@ function closeErrorDialog() {
 }
 
 function getScrollContainer() {
-  return document.querySelector('.chat-window .agent-workspace__content') || messagesContainer.value || null
+  return document.querySelector('.chat-window .agent-workspace__main-scroll') || messagesContainer.value || null
 }
 
 // 滚动到底部
@@ -1560,7 +1543,13 @@ function scrollToBottom(forceScroll = false) {
   const doScroll = () => {
     const activeContainer = getScrollContainer()
     if (activeContainer) {
+      // 增加程序化滚动计数
+      programmaticScrollCounter++
       activeContainer.scrollTop = activeContainer.scrollHeight
+      // 使用 RAF 确保在下一帧之后才减少计数
+      requestAnimationFrame(() => {
+        programmaticScrollCounter--
+      })
     }
   }
 
@@ -1578,6 +1567,9 @@ function scrollToBottom(forceScroll = false) {
 
 // 处理用户滚动事件
 function handleUserScroll() {
+  // 忽略程序化滚动触发的事件
+  if (programmaticScrollCounter > 0) return
+
   const container = getScrollContainer()
   if (!container) return
   const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < AUTO_SCROLL_NEAR_BOTTOM_PX

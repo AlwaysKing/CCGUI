@@ -318,7 +318,7 @@ function isFoldableActivityBlock(block) {
   if (!message) return false
   if (message.role === 'user' || message.role === 'assistant') return false
   if (message.role === 'system' || message.role === 'task_complete') return false
-  if (message.role === 'system_notification' && message.scope === 'session') return false
+  if (message.role === 'system_notification') return false
   return true
 }
 
@@ -388,7 +388,8 @@ function buildRenderableTimeline(blocks) {
         type: 'activity-group',
         key: getActivityGroupKey(pendingActivities, null),
         foldableBlocks: [...pendingActivities],
-        assistantBlock: null
+        assistantBlock: null,
+        shouldAutoCollapse: false
       })
     } else {
       pendingActivities.forEach(block => {
@@ -408,17 +409,34 @@ function buildRenderableTimeline(blocks) {
       return
     }
 
-    if (isAssistantAnswerBlock(block)) {
-      if (getFoldableActivityCount(pendingActivities, block) >= 2) {
+    // 遇到任何不能归入 foldable 的消息，都可能触发折叠
+    if (getFoldableActivityCount(pendingActivities, null) >= 2) {
+      const isAssistantAnswer = isAssistantAnswerBlock(block)
+      renderBlocks.push({
+        type: 'activity-group',
+        key: getActivityGroupKey(pendingActivities, isAssistantAnswer ? block : null),
+        foldableBlocks: [...pendingActivities],
+        assistantBlock: isAssistantAnswer ? block : null,
+        shouldAutoCollapse: true
+      })
+      pendingActivities = []
+
+      // assistant answer 单独渲染在 group 外部
+      if (isAssistantAnswer) {
         renderBlocks.push({
-          type: 'activity-group',
-          key: getActivityGroupKey(pendingActivities, block),
-          foldableBlocks: [...pendingActivities],
-          assistantBlock: block
+          type: 'block',
+          key: block.key || `block-${block.displayIndex}`,
+          block
         })
-        pendingActivities = []
-        return
+      } else {
+        // 其他非 foldable 消息也单独渲染
+        renderBlocks.push({
+          type: 'block',
+          key: block.key || `block-${block.displayIndex}`,
+          block
+        })
       }
+      return
     }
 
     flushPendingActivities()
@@ -511,7 +529,8 @@ function resolveActivityGroupCollapsed(group) {
   if (typeof stored === 'boolean') {
     return stored
   }
-  return Boolean(group?.assistantBlock)
+  // 有 shouldAutoCollapse 标记时默认折叠
+  return Boolean(group?.shouldAutoCollapse)
 }
 
 function toggleActivityGroup(groupKey) {

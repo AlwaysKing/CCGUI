@@ -1021,6 +1021,7 @@ class ClaudeAdapter extends ClaudeClient {
             totalFiles: files.length,
             totalInsertions: insertions,
             totalDeletions: deletions,
+            patchState: 'applied',
             userMessageId: requestContext?.userMessageId || null,
             timestamp: new Date()
           })

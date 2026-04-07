@@ -44,16 +44,16 @@ function handleMessageClick({ event, message }) {
   emit('messageClick', { event, message })
 }
 
-function handleRewind({ messageId, messageIndex }) {
-  emit('rewind', { messageId, messageIndex })
+function handleRewind(payload) {
+  emit('rewind', payload)
 }
 
 function handleFork({ messageId, messageIndex }) {
   emit('fork', { messageId, messageIndex })
 }
 
-function handleRewindAndFork({ messageId, messageIndex }) {
-  emit('rewindAndFork', { messageId, messageIndex })
+function handleRewindAndFork(payload) {
+  emit('rewindAndFork', payload)
 }
 
 function handleJumpToMessage(rewindToMessageId) {

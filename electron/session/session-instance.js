@@ -265,12 +265,20 @@ function isResetSubtype(subtype = '') {
   return subtype === 'reset_files' || subtype === 'rewind_files'
 }
 
-function isPatchSubtype(subtype = '') {
+function isPatchUndoSubtype(subtype = '') {
   return subtype === 'undo_patch'
 }
 
+function isPatchRedoSubtype(subtype = '') {
+  return subtype === 'redo_patch'
+}
+
+function isPatchSubtype(subtype = '') {
+  return isPatchUndoSubtype(subtype) || isPatchRedoSubtype(subtype)
+}
+
 function isRestoreActionSubtype(subtype = '') {
-  return isResetSubtype(subtype) || isPatchSubtype(subtype)
+  return isResetSubtype(subtype) || isPatchUndoSubtype(subtype)
 }
 
 function isRestoreAndForkSubtype(subtype = '') {
@@ -1788,8 +1796,16 @@ class SessionInstance {
           pendingRequest?.user_message_id &&
           pendingRequest?.dry_run !== true
         ) {
-          const rewindMode = isPatchSubtype(pendingRequest?.subtype) ? 'patch' : 'reset'
+          const rewindMode = isPatchUndoSubtype(pendingRequest?.subtype) ? 'patch' : 'reset'
           this.applyRewindLocally(pendingRequest.user_message_id, payload, { mode: rewindMode })
+        }
+
+        if (
+          isPatchRedoSubtype(pendingRequest?.subtype) &&
+          pendingRequest?.user_message_id &&
+          pendingRequest?.dry_run !== true
+        ) {
+          this.applyPatchRedoLocally(pendingRequest.user_message_id)
         }
 
         this.appendControlOutcomeMessage(pendingRequest, message)
@@ -2149,6 +2165,69 @@ class SessionInstance {
     }
   }
 
+  getFileChangeSummaryMessage(userMessageId) {
+    if (!userMessageId) {
+      return null
+    }
+
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index]
+      if (message?.role === 'file_change_summary' && message?.userMessageId === userMessageId) {
+        return message
+      }
+    }
+
+    return null
+  }
+
+  updateFileChangeSummaryMessage(userMessageId, updates = {}) {
+    const summaryMessage = this.getFileChangeSummaryMessage(userMessageId)
+    if (!summaryMessage) {
+      return null
+    }
+
+    const normalizedUpdates = {
+      ...updates,
+      updatedAt: new Date().toISOString()
+    }
+
+    Object.assign(summaryMessage, normalizedUpdates)
+    historyManager.updateMessage(this.projectId, this.id, summaryMessage.id, normalizedUpdates)
+    historyManager.updateIndexMessage(this.projectId, this.id, summaryMessage.id, normalizedUpdates)
+    this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+    this.emit('message-update', {
+      messageId: summaryMessage.id,
+      updates: normalizedUpdates
+    })
+
+    return summaryMessage
+  }
+
+  applyPatchUndoLocally(userMessageId) {
+    this.updateFileChangeSummaryMessage(userMessageId, {
+      patchState: 'undone',
+      patchUndoneAt: new Date().toISOString()
+    })
+
+    this.activeResponseUserMessageId = null
+    this.pendingControlRequest = null
+    this.pendingControlRequests.clear()
+    return this.messages
+  }
+
+  applyPatchRedoLocally(userMessageId) {
+    this.updateFileChangeSummaryMessage(userMessageId, {
+      patchState: 'applied',
+      patchUndoneAt: null,
+      patchRedoneAt: new Date().toISOString()
+    })
+
+    this.activeResponseUserMessageId = null
+    this.pendingControlRequest = null
+    this.pendingControlRequests.clear()
+    return this.messages
+  }
+
   applyRewindLocally(userMessageId, rewindData = {}, options = {}) {
     const targetIndex = this.messages.findIndex(item => item.role === 'user' && item.id === userMessageId)
     if (targetIndex === -1) {
@@ -2157,6 +2236,10 @@ class SessionInstance {
 
     const targetMessage = this.messages[targetIndex] || null
     const mode = options?.mode === 'patch' ? 'patch' : 'reset'
+    if (mode === 'patch') {
+      return this.applyPatchUndoLocally(userMessageId)
+    }
+
     const changedFiles = Array.from(new Set(
       (rewindData?.changed_files || rewindData?.filesChanged || rewindData?.restored_files || [])
         .filter(file => typeof file === 'string' && file.trim())
@@ -2272,7 +2355,11 @@ class SessionInstance {
 
     if (normalizedRequest?.subtype === 'changed_files') {
       normalizedRequest.dry_run = true
-    } else if (normalizedRequest?.subtype === 'reset_files' || normalizedRequest?.subtype === 'undo_patch') {
+    } else if (
+      normalizedRequest?.subtype === 'reset_files' ||
+      normalizedRequest?.subtype === 'undo_patch' ||
+      normalizedRequest?.subtype === 'redo_patch'
+    ) {
       normalizedRequest.dry_run = false
     }
 
@@ -2494,13 +2581,24 @@ class SessionInstance {
           pendingRequest?.user_message_id &&
           pendingRequest?.dry_run !== true
         ) {
-          const rewindMode = isPatchSubtype(pendingRequest?.subtype) ? 'patch' : 'reset'
+          const rewindMode = isPatchUndoSubtype(pendingRequest?.subtype) ? 'patch' : 'reset'
           this.applyRewindLocally(pendingRequest.user_message_id, payload, { mode: rewindMode })
         }
 
         if (isRestoreAndForkSubtype(pendingRequest?.subtype) && pendingRequest?.user_message_id) {
           const rewindMode = pendingRequest?.subtype === 'undo_patch_and_fork' ? 'patch' : 'reset'
           this.applyRewindLocally(pendingRequest.user_message_id, payload || {}, { mode: rewindMode })
+        }
+
+        if (
+          pendingRequest &&
+          payload &&
+          !payload.error &&
+          isPatchRedoSubtype(pendingRequest?.subtype) &&
+          pendingRequest?.user_message_id &&
+          pendingRequest?.dry_run !== true
+        ) {
+          this.applyPatchRedoLocally(pendingRequest.user_message_id)
         }
 
         this.appendControlOutcomeMessage(pendingRequest, response)

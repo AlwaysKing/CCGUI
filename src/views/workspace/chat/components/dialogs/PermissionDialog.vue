@@ -247,7 +247,22 @@ function handleApproveAll() {
   word-break: break-all;
   display: inline-block;
   max-width: 100%;
+  max-height: 120px;
+  overflow-y: auto;
   overflow-wrap: break-word;
+}
+
+.detail-value.code::-webkit-scrollbar {
+  width: 4px;
+}
+
+.detail-value.code::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.detail-value.code::-webkit-scrollbar-thumb {
+  background: #52525B;
+  border-radius: 2px;
 }
 
 .permission-description {

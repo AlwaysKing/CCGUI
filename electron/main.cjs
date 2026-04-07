@@ -2788,6 +2788,42 @@ ipcMain.handle('send-notification', async (event, { url }) => {
   }
 })
 
+ipcMain.handle('show-message-box', async (event, options = {}) => {
+  try {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow || null
+    const {
+      type = 'info',
+      title = '提示',
+      message = '',
+      detail = '',
+      buttons = ['确定'],
+      defaultId = 0,
+      cancelId = 0,
+      noLink = true
+    } = options || {}
+
+    return await dialog.showMessageBox(targetWindow, {
+      type,
+      title,
+      message: String(message || ''),
+      detail: String(detail || ''),
+      buttons: Array.isArray(buttons) && buttons.length > 0 ? buttons : ['确定'],
+      defaultId,
+      cancelId,
+      noLink
+    })
+  } catch (error) {
+    logger.error('[Dialog] Failed to show message box', {
+      error: error.message
+    })
+    return {
+      response: 0,
+      checkboxChecked: false,
+      error: error.message
+    }
+  }
+})
+
 ipcMain.handle('play-system-sound', async (event, { sound }) => {
   try {
     if (process.platform !== 'darwin') {

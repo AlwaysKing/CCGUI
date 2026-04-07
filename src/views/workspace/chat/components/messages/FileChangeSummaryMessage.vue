@@ -6,11 +6,25 @@ const props = defineProps({
     type: Object,
     required: true
   },
+  messageIndex: {
+    type: Number,
+    default: -1
+  },
+  canPatchRewind: {
+    type: Boolean,
+    default: false
+  },
+  rewindBusy: {
+    type: Boolean,
+    default: false
+  },
   chatTheme: {
     type: Object,
     default: () => ({})
   }
 })
+
+const emit = defineEmits(['rewind'])
 
 const expanded = ref(false)
 
@@ -20,6 +34,10 @@ const totalDeletions = computed(() => props.message.totalDeletions || 0)
 const files = computed(() => props.message.files || [])
 const isTextStyle = computed(() => (props.chatTheme?.messageSurface || 'bubble') === 'ghost')
 const fileCountText = computed(() => `${totalFiles.value} 个文件已更改`)
+const isPatchUndone = computed(() => props.message.patchState === 'undone')
+const showPatchActionButton = computed(() => props.canPatchRewind && typeof props.message.userMessageId === 'string' && props.message.userMessageId.trim())
+const patchActionLabel = computed(() => isPatchUndone.value ? '重做' : '撤销')
+const patchActionTitle = computed(() => isPatchUndone.value ? '重新应用本次补丁修改' : '撤销本次补丁修改')
 
 const summaryText = computed(() => {
   const parts = []
@@ -32,11 +50,25 @@ const summaryText = computed(() => {
 function toggleExpand() {
   expanded.value = !expanded.value
 }
+
+function handlePatchActionClick() {
+  if (!showPatchActionButton.value || props.rewindBusy) {
+    return
+  }
+
+  emit('rewind', {
+    messageId: props.message.userMessageId,
+    summaryMessageId: props.message.id,
+    messageIndex: props.messageIndex,
+    rewindMode: 'patch',
+    actionType: isPatchUndone.value ? 'redo' : 'undo'
+  })
+}
 </script>
 
 <template>
   <div class="file-change-summary-wrapper">
-    <div class="file-change-summary" :class="{ expanded, 'surface-ghost': isTextStyle }">
+    <div class="file-change-summary" :class="{ expanded, 'surface-ghost': isTextStyle, 'is-patch-undone': isPatchUndone }">
       <span class="summary-line" aria-hidden="true"></span>
       <div class="summary-content">
         <div class="summary-header" @click="toggleExpand">
@@ -45,13 +77,39 @@ function toggleExpand() {
               <span class="summary-title">{{ fileCountText }}</span>
               <span v-if="totalInsertions > 0" class="summary-stat stat-add">+{{ totalInsertions }}</span>
               <span v-if="totalDeletions > 0" class="summary-stat stat-del">-{{ totalDeletions }}</span>
+              <span v-if="isPatchUndone" class="summary-status">已撤销</span>
             </div>
-            <span v-if="files.length > 1" class="summary-toggle">{{ expanded ? '收起' : '展开' }}</span>
+            <div class="summary-actions">
+              <button
+                v-if="showPatchActionButton"
+                class="summary-action-btn"
+                type="button"
+                :disabled="rewindBusy"
+                :title="patchActionTitle"
+                @click.stop="handlePatchActionClick"
+              >
+                {{ patchActionLabel }}
+              </button>
+              <span v-if="files.length > 1" class="summary-toggle">{{ expanded ? '收起' : '展开' }}</span>
+            </div>
           </template>
           <template v-else>
             <span class="summary-icon">📝</span>
             <span class="summary-title">{{ summaryText }}</span>
-            <span v-if="files.length > 1" class="summary-toggle">{{ expanded ? '收起' : '展开' }}</span>
+            <span v-if="isPatchUndone" class="summary-status">已撤销</span>
+            <div class="summary-actions">
+              <button
+                v-if="showPatchActionButton"
+                class="summary-action-btn"
+                type="button"
+                :disabled="rewindBusy"
+                :title="patchActionTitle"
+                @click.stop="handlePatchActionClick"
+              >
+                {{ patchActionLabel }}
+              </button>
+              <span v-if="files.length > 1" class="summary-toggle">{{ expanded ? '收起' : '展开' }}</span>
+            </div>
           </template>
         </div>
         <div v-if="expanded && files.length > 0" class="summary-file-list">
@@ -178,9 +236,53 @@ function toggleExpand() {
   flex-wrap: wrap;
 }
 
+.summary-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.summary-action-btn {
+  appearance: none;
+  border: 1px solid rgba(120, 136, 168, 0.28);
+  background: rgba(39, 52, 76, 0.28);
+  color: #dce6f6;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.summary-action-btn:hover:not(:disabled) {
+  background: rgba(69, 87, 121, 0.4);
+  border-color: rgba(148, 163, 184, 0.5);
+}
+
+.summary-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .summary-stat {
   font-weight: 700;
   letter-spacing: -0.01em;
+}
+
+.summary-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(181, 83, 9, 0.18);
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  color: #fbbf24;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
 }
 
 .summary-toggle {
@@ -194,6 +296,14 @@ function toggleExpand() {
   opacity: 1;
   font-size: 12px;
   font-weight: 600;
+}
+
+.file-change-summary.surface-ghost .summary-action-btn {
+  background: rgba(19, 27, 41, 0.6);
+}
+
+.file-change-summary.is-patch-undone .summary-content {
+  opacity: 0.92;
 }
 
 .summary-file-list {

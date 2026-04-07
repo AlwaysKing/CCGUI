@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch, reactive } from 'vue'
 import { logger } from '../utils/logger'
 import { stripAttachmentTokens } from '../utils/chatAttachments'
+import { openAppErrorDialog } from '../utils/appErrorDialog'
 
 /**
  * 日志工具 - 使用新的文件日志系统
@@ -3050,6 +3051,35 @@ export const useSessionStore = defineStore('session', () => {
     handleUnknownMessage(session, data)
   }
 
+  function shouldShowTurnErrorAsDialog(data = {}) {
+    if (data?.type !== 'turn-error') {
+      return false
+    }
+
+    const message = typeof data?.message === 'string' ? data.message : ''
+    if (!message) {
+      return false
+    }
+
+    return [
+      '撤销本次修改失败',
+      '重做本次修改失败',
+      '重置文件失败',
+      '撤销本次修改并创建分支失败',
+      '重置文件并创建分支失败'
+    ].some(keyword => message.includes(keyword))
+  }
+
+  function showTurnErrorDialog(data = {}) {
+    const rawMessage = typeof data?.message === 'string' ? data.message.trim() : '操作失败'
+    const [titleLine, ...detailLines] = rawMessage.split('\n').filter(Boolean)
+    openAppErrorDialog({
+      title: titleLine || '操作失败',
+      message: titleLine || '操作未完成',
+      detail: detailLines.join('\n') || rawMessage
+    })
+  }
+
   /**
    * 处理运行时进程异常退出
    */
@@ -3111,6 +3141,11 @@ export const useSessionStore = defineStore('session', () => {
    */
   function handleSystemNotification(session, data) {
     log('[SessionStore] handleSystemNotification:', data)
+
+    if (shouldShowTurnErrorAsDialog(data)) {
+      showTurnErrorDialog(data)
+      return
+    }
 
     if (data?.type === 'session-runtime-starting' || data?.type === 'session-runtime-restarting') {
       session.runtimeReady = false

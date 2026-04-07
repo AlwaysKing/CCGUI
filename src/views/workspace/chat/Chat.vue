@@ -4,6 +4,7 @@ import { useSessionStore } from '../../../stores/useSessionStore'
 import { useAppStore } from '../../../stores/useAppStore'
 import { logger } from '../../../utils/logger'
 import { barkProvider } from '../../../utils/notifier'
+import { addAppErrorDialogListener, openAppErrorDialog } from '../../../utils/appErrorDialog'
 import { useSessionModelControls } from './composables/useSessionModelControls'
 import { useDialogStack } from '../../../composables/useDialogStack'
 import { resolveSessionChatMessageTheme } from '../../../utils/chatMessageTheme'
@@ -679,6 +680,10 @@ watch(
 )
 
 onMounted(async () => {
+  removeAppErrorDialogListener = addAppErrorDialogListener((detail) => {
+    openErrorDialog(detail)
+  })
+
   // 启动 SessionStore 的事件监听器（监听后端的 session-event 统一通道）
   sessionStore.startEventListener()
 
@@ -763,6 +768,9 @@ onMounted(async () => {
 // The messages computed property automatically reflects sessionStore.currentMessages
 
 onUnmounted(() => {
+  removeAppErrorDialogListener?.()
+  removeAppErrorDialogListener = null
+
   // Clean up duration timer
   if (durationTimer) {
     clearInterval(durationTimer)
@@ -1223,14 +1231,95 @@ const rewindTargetMessageId = ref(null)
 const rewindTargetMessageIndex = ref(null)
 const rewindPreviewLoading = ref(false)
 const rewindActionMode = ref('reset')
+const rewindActionType = ref('undo')
+const showErrorDialog = ref(false)
+const errorDialogState = ref({
+  title: '操作失败',
+  message: '操作未完成',
+  detail: '',
+  confirmText: '知道了'
+})
+let removeAppErrorDialogListener = null
 
-const rewindActionTitle = computed(() => rewindActionMode.value === 'patch' ? '确认撤销本次修改' : '确认重置文件')
-const rewindActionPreviewText = computed(() => rewindActionMode.value === 'patch' ? '将撤销' : '将重置')
-const rewindActionEmptyText = computed(() => rewindActionMode.value === 'patch' ? '没有本次修改需要撤销' : '没有文件需要重置')
-const rewindActionLoadingText = computed(() => rewindActionMode.value === 'patch' ? '正在获取撤销预览...' : '正在获取重置预览...')
+const rewindActionTitle = computed(() => {
+  if (rewindActionMode.value === 'patch') {
+    return rewindActionType.value === 'redo' ? '确认重做本次修改' : '确认撤销本次修改'
+  }
+  return '确认重置文件'
+})
+const rewindActionPreviewText = computed(() => {
+  if (rewindActionMode.value === 'patch') {
+    return rewindActionType.value === 'redo' ? '将重做' : '将撤销'
+  }
+  return '将重置'
+})
+const rewindActionEmptyText = computed(() => {
+  if (rewindActionMode.value === 'patch') {
+    return rewindActionType.value === 'redo' ? '没有本次修改可重做' : '没有本次修改需要撤销'
+  }
+  return '没有文件需要重置'
+})
+const rewindActionLoadingText = computed(() => {
+  if (rewindActionMode.value === 'patch') {
+    return rewindActionType.value === 'redo' ? '正在获取重做预览...' : '正在获取撤销预览...'
+  }
+  return '正在获取重置预览...'
+})
 const rewindActionConfirmText = computed(() => rewindPreviewLoading.value
-  ? (rewindActionMode.value === 'patch' ? '获取预览中...' : '获取预览中...')
-  : (rewindActionMode.value === 'patch' ? '确认撤销' : '确认重置'))
+  ? '获取预览中...'
+  : (
+      rewindActionMode.value === 'patch'
+        ? (rewindActionType.value === 'redo' ? '确认重做' : '确认撤销')
+        : '确认重置'
+    ))
+
+function normalizePreviewFiles(files = []) {
+  return Array.isArray(files)
+    ? files
+        .map(file => {
+          if (typeof file === 'string') {
+            const trimmed = file.trim()
+            return trimmed || null
+          }
+          if (file && typeof file === 'object' && typeof file.path === 'string') {
+            const trimmed = file.path.trim()
+            return trimmed || null
+          }
+          return null
+        })
+        .filter(Boolean)
+    : []
+}
+
+function resolveSummaryPreviewData(summaryMessage = null) {
+  if (!summaryMessage || typeof summaryMessage !== 'object') {
+    return null
+  }
+
+  return {
+    files: Array.from(new Set(normalizePreviewFiles(summaryMessage.files))),
+    insertions: summaryMessage.totalInsertions || 0,
+    deletions: summaryMessage.totalDeletions || 0
+  }
+}
+
+function findSummaryMessage(summaryMessageId = null, userMessageId = null) {
+  if (summaryMessageId) {
+    const exactMatch = messages.value.find(message => message?.id === summaryMessageId && message?.role === 'file_change_summary')
+    if (exactMatch) {
+      return exactMatch
+    }
+  }
+
+  if (userMessageId) {
+    return messages.value.find(message => (
+      message?.role === 'file_change_summary' &&
+      message?.userMessageId === userMessageId
+    )) || null
+  }
+
+  return null
+}
 
 // 复制粘性窗口内容
 const stickyCopied = ref(false)
@@ -1311,7 +1400,13 @@ async function handleSendMessage(userText) {
     await sessionStore.sendMessage(userText)
   } catch (error) {
     console.error('[ChatWindow] Failed to send message:', error)
-    notifyTurnError(`发送消息失败: ${error.message || error}`)
+    const errorText = error?.message || String(error)
+    notifyTurnError(`发送消息失败: ${errorText}`, {
+      asDialog: true,
+      title: '发送消息失败',
+      message: '消息未发送成功',
+      detail: errorText
+    })
   }
 }
 
@@ -1338,7 +1433,16 @@ function handleRewindNoticeClick(rewindToMessageId) {
 // 记录用户是否主动滚动离开底部
 let userScrolledAway = false
 
-function notifyTurnError(message) {
+function notifyTurnError(message, options = {}) {
+  if (options.asDialog) {
+    openAppErrorDialog({
+      title: options.title || '操作失败',
+      message: options.message || '操作未完成',
+      detail: typeof options.detail === 'string' ? options.detail : message
+    })
+    return
+  }
+
   sessionStore.addMessage({
     id: `turn-error-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     role: 'system_notification',
@@ -1347,6 +1451,20 @@ function notifyTurnError(message) {
     data: { type: 'turn-error', message },
     timestamp: new Date()
   })
+}
+
+function openErrorDialog(options = {}) {
+  errorDialogState.value = {
+    title: options.title || '操作失败',
+    message: options.message || '操作未完成',
+    detail: options.detail || '',
+    confirmText: options.confirmText || '知道了'
+  }
+  showErrorDialog.value = true
+}
+
+function closeErrorDialog() {
+  showErrorDialog.value = false
 }
 
 function getScrollContainer() {
@@ -1754,21 +1872,33 @@ async function handlePermissionApproveAll(requestId) {
 }
 
 // 处理代码还原 - 接收 MessageList 发出的事件对象
-function buildRewindRequestSubtype(mode, withFork = false) {
+function buildRewindRequestSubtype(mode, withFork = false, actionType = 'undo') {
   const normalizedMode = mode === 'patch' ? 'patch' : 'reset'
+  const normalizedActionType = actionType === 'redo' ? 'redo' : 'undo'
   if (withFork) {
     return normalizedMode === 'patch' ? 'undo_patch_and_fork' : 'reset_files_and_fork'
   }
-  return normalizedMode === 'patch' ? 'undo_patch' : 'reset_files'
+  if (normalizedMode === 'patch') {
+    return normalizedActionType === 'redo' ? 'redo_patch' : 'undo_patch'
+  }
+  return 'reset_files'
 }
 
-async function handleRewind({ messageId, messageIndex, rewindMode = 'reset' }) {
+async function handleRewind({ messageId, messageIndex, rewindMode = 'reset', actionType = 'undo', summaryMessageId = null }) {
   rewindTargetMessageId.value = messageId
   rewindTargetMessageIndex.value = messageIndex
   rewindActionMode.value = rewindMode === 'patch' ? 'patch' : 'reset'
+  rewindActionType.value = actionType === 'redo' ? 'redo' : 'undo'
   rewindPreviewData.value = null
-  rewindPreviewLoading.value = true
   showRewindDialog.value = true
+
+  if (rewindActionMode.value === 'patch' && rewindActionType.value === 'redo') {
+    rewindPreviewLoading.value = false
+    rewindPreviewData.value = resolveSummaryPreviewData(findSummaryMessage(summaryMessageId, messageId))
+    return
+  }
+
+  rewindPreviewLoading.value = true
 
   try {
     const previewResponse = await sessionStore.sendControlRequest({
@@ -1784,15 +1914,8 @@ async function handleRewind({ messageId, messageIndex, rewindMode = 'reset' }) {
       data = previewResponse || null
     }
 
-    const responseFiles = data?.changed_files || data?.filesChanged || data?.restored_files || []
-    const normalizedResponseFiles = Array.isArray(responseFiles)
-      ? responseFiles
-          .map(file => (typeof file === 'string' ? file.trim() : null))
-          .filter(Boolean)
-      : []
-
     rewindPreviewData.value = {
-      files: Array.from(new Set(normalizedResponseFiles)),
+      files: Array.from(new Set(normalizePreviewFiles(data?.changed_files || data?.filesChanged || data?.restored_files || []))),
       insertions: data?.insertions || data?.lines_added || 0,
       deletions: data?.deletions || data?.lines_removed || 0
     }
@@ -1802,7 +1925,13 @@ async function handleRewind({ messageId, messageIndex, rewindMode = 'reset' }) {
     rewindPreviewData.value = null
     rewindTargetMessageId.value = null
     rewindTargetMessageIndex.value = null
-    notifyTurnError(`获取预览失败: ${error.message || error}`)
+    const errorText = error?.message || String(error)
+    notifyTurnError(`获取预览失败: ${errorText}`, {
+      asDialog: true,
+      title: '获取预览失败',
+      message: '无法获取本次文件变更预览',
+      detail: errorText
+    })
   } finally {
     rewindPreviewLoading.value = false
   }
@@ -1818,7 +1947,7 @@ async function confirmRewind() {
 
   try {
     const response = await sessionStore.sendControlRequest({
-      subtype: buildRewindRequestSubtype(rewindActionMode.value, false),
+      subtype: buildRewindRequestSubtype(rewindActionMode.value, false, rewindActionType.value),
       user_message_id: rewindTargetMessageId.value
     })
 
@@ -1827,7 +1956,16 @@ async function confirmRewind() {
     }
   } catch (error) {
     console.error('[Rewind] Error:', error)
-    notifyTurnError(`${rewindActionMode.value === 'patch' ? '撤销本次修改' : '重置文件'}失败: ${error.message || error}`)
+    const actionLabel = rewindActionMode.value === 'patch'
+      ? (rewindActionType.value === 'redo' ? '重做本次修改' : '撤销本次修改')
+      : '重置文件'
+    const errorText = error?.message || String(error)
+    notifyTurnError(`${actionLabel}失败: ${errorText}`, {
+      asDialog: true,
+      title: `${actionLabel}失败`,
+      message: `${actionLabel}未完成`,
+      detail: errorText
+    })
   }
 }
 
@@ -1839,6 +1977,7 @@ function cancelRewind() {
   rewindTargetMessageId.value = null
   rewindTargetMessageIndex.value = null
   rewindActionMode.value = 'reset'
+  rewindActionType.value = 'undo'
 }
 
 useDialogStack(computed(() => showRewindDialog.value), cancelRewind)
@@ -1868,7 +2007,13 @@ async function handleFork({ messageId, messageIndex }) {
     }
   } catch (error) {
     console.error('[Fork] Error:', error)
-    notifyTurnError(`创建分支失败: ${error.message || error}`)
+    const errorText = error?.message || String(error)
+    notifyTurnError(`创建分支失败: ${errorText}`, {
+      asDialog: true,
+      title: '创建分支失败',
+      message: '未能创建会话分支',
+      detail: errorText
+    })
   }
 }
 
@@ -1898,7 +2043,14 @@ async function handleRewindAndFork({ messageId, messageIndex, rewindMode = 'rese
     }
   } catch (error) {
     console.error('[RewindAndFork] Error:', error)
-    notifyTurnError(`${normalizedMode === 'patch' ? '撤销本次修改并创建分支' : '重置文件并创建分支'}失败: ${error.message || error}`)
+    const actionLabel = normalizedMode === 'patch' ? '撤销本次修改并创建分支' : '重置文件并创建分支'
+    const errorText = error?.message || String(error)
+    notifyTurnError(`${actionLabel}失败: ${errorText}`, {
+      asDialog: true,
+      title: `${actionLabel}失败`,
+      message: `${actionLabel}未完成`,
+      detail: errorText
+    })
   }
 }
 
@@ -2413,11 +2565,23 @@ function handleToggleAgentRail() {
             <div class="rewind-dialog-warnings">
               <div class="warning-item">
                 <span class="warning-icon">•</span>
-                <span>{{ rewindActionMode === 'patch' ? '仅撤销此次提问对应的补丁修改' : '将文件重置到此次提问之前的状态' }}</span>
+                <span>
+                  {{
+                    rewindActionMode === 'patch'
+                      ? (rewindActionType === 'redo' ? '将重新应用此次提问对应的补丁修改' : '仅撤销此次提问对应的补丁修改')
+                      : '将文件重置到此次提问之前的状态'
+                  }}
+                </span>
               </div>
               <div class="warning-item">
                 <span class="warning-icon">•</span>
-                <span>创建一个还原点提示，可点击跳转到此次提问</span>
+                <span>
+                  {{
+                    rewindActionMode === 'patch'
+                      ? '会直接更新这条文件变更卡片的状态'
+                      : '创建一个还原点提示，可点击跳转到此次提问'
+                  }}
+                </span>
               </div>
               <div class="warning-item">
                 <span class="warning-icon">•</span>
@@ -2454,6 +2618,30 @@ function handleToggleAgentRail() {
       <button class="chat-context-menu-item" @click="copySelectedText">复制选中内容</button>
     </div>
   </Teleport>
+
+  <Teleport to="body">
+    <div v-if="showErrorDialog" class="error-dialog-overlay" @click.self="closeErrorDialog">
+      <div class="error-dialog">
+        <div class="error-dialog-header">
+          <div class="error-dialog-badge">!</div>
+          <div class="error-dialog-headings">
+            <h3 class="error-dialog-title">{{ errorDialogState.title }}</h3>
+            <p class="error-dialog-message">{{ errorDialogState.message }}</p>
+          </div>
+        </div>
+
+        <div v-if="errorDialogState.detail" class="error-dialog-body">
+          <pre class="error-dialog-detail">{{ errorDialogState.detail }}</pre>
+        </div>
+
+        <div class="error-dialog-footer">
+          <button class="error-dialog-btn" @click="closeErrorDialog">
+            {{ errorDialogState.confirmText }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -2467,6 +2655,119 @@ function handleToggleAgentRail() {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.error-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(4, 8, 16, 0.62);
+  backdrop-filter: blur(10px);
+}
+
+.error-dialog {
+  width: min(100%, 640px);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 115, 115, 0.18);
+  background:
+    linear-gradient(180deg, rgba(31, 24, 27, 0.98) 0%, rgba(20, 19, 24, 0.98) 100%);
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.error-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.error-dialog-badge {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.92) 0%, rgba(185, 28, 28, 0.92) 100%);
+  color: #fff7f7;
+  font-size: 18px;
+  font-weight: 800;
+  box-shadow: 0 10px 24px rgba(127, 29, 29, 0.32);
+}
+
+.error-dialog-headings {
+  min-width: 0;
+}
+
+.error-dialog-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #fff1f2;
+}
+
+.error-dialog-message {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(255, 228, 230, 0.78);
+}
+
+.error-dialog-body {
+  padding: 18px 24px 0;
+  overflow: auto;
+}
+
+.error-dialog-detail {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(10, 10, 14, 0.54);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.error-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 18px 24px 24px;
+}
+
+.error-dialog-btn {
+  appearance: none;
+  border: 1px solid rgba(248, 113, 113, 0.28);
+  background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%);
+  color: #fff7f7;
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+}
+
+.error-dialog-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 22px rgba(127, 29, 29, 0.28);
+  filter: brightness(1.04);
 }
 
 /* Top Bar: Expand Button + Environment Bar */

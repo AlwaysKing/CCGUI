@@ -21,6 +21,7 @@ import TaskCompleteMessage from './TaskCompleteMessage.vue'
 import { useMessageList } from '../../composables/useMessageList'
 import { useMessage } from '../../composables/useMessage'
 import { useSessionStore } from '../../../../../stores/useSessionStore'
+import { openAppErrorDialog } from '../../../../../utils/appErrorDialog'
 
 const TOOL_AVATAR_ICONS = {
   Bash: '>',
@@ -123,11 +124,54 @@ const {
 
 const { copiedMessageIndex, copyToClipboard } = useMessage()
 const sessionStore = useSessionStore()
+const dialogOnlyErrorShown = ref(false)
+
+function isDialogOnlyTurnError(message) {
+  if (message?.role !== 'system_notification' || message?.notificationType !== 'turn-error') {
+    return false
+  }
+
+  const errorText = typeof message?.data?.message === 'string' ? message.data.message : ''
+  if (!errorText) {
+    return false
+  }
+
+  return [
+    '撤销本次修改失败',
+    '重做本次修改失败',
+    '重置文件失败',
+    '撤销本次修改并创建分支失败',
+    '重置文件并创建分支失败',
+    '创建分支失败',
+    '获取预览失败',
+    '发送消息失败'
+  ].some(keyword => errorText.includes(keyword))
+}
+
+function maybeShowDialogOnlyTurnError() {
+  if (dialogOnlyErrorShown.value || !isDialogOnlyTurnError(props.message)) {
+    return
+  }
+
+  dialogOnlyErrorShown.value = true
+  const rawMessage = typeof props.message?.data?.message === 'string'
+    ? props.message.data.message.trim()
+    : '操作失败'
+  const [titleLine, ...detailLines] = rawMessage.split('\n').filter(Boolean)
+  openAppErrorDialog({
+    title: titleLine || '操作失败',
+    message: titleLine || '操作未完成',
+    detail: detailLines.join('\n') || rawMessage
+  })
+}
 
 // ============ 计算属性 ============
 
 // 是否因为前面的用户消息回答被折叠而应该隐藏
 const shouldHide = computed(() => {
+  if (isDialogOnlyTurnError(props.message)) {
+    return true
+  }
   if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
     return false
   }
@@ -532,6 +576,7 @@ watch(() => openActionMenuIndex.value, async (nextIndex) => {
 })
 
 onMounted(() => {
+  maybeShowDialogOnlyTurnError()
   document.addEventListener('click', handleGlobalClick)
   window.addEventListener('resize', handleViewportChange)
   window.addEventListener('scroll', handleViewportChange, true)
@@ -542,6 +587,10 @@ onUnmounted(() => {
   window.removeEventListener('resize', handleViewportChange)
   window.removeEventListener('scroll', handleViewportChange, true)
 })
+
+watch(() => props.message, () => {
+  maybeShowDialogOnlyTurnError()
+}, { immediate: true })
 </script>
 
 <template>
@@ -658,7 +707,14 @@ onUnmounted(() => {
 
       <!-- File change summary 消息 -->
       <template v-else-if="message.role === 'file_change_summary'">
-        <FileChangeSummaryMessage :message="message" :chat-theme="chatTheme" />
+        <FileChangeSummaryMessage
+          :message="message"
+          :message-index="messageIndex"
+          :can-patch-rewind="rewindCapabilities.patch"
+          :rewind-busy="sessionStore.isProcessing"
+          :chat-theme="chatTheme"
+          @rewind="emit('rewind', $event)"
+        />
       </template>
 
       <!-- Task complete 消息 -->

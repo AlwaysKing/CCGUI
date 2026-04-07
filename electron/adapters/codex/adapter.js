@@ -1778,6 +1778,29 @@ class CodexAdapter extends CodexClient {
       return super.sendControlRequest(request)
     }
 
+    if (request?.subtype === 'redo_patch') {
+      const userMessageUuid = request.user_message_id || null
+      const diffText = userMessageUuid ? this.readPatchFile(userMessageUuid) : null
+
+      if (diffText) {
+        const { files, insertions, deletions } = this.parseDiffInfo(diffText)
+        await this.applyForwardPatch(userMessageUuid)
+        return this.buildControlResponse(
+          `codex-redo-${Date.now()}`,
+          {
+            changed_files: files,
+            filesChanged: files,
+            restored_files: files,
+            insertions,
+            deletions,
+            dry_run: false
+          }
+        )
+      }
+
+      throw new Error('Codex provider cannot redo patch without a saved patch file')
+    }
+
     if (request?.subtype === 'reset_files' || request?.subtype === 'reset_files_and_fork') {
       throw new Error('Codex provider does not support reset-based file restore')
     }
@@ -1916,6 +1939,33 @@ class CodexAdapter extends CodexClient {
     }
   }
 
+  async applyForwardPatch(userMessageUuid) {
+    const diffText = this.readPatchFile(userMessageUuid)
+    if (!diffText?.trim()) {
+      throw new Error(`No patch found for message: ${userMessageUuid}`)
+    }
+
+    const { execSync } = require('child_process')
+    const patchFilePath = this.resolvePatchFilePath(userMessageUuid)
+
+    try {
+      execSync(`git apply --allow-empty "${patchFilePath}"`, {
+        cwd: this.workingDirectory,
+        timeout: 30000,
+        encoding: 'utf8'
+      })
+      logger.info('[CodexAdapter] Applied forward patch', { userMessageUuid })
+      return true
+    } catch (error) {
+      logger.error('[CodexAdapter] Failed to apply forward patch', {
+        userMessageUuid,
+        error: error.message,
+        stderr: error.stderr?.toString?.() || ''
+      })
+      throw new Error(`Failed to apply forward patch: ${error.message}`)
+    }
+  }
+
   // ─── 文件变更统计 ────────────────────────────────────────
 
   parseDiffFileStats(diffText = '') {
@@ -1970,6 +2020,7 @@ class CodexAdapter extends CodexClient {
       totalFiles: stats.files.length,
       totalInsertions: stats.totalInsertions,
       totalDeletions: stats.totalDeletions,
+      patchState: 'applied',
       userMessageId: userMessageUuid,
       timestamp: new Date()
     })

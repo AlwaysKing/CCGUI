@@ -13,6 +13,7 @@ const historyManager = require('./storage/history-manager')
 const processRegistry = require('./services/process-registry')
 
 const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
+const isDebugStartup = process.env.CCGUI_DEBUG_STARTUP === '1'
 
 if (isDevRuntime) {
   const devUserDataPath = path.join(app.getPath('appData'), 'CCGUI-dev')
@@ -3157,8 +3158,13 @@ function createNewWindow() {
 // App lifecycle
 
 app.whenReady().then(() => {
-  // 清理上次异常退出残留的 provider 进程
-  processRegistry.cleanupStaleInstances()
+  // Debug 启动时跳过残留 provider 进程检查，避免打断调试中的手动保留进程。
+  if (isDebugStartup) {
+    logger.info('[ProcessRegistry] Skipping stale instance cleanup in debug startup mode')
+  } else {
+    // 清理上次异常退出残留的 provider 进程
+    processRegistry.cleanupStaleInstances()
+  }
 
   appStartupStartedAt = Date.now()
   // Update isDev flag now that app is ready

@@ -19,6 +19,8 @@ import { useWorkspaceLayout } from './hooks/useWorkspaceLayout'
 import { useWorkspaceDialogs } from './hooks/useWorkspaceDialogs'
 import { useProjectWorkspacePersistence } from './hooks/useProjectWorkspacePersistence'
 
+const SESSION_FILTER_STORAGE_KEY = 'ccgui_session_list_filters'
+
 const store = useAppStore()
 const sessionStore = useSessionStore()
 const fileBrowserStore = useFileBrowserStore()
@@ -31,6 +33,8 @@ const terminalPanelVisible = ref(false)
 const terminalPanelHeight = ref(220)
 const isTerminalResizing = ref(false)
 const terminalRunningState = ref({ hasRunning: false, count: 0 })
+const showClaudeSessions = ref(true)
+const showCodexSessions = ref(true)
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
 const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
@@ -287,6 +291,28 @@ function stopTerminalResize() {
   isTerminalResizing.value = false
 }
 
+function loadSessionFilterState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SESSION_FILTER_STORAGE_KEY) || '{}')
+    showClaudeSessions.value = saved.showClaudeSessions !== false
+    showCodexSessions.value = saved.showCodexSessions !== false
+  } catch {
+    showClaudeSessions.value = true
+    showCodexSessions.value = true
+  }
+}
+
+function saveSessionFilterState() {
+  try {
+    localStorage.setItem(SESSION_FILTER_STORAGE_KEY, JSON.stringify({
+      showClaudeSessions: showClaudeSessions.value,
+      showCodexSessions: showCodexSessions.value
+    }))
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
 watch(() => fileBrowserStore.shouldShowPreviewPanel, (visible) => {
   if (!visible) {
     isChatCollapsed.value = false
@@ -308,6 +334,8 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
 
 // Initialize
 onMounted(async () => {
+  loadSessionFilterState()
+
   // Render the workspace first, then hydrate project data in the background.
   if (store.currentProject) {
     requestAnimationFrame(() => {
@@ -375,6 +403,55 @@ function handleShortcutEvent(event) {
     toggleChatPanelCollapse()
   }
 }
+
+const filteredProjectSessions = computed(() => {
+  const sessions = store.currentProjectSessions
+  if (showClaudeSessions.value && showCodexSessions.value) {
+    return sessions
+  }
+  return sessions.filter(session => {
+    const tool = session?.settings?.tool || session?.settings?.provider || 'claude'
+    const isCodex = tool === 'codex'
+    if (isCodex) return showCodexSessions.value
+    return showClaudeSessions.value
+  })
+})
+
+function handleToggleShowClaude() {
+  showClaudeSessions.value = !showClaudeSessions.value
+}
+
+function handleToggleShowCodex() {
+  showCodexSessions.value = !showCodexSessions.value
+}
+
+watch([showClaudeSessions, showCodexSessions], () => {
+  saveSessionFilterState()
+}, { immediate: true })
+
+async function handleDeleteInactiveSessions() {
+  const inactiveSessions = store.currentProjectSessions.filter(session => {
+    const status = store.sessionStatuses[session.id]
+    return !status || !status.ready
+  })
+  if (inactiveSessions.length === 0) return
+
+  confirmDialogConfig.value = {
+    title: '删除未激活会话',
+    message: `确定要删除 ${inactiveSessions.length} 个未激活的会话吗？\n此操作不可撤销。`,
+    onConfirm: async () => {
+      for (const session of inactiveSessions) {
+        try {
+          await store.deleteSession(session.id)
+        } catch (e) {
+          console.error('Failed to delete inactive session:', session.id, e)
+        }
+      }
+      showConfirmDialog.value = false
+    }
+  }
+  showConfirmDialog.value = true
+}
 </script>
 
 <template>
@@ -395,10 +472,12 @@ function handleShortcutEvent(event) {
         ref="sessionSidebarRef"
         v-show="!sidebarCollapsed"
         :style="{ width: `${sidebarWidth}px` }"
-        :sessions="store.currentProjectSessions"
+        :sessions="filteredProjectSessions"
         :current-session="store.currentSession"
         :session-statuses="store.sessionStatuses"
         :project-path="store.currentProject?.path"
+        :show-claude-filter="showClaudeSessions"
+        :show-codex-filter="showCodexSessions"
         :file-tree="fileBrowserStore.tree"
         :file-tree-loading="fileBrowserStore.isTreeLoading"
         :file-tree-error="fileBrowserStore.treeError"
@@ -440,6 +519,9 @@ function handleShortcutEvent(event) {
         @addFileToChat="handleAddFileToChat"
         @toggleTerminalPanel="toggleTerminalPanel"
         @layoutChange="handleSidebarLayoutChange"
+        @toggleShowClaude="handleToggleShowClaude"
+        @toggleShowCodex="handleToggleShowCodex"
+        @deleteInactiveSessions="handleDeleteInactiveSessions"
       />
 
       <!-- Resize Handle -->

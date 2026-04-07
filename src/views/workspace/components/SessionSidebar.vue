@@ -69,10 +69,18 @@ const props = defineProps({
   terminalRunningCount: {
     type: Number,
     default: 0
+  },
+  showClaudeFilter: {
+    type: Boolean,
+    default: true
+  },
+  showCodexFilter: {
+    type: Boolean,
+    default: true
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -81,6 +89,9 @@ const loadingConfig = ref(false)
 const showConfigPanel = ref(false)
 const sessionConfigs = ref({}) // Map of sessionId -> hasCustomConfig
 const compactCountLabels = ref(new Set()) // Sessions with compact count labels
+const showSessionListMenu = ref(false)
+const sessionListMenuRef = ref(null)
+const sessionListDropdownRef = ref(null)
 
 const contextMenuRef = ref(null)
 const contextMenu = ref({
@@ -163,9 +174,15 @@ function closeContextMenu() {
 }
 
 function handleGlobalPointerDown(event) {
-  if (!contextMenu.value.show) return
-  if (contextMenuRef.value?.contains(event.target)) return
-  closeContextMenu()
+  if (contextMenu.value.show) {
+    if (contextMenuRef.value?.contains(event.target)) return
+    closeContextMenu()
+  }
+  if (showSessionListMenu.value) {
+    if (sessionListMenuRef.value?.contains(event.target)) return
+    if (sessionListDropdownRef.value?.contains(event.target)) return
+    showSessionListMenu.value = false
+  }
 }
 
 function handleGlobalContextMenu(event) {
@@ -176,9 +193,44 @@ function handleGlobalContextMenu(event) {
 
 function handleWindowBlur() {
   closeContextMenu()
+  showSessionListMenu.value = false
+}
+
+function toggleSessionListMenu() {
+  showSessionListMenu.value = !showSessionListMenu.value
+  if (showSessionListMenu.value) {
+    updateSessionListDropdownPosition()
+  }
+}
+
+const sessionListDropdownStyle = ref({})
+
+function updateSessionListDropdownPosition() {
+  nextTick(() => {
+    const btn = sessionListMenuRef.value?.querySelector('.session-list-menu-btn')
+    if (!btn) {
+      sessionListDropdownStyle.value = {}
+      return
+    }
+    const rect = btn.getBoundingClientRect()
+    const vw = window.innerWidth
+    const menuWidth = 180
+    const left = Math.max(4, Math.min(rect.left, vw - menuWidth - 4))
+    sessionListDropdownStyle.value = {
+      position: 'fixed',
+      left: `${left}px`,
+      top: `${rect.bottom + 4}px`,
+      minWidth: `${menuWidth}px`,
+      zIndex: 1000
+    }
+  })
 }
 
 function handleViewportChange() {
+  if (showSessionListMenu.value) {
+    updateSessionListDropdownPosition()
+  }
+
   if (!contextMenu.value.show) return
   nextTick(() => {
     const clamped = clampMenuPosition(contextMenu.value.x, contextMenu.value.y)
@@ -665,6 +717,19 @@ function handleCopySession() {
   closeContextMenu()
 }
 
+function handleToggleShowClaudeFilter() {
+  emit('toggleShowClaude')
+}
+
+function handleToggleShowCodexFilter() {
+  emit('toggleShowCodex')
+}
+
+function handleDeleteInactiveSessionsClick() {
+  emit('deleteInactiveSessions')
+  showSessionListMenu.value = false
+}
+
 function getSessionStatus(sessionId) {
   const status = props.sessionStatuses[sessionId]
   if (!status || !status.ready) return 'inactive'
@@ -996,6 +1061,47 @@ watch([showConfigPanel, fileSectionHeight], () => {
                 <line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
             </button>
+            <div class="session-list-menu-wrapper" ref="sessionListMenuRef">
+              <button class="session-list-menu-btn" @click.stop="toggleSessionListMenu" title="会话管理">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="5" r="2"/>
+                  <circle cx="12" cy="12" r="2"/>
+                  <circle cx="12" cy="19" r="2"/>
+                </svg>
+              </button>
+              <Teleport to="body">
+              <div
+                v-if="showSessionListMenu"
+                ref="sessionListDropdownRef"
+                class="session-list-dropdown"
+                :style="sessionListDropdownStyle"
+                @click.stop
+              >
+                <button class="menu-item" @click="handleToggleShowClaudeFilter">
+                  <svg v-if="showClaudeFilter" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                  <span v-else class="menu-icon-placeholder"></span>
+                  显示Claude会话
+                </button>
+                <button class="menu-item" @click="handleToggleShowCodexFilter">
+                  <svg v-if="showCodexFilter" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                  <span v-else class="menu-icon-placeholder"></span>
+                  显示Codex会话
+                </button>
+                <div class="menu-divider"></div>
+                <button class="menu-item danger" @click="handleDeleteInactiveSessionsClick">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                  删除未激活会话
+                </button>
+              </div>
+              </Teleport>
+            </div>
           </div>
           <div class="session-section-counts">
             <span class="session-section-count responding" :title="`正在对答会话 ${respondingSessionCount}`">
@@ -1472,6 +1578,46 @@ watch([showConfigPanel, fileSectionHeight], () => {
 .session-add-btn:hover {
   background: #27272A;
   color: #E4E4E7;
+}
+
+.session-list-menu-wrapper {
+  position: relative;
+}
+
+.session-list-menu-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #6B7280;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.session-list-menu-btn:hover {
+  background: #27272A;
+  color: #E4E4E7;
+}
+
+.session-list-dropdown {
+  background: #1E1E1E;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 180px;
+  z-index: 1000;
+  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.5);
+}
+
+.menu-icon-placeholder {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .session-list {

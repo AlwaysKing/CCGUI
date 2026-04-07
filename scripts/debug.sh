@@ -58,6 +58,7 @@ fi
 
 # 设置环境变量
 export NODE_ENV=development
+export CCGUI_DEBUG_STARTUP=1
 
 # 启动提示
 echo -e "${CYAN}═══════════════════════════════════════${NC}"

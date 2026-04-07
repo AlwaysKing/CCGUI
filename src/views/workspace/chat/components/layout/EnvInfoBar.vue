@@ -47,10 +47,14 @@ const props = defineProps({
   viewMode: {
     type: String,
     default: 'single'
+  },
+  codexUsageRefreshing: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode', 'refreshCodexUsage'])
 
 // 使用 useMessage composable
 const { formatMcpServers, formatSkills, copiedMessageIndex, copyToClipboard } = useMessage()
@@ -375,17 +379,26 @@ const codexUsageSummary = computed(() => {
 
 const codexUsageTitle = computed(() => {
   const summary = codexUsageSummary.value
-  if (!summary) {
+  if (!summary && !codexUsageError.value) {
     return ''
   }
 
-  return summary.items
+  const parts = []
+
+  if (codexUsageError.value) {
+    parts.push('刷新失败')
+  }
+
+  if (summary) {
+    parts.push(...summary.items
     .map(item => {
-      const parts = [`${item.label} 已使用 ${Math.round(item.used)}%`]
-      if (item.resetAt) parts.push(`到期 ${item.resetAt}`)
-      return parts.join(' · ')
-    })
-    .join('\n')
+      const lineParts = [`${item.label} 已使用 ${Math.round(item.used)}%`]
+      if (item.resetAt) lineParts.push(`到期 ${item.resetAt}`)
+      return lineParts.join(' · ')
+    }))
+  }
+
+  return parts.join('\n')
 })
 
 function showUsageTooltip(type) {
@@ -396,6 +409,10 @@ function hideUsageTooltip(type) {
   if (activeUsageTooltip.value === type) {
     activeUsageTooltip.value = ''
   }
+}
+
+function handleRefreshCodexUsage() {
+  emit('refreshCodexUsage')
 }
 
 function resolveUsageStrokeColor(percent, palette = 'default') {
@@ -479,14 +496,6 @@ async function copySilentMessage(message, reverseIndex) {
             <span class="env-icon">🤖</span>
             <span class="env-label">{{ envInfo.model }}</span>
           </span>
-          <span
-            v-if="codexUsageError"
-            class="env-item env-item-highlight env-item-error"
-            :title="codexUsageError.message || codexUsageError.label"
-          >
-            <span class="env-icon">⚠️</span>
-            <span class="env-label">{{ codexUsageError.label }}</span>
-          </span>
           <span v-if="envInfo.tools?.length" class="env-item">
             <span class="env-icon">🔧</span>
             <span class="env-label">{{ envInfo.tools.length }} 工具</span>
@@ -551,9 +560,14 @@ async function copySilentMessage(message, reverseIndex) {
               </span>
             </span>
           </span>
-          <span
-            v-if="codexUsageSummary"
-            class="env-item env-item-usage env-item-codex-usage"
+          <button
+            v-if="codexUsageSummary || codexUsageError"
+            type="button"
+            class="env-item env-item-usage env-item-codex-usage env-item-codex-usage-button"
+            :class="{ refreshing: codexUsageRefreshing }"
+            :disabled="codexUsageRefreshing"
+            :title="codexUsageRefreshing ? '正在刷新 Codex 账号用量' : '点击刷新 Codex 账号用量'"
+            @click="handleRefreshCodexUsage"
             @mouseenter="showUsageTooltip('codex')"
             @mouseleave="hideUsageTooltip('codex')"
           >
@@ -565,18 +579,26 @@ async function copySilentMessage(message, reverseIndex) {
                   cx="10"
                   cy="10"
                   r="7"
-                  :style="{ stroke: resolveUsageStrokeColor(codexUsageSummary.dominant.used, 'codex') }"
+                  :style="{ stroke: resolveUsageStrokeColor(codexUsageSummary?.dominant?.used, 'codex') }"
                   :stroke-dasharray="2 * Math.PI * 7"
-                  :stroke-dashoffset="2 * Math.PI * 7 * (1 - codexUsageSummary.dominant.used / 100)"
+                  :stroke-dashoffset="2 * Math.PI * 7 * (1 - ((codexUsageSummary?.dominant?.used || 0) / 100))"
                 ></circle>
               </svg>
             </span>
+            <span v-if="codexUsageError" class="env-usage-error-dot" aria-hidden="true">!</span>
             <span v-if="activeUsageTooltip === 'codex'" class="env-usage-tooltip">
               <span class="env-usage-tooltip-title">Codex 账号用量</span>
+              <span v-if="codexUsageRefreshing" class="env-usage-tooltip-line env-usage-tooltip-summary">
+                正在刷新...
+              </span>
+              <span v-if="codexUsageError" class="env-usage-tooltip-line env-usage-tooltip-warn">
+                刷新失败
+              </span>
               <span v-if="codexUsageSummary.planType" class="env-usage-tooltip-line">
                 套餐 {{ codexUsageSummary.planType }}
               </span>
               <span
+                v-if="codexUsageSummary"
                 v-for="item in codexUsageSummary.items"
                 :key="item.key"
                 class="env-usage-tooltip-line"
@@ -585,7 +607,7 @@ async function copySilentMessage(message, reverseIndex) {
                 <span v-if="item.resetAt" class="env-usage-tooltip-summary"> · 到期 {{ item.resetAt }}</span>
               </span>
             </span>
-          </span>
+          </button>
           <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">
             {{ showEnvDetail ? '收起' : '详情' }}
           </button>
@@ -690,7 +712,7 @@ async function copySilentMessage(message, reverseIndex) {
         <div v-if="codexUsageError" class="env-detail-row">
           <span class="env-detail-label">账号状态</span>
           <span class="env-detail-value env-detail-value-error">
-            {{ codexUsageError.label }}
+            刷新失败
             <span v-if="codexUsageError.message"> · {{ codexUsageError.message }}</span>
           </span>
         </div>
@@ -848,6 +870,33 @@ async function copySilentMessage(message, reverseIndex) {
 
 .env-item-codex-usage {
   margin-left: 2px;
+}
+
+.env-item-codex-usage-button {
+  border: none;
+  font: inherit;
+  position: relative;
+}
+
+.env-item-codex-usage-button.refreshing {
+  opacity: 0.72;
+  cursor: wait;
+}
+
+.env-usage-error-dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 10px;
+  text-align: center;
+  box-shadow: 0 0 0 2px rgba(18, 18, 20, 0.98);
 }
 
 .env-silent-btn {

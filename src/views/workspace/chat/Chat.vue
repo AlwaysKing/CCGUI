@@ -134,6 +134,7 @@ const pendingQuestion = computed(() => sessionStore.currentSession?.pendingQuest
 const envInfo = computed(() => sessionStore.currentSession?.envInfo)
 const silentMessages = computed(() => sessionStore.currentSession?.silentMessages || [])
 const runtimeActive = computed(() => envInfo.value?.providerPid != null)
+const codexUsageRefreshing = ref(false)
 const inputMessage = computed({
   get: () => sessionStore.inputMessage,
   set: (val) => { sessionStore.inputMessage = val }
@@ -1136,6 +1137,85 @@ function handlePidClick() {
   }
 }
 
+function buildCodexRateLimitsFromUsage(usage) {
+  if (!usage || typeof usage !== 'object') {
+    return null
+  }
+
+  const primary = usage.primaryWindow
+  const secondary = usage.secondaryWindow
+  const hasPrimary = primary && primary.remainingPercent !== null
+  const hasSecondary = secondary && secondary.remainingPercent !== null
+
+  if (!hasPrimary && !hasSecondary) {
+    return null
+  }
+
+  return {
+    planType: usage.planType || null,
+    limitName: usage.email || usage.accountId || null,
+    primary: hasPrimary
+      ? {
+          label: '5小时',
+          used: primary.usedPercent,
+          resetAfter: primary.resetAfterSeconds || null,
+          resetAt: primary.resetAt || null
+        }
+      : null,
+    secondary: hasSecondary
+      ? {
+          label: '1周',
+          used: secondary.usedPercent,
+          resetAfter: secondary.resetAfterSeconds || null,
+          resetAt: secondary.resetAt || null
+        }
+      : null
+  }
+}
+
+async function handleRefreshCodexUsage() {
+  const currentSession = sessionStore.currentSession
+  if (!currentSession || currentSession.envInfo?.provider !== 'codex' || codexUsageRefreshing.value) {
+    return
+  }
+
+  codexUsageRefreshing.value = true
+  try {
+    const result = await window.electronAPI.getCodexUsageStatus()
+    const currentEnvInfo = currentSession.envInfo || {}
+
+    if (result?.success) {
+      currentSession.envInfo = {
+        ...currentEnvInfo,
+        rate_limits: buildCodexRateLimitsFromUsage(result.usage),
+        codex_usage_error: null
+      }
+      return
+    }
+
+    currentSession.envInfo = {
+      ...currentEnvInfo,
+      codex_usage_error: {
+        code: null,
+        message: result?.error || 'Codex usage refresh failed',
+        status: null
+      }
+    }
+  } catch (error) {
+    const currentEnvInfo = currentSession.envInfo || {}
+    currentSession.envInfo = {
+      ...currentEnvInfo,
+      codex_usage_error: {
+        code: error?.code || null,
+        message: error?.message || 'Codex usage refresh failed',
+        status: Number(error?.statusCode || 0) || null
+      }
+    }
+  } finally {
+    codexUsageRefreshing.value = false
+  }
+}
+
 // Rewind 确认对话框状态
 const showRewindDialog = ref(false)
 const rewindPreviewData = ref(null)
@@ -2012,9 +2092,11 @@ function handleToggleAgentRail() {
       :show-agent-rail-toggle="hasCollaborativeChildren"
       :is-agent-rail-visible="isAgentRailVisible"
       :view-mode="agentWorkspaceState.collaborativeViewMode"
+      :codex-usage-refreshing="codexUsageRefreshing"
       @toggle-sidebar="emit('toggleSidebar')"
       @toggle-collapse="emit('toggleCollapse')"
       @pid-click="handlePidClick"
+      @refresh-codex-usage="handleRefreshCodexUsage"
       @toggle-agent-rail="handleToggleAgentRail"
       @toggle-view-mode="handleToggleAgentViewMode"
     />

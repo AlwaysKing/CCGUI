@@ -446,9 +446,8 @@ function mountTerminal(terminalId, shouldFocus = false) {
 
   scheduleTerminalFit(instance)
 
-  if (shouldFocus && props.visible) {
-    instance.terminal.focus()
-  }
+  // 不再自动获取焦点，用户必须手动点击终端才能获得焦点
+  // 这样可以避免终端状态变化时抢夺聊天输入框的焦点
 }
 
 function fitActiveTerminal() {

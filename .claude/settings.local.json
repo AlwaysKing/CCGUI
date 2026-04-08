@@ -127,7 +127,9 @@
       "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/node -c /Users/alwaysking/AKProject/CCGUI/electron/adapters/claude/adapter.js)",
       "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/node -c /Users/alwaysking/AKProject/CCGUI/electron/session/session-instance.js)",
       "Bash(/Users/alwaysking/.nvm/versions/node/20.11.0/bin/node --check src/views/workspace/chat/components/messages/FileChangeSummaryMessage.vue)",
-      "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/node --check src/views/workspace/chat/components/messages/FileChangeSummaryMessage.vue)"
+      "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/node --check src/views/workspace/chat/components/messages/FileChangeSummaryMessage.vue)",
+      "Bash(git show:*)",
+      "Read(//Users/alwaysking/.nvm/versions/node/v25.2.1/lib/node_modules/@openai/codex/bin/**)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

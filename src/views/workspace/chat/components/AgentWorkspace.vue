@@ -470,41 +470,7 @@ const availableSplitSessions = computed(() => {
 })
 
 const visibleSplitSessions = computed(() => {
-  if (props.viewMode !== 'split') {
-    return availableSplitSessions.value
-  }
-
-  const activeTeamIds = new Set(railActiveTeamGroups.value.map(group => group.teamId))
-  const deletedTeamIds = new Set(railDeletedTeamGroups.value.map(group => group.teamId))
-  const focusedSession = availableSplitSessions.value.find(session => session.agentId === props.focusedPaneAgentId) || null
-  const focusedTeamId = focusedSession?.registry?.teamId || null
-
-  let targetTeamId = null
-
-  if (focusedTeamId && activeTeamIds.has(focusedTeamId)) {
-    targetTeamId = focusedTeamId
-  } else if (
-    focusedTeamId &&
-    deletedTeamIds.has(focusedTeamId) &&
-    showDeletedTeams.value &&
-    expandedDeletedTeamId.value === focusedTeamId
-  ) {
-    targetTeamId = focusedTeamId
-  } else if (
-    showDeletedTeams.value &&
-    expandedDeletedTeamId.value &&
-    deletedTeamIds.has(expandedDeletedTeamId.value)
-  ) {
-    targetTeamId = expandedDeletedTeamId.value
-  } else if (railActiveTeamGroups.value.length > 0) {
-    targetTeamId = railActiveTeamGroups.value[0].teamId
-  }
-
-  if (!targetTeamId) {
-    return []
-  }
-
-  return availableSplitSessions.value.filter(session => session.registry?.teamId === targetTeamId)
+  return availableSplitSessions.value
 })
 const hasVisibleSplitSessions = computed(() => visibleSplitSessions.value.length > 0)
 

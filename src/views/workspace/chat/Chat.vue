@@ -69,7 +69,6 @@ const executionAgentCards = computed(() => sessionStore.executionAgentCards)
 const collaborativeAgentSessions = computed(() => sessionStore.collaborativeAgentSessions)
 const agentWorkspaceAgents = computed(() => sessionStore.agentWorkspaceAgents)
 const activeCollaborativeSession = computed(() => sessionStore.activeCollaborativeSession)
-const splitCollaborativeSessions = computed(() => sessionStore.splitCollaborativeSessions)
 const agentWorkspaceState = computed(() => sessionStore.currentAgentWorkspaceState)
 const currentInputTargetAgent = computed(() => sessionStore.currentInputTargetAgent)
 const childCollaborativeSessions = computed(() => collaborativeAgentSessions.value.filter(session => !session.isMain))
@@ -104,8 +103,15 @@ const splitSideSessions = computed(() => {
     return []
   }
 
-  const activeAgentId = activeCollaborativeSession.value?.agentId || null
-  return splitCollaborativeSessions.value.filter(session => session.agentId !== activeAgentId)
+  const deletedTeamIds = new Set(
+    collaborativeAgentSessions.value
+      .filter(entry => entry.registry?.agentType === 'team' && entry.status === 'deleted')
+      .map(entry => entry.agentId)
+  )
+
+  return childCollaborativeSessions.value
+    .filter(entry => entry.status !== 'deleted' && entry.registry?.agentType !== 'team')
+    .filter(entry => !entry.registry?.teamId || !deletedTeamIds.has(entry.registry.teamId))
 })
 
 const shouldShowStickyHeader = computed(() => {
@@ -479,7 +485,8 @@ watch(
     if (!isProcessing.value && !pendingPermission.value && !pendingControlRequest.value && queuedMessageCount.value > 0 && runtimeActive.value) {
       void flushQueuedMessages()
     }
-  }
+  },
+  { flush: 'sync' }
 )
 
 function formatCenterTimer(ms) {
@@ -929,7 +936,8 @@ watch(() => {
   if (!messages.value) return null
   const streamingMsg = messages.value.find(m => m.isStreaming || m.isExecuting)
   if (!streamingMsg) return null
-  return `${streamingMsg.id}:${streamingMsg.content?.length || 0}`
+  // 同时监听 content 和 thinking 字段的变化，确保 thinking 消息增长时也能触发滚动
+  return `${streamingMsg.id}:${streamingMsg.content?.length || 0}:${streamingMsg.thinking?.length || 0}`
 }, async () => {
   if (wasNearBottomBeforeStreaming) {
     // 等待 DOM 更新
@@ -2208,7 +2216,7 @@ async function handleQuestionAnswer(requestId, answers) {
 
 function handleSelectAgent(agentId) {
   if (agentWorkspaceState.value.collaborativeViewMode === 'split') {
-    sessionStore.replaceSplitPaneAgent(agentId)
+    sessionStore.setFocusedPaneAgentId(agentId)
     return
   }
 

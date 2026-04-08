@@ -469,23 +469,6 @@ const availableSplitSessions = computed(() => {
   return props.splitSessions.filter(session => session && !session.isMain)
 })
 
-const visibleSplitSessions = computed(() => {
-  return availableSplitSessions.value
-})
-const hasVisibleSplitSessions = computed(() => visibleSplitSessions.value.length > 0)
-
-watch(
-  () => visibleSplitSessions.value.map(sessionItem => {
-    const lastMessage = sessionItem.messages?.[sessionItem.messages.length - 1]
-    return `${sessionItem.agentId}:${sessionItem.messages.length}:${lastMessage?.id || ''}`
-  }),
-  async () => {
-    await nextTick()
-    autoScrollSplitPanes()
-  },
-  { flush: 'post' }
-)
-
 function isActivityGroupCollapsed(groupKey) {
   return Boolean(collapsedActivityGroups.value[groupKey])
 }
@@ -596,6 +579,31 @@ const railStandaloneEntries = computed(() => {
     return !groupedMemberIds.has(entry.agentId)
   })
 })
+
+const visibleSplitSessions = computed(() => {
+  const deletedTeamIds = new Set(railDeletedTeamGroups.value.map(group => group.teamId))
+  const focusedSession = availableSplitSessions.value.find(session => session.agentId === props.focusedPaneAgentId) || null
+  const focusedTeamId = focusedSession?.registry?.teamId || null
+
+  if (focusedTeamId && deletedTeamIds.has(focusedTeamId)) {
+    return availableSplitSessions.value.filter(session => session.registry?.teamId === focusedTeamId)
+  }
+
+  return availableSplitSessions.value.filter(session => !session.registry?.teamId || !deletedTeamIds.has(session.registry.teamId))
+})
+const hasVisibleSplitSessions = computed(() => visibleSplitSessions.value.length > 0)
+
+watch(
+  () => visibleSplitSessions.value.map(sessionItem => {
+    const lastMessage = sessionItem.messages?.[sessionItem.messages.length - 1]
+    return `${sessionItem.agentId}:${sessionItem.messages.length}:${lastMessage?.id || ''}`
+  }),
+  async () => {
+    await nextTick()
+    autoScrollSplitPanes()
+  },
+  { flush: 'post' }
+)
 
 const shouldShowRail = computed(() => {
   if (!props.railVisible) {

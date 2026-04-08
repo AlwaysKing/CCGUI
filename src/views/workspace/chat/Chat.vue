@@ -103,15 +103,8 @@ const splitSideSessions = computed(() => {
     return []
   }
 
-  const deletedTeamIds = new Set(
-    collaborativeAgentSessions.value
-      .filter(entry => entry.registry?.agentType === 'team' && entry.status === 'deleted')
-      .map(entry => entry.agentId)
-  )
-
   return childCollaborativeSessions.value
-    .filter(entry => entry.status !== 'deleted' && entry.registry?.agentType !== 'team')
-    .filter(entry => !entry.registry?.teamId || !deletedTeamIds.has(entry.registry.teamId))
+    .filter(entry => entry.registry?.agentType !== 'team')
 })
 
 const shouldShowStickyHeader = computed(() => {

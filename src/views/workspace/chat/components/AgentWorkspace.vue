@@ -150,9 +150,19 @@ const splitPaneElementToAgentId = new WeakMap()
 const splitPaneUserScrolledAway = ref({})
 const collapsedSplitPaneIds = ref({})
 const splitPaneWidths = ref({})
+const contentRef = ref(null)
+const contentWidth = ref(0)
 const mainScrollRef = ref(null)
 const mainStageWidth = ref(0)
+const splitSideWidth = ref(360)
+const isDraggingSplitDivider = ref(false)
+let splitDragPointerId = null
+let splitDragStartX = 0
+let splitDragStartWidth = 360
 let paneResizeObserver = null
+const MIN_SPLIT_SIDE_WIDTH = 280
+const MIN_MAIN_STAGE_WIDTH = 320
+const SPLIT_DIVIDER_WIDTH = 10
 
 function updateSplitPaneWidth(agentId, element) {
   if (!agentId || !(element instanceof HTMLElement)) {
@@ -181,6 +191,29 @@ function updateMainStageWidth(element) {
   }
 
   mainStageWidth.value = nextWidth
+}
+
+function updateContentWidth(element) {
+  if (!(element instanceof HTMLElement)) {
+    return
+  }
+
+  const nextWidth = Math.round(element.getBoundingClientRect().width)
+  if (!nextWidth || contentWidth.value === nextWidth) {
+    return
+  }
+
+  contentWidth.value = nextWidth
+}
+
+function clampSplitSideWidth(nextWidth) {
+  const totalWidth = contentWidth.value
+  if (!totalWidth) {
+    return Math.max(MIN_SPLIT_SIDE_WIDTH, nextWidth)
+  }
+
+  const maxWidth = Math.max(MIN_SPLIT_SIDE_WIDTH, totalWidth - MIN_MAIN_STAGE_WIDTH - SPLIT_DIVIDER_WIDTH)
+  return Math.min(Math.max(MIN_SPLIT_SIDE_WIDTH, nextWidth), maxWidth)
 }
 
 function bindPaneWidth(agentId, element) {
@@ -246,6 +279,23 @@ function setMainScrollRef(element) {
 
   mainScrollRef.value = null
   mainStageWidth.value = 0
+}
+
+function setContentRef(element) {
+  const previous = contentRef.value
+  if (previous && previous !== element) {
+    paneResizeObserver?.unobserve(previous)
+  }
+
+  if (element instanceof HTMLElement) {
+    contentRef.value = element
+    updateContentWidth(element)
+    paneResizeObserver?.observe(element)
+    return
+  }
+
+  contentRef.value = null
+  contentWidth.value = 0
 }
 
 function handleSplitPaneScroll(agentId, event) {
@@ -324,6 +374,58 @@ function railItemStyle(agentItem) {
   }
 }
 
+const shouldShowSplitDivider = computed(() => {
+  return props.viewMode === 'split' && props.hasCollaborativeChildren && hasVisibleSplitSessions.value
+})
+
+const effectiveSplitSideWidth = computed(() => clampSplitSideWidth(splitSideWidth.value))
+
+const contentLayoutStyle = computed(() => {
+  if (!shouldShowSplitDivider.value) {
+    return null
+  }
+
+  return {
+    '--agent-workspace-split-side-width': `${effectiveSplitSideWidth.value}px`,
+    '--agent-workspace-split-divider-width': `${SPLIT_DIVIDER_WIDTH}px`
+  }
+})
+
+function handleSplitDividerPointerMove(event) {
+  if (!isDraggingSplitDivider.value) {
+    return
+  }
+
+  const deltaX = splitDragStartX - event.clientX
+  splitSideWidth.value = clampSplitSideWidth(splitDragStartWidth + deltaX)
+}
+
+function stopSplitDividerDrag() {
+  isDraggingSplitDivider.value = false
+  splitDragPointerId = null
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  window.removeEventListener('pointermove', handleSplitDividerPointerMove)
+  window.removeEventListener('pointerup', stopSplitDividerDrag)
+  window.removeEventListener('pointercancel', stopSplitDividerDrag)
+}
+
+function startSplitDividerDrag(event) {
+  if (!shouldShowSplitDivider.value) {
+    return
+  }
+
+  splitDragPointerId = event.pointerId
+  splitDragStartX = event.clientX
+  splitDragStartWidth = effectiveSplitSideWidth.value
+  isDraggingSplitDivider.value = true
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('pointermove', handleSplitDividerPointerMove)
+  window.addEventListener('pointerup', stopSplitDividerDrag)
+  window.addEventListener('pointercancel', stopSplitDividerDrag)
+}
+
 onMounted(() => {
   if (typeof ResizeObserver === 'undefined') {
     return
@@ -341,6 +443,11 @@ onMounted(() => {
         continue
       }
 
+      if (target === contentRef.value) {
+        updateContentWidth(target)
+        continue
+      }
+
       const agentId = splitPaneElementToAgentId.get(target)
       if (agentId) {
         updateSplitPaneWidth(agentId, target)
@@ -353,12 +460,18 @@ onMounted(() => {
     paneResizeObserver.observe(mainScrollRef.value)
   }
 
+  if (contentRef.value instanceof HTMLElement) {
+    updateContentWidth(contentRef.value)
+    paneResizeObserver.observe(contentRef.value)
+  }
+
   for (const [agentId, element] of splitPaneScrollRefs.entries()) {
     bindPaneWidth(agentId, element)
   }
 })
 
 onUnmounted(() => {
+  stopSplitDividerDrag()
   paneResizeObserver?.disconnect()
   paneResizeObserver = null
 })
@@ -759,7 +872,11 @@ const shouldShowRail = computed(() => {
       @toggle-view-mode="toggleViewMode"
     />
 
-    <div class="agent-workspace__content">
+    <div
+      ref="setContentRef"
+      class="agent-workspace__content"
+      :style="contentLayoutStyle"
+    >
       <div class="agent-workspace__main-stage" @click="selectMainAgentFromStage">
         <StickyHeader
           v-if="showStickyHeader && stickyMessage"
@@ -950,6 +1067,16 @@ const shouldShowRail = computed(() => {
           </template>
         </div>
       </div>
+
+      <div
+        v-if="shouldShowSplitDivider"
+        class="agent-workspace__split-resizebar"
+        :class="{ dragging: isDraggingSplitDivider }"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整主会话与子会话宽度"
+        @pointerdown.prevent="startSplitDividerDrag"
+      ></div>
 
       <aside
         v-if="hasCollaborativeChildren && viewMode === 'split' && hasVisibleSplitSessions"
@@ -1180,7 +1307,10 @@ const shouldShowRail = computed(() => {
 }
 
 .agent-workspace--split .agent-workspace__content {
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-columns:
+    minmax(0, 1fr)
+    var(--agent-workspace-split-divider-width, 10px)
+    minmax(280px, var(--agent-workspace-split-side-width, 360px));
   align-items: start;
 }
 
@@ -1196,6 +1326,45 @@ const shouldShowRail = computed(() => {
   flex-direction: column;
   overflow-y: clip;
   overflow-x: visible;
+}
+
+.agent-workspace__split-resizebar {
+  width: 5px;
+  flex: 0 0 5px;
+  margin-left: -2px;
+  margin-right: -3px;
+  min-width: 0;
+  min-height: 0;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  transition: background-color 0.15s ease;
+  touch-action: none;
+  user-select: none;
+  position: relative;
+  z-index: 2;
+}
+
+.agent-workspace__split-resizebar::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(82, 82, 91, 0.42);
+  transition: background-color 0.15s ease;
+}
+
+.agent-workspace__split-resizebar:hover,
+.agent-workspace__split-resizebar.dragging {
+  background: transparent;
+}
+
+.agent-workspace__split-resizebar:hover::before,
+.agent-workspace__split-resizebar.dragging::before {
+  background: #F97316;
 }
 
 .agent-workspace__main-scroll {

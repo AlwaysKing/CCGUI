@@ -83,6 +83,10 @@ const props = defineProps({
     type: Object,
     default: () => ({})
   },
+  paneWidth: {
+    type: Number,
+    default: 0
+  },
   externalizeThinking: {
     type: Boolean,
     default: false
@@ -195,6 +199,32 @@ const shouldHide = computed(() => {
 // 是否是一轮新问答的开始（用户消息且不是第一条）
 const isNewTurn = computed(() => {
   return props.message.role === 'user' && props.messageIndex > 0
+})
+
+const responsiveMessageWidthStyle = computed(() => {
+  const paneWidth = Number(props.paneWidth) || 0
+  if (paneWidth <= 0) {
+    return null
+  }
+
+  let targetWidth = paneWidth
+  if (paneWidth > 300 && paneWidth < 400) {
+    const ratio = 1 - 0.3 * ((paneWidth - 300) / 100)
+    targetWidth = paneWidth * ratio
+  } else if (paneWidth >= 400 && paneWidth <= 1077) {
+    targetWidth = paneWidth * 0.7
+  } else if (paneWidth > 1077) {
+    targetWidth = 720
+  }
+
+  const safeTargetWidth = Math.max(0, Math.min(targetWidth, paneWidth))
+  const cssWidth = `min(100%, ${safeTargetWidth}px)`
+
+  return {
+    '--ccgui-message-max-width': cssWidth,
+    '--ccgui-message-fill-width': cssWidth,
+    '--ccgui-message-ghost-max-width': cssWidth
+  }
 })
 
 const avatarMode = computed(() => props.chatTheme?.avatarMode || 'large')
@@ -494,7 +524,7 @@ async function onToggleResponseCollapse(messageIndex, event = null) {
         )
 
     if (ownerSession?.id) {
-      const result = await sessionStore.loadHistoryTurn(ownerSession.id, message.historyTurn.turnId)
+      const result = await sessionStore.loadHistoryTurn(ownerSession.id, message.historyTurn.turnId, message.historyTurn)
       if (!result?.success) {
         return
       }
@@ -614,6 +644,7 @@ watch(() => props.message, () => {
         'read-avatar': message.role === 'tool_use' && message.toolName === 'Read'
       }
     ]"
+    :style="responsiveMessageWidthStyle"
     :data-index="messageIndex"
     :data-message-id="message.id"
     @click="handleMessageClick"
@@ -1014,12 +1045,12 @@ watch(() => props.message, () => {
 .message.user .message-body {
   align-items: flex-end;
   flex: 1;
-  max-width: calc(100% - 48px);  /* 减去右侧列宽度(36px) + 间距(12px) */
+  max-width: var(--ccgui-message-fill-width, calc(100% - 48px));  /* 减去右侧列宽度(36px) + 间距(12px) */
   overflow: visible;
 }
 
 .message.user.no-avatar .message-body {
-  max-width: calc(100% - 28px);
+  max-width: var(--ccgui-message-fill-width, calc(100% - 28px));
 }
 
 /* 用户消息右侧列：头像 + 操作按钮 */
@@ -1461,28 +1492,28 @@ watch(() => props.message, () => {
 
 .message.execution-card .message-body {
   width: 100%;
-  max-width: min(70%, 720px);
+  max-width: var(--ccgui-message-max-width, min(70%, 720px));
 }
 
 /* Assistant 内容包装器：thinking 和 message 共享宽度 */
 .assistant-content-wrapper {
-  width: fit-content;
-  max-width: calc(100% - 48px);  /* 减去左侧头像宽度(36px) + 间距(12px) */
+  width: var(--ccgui-message-fill-width, fit-content);
+  max-width: var(--ccgui-message-fill-width, calc(100% - 48px));  /* 减去左侧头像宽度(36px) + 间距(12px) */
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
 .message.assistant.surface-ghost .assistant-content-wrapper {
-  max-width: min(85%, calc(100% - 48px));
+  max-width: var(--ccgui-message-ghost-max-width, min(85%, calc(100% - 48px)));
 }
 
 .message.no-avatar .assistant-content-wrapper {
-  max-width: 100%;
+  max-width: var(--ccgui-message-fill-width, 100%);
 }
 
 .message.assistant.surface-ghost.no-avatar .assistant-content-wrapper {
-  max-width: 85%;
+  max-width: var(--ccgui-message-ghost-max-width, 85%);
 }
 
 .assistant-content-wrapper > * {
@@ -1572,7 +1603,7 @@ watch(() => props.message, () => {
 
 .system-inline-text {
   flex-shrink: 0;
-  max-width: min(70%, 720px);
+  max-width: var(--ccgui-message-max-width, min(70%, 720px));
   font-size: 12px;
   line-height: 1.55;
   color: #A1A1AA;

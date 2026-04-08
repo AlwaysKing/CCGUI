@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import MessageItem from './messages/MessageItem.vue'
 import ExecutionAgentCard from './messages/ExecutionAgentCard.vue'
 import ThinkingSection from './messages/ThinkingSection.vue'
@@ -146,20 +146,106 @@ function handleContentScroll(event) {
 }
 
 const splitPaneScrollRefs = new Map()
+const splitPaneElementToAgentId = new WeakMap()
 const splitPaneUserScrolledAway = ref({})
 const collapsedSplitPaneIds = ref({})
+const splitPaneWidths = ref({})
+const mainScrollRef = ref(null)
+const mainStageWidth = ref(0)
+let paneResizeObserver = null
+
+function updateSplitPaneWidth(agentId, element) {
+  if (!agentId || !(element instanceof HTMLElement)) {
+    return
+  }
+
+  const nextWidth = Math.round(element.getBoundingClientRect().width)
+  if (!nextWidth || splitPaneWidths.value[agentId] === nextWidth) {
+    return
+  }
+
+  splitPaneWidths.value = {
+    ...splitPaneWidths.value,
+    [agentId]: nextWidth
+  }
+}
+
+function updateMainStageWidth(element) {
+  if (!(element instanceof HTMLElement)) {
+    return
+  }
+
+  const nextWidth = Math.round(element.getBoundingClientRect().width)
+  if (!nextWidth || mainStageWidth.value === nextWidth) {
+    return
+  }
+
+  mainStageWidth.value = nextWidth
+}
+
+function bindPaneWidth(agentId, element) {
+  if (!(element instanceof HTMLElement)) {
+    return
+  }
+
+  splitPaneElementToAgentId.set(element, agentId)
+  updateSplitPaneWidth(agentId, element)
+  paneResizeObserver?.observe(element)
+}
+
+function unbindPaneWidth(agentId, element) {
+  if (!(element instanceof HTMLElement)) {
+    return
+  }
+
+  paneResizeObserver?.unobserve(element)
+
+  if (!agentId) {
+    return
+  }
+
+  const nextWidths = { ...splitPaneWidths.value }
+  delete nextWidths[agentId]
+  splitPaneWidths.value = nextWidths
+}
 
 function setSplitPaneScrollRef(agentId, element) {
   if (!agentId) {
     return
   }
 
+  const previous = splitPaneScrollRefs.get(agentId)
+  if (previous && previous !== element) {
+    unbindPaneWidth(agentId, previous)
+  }
+
   if (element) {
     splitPaneScrollRefs.set(agentId, element)
+    bindPaneWidth(agentId, element)
     return
   }
 
+  if (previous) {
+    unbindPaneWidth(agentId, previous)
+  }
   splitPaneScrollRefs.delete(agentId)
+}
+
+function setMainScrollRef(element) {
+  const previous = mainScrollRef.value
+  if (previous && previous !== element) {
+    paneResizeObserver?.unobserve(previous)
+  }
+
+  if (element instanceof HTMLElement) {
+    mainScrollRef.value = element
+    updateMainStageWidth(element)
+    paneResizeObserver?.observe(element)
+    return
+  }
+
+  mainScrollRef.value = null
+  mainStageWidth.value = 0
 }
 
 function handleSplitPaneScroll(agentId, event) {
@@ -237,6 +323,45 @@ function railItemStyle(agentItem) {
     borderColor: agentItem.color
   }
 }
+
+onMounted(() => {
+  if (typeof ResizeObserver === 'undefined') {
+    return
+  }
+
+  paneResizeObserver = new ResizeObserver(entries => {
+    for (const entry of entries) {
+      const target = entry.target
+      if (!(target instanceof HTMLElement)) {
+        continue
+      }
+
+      if (target === mainScrollRef.value) {
+        updateMainStageWidth(target)
+        continue
+      }
+
+      const agentId = splitPaneElementToAgentId.get(target)
+      if (agentId) {
+        updateSplitPaneWidth(agentId, target)
+      }
+    }
+  })
+
+  if (mainScrollRef.value instanceof HTMLElement) {
+    updateMainStageWidth(mainScrollRef.value)
+    paneResizeObserver.observe(mainScrollRef.value)
+  }
+
+  for (const [agentId, element] of splitPaneScrollRefs.entries()) {
+    bindPaneWidth(agentId, element)
+  }
+})
+
+onUnmounted(() => {
+  paneResizeObserver?.disconnect()
+  paneResizeObserver = null
+})
 
 function railItemTypeLabel(agentItem) {
   if (!agentItem) return ''
@@ -421,14 +546,8 @@ function buildRenderableTimeline(blocks) {
       })
       pendingActivities = []
 
-      // assistant answer 单独渲染在 group 外部
-      if (isAssistantAnswer) {
-        renderBlocks.push({
-          type: 'block',
-          key: block.key || `block-${block.displayIndex}`,
-          block
-        })
-      } else {
+      // assistant answer 已经作为 assistantBlock 包含在 group 中，不要再重复渲染一次
+      if (!isAssistantAnswer) {
         // 其他非 foldable 消息也单独渲染
         renderBlocks.push({
           type: 'block',
@@ -654,7 +773,7 @@ const shouldShowRail = computed(() => {
           @copy="forward('copySticky')"
           @scroll-to-user="forward('scrollToSticky')"
         />
-        <div class="agent-workspace__main-scroll" @scroll="handleContentScroll">
+        <div ref="setMainScrollRef" class="agent-workspace__main-scroll" @scroll="handleContentScroll">
           <template v-if="splitMainSession?.isMain">
             <template v-for="renderBlock in renderableMainTimelineBlocks" :key="renderBlock.key">
               <template v-if="renderBlock.type === 'activity-group'">
@@ -688,6 +807,7 @@ const shouldShowRail = computed(() => {
                           :current-time="currentTime"
                           :all-messages="mainStageDisplayMessages"
                           :chat-theme="chatTheme"
+                          :pane-width="mainStageWidth"
                           @message-click="forward('messageClick', $event)"
                           @rewind="forward('rewind', $event)"
                           @fork="forward('fork', $event)"
@@ -706,6 +826,7 @@ const shouldShowRail = computed(() => {
                           :current-time="currentTime"
                           :all-messages="mainStageDisplayMessages"
                           :chat-theme="chatTheme"
+                          :pane-width="mainStageWidth"
                           @message-click="forward('messageClick', $event)"
                           @rewind="forward('rewind', $event)"
                           @fork="forward('fork', $event)"
@@ -744,6 +865,7 @@ const shouldShowRail = computed(() => {
                     :all-messages="mainStageDisplayMessages"
                     :chat-theme="chatTheme"
                     :externalize-thinking="hasExternalThinking(renderBlock.assistantBlock)"
+                    :pane-width="mainStageWidth"
                     @message-click="forward('messageClick', $event)"
                     @rewind="forward('rewind', $event)"
                     @fork="forward('fork', $event)"
@@ -766,6 +888,7 @@ const shouldShowRail = computed(() => {
                 :current-time="currentTime"
                 :all-messages="mainStageDisplayMessages"
                 :chat-theme="chatTheme"
+                :pane-width="mainStageWidth"
                 @message-click="forward('messageClick', $event)"
                 @rewind="forward('rewind', $event)"
                 @fork="forward('fork', $event)"
@@ -784,6 +907,7 @@ const shouldShowRail = computed(() => {
                 :current-time="currentTime"
                 :all-messages="mainStageDisplayMessages"
                 :chat-theme="chatTheme"
+                :pane-width="mainStageWidth"
                 @message-click="forward('messageClick', $event)"
                 @rewind="forward('rewind', $event)"
                 @fork="forward('fork', $event)"
@@ -814,6 +938,7 @@ const shouldShowRail = computed(() => {
               :current-time="currentTime"
               :all-messages="splitMainSession.messages"
               :chat-theme="chatTheme"
+              :pane-width="mainStageWidth"
               @message-click="forward('messageClick', $event)"
               @rewind="forward('rewind', $event)"
               @fork="forward('fork', $event)"
@@ -866,6 +991,7 @@ const shouldShowRail = computed(() => {
               :current-time="currentTime"
               :all-messages="sessionItem.messages"
               :chat-theme="chatTheme"
+              :pane-width="splitPaneWidths[sessionItem.agentId] || 0"
               @message-click="forward('messageClick', $event)"
               @rewind="forward('rewind', $event)"
               @fork="forward('fork', $event)"

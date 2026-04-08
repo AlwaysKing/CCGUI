@@ -105,6 +105,21 @@ function normalizeAttribution(attribution = null) {
   }).filter(([, value]) => value !== null))
 }
 
+function normalizeHistoryContext(history = null) {
+  if (!isPlainObject(history)) {
+    return null
+  }
+
+  return Object.fromEntries(Object.entries({
+    sourceUserTurnId: pickFirstDefined(history.sourceUserTurnId, history.source_user_turn_id),
+    subagentTurnId: pickFirstDefined(history.subagentTurnId, history.subagent_turn_id),
+    inputKind: pickFirstDefined(history.inputKind, history.input_kind),
+    deliveryKind: pickFirstDefined(history.deliveryKind, history.delivery_kind),
+    senderAgentId: pickFirstDefined(history.senderAgentId, history.sender_agent_id),
+    targetAgentId: pickFirstDefined(history.targetAgentId, history.target_agent_id)
+  }).filter(([, value]) => value !== null))
+}
+
 function mergePlain(base = null, patch = null) {
   if (!base && !patch) {
     return null
@@ -135,6 +150,10 @@ function mergeCcguiSemantics(base = null, patch = null) {
     normalizeAttribution(safeBase.attribution),
     normalizeAttribution(safePatch.attribution)
   )
+  const history = mergePlain(
+    normalizeHistoryContext(safeBase.history),
+    normalizeHistoryContext(safePatch.history)
+  )
   const legacy = {
     subagentId: pickFirstDefined(safePatch.subagentId, safeBase.subagentId, registry?.agentId, attribution?.agentId),
     subagentType: pickFirstDefined(safePatch.subagentType, safeBase.subagentType, registry?.agentType),
@@ -150,6 +169,7 @@ function mergeCcguiSemantics(base = null, patch = null) {
     ...(registry ? { registry } : {}),
     ...(orchestration ? { orchestration } : {}),
     ...(attribution ? { attribution } : {}),
+    ...(history ? { history } : {}),
     ...(legacy.subagentId || legacy.subagentType || legacy.isSubagent ? legacy : {})
   }
 }
@@ -682,6 +702,11 @@ class SessionInstance {
     this.eventLog = []
     this.historyTurns = []
     this.currentHistoryTurnId = null
+    this.agentSourceTurnIds = new Map()
+    this.agentSubagentTurns = new Map()
+    this.agentAliases = new Map()
+    this.agentRegistrySnapshots = new Map()
+    this.pendingCollaborativeDeliveries = []
 
     // 流式消息处理状态
     this.currentStreamingAssistantId = null
@@ -691,6 +716,345 @@ class SessionInstance {
     this.currentTurnNumber = 0
     this.hasSeenToolUseInCurrentTurn = false
     this.activeResponseUserMessageId = null
+  }
+
+  getMainAgentId() {
+    return 'master'
+  }
+
+  normalizeAgentAlias(value) {
+    if (typeof value !== 'string') {
+      return ''
+    }
+
+    return value.replace(/^@/, '').trim().toLowerCase()
+  }
+
+  rememberAgentAlias(agentId, ...values) {
+    if (!agentId) {
+      return
+    }
+
+    for (const value of values) {
+      const alias = this.normalizeAgentAlias(value)
+      if (!alias) {
+        continue
+      }
+      this.agentAliases.set(alias, agentId)
+    }
+  }
+
+  resolveAgentIdFromAlias(value) {
+    const alias = this.normalizeAgentAlias(value)
+    if (!alias) {
+      return null
+    }
+
+    if (alias === 'master') {
+      return this.getMainAgentId()
+    }
+
+    return this.agentAliases.get(alias) || null
+  }
+
+  rememberAgentAliasesFromPayload(payload = null) {
+    if (!payload || typeof payload !== 'object') {
+      return
+    }
+
+    const ccgui = payload.ccgui || {}
+    const registry = ccgui.registry || null
+    const orchestration = ccgui.orchestration || null
+    const attribution = ccgui.attribution || null
+    const agentId = pickFirstDefined(
+      registry?.agentId,
+      orchestration?.agentId,
+      attribution?.agentId,
+      attribution?.actorId
+    )
+
+    if (!agentId) {
+      return
+    }
+
+    this.rememberAgentAlias(agentId, registry?.name, registry?.title, orchestration?.name)
+    if (registry) {
+      const normalizedRegistry = normalizeAgentRegistry(registry)
+      this.agentRegistrySnapshots.set(
+        agentId,
+        mergePlain(this.agentRegistrySnapshots.get(agentId) || null, normalizedRegistry || { agentId })
+      )
+    }
+
+    if (payload.toolName === 'SendMessage') {
+      this.rememberAgentAlias(agentId, payload.toolInput?.from)
+    }
+
+    if (payload.toolName === 'ReceiveMessage') {
+      this.rememberAgentAlias(agentId, payload.toolInput?.to)
+    }
+  }
+
+  getAgentRegistrySnapshot(agentId) {
+    if (!agentId) {
+      return null
+    }
+
+    return this.agentRegistrySnapshots.get(agentId) || null
+  }
+
+  getPayloadAgentId(payload = null) {
+    if (!payload || typeof payload !== 'object') {
+      return null
+    }
+
+    return pickFirstDefined(
+      payload.ccgui?.attribution?.agentId,
+      payload.ccgui?.attribution?.actorId,
+      payload.ccgui?.registry?.agentId,
+      payload.ccgui?.orchestration?.agentId
+    )
+  }
+
+  getAgentSourceTurnId(agentId) {
+    if (!agentId) {
+      return this.currentHistoryTurnId || null
+    }
+
+    if (agentId === this.getMainAgentId()) {
+      return this.agentSourceTurnIds.get(agentId) || this.currentHistoryTurnId || null
+    }
+
+    return this.agentSourceTurnIds.get(agentId) || null
+  }
+
+  setAgentSourceTurnId(agentId, sourceUserTurnId) {
+    if (!agentId || !sourceUserTurnId) {
+      return
+    }
+
+    this.agentSourceTurnIds.set(agentId, sourceUserTurnId)
+  }
+
+  ensureSubagentTurn(agentId, sourceUserTurnId, options = {}) {
+    if (!agentId || !sourceUserTurnId || agentId === this.getMainAgentId()) {
+      return null
+    }
+
+    const current = this.agentSubagentTurns.get(agentId) || null
+    if (!options.forceNew && current?.sourceUserTurnId === sourceUserTurnId) {
+      current.updatedAt = new Date().toISOString()
+      this.agentSubagentTurns.set(agentId, current)
+      return current.turnId
+    }
+
+    const nextTurnId = `subagent-turn:${agentId}:${crypto.randomUUID()}`
+    this.agentSubagentTurns.set(agentId, {
+      turnId: nextTurnId,
+      sourceUserTurnId,
+      updatedAt: new Date().toISOString(),
+      inputKind: options.inputKind || 'delegated_context'
+    })
+    return nextTurnId
+  }
+
+  recordPendingCollaborativeDelivery(entry = {}) {
+    if (!entry?.senderAgentId || !entry?.sourceUserTurnId) {
+      return
+    }
+
+    this.pendingCollaborativeDeliveries.push({
+      senderAgentId: entry.senderAgentId,
+      targetAgentId: entry.targetAgentId || null,
+      targetLabel: this.normalizeAgentAlias(entry.targetLabel),
+      sourceUserTurnId: entry.sourceUserTurnId,
+      timestamp: Date.now()
+    })
+
+    const cutoff = Date.now() - 5 * 60 * 1000
+    this.pendingCollaborativeDeliveries = this.pendingCollaborativeDeliveries
+      .filter(item => item.timestamp >= cutoff)
+      .slice(-200)
+  }
+
+  resolveCollaborativeDeliveryTurn({ senderAgentId = null, recipientAgentId = null, senderLabel = '' } = {}) {
+    const normalizedSenderLabel = this.normalizeAgentAlias(senderLabel)
+    const candidates = [...this.pendingCollaborativeDeliveries].reverse()
+
+    for (const item of candidates) {
+      if (senderAgentId && item.senderAgentId !== senderAgentId) {
+        continue
+      }
+      if (recipientAgentId && item.targetAgentId && item.targetAgentId !== recipientAgentId) {
+        continue
+      }
+      return item.sourceUserTurnId
+    }
+
+    if (senderAgentId) {
+      return this.getAgentSourceTurnId(senderAgentId)
+    }
+
+    if (normalizedSenderLabel) {
+      const resolvedSenderAgentId = this.resolveAgentIdFromAlias(normalizedSenderLabel)
+      if (resolvedSenderAgentId) {
+        return this.getAgentSourceTurnId(resolvedSenderAgentId)
+      }
+    }
+
+    return null
+  }
+
+  attachHistoryContext(payload = null, historyPatch = null) {
+    if (!payload || typeof payload !== 'object' || !historyPatch) {
+      return payload
+    }
+
+    return attachExistingCcgui(payload, {
+      history: historyPatch
+    })
+  }
+
+  applyHistoryContextToEventData(eventType, data) {
+    if (!data || typeof data !== 'object') {
+      return data
+    }
+
+    let payload = attachExistingCcgui(data)
+    this.rememberAgentAliasesFromPayload(payload)
+
+    const payloadAgentId = this.getPayloadAgentId(payload)
+    const registrySnapshot = this.getAgentRegistrySnapshot(payloadAgentId)
+    if (payloadAgentId && registrySnapshot && !payload?.ccgui?.registry) {
+      payload = attachExistingCcgui(payload, {
+        registry: registrySnapshot
+      })
+    }
+
+    if (eventType === 'message' && payload.role === 'user') {
+      const sourceUserTurnId = payload.id || null
+      const targetAgentId = this.getPayloadAgentId(payload)
+
+      if (sourceUserTurnId) {
+        this.setAgentSourceTurnId(this.getMainAgentId(), sourceUserTurnId)
+      }
+
+      if (targetAgentId && targetAgentId !== this.getMainAgentId() && sourceUserTurnId) {
+        this.setAgentSourceTurnId(targetAgentId, sourceUserTurnId)
+        const subagentTurnId = this.ensureSubagentTurn(targetAgentId, sourceUserTurnId, {
+          forceNew: true,
+          inputKind: 'direct_user'
+        })
+        const targetRegistry = this.getAgentRegistrySnapshot(targetAgentId)
+        payload = this.attachHistoryContext(payload, {
+          sourceUserTurnId,
+          subagentTurnId,
+          inputKind: 'direct_user',
+          targetAgentId
+        })
+        if (targetRegistry && !payload?.ccgui?.registry) {
+          payload = attachExistingCcgui(payload, {
+            registry: targetRegistry
+          })
+        }
+      } else if (sourceUserTurnId) {
+        payload = this.attachHistoryContext(payload, {
+          sourceUserTurnId,
+          targetAgentId: targetAgentId || this.getMainAgentId()
+        })
+      }
+
+      return payload
+    }
+
+    if (eventType === 'message-start' && payload.role === 'tool_use') {
+      const toolName = String(payload.toolName || '').trim()
+      const actingAgentId = this.getPayloadAgentId(payload) || this.getMainAgentId()
+
+      if (toolName === 'SendMessage') {
+        const sourceUserTurnId = this.getAgentSourceTurnId(actingAgentId)
+        const targetLabel = payload.toolInput?.to || ''
+        const targetAgentId = this.resolveAgentIdFromAlias(targetLabel)
+        const targetRegistry = this.getAgentRegistrySnapshot(targetAgentId)
+        if (sourceUserTurnId) {
+          const subagentTurnId = targetAgentId && targetAgentId !== this.getMainAgentId()
+            ? this.ensureSubagentTurn(targetAgentId, sourceUserTurnId, {
+                inputKind: 'delegated_context'
+              })
+            : null
+          this.recordPendingCollaborativeDelivery({
+            senderAgentId: actingAgentId,
+            targetAgentId,
+            targetLabel,
+            sourceUserTurnId
+          })
+          payload = this.attachHistoryContext(payload, {
+            sourceUserTurnId,
+            inputKind: 'delegated_context',
+            deliveryKind: 'send',
+            senderAgentId: actingAgentId,
+            targetAgentId,
+            ...(subagentTurnId ? { subagentTurnId } : {})
+          })
+        }
+        if (targetRegistry) {
+          payload = attachExistingCcgui(payload, {
+            registry: targetRegistry
+          })
+        }
+        return payload
+      }
+
+      if (toolName === 'ReceiveMessage') {
+        const recipientAgentId = actingAgentId
+        const senderLabel = payload.toolInput?.from || ''
+        const senderAgentId = this.resolveAgentIdFromAlias(senderLabel)
+        const sourceUserTurnId = this.resolveCollaborativeDeliveryTurn({
+          senderAgentId,
+          recipientAgentId,
+          senderLabel
+        })
+
+        if (recipientAgentId && sourceUserTurnId) {
+          this.setAgentSourceTurnId(recipientAgentId, sourceUserTurnId)
+          const current = this.agentSubagentTurns.get(recipientAgentId) || null
+          const forceNew = current?.sourceUserTurnId !== sourceUserTurnId
+          const subagentTurnId = this.ensureSubagentTurn(recipientAgentId, sourceUserTurnId, {
+            forceNew,
+            inputKind: 'delegated_context'
+          })
+          payload = this.attachHistoryContext(payload, {
+            sourceUserTurnId,
+            subagentTurnId,
+            inputKind: 'delegated_context',
+            deliveryKind: 'receive',
+            senderAgentId,
+            targetAgentId: recipientAgentId
+          })
+        }
+        return payload
+      }
+    }
+
+    const actingAgentId = this.getPayloadAgentId(payload)
+    const sourceUserTurnId = actingAgentId ? this.getAgentSourceTurnId(actingAgentId) : null
+    if (actingAgentId && sourceUserTurnId) {
+      const historyPatch = {
+        sourceUserTurnId,
+        targetAgentId: actingAgentId
+      }
+      if (actingAgentId !== this.getMainAgentId()) {
+        const subagentTurnId = this.ensureSubagentTurn(actingAgentId, sourceUserTurnId, {
+          inputKind: 'delegated_context'
+        })
+        if (subagentTurnId) {
+          historyPatch.subagentTurnId = subagentTurnId
+        }
+      }
+      payload = this.attachHistoryContext(payload, historyPatch)
+    }
+
+    return payload
   }
 
   /**
@@ -739,36 +1103,12 @@ class SessionInstance {
         })
       }
 
-      const turnIndex = historyManager.loadTurnIndex(this.projectId, this.id)
-      const semanticEvents = historyManager.loadSemanticEvents(this.projectId, this.id)
-      this.silentMessages = semanticEvents
-        .filter(event => event?.eventType === 'silent-message')
-        .map(event => event.payload)
-        .filter(Boolean)
-      this.taskEvents = semanticEvents
-        .filter(event => event?.eventType === 'task-event')
-        .map(event => event.payload)
-        .filter(Boolean)
+      this.silentMessages = []
+      this.taskEvents = []
+      this.eventLog = []
 
-      if (turnIndex.length > 0) {
-        const legacyMessages = historyManager.loadHistory(this.projectId, this.id)
-        const indexedMessageIds = new Set(
-          turnIndex
-            .filter(entry => entry?.entryType === 'message' && entry?.messageId)
-            .map(entry => entry.messageId)
-        )
-
-        for (const message of legacyMessages) {
-          if (
-            isIndexVisibleMessage(message) &&
-            message?.id &&
-            !indexedMessageIds.has(message.id)
-          ) {
-            historyManager.appendIndexMessage(this.projectId, this.id, message)
-          }
-        }
-
-        this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+      this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
+      if (this.historyTurns.length > 0) {
         this.messages = this.historyTurns.map(buildHistoryIndexMessage)
         this.inputHistory = mergeInputHistory(this.inputHistory, this.messages)
         logger.info(`[SessionInstance] Loaded ${this.historyTurns.length} history index entries for session ${this.id}`)
@@ -777,20 +1117,6 @@ class SessionInstance {
           if (msg?.id) {
             this.savedMessageIds.add(msg.id)
           }
-        }
-        return
-      }
-
-      const ccguiMessages = historyManager.loadHistory(this.projectId, this.id)
-      this.eventLog = historyManager.loadSessionEvents(this.projectId, this.id)
-
-      if (ccguiMessages.length > 0) {
-        this.messages = ccguiMessages
-        this.inputHistory = mergeInputHistory(this.inputHistory, ccguiMessages)
-        logger.info(`[SessionInstance] Loaded ${ccguiMessages.length} messages from CCGUI storage for session ${this.id}`)
-
-        for (const msg of ccguiMessages) {
-          this.savedMessageIds.add(msg.id)
         }
         return
       }
@@ -832,6 +1158,7 @@ class SessionInstance {
       envInfo: this.envInfo,
       silentMessages: this.silentMessages,
       taskEvents: this.taskEvents,
+      subagentHistories: historyManager.loadAllSubagentHistories(this.projectId, this.id),
       eventLog: this.eventLog,
       historyTurns: this.historyTurns,
       runtimeReady: this.runtimeManager?.isReady() || false,
@@ -1159,6 +1486,21 @@ class SessionInstance {
       return false
     }
 
+    if (
+      event.eventType === 'env-info' ||
+      event.eventType === 'state-update' ||
+      event.eventType === 'control-response' ||
+      event.eventType === 'silent-message' ||
+      event.eventType === 'task-event' ||
+      event.eventType === 'agent-update' ||
+      event.eventType === 'permission-mode-change' ||
+      event.eventType === 'fast-mode-change' ||
+      event.eventType === 'cli-status' ||
+      event.eventType === 'unknown-message'
+    ) {
+      return false
+    }
+
     if (event.eventType === 'system-notification') {
       if (this.resolveNotificationScope(payload?.type, payload) === 'session') {
         return false
@@ -1182,7 +1524,7 @@ class SessionInstance {
     this.saveMessageToHistory(message)
     if (message.scope === 'session') {
       historyManager.appendIndexMessage(this.projectId, this.id, message)
-      this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+      this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
     }
     return message
   }
@@ -1231,7 +1573,7 @@ class SessionInstance {
             data: pendingMessage.data,
             timestamp: pendingMessage.timestamp
           })
-          this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+          this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
         }
         return pendingMessage
       }
@@ -1275,7 +1617,7 @@ class SessionInstance {
         data: pendingMessage.data,
         timestamp: pendingMessage.timestamp
       })
-      this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+      this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
     }
 
     return pendingMessage
@@ -1839,11 +2181,6 @@ class SessionInstance {
         timestamp: message.timestamp || new Date().toISOString()
       }
       this.silentMessages.push(silentMessage)
-      historyManager.appendSemanticEvent(this.projectId, this.id, {
-        eventType: 'silent-message',
-        timestamp: new Date().toISOString(),
-        payload: silentMessage
-      })
       this.emit('silent-message', silentMessage)
     })
 
@@ -1878,11 +2215,6 @@ class SessionInstance {
     manager.on('task-event', (message) => {
       const normalizedTaskEvent = attachExistingCcgui(message)
       this.taskEvents.push(normalizedTaskEvent)
-      historyManager.appendSemanticEvent(this.projectId, this.id, {
-        eventType: 'task-event',
-        timestamp: new Date().toISOString(),
-        payload: normalizedTaskEvent
-      })
       this.emit('task-event', normalizedTaskEvent)
     })
 
@@ -1916,7 +2248,7 @@ class SessionInstance {
       this.messages.push(summary)
       this.saveMessageToHistory(summary)
       historyManager.appendIndexMessage(this.projectId, this.id, summary)
-      this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+      this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
       this.emit('message', summary)
     })
 
@@ -2194,7 +2526,7 @@ class SessionInstance {
     Object.assign(summaryMessage, normalizedUpdates)
     historyManager.updateMessage(this.projectId, this.id, summaryMessage.id, normalizedUpdates)
     historyManager.updateIndexMessage(this.projectId, this.id, summaryMessage.id, normalizedUpdates)
-    this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+    this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
     this.emit('message-update', {
       messageId: summaryMessage.id,
       updates: normalizedUpdates
@@ -2275,7 +2607,7 @@ class SessionInstance {
 
     this.saveMessageToHistory(rewindNotice)
     historyManager.appendIndexMessage(this.projectId, this.id, rewindNotice)
-    this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+    this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
     this.emit('message', rewindNotice)
 
     return this.messages
@@ -2995,14 +3327,14 @@ class SessionInstance {
    * 向前端发送事件
    */
   emit(eventType, data) {
+    const normalizedData = this.applyHistoryContextToEventData(eventType, data)
     const event = {
       sessionId: this.id,
       eventType,
-      data,
+      data: normalizedData,
       timestamp: new Date().toISOString()
     }
     this.eventLog.push(event)
-    historyManager.appendSessionEvent(this.projectId, this.id, event)
     this.appendEventToTurnHistory(event)
 
     if (this.webContents && !this.webContents.isDestroyed()) {
@@ -3012,15 +3344,32 @@ class SessionInstance {
 
   appendEventToTurnHistory(event) {
     const payload = event?.data || null
+    const history = payload?.ccgui?.history || null
+    const subagentTurnId = history?.subagentTurnId || null
+    const subagentAgentId = history?.targetAgentId && history.targetAgentId !== this.getMainAgentId()
+      ? history.targetAgentId
+      : null
 
     if (event?.eventType === 'message' && payload?.role === 'user') {
       const turnEntry = historyManager.appendTurn(this.projectId, this.id, payload)
       this.currentHistoryTurnId = turnEntry?.turnId || payload?.id || null
-      this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+      if (this.currentHistoryTurnId) {
+        this.setAgentSourceTurnId(this.getMainAgentId(), this.currentHistoryTurnId)
+      }
       if (this.currentHistoryTurnId) {
         historyManager.appendTurnEvent(this.projectId, this.id, this.currentHistoryTurnId, event)
       }
+      if (subagentAgentId && subagentTurnId) {
+        historyManager.ensureSubagentTurn(this.projectId, this.id, subagentAgentId, subagentTurnId, event)
+        historyManager.appendSubagentTurnEvent(this.projectId, this.id, subagentAgentId, subagentTurnId, event)
+      }
+      this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
       return
+    }
+
+    if (subagentAgentId && subagentTurnId) {
+      historyManager.ensureSubagentTurn(this.projectId, this.id, subagentAgentId, subagentTurnId, event)
+      historyManager.appendSubagentTurnEvent(this.projectId, this.id, subagentAgentId, subagentTurnId, event)
     }
 
     if (!this.currentHistoryTurnId) {
@@ -3031,8 +3380,12 @@ class SessionInstance {
       return
     }
 
+    if (subagentAgentId || history?.deliveryKind === 'send') {
+      return
+    }
+
     historyManager.appendTurnEvent(this.projectId, this.id, this.currentHistoryTurnId, event)
-    this.historyTurns = historyManager.loadTurnIndex(this.projectId, this.id)
+    this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
   }
 
   buildQuestionMessage(controlRequest, answers = {}) {

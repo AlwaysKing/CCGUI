@@ -934,7 +934,7 @@ ipcMain.handle('load-session-history-turn', async (event, { sessionId, turnId })
       throw new Error(`Session ${sessionId} not found`)
     }
 
-    const turns = historyManager.loadTurnIndex(session.projectId, sessionId)
+    const turns = historyManager.loadIndexEntries(session.projectId, sessionId)
     const turn = turns.find(item => item.turnId === turnId) || null
     const events = historyManager.loadTurnEvents(session.projectId, sessionId, turnId)
 
@@ -946,6 +946,36 @@ ipcMain.handle('load-session-history-turn', async (event, { sessionId, turnId })
   } catch (error) {
     logger.error('[IPC] load-session-history-turn error:', {
       sessionId,
+      turnId,
+      message: error.message
+    })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('load-subagent-history-turn', async (event, { sessionId, agentId, turnId }) => {
+  try {
+    const session = sessionManager.getSession(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+    if (!agentId) {
+      throw new Error('Missing agentId')
+    }
+
+    const turns = historyManager.loadSubagentIndexEntries(session.projectId, sessionId, agentId)
+    const turn = turns.find(item => item.turnId === turnId) || null
+    const events = historyManager.loadSubagentTurnEvents(session.projectId, sessionId, agentId, turnId)
+
+    return {
+      success: true,
+      turn,
+      events
+    }
+  } catch (error) {
+    logger.error('[IPC] load-subagent-history-turn error:', {
+      sessionId,
+      agentId,
       turnId,
       message: error.message
     })

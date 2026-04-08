@@ -49,6 +49,7 @@ class SessionData {
     this.envInfo = null
     this.silentMessages = []
     this.taskEvents = []
+    this.subagentHistories = []
 
     // Runtime 状态
     this.runtimeReady = false
@@ -531,6 +532,44 @@ function createAgentBucket(agentId) {
   }
 }
 
+function buildSubagentHistoryAnchor(turn = {}, agentId, registry = null) {
+  const timestamp = toIsoTimestamp(turn.createdAt) || new Date().toISOString()
+  const content = typeof turn.inputText === 'string' ? turn.inputText : ''
+  const syntheticId = `subagent-anchor:${agentId}:${turn.turnId}`
+
+  return {
+    id: syntheticId,
+    role: 'user',
+    content,
+    serializedContent: content,
+    attachments: [],
+    timestamp,
+    responseCollapsed: Boolean(turn.hasAssistantResponse),
+    ccgui: {
+      ...(registry ? { registry } : {}),
+      history: {
+        sourceUserTurnId: turn.sourceUserTurnId || null,
+        subagentTurnId: turn.turnId,
+        inputKind: turn.inputKind || null,
+        deliveryKind: turn.deliveryKind || null,
+        senderAgentId: turn.senderAgentId || null,
+        targetAgentId: turn.targetAgentId || agentId
+      }
+    },
+    historyTurn: {
+      scope: 'subagent',
+      agentId,
+      turnId: turn.turnId,
+      status: turn.status || 'pending',
+      hasResponse: Boolean(turn.hasAssistantResponse),
+      eventCount: Number(turn.eventCount || 0),
+      loaded: Boolean(turn.loaded),
+      loading: false
+    },
+    ...(turn.loaded ? { responseCollapsed: false } : {})
+  }
+}
+
 function getMessageTimestamp(message) {
   if (!message || typeof message !== 'object') {
     return null
@@ -977,6 +1016,51 @@ export const useSessionStore = defineStore('session', () => {
       recordEvent(taskEvent?.ccgui?.orchestration)
     }
 
+    for (const subagentHistory of session.subagentHistories || []) {
+      const agentId = subagentHistory?.agentId
+      if (!agentId) {
+        continue
+      }
+
+      ensureBucket(agentId)
+      nextRegistry.set(agentId, mergeAgentRegistryEntry(nextRegistry.get(agentId), {
+        ...(subagentHistory?.registry || {}),
+        agentId,
+        agentKind: 'collaborative',
+        status: 'interrupted'
+      }))
+
+      for (const turn of subagentHistory.entries || []) {
+        const anchorMessage = buildSubagentHistoryAnchor(turn, agentId, subagentHistory.registry || null)
+        const bucket = ensureBucket(agentId)
+        bucket.messages.push(anchorMessage)
+        const timestamp = getMessageTimestamp(anchorMessage)
+        if (timestamp && !bucket.firstTimestamp) {
+          bucket.firstTimestamp = timestamp
+        }
+        if (timestamp) {
+          bucket.lastTimestamp = timestamp
+        }
+
+        if (Array.isArray(turn.loadedEvents)) {
+          for (const event of turn.loadedEvents) {
+            const payload = event?.data
+            if (!payload || typeof payload !== 'object') {
+              continue
+            }
+            if (payload.role === 'user' && payload.ccgui?.history?.subagentTurnId === turn.turnId) {
+              continue
+            }
+            bucket.messages.push(payload)
+            const payloadTimestamp = getMessageTimestamp(payload)
+            if (payloadTimestamp) {
+              bucket.lastTimestamp = payloadTimestamp
+            }
+          }
+        }
+      }
+    }
+
     if (!nextBuckets.has(mainAgentId)) {
       nextBuckets.set(mainAgentId, createAgentBucket(mainAgentId))
     }
@@ -1400,6 +1484,7 @@ export const useSessionStore = defineStore('session', () => {
         sessionData.envInfo = result.state.envInfo || null
         sessionData.silentMessages = (result.state.silentMessages || []).map(msg => reactive(msg))
         sessionData.taskEvents = (result.state.taskEvents || []).map(event => reactive(event))
+        sessionData.subagentHistories = result.state.subagentHistories || []
         sessionData.runtimeReady = result.state.runtimeReady || false
         // 恢复权限模式
         if (result.state.permissionMode) {
@@ -1986,18 +2071,51 @@ export const useSessionStore = defineStore('session', () => {
     return replaySession
   }
 
-  async function loadHistoryTurn(sessionId, turnId) {
+  function findHistoryAnchor(session, turnId, historyTurn = null) {
+    const mainAnchorIndex = session.messages.findIndex(message => message?.historyTurn?.turnId === turnId)
+    if (mainAnchorIndex !== -1) {
+      return {
+        scope: 'main',
+        collection: session.messages,
+        index: mainAnchorIndex,
+        message: session.messages[mainAnchorIndex]
+      }
+    }
+
+    const targetAgentId = historyTurn?.agentId || null
+    const bucketCandidates = targetAgentId
+      ? [session.agentBuckets.get(targetAgentId)].filter(Boolean)
+      : Array.from(session.agentBuckets.values())
+
+    for (const bucket of bucketCandidates) {
+      const bucketMessages = Array.isArray(bucket?.messages) ? bucket.messages : []
+      const index = bucketMessages.findIndex(message => message?.historyTurn?.turnId === turnId)
+      if (index !== -1) {
+        return {
+          scope: 'subagent',
+          collection: bucketMessages,
+          index,
+          message: bucketMessages[index],
+          bucket
+        }
+      }
+    }
+
+    return null
+  }
+
+  async function loadHistoryTurn(sessionId, turnId, historyTurn = null) {
     const session = sessions.value.get(sessionId)
     if (!session || !turnId) {
       return { success: false, error: 'Session or turn not found' }
     }
 
-    const anchorIndex = session.messages.findIndex(message => message?.historyTurn?.turnId === turnId)
-    if (anchorIndex === -1) {
+    const anchorRef = findHistoryAnchor(session, turnId, historyTurn)
+    if (!anchorRef) {
       return { success: false, error: 'Turn anchor message not found' }
     }
 
-    const anchorMessage = session.messages[anchorIndex]
+    const anchorMessage = anchorRef.message
     if (anchorMessage?.historyTurn?.loaded) {
       return { success: true, cached: true }
     }
@@ -2009,29 +2127,47 @@ export const useSessionStore = defineStore('session', () => {
     anchorMessage.historyTurn.error = null
 
     try {
-      const result = await window.electronAPI.loadSessionHistoryTurn({
-        sessionId,
-        turnId
-      })
+      const isSubagentTurn = anchorMessage?.historyTurn?.scope === 'subagent' && anchorMessage?.historyTurn?.agentId
+      const result = isSubagentTurn
+        ? await window.electronAPI.loadSubagentHistoryTurn({
+            sessionId,
+            agentId: anchorMessage.historyTurn.agentId,
+            turnId
+          })
+        : await window.electronAPI.loadSessionHistoryTurn({
+            sessionId,
+            turnId
+          })
 
       if (!result?.success) {
         throw new Error(result?.error || 'Failed to load history turn')
       }
 
-      const replaySession = createHistoryReplaySession(session)
       const turnEvents = Array.isArray(result.events) ? result.events : []
-      for (const event of turnEvents) {
-        handleSessionEvent(event, replaySession)
-      }
+      let replayedUserMessage = null
+      let insertedMessages = []
 
-      const replayedMessages = Array.isArray(replaySession.messages) ? replaySession.messages : []
-      const replayedUserIndex = replayedMessages.findIndex(message =>
-        message?.role === 'user' && message?.id === anchorMessage.id
-      )
-      const replayedUserMessage = replayedUserIndex >= 0 ? replayedMessages[replayedUserIndex] : null
-      const insertedMessages = replayedMessages
-        .filter((message, index) => !(index === replayedUserIndex && message?.role === 'user'))
-        .map(message => reactive(message))
+      if (isSubagentTurn) {
+        insertedMessages = turnEvents
+          .map(event => event?.data)
+          .filter(message => message && typeof message === 'object')
+          .filter(message => !(message.role === 'user' && message.ccgui?.history?.subagentTurnId === turnId))
+          .map(message => reactive(message))
+      } else {
+        const replaySession = createHistoryReplaySession(session)
+        for (const event of turnEvents) {
+          handleSessionEvent(event, replaySession)
+        }
+
+        const replayedMessages = Array.isArray(replaySession.messages) ? replaySession.messages : []
+        const replayedUserIndex = replayedMessages.findIndex(message =>
+          message?.role === 'user' && message?.id === anchorMessage.id
+        )
+        replayedUserMessage = replayedUserIndex >= 0 ? replayedMessages[replayedUserIndex] : null
+        insertedMessages = replayedMessages
+          .filter((message, index) => !(index === replayedUserIndex && message?.role === 'user'))
+          .map(message => reactive(message))
+      }
 
       const refreshedTurn = {
         ...(anchorMessage.historyTurn || {}),
@@ -2049,8 +2185,20 @@ export const useSessionStore = defineStore('session', () => {
         historyTurn: refreshedTurn
       })
 
-      session.messages.splice(anchorIndex, 1, mergedUserMessage, ...insertedMessages)
-      rebuildAgentSemanticState(session)
+      if (isSubagentTurn) {
+        anchorRef.collection.splice(anchorRef.index, 1, mergedUserMessage, ...insertedMessages)
+        const subagentEntry = (session.subagentHistories || [])
+          .find(item => item?.agentId === anchorMessage.historyTurn.agentId)
+        const turnEntry = subagentEntry?.entries?.find(entry => entry?.turnId === turnId)
+        if (turnEntry) {
+          turnEntry.loaded = true
+          turnEntry.loadedEvents = turnEvents
+        }
+        rebuildAgentSemanticState(session)
+      } else {
+        anchorRef.collection.splice(anchorRef.index, 1, mergedUserMessage, ...insertedMessages)
+        rebuildAgentSemanticState(session)
+      }
 
       return { success: true, insertedCount: insertedMessages.length }
     } catch (error) {

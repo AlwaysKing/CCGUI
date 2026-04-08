@@ -365,7 +365,7 @@ function syncProjectSessions(projectId) {
 function loadSessionHistoryWithFallback(projectId, sessionId) {
   try {
     // 首先尝试从 CCGUI 加载
-    const ccguiMessages = historyManager.loadHistory(projectId, sessionId)
+    const ccguiMessages = historyManager.loadIndexEntries(projectId, sessionId)
     if (ccguiMessages.length > 0) {
       logger.info('[SyncManager] Loading history from CCGUI', { projectId, sessionId, messageCount: ccguiMessages.length })
       return ccguiMessages

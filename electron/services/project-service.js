@@ -902,7 +902,7 @@ async function importProviderSessionHistory(projectId, providerSession, targetSe
     return
   }
 
-  if (historyManager.historyExists(projectId, historySessionId)) {
+  if (historyManager.hasHistoryIndex(projectId, historySessionId)) {
     return
   }
 
@@ -922,7 +922,7 @@ async function importProviderSessionHistory(projectId, providerSession, targetSe
     return
   }
 
-  historyManager.saveAllMessages(projectId, historySessionId, messages)
+  historyManager.saveIndexEntries(projectId, historySessionId, messages)
   logger.info('[ProjectService] Imported provider session history into CCGUI', {
     projectId,
     sessionId: historySessionId,
@@ -959,7 +959,7 @@ function scheduleProviderSessionHistoryImportToTarget(projectId, providerSession
         })
         const retryTimer = setTimeout(() => {
           pendingHistoryRetries.delete(key)
-          if (!historyManager.historyExists(projectId, historySessionId)) {
+          if (!historyManager.hasHistoryIndex(projectId, historySessionId)) {
             scheduleProviderSessionHistoryImportToTarget(projectId, providerSession, historySessionId)
           }
         }, HISTORY_RETRY_DELAY_MS)
@@ -988,14 +988,14 @@ function ensureProviderSessions(projectId, providerSessions, preferredLinkedSess
     const linkedSession = identity?.key ? preferredLinkedSessions.get(identity.key) : null
 
     if (linkedSession) {
-      if (!historyManager.historyExists(projectId, linkedSession.id)) {
+      if (!historyManager.hasHistoryIndex(projectId, linkedSession.id)) {
         scheduleProviderSessionHistoryImportToTarget(projectId, providerSession, linkedSession.id)
       }
       continue
     }
 
     const ensured = ensureSessionConfig(projectId, providerSession)
-    if (ensured?.created || !historyManager.historyExists(projectId, providerSession.id)) {
+    if (ensured?.created || !historyManager.hasHistoryIndex(projectId, providerSession.id)) {
       scheduleProviderSessionHistoryImport(projectId, providerSession)
     }
   }
@@ -1472,7 +1472,7 @@ async function renameSession(sessionId, projectId, name) {
 }
 
 function getSessionMessages(projectId, sessionId) {
-  return historyManager.loadHistory(projectId, sessionId)
+  return historyManager.loadIndexEntries(projectId, sessionId)
 }
 
 function resolveRuntimeConfig(projectId, sessionId) {

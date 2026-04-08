@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Get session state
   getSessionState: (options) => ipcRenderer.invoke('get-session-state', options),
   loadSessionHistoryTurn: (options) => ipcRenderer.invoke('load-session-history-turn', options),
+  loadSubagentHistoryTurn: (options) => ipcRenderer.invoke('load-subagent-history-turn', options),
   getSessionAvailable: (options) => ipcRenderer.invoke('get-session-available', options),
   listSessionSubmodels: (options) => ipcRenderer.invoke('list-session-submodels', options),
   setSessionModel: (options) => ipcRenderer.invoke('set-session-model', options),

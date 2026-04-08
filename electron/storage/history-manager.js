@@ -1,7 +1,8 @@
 /**
  * 历史管理器
- * 管理聊天历史记录的存储和加载
- * 直接保存/加载界面显示用的 message 对象
+ * 正式历史结构只包含：
+ * - history/index.jsonl
+ * - history/turns/<turnId>.jsonl
  */
 
 const fs = require('fs')
@@ -9,55 +10,20 @@ const path = require('path')
 const os = require('os')
 const logger = require('../logger')
 
-/**
- * 获取历史记录根目录
- */
 function getHistoryRoot() {
   return path.join(os.homedir(), '.ccgui', 'projects')
 }
 
-/**
- * 获取会话历史目录路径
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- */
 function getSessionHistoryDir(projectId, sessionId) {
   return path.join(getHistoryRoot(), projectId, 'sessions', sessionId, 'history')
 }
 
-/**
- * 获取消息历史文件路径
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- */
-function getMessagesFilePath(projectId, sessionId) {
-  return path.join(getSessionHistoryDir(projectId, sessionId), 'messages.jsonl')
+function getIndexFilePath(projectId, sessionId) {
+  return path.join(getSessionHistoryDir(projectId, sessionId), 'index.jsonl')
 }
 
-/**
- * 获取元数据文件路径
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- */
 function getMetadataFilePath(projectId, sessionId) {
   return path.join(getSessionHistoryDir(projectId, sessionId), 'metadata.json')
-}
-
-/**
- * 获取语义事件历史文件路径
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- */
-function getSemanticEventsFilePath(projectId, sessionId) {
-  return path.join(getSessionHistoryDir(projectId, sessionId), 'semantic-events.jsonl')
-}
-
-function getSessionEventsFilePath(projectId, sessionId) {
-  return path.join(getSessionHistoryDir(projectId, sessionId), 'session-events.jsonl')
-}
-
-function getTurnIndexFilePath(projectId, sessionId) {
-  return path.join(getSessionHistoryDir(projectId, sessionId), 'turn-index.json')
 }
 
 function getTurnsDirPath(projectId, sessionId) {
@@ -68,11 +34,51 @@ function getTurnStreamFilePath(projectId, sessionId, fileName) {
   return path.join(getTurnsDirPath(projectId, sessionId), fileName)
 }
 
-/**
- * 确保历史目录存在
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- */
+function toSafePathSegment(value, fallback = 'unknown') {
+  const rawValue = String(value || '').trim() || fallback
+  return rawValue.replace(/[/:*?"<>|\\]/g, '-').replace(/\s+/g, ' ').trim()
+}
+
+function getReadableSubagentPathName(agentId) {
+  const rawAgentId = String(agentId || '').trim()
+  if (!rawAgentId) {
+    return 'unknown-agent'
+  }
+
+  const lastSegment = rawAgentId.split(':').pop() || rawAgentId
+  return toSafePathSegment(lastSegment, 'unknown-agent')
+}
+
+function getReadableSubagentTurnFileName(turnId) {
+  const rawTurnId = String(turnId || '').trim()
+  if (!rawTurnId) {
+    return 'unknown-turn.jsonl'
+  }
+
+  const lastSegment = rawTurnId.split(':').pop() || rawTurnId
+  return `${toSafePathSegment(lastSegment, 'unknown-turn')}.jsonl`
+}
+
+function getSubagentsDirPath(projectId, sessionId) {
+  return path.join(getSessionHistoryDir(projectId, sessionId), 'subagents')
+}
+
+function getSubagentHistoryDir(projectId, sessionId, agentId) {
+  return path.join(getSubagentsDirPath(projectId, sessionId), getReadableSubagentPathName(agentId))
+}
+
+function getSubagentIndexFilePath(projectId, sessionId, agentId) {
+  return path.join(getSubagentHistoryDir(projectId, sessionId, agentId), 'index.jsonl')
+}
+
+function getSubagentTurnsDirPath(projectId, sessionId, agentId) {
+  return path.join(getSubagentHistoryDir(projectId, sessionId, agentId), 'turns')
+}
+
+function getSubagentTurnStreamFilePath(projectId, sessionId, agentId, fileName) {
+  return path.join(getSubagentTurnsDirPath(projectId, sessionId, agentId), fileName)
+}
+
 function ensureHistoryDir(projectId, sessionId) {
   const historyDir = getSessionHistoryDir(projectId, sessionId)
   if (!fs.existsSync(historyDir)) {
@@ -88,9 +94,20 @@ function ensureTurnsDir(projectId, sessionId) {
   }
 }
 
-/**
- * 创建默认元数据
- */
+function ensureSubagentHistoryDir(projectId, sessionId, agentId) {
+  const subagentDir = getSubagentHistoryDir(projectId, sessionId, agentId)
+  if (!fs.existsSync(subagentDir)) {
+    fs.mkdirSync(subagentDir, { recursive: true })
+  }
+}
+
+function ensureSubagentTurnsDir(projectId, sessionId, agentId) {
+  const turnsDir = getSubagentTurnsDirPath(projectId, sessionId, agentId)
+  if (!fs.existsSync(turnsDir)) {
+    fs.mkdirSync(turnsDir, { recursive: true })
+  }
+}
+
 function createDefaultMetadata() {
   return {
     messageCount: 0,
@@ -111,6 +128,45 @@ function cloneSerializable(value) {
   }
 
   return JSON.parse(JSON.stringify(value))
+}
+
+function normalizeSubagentRegistrySnapshot(registry = null, fallbackAgentId = null) {
+  if (!registry || typeof registry !== 'object') {
+    return fallbackAgentId ? { agentId: fallbackAgentId } : null
+  }
+
+  const agentId = registry.agentId || registry.agent_id || fallbackAgentId || null
+  if (!agentId) {
+    return null
+  }
+
+  return Object.fromEntries(Object.entries({
+    agentId,
+    agentKind: registry.agentKind || registry.agent_kind || null,
+    agentType: registry.agentType || registry.agent_type || null,
+    name: registry.name || null,
+    title: registry.title || registry.name || null,
+    description: registry.description || registry.prompt || null,
+    color: registry.color || registry.agentColor || registry.agent_color || null,
+    prompt: registry.prompt || null,
+    model: registry.model || null,
+    teamId: registry.teamId || registry.team_id || null,
+    parentAgentId: registry.parentAgentId || registry.parent_agent_id || null,
+    status: registry.status || null,
+    canWrite: registry.canWrite !== undefined ? Boolean(registry.canWrite) : null,
+    interactionMode: registry.interactionMode || registry.interaction_mode || null
+  }).filter(([, value]) => value !== null))
+}
+
+function mergeSubagentRegistrySnapshot(current = null, patch = null) {
+  if (!current && !patch) {
+    return null
+  }
+
+  return {
+    ...(current || {}),
+    ...(patch || {})
+  }
 }
 
 function createTurnIndexEntry(message = {}) {
@@ -152,6 +208,111 @@ function createIndexMessageEntry(message = {}) {
   }
 }
 
+function extractSubagentInputTextFromPayload(payload = {}, history = {}) {
+  if (payload?.role === 'user') {
+    return typeof payload.content === 'string'
+      ? payload.content
+      : (typeof payload.serializedContent === 'string' ? payload.serializedContent : '')
+  }
+
+  if (payload?.role === 'tool_use' && payload?.toolName === 'SendMessage') {
+    return (
+      payload?.toolInput?.content ||
+      payload?.toolInput?.summary ||
+      payload?.toolInput?.prompt ||
+      ''
+    )
+  }
+
+  if (payload?.role === 'tool_use' && payload?.toolName === 'ReceiveMessage') {
+    return (
+      payload?.toolInput?.content ||
+      payload?.toolInput?.summary ||
+      ''
+    )
+  }
+
+  return history?.inputText || ''
+}
+
+function resolveSourceUserTurnText(projectId, sessionId, sourceUserTurnId) {
+  if (!sourceUserTurnId) {
+    return ''
+  }
+
+  const sourceTurn = loadIndexEntries(projectId, sessionId)
+    .find(entry => entry?.entryType === 'turn' && entry?.turnId === sourceUserTurnId)
+
+  if (!sourceTurn) {
+    return ''
+  }
+
+  return typeof sourceTurn.userText === 'string'
+    ? sourceTurn.userText
+    : (typeof sourceTurn.serializedContent === 'string' ? sourceTurn.serializedContent : '')
+}
+
+function createSubagentTurnEntry(projectId, sessionId, agentId, turnId, event = {}) {
+  const payload = event?.data || {}
+  const history = payload?.ccgui?.history || {}
+  const timestamp = event?.timestamp || payload?.timestamp || new Date().toISOString()
+  const inputText = resolveSourceUserTurnText(projectId, sessionId, history?.sourceUserTurnId)
+    || extractSubagentInputTextFromPayload(payload, history)
+  const registry = normalizeSubagentRegistrySnapshot(payload?.ccgui?.registry, agentId)
+
+  return {
+    entryType: 'subagent-turn',
+    schemaVersion: 1,
+    agentId,
+    turnId,
+    sourceUserTurnId: history?.sourceUserTurnId || null,
+    inputKind: history?.inputKind || null,
+    deliveryKind: history?.deliveryKind || null,
+    senderAgentId: history?.senderAgentId || null,
+    targetAgentId: history?.targetAgentId || agentId,
+    inputText,
+    registry,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    streamFile: getReadableSubagentTurnFileName(turnId),
+    status: 'pending',
+    hasAssistantResponse: false,
+    eventCount: 0
+  }
+}
+
+function serializeMessage(message) {
+  return JSON.stringify(message, (key, value) => {
+    if (value instanceof Date) {
+      return { __type: 'Date', value: value.toISOString() }
+    }
+    if (value instanceof Set) {
+      return { __type: 'Set', value: Array.from(value) }
+    }
+    if (value instanceof Map) {
+      return { __type: 'Map', value: Array.from(value.entries()) }
+    }
+    return value
+  })
+}
+
+function deserializeMessage(jsonStr) {
+  return JSON.parse(jsonStr, (key, value) => {
+    if (value && typeof value === 'object') {
+      if (value.__type === 'Date') {
+        return new Date(value.value)
+      }
+      if (value.__type === 'Set') {
+        return new Set(value.value)
+      }
+      if (value.__type === 'Map') {
+        return new Map(value.value)
+      }
+    }
+    return value
+  })
+}
+
 function loadJsonLines(filePath) {
   if (!fs.existsSync(filePath)) {
     return []
@@ -162,9 +323,8 @@ function loadJsonLines(filePath) {
     return []
   }
 
-  const lines = content.trim().split('\n')
   const items = []
-  for (const line of lines) {
+  for (const line of content.trim().split('\n')) {
     if (!line.trim()) continue
     try {
       items.push(deserializeMessage(line))
@@ -176,30 +336,65 @@ function loadJsonLines(filePath) {
       })
     }
   }
-
   return items
 }
 
-/**
- * 加载元数据
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- * @returns {object} 元数据对象
- */
+function writeJsonLines(filePath, items = []) {
+  const normalizedItems = Array.isArray(items) ? items : []
+  const content = normalizedItems.length > 0
+    ? `${normalizedItems.map(item => serializeMessage(item)).join('\n')}\n`
+    : ''
+  fs.writeFileSync(filePath, content, 'utf-8')
+}
+
+function resolveStoredSubagentPathNames(projectId, sessionId) {
+  try {
+    const subagentsDir = getSubagentsDirPath(projectId, sessionId)
+    if (!fs.existsSync(subagentsDir)) {
+      return []
+    }
+
+    return fs.readdirSync(subagentsDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+      .filter(Boolean)
+      .sort()
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to list stored subagent path names', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return []
+  }
+}
+
+function listSubagentIds(projectId, sessionId) {
+  try {
+    return resolveStoredSubagentPathNames(projectId, sessionId)
+      .map(pathName => {
+        const indexPath = path.join(getSubagentsDirPath(projectId, sessionId), pathName, 'index.jsonl')
+        const entries = loadJsonLines(indexPath)
+        return entries[0]?.agentId || entries[0]?.registry?.agentId || pathName
+      })
+      .filter(Boolean)
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to list subagent ids', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return []
+  }
+}
+
 function loadMetadata(projectId, sessionId) {
   try {
     const metadataPath = getMetadataFilePath(projectId, sessionId)
-
     if (!fs.existsSync(metadataPath)) {
-      logger.debug('[HistoryManager] Metadata file not found, creating default', {
-        projectId,
-        sessionId
-      })
       return createDefaultMetadata()
     }
-
-    const content = fs.readFileSync(metadataPath, 'utf-8')
-    return JSON.parse(content)
+    return JSON.parse(fs.readFileSync(metadataPath, 'utf-8'))
   } catch (error) {
     logger.error('[HistoryManager] Failed to load metadata', {
       projectId,
@@ -210,22 +405,12 @@ function loadMetadata(projectId, sessionId) {
   }
 }
 
-/**
- * 保存元数据
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- * @param {object} metadata - 元数据对象
- */
 function saveMetadata(projectId, sessionId, metadata) {
   try {
     ensureHistoryDir(projectId, sessionId)
-
     const metadataPath = getMetadataFilePath(projectId, sessionId)
     metadata.updatedAt = new Date().toISOString()
-
     fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8')
-
-    logger.debug('[HistoryManager] Saved metadata', { projectId, sessionId })
     return true
   } catch (error) {
     logger.error('[HistoryManager] Failed to save metadata', {
@@ -252,170 +437,12 @@ function updateSessionEnvInfo(projectId, sessionId, envInfo) {
   }
 }
 
-/**
- * 序列化消息（处理 Date 对象等特殊类型）
- * @param {object} message - 消息对象
- * @returns {string} JSON 字符串
- */
-function serializeMessage(message) {
-  return JSON.stringify(message, (key, value) => {
-    // 处理 Date 对象
-    if (value instanceof Date) {
-      return { __type: 'Date', value: value.toISOString() }
-    }
-    // 处理 Set
-    if (value instanceof Set) {
-      return { __type: 'Set', value: Array.from(value) }
-    }
-    // 处理 Map
-    if (value instanceof Map) {
-      return { __type: 'Map', value: Array.from(value.entries()) }
-    }
-    return value
-  })
-}
-
-/**
- * 反序列化消息（恢复 Date 对象等特殊类型）
- * @param {string} jsonStr - JSON 字符串
- * @returns {object} 消息对象
- */
-function deserializeMessage(jsonStr) {
-  return JSON.parse(jsonStr, (key, value) => {
-    if (value && typeof value === 'object') {
-      // 恢复 Date 对象
-      if (value.__type === 'Date') {
-        return new Date(value.value)
-      }
-      // 恢复 Set
-      if (value.__type === 'Set') {
-        return new Set(value.value)
-      }
-      // 恢复 Map
-      if (value.__type === 'Map') {
-        return new Map(value.value)
-      }
-    }
-    return value
-  })
-}
-
-/**
- * 追加消息到历史记录
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- * @param {object} message - 消息对象
- */
-function appendMessage(projectId, sessionId, message) {
+function loadIndexEntries(projectId, sessionId) {
   try {
-    ensureHistoryDir(projectId, sessionId)
-
-    const messagesPath = getMessagesFilePath(projectId, sessionId)
-    const messageLine = serializeMessage(message) + '\n'
-
-    fs.appendFileSync(messagesPath, messageLine, 'utf-8')
-
-    // 更新元数据
-    const metadata = loadMetadata(projectId, sessionId)
-    metadata.messageCount++
-    metadata.lastMessageAt = message.timestamp || new Date().toISOString()
-
-    // 累加 token 统计
-    if (message.usage) {
-      metadata.totalTokens.input += message.usage.input_tokens || 0
-      metadata.totalTokens.output += message.usage.output_tokens || 0
-    }
-
-    saveMetadata(projectId, sessionId, metadata)
-
-    logger.debug('[HistoryManager] Appended message', {
-      projectId,
-      sessionId,
-      role: message.role,
-      messageCount: metadata.messageCount
-    })
-
-    return true
+    const indexPath = getIndexFilePath(projectId, sessionId)
+    return fs.existsSync(indexPath) ? loadJsonLines(indexPath) : []
   } catch (error) {
-    logger.error('[HistoryManager] Failed to append message', {
-      projectId,
-      sessionId,
-      error: error.message
-    })
-    return false
-  }
-}
-
-/**
- * 追加语义事件到历史记录
- * @param {string} projectId
- * @param {string} sessionId
- * @param {object} event
- */
-function appendSemanticEvent(projectId, sessionId, event) {
-  try {
-    ensureHistoryDir(projectId, sessionId)
-
-    const eventsPath = getSemanticEventsFilePath(projectId, sessionId)
-    const eventLine = serializeMessage(event) + '\n'
-
-    fs.appendFileSync(eventsPath, eventLine, 'utf-8')
-
-    logger.debug('[HistoryManager] Appended semantic event', {
-      projectId,
-      sessionId,
-      eventType: event?.eventType || event?.type || 'unknown'
-    })
-
-    return true
-  } catch (error) {
-    logger.error('[HistoryManager] Failed to append semantic event', {
-      projectId,
-      sessionId,
-      error: error.message
-    })
-    return false
-  }
-}
-
-function appendSessionEvent(projectId, sessionId, event) {
-  try {
-    ensureHistoryDir(projectId, sessionId)
-
-    const eventsPath = getSessionEventsFilePath(projectId, sessionId)
-    const eventLine = serializeMessage(event) + '\n'
-
-    fs.appendFileSync(eventsPath, eventLine, 'utf-8')
-
-    logger.debug('[HistoryManager] Appended session event', {
-      projectId,
-      sessionId,
-      eventType: event?.eventType || 'unknown'
-    })
-
-    return true
-  } catch (error) {
-    logger.error('[HistoryManager] Failed to append session event', {
-      projectId,
-      sessionId,
-      error: error.message
-    })
-    return false
-  }
-}
-
-function loadTurnIndex(projectId, sessionId) {
-  try {
-    const indexPath = getTurnIndexFilePath(projectId, sessionId)
-    if (!fs.existsSync(indexPath)) {
-      return []
-    }
-
-    const content = fs.readFileSync(indexPath, 'utf-8')
-    const parsed = JSON.parse(content)
-    return Array.isArray(parsed) ? parsed : []
-  } catch (error) {
-    logger.error('[HistoryManager] Failed to load turn index', {
+    logger.error('[HistoryManager] Failed to load index entries', {
       projectId,
       sessionId,
       error: error.message
@@ -424,14 +451,19 @@ function loadTurnIndex(projectId, sessionId) {
   }
 }
 
-function saveTurnIndex(projectId, sessionId, turns) {
+function saveIndexEntries(projectId, sessionId, entries = []) {
   try {
     ensureHistoryDir(projectId, sessionId)
-    const indexPath = getTurnIndexFilePath(projectId, sessionId)
-    fs.writeFileSync(indexPath, JSON.stringify(Array.isArray(turns) ? turns : [], null, 2), 'utf-8')
+    writeJsonLines(getIndexFilePath(projectId, sessionId), entries)
+
+    const metadata = loadMetadata(projectId, sessionId)
+    metadata.messageCount = Array.isArray(entries) ? entries.length : 0
+    const lastEntry = Array.isArray(entries) && entries.length > 0 ? entries[entries.length - 1] : null
+    metadata.lastMessageAt = lastEntry?.updatedAt || lastEntry?.createdAt || metadata.lastMessageAt || null
+    saveMetadata(projectId, sessionId, metadata)
     return true
   } catch (error) {
-    logger.error('[HistoryManager] Failed to save turn index', {
+    logger.error('[HistoryManager] Failed to save index entries', {
       projectId,
       sessionId,
       error: error.message
@@ -445,21 +477,21 @@ function appendTurn(projectId, sessionId, message) {
     ensureHistoryDir(projectId, sessionId)
     ensureTurnsDir(projectId, sessionId)
 
-    const turns = loadTurnIndex(projectId, sessionId)
+    const entries = loadIndexEntries(projectId, sessionId)
     const nextEntry = createTurnIndexEntry(message)
-    const existingIndex = turns.findIndex(turn => turn.turnId === nextEntry.turnId)
+    const existingIndex = entries.findIndex(turn => turn.turnId === nextEntry.turnId)
 
     if (existingIndex >= 0) {
-      turns[existingIndex] = {
-        ...turns[existingIndex],
+      entries[existingIndex] = {
+        ...entries[existingIndex],
         ...nextEntry,
         updatedAt: new Date().toISOString()
       }
     } else {
-      turns.push(nextEntry)
+      entries.push(nextEntry)
     }
 
-    saveTurnIndex(projectId, sessionId, turns)
+    saveIndexEntries(projectId, sessionId, entries)
     return nextEntry
   } catch (error) {
     logger.error('[HistoryManager] Failed to append turn', {
@@ -471,10 +503,22 @@ function appendTurn(projectId, sessionId, message) {
   }
 }
 
+function appendMessage(projectId, sessionId, message) {
+  if (!message || typeof message !== 'object') {
+    return false
+  }
+
+  if (message.role === 'user') {
+    return Boolean(appendTurn(projectId, sessionId, message))
+  }
+
+  return Boolean(appendIndexMessage(projectId, sessionId, message))
+}
+
 function appendIndexMessage(projectId, sessionId, message) {
   try {
     ensureHistoryDir(projectId, sessionId)
-    const entries = loadTurnIndex(projectId, sessionId)
+    const entries = loadIndexEntries(projectId, sessionId)
     const nextEntry = createIndexMessageEntry(message)
     const existingIndex = entries.findIndex(entry =>
       entry?.entryType === 'message' && entry?.messageId === nextEntry.messageId
@@ -490,7 +534,7 @@ function appendIndexMessage(projectId, sessionId, message) {
       entries.push(nextEntry)
     }
 
-    saveTurnIndex(projectId, sessionId, entries)
+    saveIndexEntries(projectId, sessionId, entries)
     return nextEntry
   } catch (error) {
     logger.error('[HistoryManager] Failed to append index message', {
@@ -504,7 +548,7 @@ function appendIndexMessage(projectId, sessionId, message) {
 
 function updateIndexMessage(projectId, sessionId, messageId, updates = {}) {
   try {
-    const entries = loadTurnIndex(projectId, sessionId)
+    const entries = loadIndexEntries(projectId, sessionId)
     const entryIndex = entries.findIndex(entry =>
       entry?.entryType === 'message' && entry?.messageId === messageId
     )
@@ -523,7 +567,7 @@ function updateIndexMessage(projectId, sessionId, messageId, updates = {}) {
       })
     }
 
-    return saveTurnIndex(projectId, sessionId, entries)
+    return saveIndexEntries(projectId, sessionId, entries)
   } catch (error) {
     logger.error('[HistoryManager] Failed to update index message', {
       projectId,
@@ -537,19 +581,19 @@ function updateIndexMessage(projectId, sessionId, messageId, updates = {}) {
 
 function updateTurn(projectId, sessionId, turnId, updates = {}) {
   try {
-    const turns = loadTurnIndex(projectId, sessionId)
-    const turnIndex = turns.findIndex(turn => turn.turnId === turnId)
-    if (turnIndex === -1) {
+    const entries = loadIndexEntries(projectId, sessionId)
+    const entryIndex = entries.findIndex(entry => entry?.turnId === turnId)
+    if (entryIndex === -1) {
       return false
     }
 
-    turns[turnIndex] = {
-      ...turns[turnIndex],
+    entries[entryIndex] = {
+      ...entries[entryIndex],
       ...cloneSerializable(updates),
       updatedAt: new Date().toISOString()
     }
 
-    return saveTurnIndex(projectId, sessionId, turns)
+    return saveIndexEntries(projectId, sessionId, entries)
   } catch (error) {
     logger.error('[HistoryManager] Failed to update turn', {
       projectId,
@@ -563,48 +607,24 @@ function updateTurn(projectId, sessionId, turnId, updates = {}) {
 
 function appendTurnEvent(projectId, sessionId, turnId, event) {
   try {
-    const turns = loadTurnIndex(projectId, sessionId)
-    const turnIndex = turns.findIndex(turn => turn.turnId === turnId)
-    if (turnIndex === -1) {
+    const entries = loadIndexEntries(projectId, sessionId)
+    const entryIndex = entries.findIndex(entry => entry?.turnId === turnId)
+    if (entryIndex === -1) {
       return false
     }
 
     ensureHistoryDir(projectId, sessionId)
     ensureTurnsDir(projectId, sessionId)
 
-    const turn = turns[turnIndex]
+    const turn = entries[entryIndex]
     const streamPath = getTurnStreamFilePath(projectId, sessionId, turn.streamFile)
-    fs.appendFileSync(streamPath, serializeMessage(event) + '\n', 'utf-8')
+    fs.appendFileSync(streamPath, `${serializeMessage(event)}\n`, 'utf-8')
 
-    const payload = event?.data || null
-    const nextUpdates = {
-      eventCount: Number(turn.eventCount || 0) + 1,
-      updatedAt: new Date().toISOString()
-    }
-
-    if (
-      (event?.eventType === 'message-start' || event?.eventType === 'message') &&
-      payload?.role === 'assistant'
-    ) {
-      nextUpdates.hasAssistantResponse = true
-      nextUpdates.status = payload?.isStreaming ? 'streaming' : 'completed'
-    } else if (event?.eventType === 'result') {
-      nextUpdates.status = 'completed'
-    } else if (
-      event?.eventType === 'abnormal-exit' ||
-      (event?.eventType === 'system-notification' && payload?.type === 'turn-error')
-    ) {
-      nextUpdates.status = 'error'
-    } else if (event?.eventType === 'message-start' && payload?.role !== 'user') {
-      nextUpdates.status = 'streaming'
-    }
-
-    turns[turnIndex] = {
+    entries[entryIndex] = {
       ...turn,
-      ...nextUpdates
+      ...buildTurnEventUpdates(turn, event)
     }
-    saveTurnIndex(projectId, sessionId, turns)
-
+    saveIndexEntries(projectId, sessionId, entries)
     return true
   } catch (error) {
     logger.error('[HistoryManager] Failed to append turn event', {
@@ -617,10 +637,38 @@ function appendTurnEvent(projectId, sessionId, turnId, event) {
   }
 }
 
+function buildTurnEventUpdates(turn, event) {
+  const payload = event?.data || null
+  const nextUpdates = {
+    eventCount: Number(turn.eventCount || 0) + 1,
+    updatedAt: new Date().toISOString()
+  }
+  const registryPatch = normalizeSubagentRegistrySnapshot(payload?.ccgui?.registry, turn?.agentId)
+  if (registryPatch) {
+    nextUpdates.registry = mergeSubagentRegistrySnapshot(turn?.registry || null, registryPatch)
+  }
+
+  if ((event?.eventType === 'message-start' || event?.eventType === 'message') && payload?.role === 'assistant') {
+    nextUpdates.hasAssistantResponse = true
+    nextUpdates.status = payload?.isStreaming ? 'streaming' : 'completed'
+  } else if (event?.eventType === 'result') {
+    nextUpdates.status = 'completed'
+  } else if (
+    event?.eventType === 'abnormal-exit' ||
+    (event?.eventType === 'system-notification' && payload?.type === 'turn-error')
+  ) {
+    nextUpdates.status = 'error'
+  } else if (event?.eventType === 'message-start' && payload?.role !== 'user') {
+    nextUpdates.status = 'streaming'
+  }
+
+  return nextUpdates
+}
+
 function loadTurnEvents(projectId, sessionId, turnId) {
   try {
-    const turns = loadTurnIndex(projectId, sessionId)
-    const turn = turns.find(item => item.turnId === turnId)
+    const entries = loadIndexEntries(projectId, sessionId)
+    const turn = entries.find(item => item.turnId === turnId)
     if (!turn?.streamFile) {
       return []
     }
@@ -637,152 +685,141 @@ function loadTurnEvents(projectId, sessionId, turnId) {
   }
 }
 
-/**
- * 更新指定消息（通过消息ID）
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- * @param {string} messageId - 消息ID
- * @param {object} updates - 更新内容
- */
 function updateMessage(projectId, sessionId, messageId, updates) {
+  return updateIndexMessage(projectId, sessionId, messageId, updates)
+}
+
+function loadSubagentIndexEntries(projectId, sessionId, agentId) {
   try {
-    const messages = loadHistory(projectId, sessionId)
-    let found = false
-
-    for (let i = 0; i < messages.length; i++) {
-      if (messages[i].id === messageId) {
-        messages[i] = { ...messages[i], ...updates }
-        found = true
-        break
-      }
-    }
-
-    if (found) {
-      // 重写整个文件
-      saveAllMessages(projectId, sessionId, messages)
-      logger.debug('[HistoryManager] Updated message', { projectId, sessionId, messageId })
-    }
-
-    return found
+    const indexPath = getSubagentIndexFilePath(projectId, sessionId, agentId)
+    return fs.existsSync(indexPath) ? loadJsonLines(indexPath) : []
   } catch (error) {
-    logger.error('[HistoryManager] Failed to update message', {
+    logger.error('[HistoryManager] Failed to load subagent index entries', {
       projectId,
       sessionId,
-      messageId,
+      agentId,
+      error: error.message
+    })
+    return []
+  }
+}
+
+function saveSubagentIndexEntries(projectId, sessionId, agentId, entries = []) {
+  try {
+    ensureSubagentHistoryDir(projectId, sessionId, agentId)
+    ensureSubagentTurnsDir(projectId, sessionId, agentId)
+    writeJsonLines(getSubagentIndexFilePath(projectId, sessionId, agentId), entries)
+    return true
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to save subagent index entries', {
+      projectId,
+      sessionId,
+      agentId,
       error: error.message
     })
     return false
   }
 }
 
-/**
- * 加载会话历史记录
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- * @returns {Array} 消息数组
- */
-function loadHistory(projectId, sessionId) {
-  try {
-    const messagesPath = getMessagesFilePath(projectId, sessionId)
+function ensureSubagentTurn(projectId, sessionId, agentId, turnId, event = null) {
+  if (!agentId || !turnId) {
+    return null
+  }
 
-    if (!fs.existsSync(messagesPath)) {
-      logger.debug('[HistoryManager] History file not found', { projectId, sessionId })
+  const entries = loadSubagentIndexEntries(projectId, sessionId, agentId)
+  const existingEntryIndex = entries.findIndex(entry => entry?.turnId === turnId)
+  if (existingEntryIndex >= 0) {
+    return entries[existingEntryIndex]
+  }
+
+  const nextEntry = createSubagentTurnEntry(projectId, sessionId, agentId, turnId, event || {})
+  entries.push(nextEntry)
+  saveSubagentIndexEntries(projectId, sessionId, agentId, entries)
+  return nextEntry
+}
+
+function appendSubagentTurnEvent(projectId, sessionId, agentId, turnId, event) {
+  try {
+    if (!agentId || !turnId) {
+      return false
+    }
+
+    const entries = loadSubagentIndexEntries(projectId, sessionId, agentId)
+    let entryIndex = entries.findIndex(entry => entry?.turnId === turnId)
+    if (entryIndex === -1) {
+      const nextEntry = createSubagentTurnEntry(projectId, sessionId, agentId, turnId, event)
+      entries.push(nextEntry)
+      entryIndex = entries.length - 1
+    }
+
+    ensureSubagentHistoryDir(projectId, sessionId, agentId)
+    ensureSubagentTurnsDir(projectId, sessionId, agentId)
+
+    const turn = entries[entryIndex]
+    const streamPath = getSubagentTurnStreamFilePath(projectId, sessionId, agentId, turn.streamFile)
+    fs.appendFileSync(streamPath, `${serializeMessage(event)}\n`, 'utf-8')
+
+    entries[entryIndex] = {
+      ...turn,
+      ...buildTurnEventUpdates(turn, event)
+    }
+    saveSubagentIndexEntries(projectId, sessionId, agentId, entries)
+    return true
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to append subagent turn event', {
+      projectId,
+      sessionId,
+      agentId,
+      turnId,
+      error: error.message
+    })
+    return false
+  }
+}
+
+function loadSubagentTurnEvents(projectId, sessionId, agentId, turnId) {
+  try {
+    const entries = loadSubagentIndexEntries(projectId, sessionId, agentId)
+    const turn = entries.find(item => item.turnId === turnId)
+    if (!turn?.streamFile) {
       return []
     }
-    const messages = loadJsonLines(messagesPath)
 
-    logger.info('[HistoryManager] Loaded history', {
-      projectId,
-      sessionId,
-      messageCount: messages.length
-    })
-
-    return messages
+    return loadJsonLines(getSubagentTurnStreamFilePath(projectId, sessionId, agentId, turn.streamFile))
   } catch (error) {
-    logger.error('[HistoryManager] Failed to load history', {
+    logger.error('[HistoryManager] Failed to load subagent turn events', {
       projectId,
       sessionId,
+      agentId,
+      turnId,
       error: error.message
     })
     return []
   }
 }
 
-/**
- * 加载语义事件历史
- * @param {string} projectId
- * @param {string} sessionId
- * @returns {Array}
- */
-function loadSemanticEvents(projectId, sessionId) {
-  try {
-    const eventsPath = getSemanticEventsFilePath(projectId, sessionId)
+function loadAllSubagentHistories(projectId, sessionId) {
+  return resolveStoredSubagentPathNames(projectId, sessionId).map(pathName => {
+    const entries = loadJsonLines(path.join(getSubagentsDirPath(projectId, sessionId), pathName, 'index.jsonl'))
+    const agentId = entries[0]?.agentId || entries[0]?.registry?.agentId || pathName
 
-    if (!fs.existsSync(eventsPath)) {
-      logger.debug('[HistoryManager] Semantic history file not found', { projectId, sessionId })
-      return []
+    return {
+      agentId,
+      entries,
+      registry: entries
+      .map(entry => entry?.registry || null)
+      .reduce((acc, registry) => mergeSubagentRegistrySnapshot(acc, registry), { agentId })
     }
-    const events = loadJsonLines(eventsPath)
-
-    logger.info('[HistoryManager] Loaded semantic history', {
-      projectId,
-      sessionId,
-      eventCount: events.length
-    })
-
-    return events
-  } catch (error) {
-    logger.error('[HistoryManager] Failed to load semantic history', {
-      projectId,
-      sessionId,
-      error: error.message
-    })
-    return []
-  }
+  })
 }
 
-function loadSessionEvents(projectId, sessionId) {
-  try {
-    const eventsPath = getSessionEventsFilePath(projectId, sessionId)
-
-    if (!fs.existsSync(eventsPath)) {
-      logger.debug('[HistoryManager] Session event log not found', { projectId, sessionId })
-      return []
-    }
-    const events = loadJsonLines(eventsPath)
-
-    logger.info('[HistoryManager] Loaded session event log', {
-      projectId,
-      sessionId,
-      eventCount: events.length
-    })
-
-    return events
-  } catch (error) {
-    logger.error('[HistoryManager] Failed to load session event log', {
-      projectId,
-      sessionId,
-      error: error.message
-    })
-    return []
-  }
-}
-
-/**
- * 删除会话历史
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- */
 function deleteHistory(projectId, sessionId) {
   try {
     const historyDir = getSessionHistoryDir(projectId, sessionId)
-
     if (fs.existsSync(historyDir)) {
       fs.rmSync(historyDir, { recursive: true })
-      logger.info('[HistoryManager] Deleted history', { projectId, sessionId })
       return true
     }
-
     return false
   } catch (error) {
     logger.error('[HistoryManager] Failed to delete history', {
@@ -794,93 +831,41 @@ function deleteHistory(projectId, sessionId) {
   }
 }
 
-/**
- * 批量保存消息 (用于初始化或迁移)
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- * @param {Array} messages - 消息数组
- */
-function saveAllMessages(projectId, sessionId, messages) {
-  try {
-    ensureHistoryDir(projectId, sessionId)
-
-    const messagesPath = getMessagesFilePath(projectId, sessionId)
-    const content = messages.map(msg => serializeMessage(msg)).join('\n') + '\n'
-
-    fs.writeFileSync(messagesPath, content, 'utf-8')
-
-    // 更新元数据
-    const metadata = createDefaultMetadata()
-    metadata.messageCount = messages.length
-
-    if (messages.length > 0) {
-      metadata.lastMessageAt = messages[messages.length - 1].timestamp || new Date().toISOString()
-
-      // 累加所有 token
-      for (const msg of messages) {
-        if (msg.usage) {
-          metadata.totalTokens.input += msg.usage.input_tokens || 0
-          metadata.totalTokens.output += msg.usage.output_tokens || 0
-        }
-      }
-    }
-
-    saveMetadata(projectId, sessionId, metadata)
-
-    logger.info('[HistoryManager] Saved all messages', {
-      projectId,
-      sessionId,
-      messageCount: messages.length
-    })
-
-    return true
-  } catch (error) {
-    logger.error('[HistoryManager] Failed to save all messages', {
-      projectId,
-      sessionId,
-      error: error.message
-    })
-    return false
-  }
-}
-
-/**
- * 检查历史记录是否存在
- * @param {string} projectId - 项目ID
- * @param {string} sessionId - 会话ID
- */
-function historyExists(projectId, sessionId) {
-  const messagesPath = getMessagesFilePath(projectId, sessionId)
-  const turnIndexPath = getTurnIndexFilePath(projectId, sessionId)
-  return fs.existsSync(messagesPath) || fs.existsSync(turnIndexPath)
+function hasHistoryIndex(projectId, sessionId) {
+  return fs.existsSync(getIndexFilePath(projectId, sessionId))
 }
 
 module.exports = {
   getSessionHistoryDir,
-  getMessagesFilePath,
+  getIndexFilePath,
   getMetadataFilePath,
-  getSemanticEventsFilePath,
-  getSessionEventsFilePath,
-  getTurnIndexFilePath,
   getTurnsDirPath,
+  getTurnStreamFilePath,
+  getSubagentsDirPath,
+  getSubagentHistoryDir,
+  getSubagentIndexFilePath,
+  getSubagentTurnsDirPath,
+  getSubagentTurnStreamFilePath,
   loadMetadata,
   saveMetadata,
   updateSessionEnvInfo,
   appendMessage,
-  appendSemanticEvent,
-  appendSessionEvent,
   appendTurn,
   appendIndexMessage,
   updateTurn,
   updateIndexMessage,
   appendTurnEvent,
+  ensureSubagentTurn,
+  appendSubagentTurnEvent,
   updateMessage,
-  loadHistory,
-  loadSemanticEvents,
-  loadSessionEvents,
-  loadTurnIndex,
+  loadIndexEntries,
   loadTurnEvents,
+  loadSubagentIndexEntries,
+  loadSubagentTurnEvents,
+  loadAllSubagentHistories,
   deleteHistory,
-  saveAllMessages,
-  historyExists
+  saveIndexEntries,
+  saveSubagentIndexEntries,
+  listSubagentIds,
+  hasHistoryIndex
 }

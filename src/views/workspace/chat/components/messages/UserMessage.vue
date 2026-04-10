@@ -134,7 +134,7 @@ function closeImagePreview() {
 }
 
 .message-content.user-content {
-  width: var(--ccgui-message-fill-width, fit-content);
+  width: fit-content;
   max-width: var(--ccgui-message-fill-width, calc(100% - 100px));
 }
 

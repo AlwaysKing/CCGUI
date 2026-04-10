@@ -6,6 +6,8 @@
 import { ref, computed } from 'vue'
 import { useMessage } from '../../composables/useMessage'
 import CopyButton from '../ui/CopyButton.vue'
+import BaseDialog from '@/components/base/BaseDialog.vue'
+import ContextUsageDetail from './ContextUsageDetail.vue'
 
 const props = defineProps({
   envInfo: {
@@ -62,6 +64,7 @@ const { formatMcpServers, formatSkills, copiedMessageIndex, copyToClipboard } = 
 // 是否显示详情
 const showEnvDetail = ref(false)
 const showSilentPanel = ref(false)
+const showContextDetailDialog = ref(false)
 const activeUsageTooltip = ref('')
 
 // 检查工作目录是否与项目路径一致
@@ -530,7 +533,8 @@ async function copySilentMessage(message, reverseIndex) {
         <div class="env-right">
           <span
             v-if="sessionUsageSummary"
-            class="env-item env-item-usage"
+            class="env-item env-item-usage env-item-usage-clickable"
+            @click="showContextDetailDialog = true"
             @mouseenter="showUsageTooltip('session')"
             @mouseleave="hideUsageTooltip('session')"
           >
@@ -748,6 +752,14 @@ async function copySilentMessage(message, reverseIndex) {
         </div>
       </div>
     </div>
+
+    <BaseDialog
+      v-model="showContextDetailDialog"
+      title="上下文用量"
+      width="640px"
+    >
+      <ContextUsageDetail :usage="envInfo?.session_usage" />
+    </BaseDialog>
   </div>
 </template>
 
@@ -876,6 +888,15 @@ async function copySilentMessage(message, reverseIndex) {
   background: transparent;
   -webkit-app-region: no-drag;
   cursor: default;
+}
+
+.env-item-usage-clickable {
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.env-item-usage-clickable:hover {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .env-item-codex-usage {

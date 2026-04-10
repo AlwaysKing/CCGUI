@@ -7,7 +7,7 @@ export const SHORTCUT_ACTIONS = [
     label: '切换侧边栏',
     description: '显示或隐藏左侧会话/文件侧边栏',
     defaultCombo: 'Mod+B',
-    allowInEditable: false
+    allowInEditable: true
   },
   {
     id: 'toggle-project-board',
@@ -15,7 +15,7 @@ export const SHORTCUT_ACTIONS = [
     label: '切换项目看板',
     description: '显示或隐藏侧边栏中的项目看板',
     defaultCombo: 'Mod+Shift+E',
-    allowInEditable: false
+    allowInEditable: true
   },
   {
     id: 'toggle-preview',
@@ -23,7 +23,7 @@ export const SHORTCUT_ACTIONS = [
     label: '切换文件预览区',
     description: '显示或隐藏右侧文件预览面板',
     defaultCombo: 'Mod+\\',
-    allowInEditable: false
+    allowInEditable: true
   },
   {
     id: 'toggle-file-panel',
@@ -31,7 +31,7 @@ export const SHORTCUT_ACTIONS = [
     label: '切换文件列表',
     description: '显示或隐藏文件列表区域',
     defaultCombo: 'Mod+Shift+F',
-    allowInEditable: false
+    allowInEditable: true
   },
   {
     id: 'toggle-terminal',
@@ -39,7 +39,7 @@ export const SHORTCUT_ACTIONS = [
     label: '切换终端',
     description: '显示或隐藏底部终端面板',
     defaultCombo: 'Ctrl+`',
-    allowInEditable: false
+    allowInEditable: true
   },
   {
     id: 'toggle-chat-panel',
@@ -47,7 +47,7 @@ export const SHORTCUT_ACTIONS = [
     label: '切换消息区',
     description: '在分栏模式下折叠或展开消息区域',
     defaultCombo: 'Mod+Alt+M',
-    allowInEditable: false
+    allowInEditable: true
   },
   {
     id: 'toggle-all-message-collapse',
@@ -55,7 +55,7 @@ export const SHORTCUT_ACTIONS = [
     label: '折叠或展开全部问答',
     description: '切换当前会话中所有可折叠问答的展开状态',
     defaultCombo: 'Mod+Alt+[',
-    allowInEditable: false
+    allowInEditable: true
   },
   {
     id: 'open-settings',

@@ -1028,6 +1028,13 @@ class ClaudeAdapter extends ClaudeClient {
         }
       }
 
+      // 上下文用量查询响应：拦截 get_context_usage 响应，映射到统一 session_usage
+      if (requestContext?.kind === 'context-usage') {
+        this.pendingDryRunRequests.delete(requestId)
+        this.handleContextUsageResponse(payload)
+        return
+      }
+
       this.emit('control-response', message)
       return
     }
@@ -1090,6 +1097,8 @@ class ClaudeAdapter extends ClaudeClient {
           user_message_id: completedUserMessageId
         })
       }
+      // turn 完成后请求上下文用量
+      this.requestContextUsage()
       this.currentTurnUserMessageId = null
       this.emit('result', message)
       return
@@ -1211,6 +1220,61 @@ class ClaudeAdapter extends ClaudeClient {
     }
   }
 
+  // ─── 上下文用量查询 ──────────────────────────────────────
+
+  /**
+   * 主动请求 Claude 的上下文用量信息
+   * 在 session init 后和每次 turn 完成后调用
+   */
+  requestContextUsage() {
+    const requestId = `ctx_usage_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+    this.pendingDryRunRequests.set(requestId, { kind: 'context-usage' })
+    super.sendControlRequest({
+      subtype: 'get_context_usage',
+      __ccguiRequestId: requestId
+    })
+  }
+
+  /**
+   * 将 get_context_usage 响应映射到统一的 session_usage 结构
+   */
+  handleContextUsageResponse(payload) {
+    if (!payload || typeof payload !== 'object') return
+
+    const categories = Array.isArray(payload.categories) ? payload.categories : []
+    const inputTokens = categories.reduce((sum, c) => sum + (c.tokens || 0), 0)
+
+    const detail = {
+      model: payload.model || null,
+      percentage: payload.percentage || 0,
+      categories,
+      memoryFiles: Array.isArray(payload.memoryFiles) ? payload.memoryFiles : [],
+      mcpTools: Array.isArray(payload.mcpTools) ? payload.mcpTools : [],
+      deferredBuiltinTools: Array.isArray(payload.deferredBuiltinTools) ? payload.deferredBuiltinTools : [],
+      systemTools: Array.isArray(payload.systemTools) ? payload.systemTools : [],
+      systemPromptSections: Array.isArray(payload.systemPromptSections) ? payload.systemPromptSections : [],
+      agents: Array.isArray(payload.agents) ? payload.agents : [],
+      slashCommands: payload.slashCommands || { totalCommands: 0, includedCommands: 0, tokens: 0 },
+      skills: payload.skills || { totalSkills: 0, includedSkills: 0, tokens: 0 }
+    }
+
+    this.envInfo = {
+      ...this.envInfo,
+      session_usage: {
+        ...(this.envInfo.session_usage || {}),
+        total_tokens: payload.totalTokens || 0,
+        input_tokens: inputTokens,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        reasoning_output_tokens: 0,
+        model_context_window: payload.maxTokens || payload.rawMaxTokens || 0,
+        raw: payload,
+        provider_detail: detail
+      }
+    }
+    this.emit('env-info', this.envInfo)
+  }
+
   getSessionIdentifier() {
     return this.sessionId || null
   }
@@ -1257,6 +1321,8 @@ class ClaudeAdapter extends ClaudeClient {
       if (message.fast_mode_state) {
         this.emit('fast-mode-change', message.fast_mode_state)
       }
+      // session 初始化后请求上下文用量
+      this.requestContextUsage()
       return
     }
 
@@ -1292,6 +1358,16 @@ class ClaudeAdapter extends ClaudeClient {
     }
 
     if (message.subtype === 'compact_boundary') {
+      this.envInfo = {
+        ...this.envInfo,
+        session_usage: {
+          ...(this.envInfo.session_usage || {}),
+          compacted: true,
+          compacted_at: new Date().toISOString(),
+          compact_summary: message.compactSummary || message.compact_summary || ''
+        }
+      }
+      this.emit('env-info', this.envInfo)
       this.emit('system-notification', {
         type: 'compact-boundary',
         compactMetadata: message.compact_metadata || message.compactMetadata,

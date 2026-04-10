@@ -61,7 +61,7 @@ function encodeProjectPath(projectPath) {
  * 将目录名中的非 ASCII 字符替换为 -（模拟 Claude 的 sanitization）
  */
 function sanitizeDirName(name) {
-  return String(name || '').replace(/[^A-Za-z0-9._-]/g, '-')
+  return String(name || '').replace(/[^A-Za-z0-9]/g, '-')
 }
 
 /**

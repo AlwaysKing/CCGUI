@@ -50,7 +50,7 @@ function resolveSessionFilePath(projectId, sessionId) {
 }
 
 function sanitizeDirName(name) {
-  return String(name || '').replace(/[^A-Za-z0-9._-]/g, '-')
+  return String(name || '').replace(/[^A-Za-z0-9]/g, '-')
 }
 
 function scanClaudeProjects() {
@@ -72,13 +72,32 @@ function scanClaudeProjects() {
     }
   }
 
+  // 从 CCGUI 项目配置中获取 id → path 映射，不使用 decodeProjectPath
+  const ccguiPathMap = new Map()
+  try {
+    const ccguiProjectsDir = path.join(os.homedir(), '.ccgui', 'projects')
+    if (fs.existsSync(ccguiProjectsDir)) {
+      for (const dir of fs.readdirSync(ccguiProjectsDir, { withFileTypes: true })) {
+        if (!dir.isDirectory()) continue
+        const configPath = path.join(ccguiProjectsDir, dir.name, 'project.json')
+        try {
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+          if (config.path) {
+            ccguiPathMap.set(dir.name, config.path)
+          }
+        } catch { /* ignore broken config */ }
+      }
+    }
+  } catch { /* ignore */ }
+
   const projects = []
   const seenPaths = new Set()
 
   for (const entry of dirEntries) {
     if (sanitizedAliases.has(entry.name)) continue
 
-    const projectPath = decodeProjectPath(entry.name)
+    const projectPath = ccguiPathMap.get(entry.name)
+    if (!projectPath) continue
     if (seenPaths.has(projectPath)) continue
     seenPaths.add(projectPath)
 

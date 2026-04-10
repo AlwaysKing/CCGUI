@@ -186,6 +186,11 @@ function insertNodeAtSelection(node) {
 
 function insertTextAtCursor(text) {
   editorRef.value?.focus()
+  // execCommand 会将操作记录到浏览器原生撤销栈，粘贴/撤销行为正常
+  if (document.execCommand('insertText', false, text)) {
+    return
+  }
+  // fallback: 手动 DOM 操作（不进入撤销栈）
   const selection = window.getSelection()
   const range = selection?.rangeCount ? selection.getRangeAt(0) : null
   if (!range || !editorRef.value?.contains(range.startContainer)) {

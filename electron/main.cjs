@@ -1746,6 +1746,7 @@ ipcMain.handle('focus-project-window', async (event, { projectId }) => {
 ipcMain.handle('check-project-exists', async (event, { projectPath }) => {
   try {
     const exists = fs.existsSync(projectPath)
+    logger.info('[Project] check-project-exists', { projectPath, exists })
     return { exists }
   } catch (error) {
     logger.error('[Project] Failed to check if project exists', { error: error.message, projectPath })

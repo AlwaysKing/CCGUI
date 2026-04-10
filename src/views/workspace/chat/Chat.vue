@@ -913,8 +913,8 @@ watch(() => {
   if (!messages.value) return null
   const streamingMsg = messages.value.find(m => m.isStreaming || m.isExecuting)
   if (!streamingMsg) return null
-  // 返回消息 ID + 内容长度，确保内容变化时能触发 watch
-  return `${streamingMsg.id}:${streamingMsg.content?.length || 0}`
+  // 返回消息 ID + 内容长度 + thinking长度，确保 thinking 和 content 变化时都能触发
+  return `${streamingMsg.id}:${streamingMsg.content?.length || 0}:${streamingMsg.thinking?.length || 0}`
 }, () => {
   const container = getScrollContainer()
   if (container) {

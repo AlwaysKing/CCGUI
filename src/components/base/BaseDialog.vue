@@ -121,8 +121,11 @@ useDialogStack(computed(() => props.modelValue), close, {
   justify-content: center;
   width: 32px;
   height: 32px;
+  border: none;
   border-radius: var(--radius-md);
+  background: transparent;
   color: var(--text-secondary);
+  cursor: pointer;
   transition: all var(--transition-fast);
 }
 

@@ -211,10 +211,8 @@ const responsiveMessageWidthStyle = computed(() => {
   if (paneWidth > 300 && paneWidth < 400) {
     const ratio = 1 - 0.3 * ((paneWidth - 300) / 100)
     targetWidth = paneWidth * ratio
-  } else if (paneWidth >= 400 && paneWidth <= 1077) {
+  } else if (paneWidth >= 400) {
     targetWidth = paneWidth * 0.7
-  } else if (paneWidth > 1077) {
-    targetWidth = 720
   }
 
   const safeTargetWidth = Math.max(0, Math.min(targetWidth, paneWidth))
@@ -638,6 +636,7 @@ watch(() => props.message, () => {
         'new-turn': isNewTurn,
         'denied': isPermissionDenied,
         'no-avatar': !showAvatar,
+        'with-response-toolbar': showResponseToolbar,
         'thinking-first': message.role === 'assistant' && showThinking,
         'tool-text-first': (message.role === 'tool_use' || message.role === 'diff') && (chatTheme.messageSurface || 'bubble') === 'ghost',
         'tool-avatar-icon': usesToolAvatarIcon,
@@ -1049,8 +1048,16 @@ watch(() => props.message, () => {
   overflow: visible;
 }
 
+.message.user.with-response-toolbar .message-body {
+  max-width: calc(100% - 48px);
+}
+
 .message.user.no-avatar .message-body {
   max-width: var(--ccgui-message-fill-width, calc(100% - 28px));
+}
+
+.message.user.with-response-toolbar.no-avatar .message-body {
+  max-width: calc(100% - 28px);
 }
 
 /* 用户消息右侧列：头像 + 操作按钮 */

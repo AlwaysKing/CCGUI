@@ -1,7 +1,7 @@
 # Claude Code 通信协议完整文档
 
-**文档版本**: 2.1
-**最后更新**: 2026-03-22
+**文档版本**: 2.3
+**最后更新**: 2026-04-09
 **适用版本**: Claude Code 2.1.81+
 
 ---
@@ -56,7 +56,11 @@ claude -p "your prompt" --output-format stream-json --verbose --print
 const claude = spawn('claude', [
   '--output-format', 'stream-json',
   '--input-format', 'stream-json',
-  '--verbose'
+  '--verbose',
+  '--print',
+  '--permission-prompt-tool', 'stdio',
+  '--replay-user-messages',
+  '--include-partial-messages'
 ], {
   stdio: ['pipe', 'pipe', 'inherit']
 });
@@ -72,11 +76,14 @@ const claude = spawn('claude', [
 
 | 参数 | 类型 | 描述 |
 |------|------|------|
-| `-p` | string | 输入提示词 |
-| `--output-format` | text/json/stream-json | 输出格式 |
-| `--print` | flag | 启用打印模式（stream-json 必需） |
-| `--verbose` | flag | 详细输出（stream-json 必需） |
-| `--model` | string | 模型名称或别名 (sonnet/opus/haiku) |
+| `-p` | string | 输入提示词（非交互模式） |
+| `--output-format` | text/json/stream-json | 输出格式（需配合 `--print`） |
+| `--print` | flag | 启用非交互/打印模式 |
+| `--verbose` | flag | 详细输出（`--print` + `stream-json` 时必需） |
+| `--model` | string | 模型名称或别名（如 sonnet/opus/haiku，或完整名如 claude-sonnet-4-6） |
+| `--input-format` | stream-json | 输入格式（双向通信模式必需） |
+| `--permission-prompt-tool` | string | MCP 工具名，用于权限提示（隐藏参数，仅 `--print` 模式可用） |
+| `--replay-user-messages` | flag | 将 stdin 收到的用户消息重发到 stdout（需 `--input-format` + `--output-format` 均为 stream-json） |
 
 #### 会话相关参数
 
@@ -103,6 +110,40 @@ const claude = spawn('claude', [
 | `--permission-mode` | string | 权限模式 |
 | `--allowedTools` | string | 允许的工具列表（逗号分隔） |
 | `--disallowedTools` | string | 禁用的工具列表（逗号分隔） |
+| `--dangerously-skip-permissions` | flag | 跳过所有权限检查（仅限沙箱环境） |
+
+#### 预算与限制参数
+
+| 参数 | 类型 | 描述 |
+|------|------|------|
+| `--max-turns` | number | 最大 agentic 轮次（仅 `--print` 模式） |
+| `--max-budget-usd` | number | 最大 API 花费上限（仅 `--print` 模式） |
+| `--task-budget` | string | API 侧 token 预算（隐藏参数） |
+
+#### 高级参数
+
+| 参数 | 类型 | 描述 |
+|------|------|------|
+| `--agent` | string | 指定 agent 类型（覆盖 'agent' 设置） |
+| `--agents` | string | JSON 对象定义自定义 agent（如 `'{"reviewer": {"description": "...", "prompt": "..."}}'`） |
+| `--fallback-model` | string | 模型不可用时的回退模型（仅 `--print` 模式） |
+| `--settings` | string | 额外设置文件路径或 JSON 字符串 |
+| `--plugin-dir` | string[] | 插件目录（可重复） |
+| `--debug` | string? | 调试模式（可选类别过滤，如 `"api,hooks"` 或 `"!1p,!file"`） |
+| `--bare` | flag | 最小模式：跳过 hooks、LSP、插件同步、auto-memory 等 |
+| `--include-hook-events` | flag | 流式输出包含 hook 事件 |
+| `--include-partial-messages` | flag | 流式输出包含部分消息块 |
+| `--chrome` / `--no-chrome` | flag | 启用/禁用 Chrome 集成 |
+| `--system-prompt` | string | 替换默认系统提示词 |
+| `--append-system-prompt` | string | 在默认系统提示词后追加内容 |
+| `--effort` | string | 推理力度级别：low / medium / high / max |
+| `--setting-sources` | string | 逗号分隔的设置源列表（user,project,local） |
+| `--thinking` | string | 思考模式：`enabled` / `adaptive` / `disabled`（其中 `enabled` 等效于 `adaptive`） |
+| `--max-thinking-tokens` | number | 最大思考 token 数（已废弃，建议用 `--thinking`；隐藏参数） |
+| `--tools` | string | 指定可用工具列表（"" 禁用所有，"default" 使用所有） |
+| `--name` | string | 设置会话显示名（显示在 /resume 和终端标题中） |
+| `--ide` | flag | 启动时自动连接 IDE |
+| `--disable-slash-commands` | flag | 禁用所有 skill |
 
 ### 消息流格式
 
@@ -175,7 +216,42 @@ interface Message {
     "systemPrompt": null,
     "appendSystemPrompt": null,
     "agents": {},
-    "promptSuggestions": {}
+    "promptSuggestions": true,
+    "agentProgressSummaries": true
+  }
+}
+```
+
+**请求字段说明**:
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `hooks` | object | Hook 配置（事件名 → 回调匹配器数组） |
+| `sdkMcpServers` | string[] | SDK 管理的 MCP 服务器名称列表 |
+| `jsonSchema` | object? | JSON Schema 定义 |
+| `systemPrompt` | string? | 自定义系统提示词（替换默认） |
+| `appendSystemPrompt` | string? | 追加系统提示词（在默认之后） |
+| `agents` | object? | 自定义 agent 定义（名称 → 定义） |
+| `promptSuggestions` | boolean? | 是否启用提示建议 |
+| `agentProgressSummaries` | boolean? | 是否启用 agent 进度摘要 |
+
+**响应**:
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "abc123",
+    "response": {
+      "commands": [],
+      "agents": [],
+      "output_style": "default",
+      "available_output_styles": ["default", "streamlined"],
+      "models": [],
+      "account": {},
+      "pid": 12345,
+      "fast_mode_state": "off"
+    }
   }
 }
 ```
@@ -201,7 +277,8 @@ interface Message {
   "request_id": "perm123",
   "request": {
     "subtype": "set_permission_mode",
-    "mode": "acceptEdits"
+    "mode": "acceptEdits",
+    "ultraplan": false
   }
 }
 ```
@@ -211,6 +288,9 @@ interface Message {
 - `"acceptEdits"`: 自动接受编辑操作
 - `"plan"`: 计划模式
 - `"bypassPermissions"`: 跳过所有权限检查
+- `"dontAsk"`: 不询问权限，未预批准则拒绝
+
+> `auto` 不是标准权限模式值，详见权限系统章节。
 
 ##### interrupt (中断)
 
@@ -246,51 +326,12 @@ interface Message {
     "subtype": "success",
     "request_id": "rewind123",
     "response": {
-      "restored_files": ["/path/to/file1.js", "/path/to/file2.ts"],
-      "dry_run": false
+      "canRewind": true,
+      "filesChanged": ["/path/to/file1.js", "/path/to/file2.ts"],
+      "insertions": 0,
+      "deletions": 42,
+      "error": null
     }
-  }
-}
-```
-
-##### fork_session (创建会话分支)
-
-```json
-{
-  "type": "control_request",
-  "request_id": "fork123",
-  "request": {
-    "subtype": "fork_session",
-    "message_id": "msg_123"
-  }
-}
-```
-
-**响应**:
-```json
-{
-  "type": "control_response",
-  "response": {
-    "subtype": "success",
-    "request_id": "fork123",
-    "response": {
-      "session_id": "new-session-uuid-456",
-      "message": "会话分支创建成功"
-    }
-  }
-}
-```
-
-##### rewind_and_fork (回滚并创建分支)
-
-```json
-{
-  "type": "control_request",
-  "request_id": "rewindfork123",
-  "request": {
-    "subtype": "rewind_and_fork",
-    "user_message_id": "msg_123",
-    "dry_run": false
   }
 }
 ```
@@ -343,7 +384,10 @@ Claude 进程向父进程发送的请求，用于权限处理和回调。
     "agent_id": "agent_456",
     "permission_suggestions": ["suggestion1"],
     "blocked_path": "/path/to/blocked",
-    "decision_reason": "reason"
+    "decision_reason": "reason",
+    "title": "Execute command",
+    "display_name": "Bash",
+    "description": "Run a shell command"
   }
 }
 ```
@@ -422,7 +466,7 @@ Claude 进程向父进程发送的请求，用于权限处理和回调。
     "subtype": "elicitation",
     "mcp_server_name": "server_name",
     "message": "消息内容",
-    "mode": "mode",
+    "mode": "form",
     "url": "https://example.com",
     "elicitation_id": "elic_123",
     "requested_schema": {}
@@ -438,11 +482,403 @@ Claude 进程向父进程发送的请求，用于权限处理和回调。
     "subtype": "success",
     "request_id": "elic123",
     "response": {
-      "action": "accept"
+      "action": "accept",
+      "content": {}
     }
   }
 }
 ```
+
+**action 可选值**: `"accept"` | `"decline"` | `"cancel"`
+
+**mode 可选值**: `"form"` | `"url"`（可选字段）
+
+##### set_max_thinking_tokens (设置思考 token 上限)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "think123",
+  "request": {
+    "subtype": "set_max_thinking_tokens",
+    "max_thinking_tokens": 10000
+  }
+}
+```
+
+**max_thinking_tokens**: 设置为 `null` 则清除限制。
+
+##### get_context_usage (查询上下文用量)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "ctx123",
+  "request": {
+    "subtype": "get_context_usage"
+  }
+}
+```
+
+**响应**:
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "ctx123",
+    "response": {
+      "totalTokens": 45230,
+      "maxTokens": 190000,
+      "rawMaxTokens": 200000,
+      "percentage": 23.8,
+      "model": "claude-sonnet-4-6",
+      "categories": [
+        { "name": "System Prompt", "tokens": 12000, "color": "#4A90D9" },
+        { "name": "Messages", "tokens": 25000, "color": "#7BC67E" },
+        { "name": "Tools", "tokens": 8230, "color": "#F5A623" }
+      ],
+      "gridRows": [],
+      "memoryFiles": [
+        { "path": "MEMORY.md", "type": "memory", "tokens": 450 }
+      ],
+      "mcpTools": [
+        { "name": "read_file", "serverName": "filesystem", "tokens": 320, "isLoaded": true }
+      ],
+      "deferredBuiltinTools": [
+        { "name": "NotebookEdit", "tokens": 800, "isLoaded": false }
+      ],
+      "systemTools": [
+        { "name": "TodoWrite", "tokens": 300 }
+      ],
+      "systemPromptSections": [
+        { "name": "system-reminder", "tokens": 500 }
+      ],
+      "agents": [
+        { "agentType": "Explore", "source": "builtin", "tokens": 1200 }
+      ],
+      "slashCommands": {
+        "totalCommands": 10,
+        "includedCommands": 8,
+        "tokens": 2000
+      },
+      "skills": {
+        "totalSkills": 5,
+        "includedSkills": 3,
+        "tokens": 1500,
+        "skillFrontmatter": [
+          { "name": "commit", "source": "local", "tokens": 300 }
+        ]
+      },
+      "autoCompactThreshold": 170000,
+      "isAutoCompactEnabled": true,
+      "messageBreakdown": {
+        "toolCallTokens": 8000,
+        "toolResultTokens": 12000,
+        "attachmentTokens": 0,
+        "assistantMessageTokens": 5000,
+        "userMessageTokens": 3000,
+        "toolCallsByType": [
+          { "name": "Read", "callTokens": 200, "resultTokens": 5000 }
+        ],
+        "attachmentsByType": []
+      },
+      "apiUsage": {
+        "input_tokens": 45230,
+        "output_tokens": 1200,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 15000
+      }
+    }
+  }
+}
+```
+
+##### mcp_status (查询 MCP 状态)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "mcpstatus123",
+  "request": {
+    "subtype": "mcp_status"
+  }
+}
+```
+
+**响应**:
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "mcpstatus123",
+    "response": {
+      "mcpServers": [
+        { "name": "filesystem", "status": "connected" }
+      ]
+    }
+  }
+}
+```
+
+##### mcp_set_servers (动态设置 MCP 服务器)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "mcpset123",
+  "request": {
+    "subtype": "mcp_set_servers",
+    "servers": {
+      "my-server": {
+        "command": "node",
+        "args": ["server.js"],
+        "type": "stdio",
+        "env": {}
+      }
+    }
+  }
+}
+```
+
+**响应**:
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "mcpset123",
+    "response": {
+      "added": ["my-server"],
+      "removed": [],
+      "errors": {}
+    }
+  }
+}
+```
+
+##### mcp_reconnect (重连 MCP 服务器)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "mcprecon123",
+  "request": {
+    "subtype": "mcp_reconnect",
+    "serverName": "filesystem"
+  }
+}
+```
+
+##### mcp_toggle (开关 MCP 服务器)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "mcptoggle123",
+  "request": {
+    "subtype": "mcp_toggle",
+    "serverName": "filesystem",
+    "enabled": false
+  }
+}
+```
+
+##### reload_plugins (重新加载插件)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "reload123",
+  "request": {
+    "subtype": "reload_plugins"
+  }
+}
+```
+
+**响应**:
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "reload123",
+    "response": {
+      "commands": [],
+      "agents": [],
+      "plugins": [
+        { "name": "my-plugin", "path": "/path/to/plugin", "source": "local" }
+      ],
+      "mcpServers": [],
+      "error_count": 0
+    }
+  }
+}
+```
+
+##### stop_task (停止任务)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "stoptask123",
+  "request": {
+    "subtype": "stop_task",
+    "task_id": "task_abc123"
+  }
+}
+```
+
+##### cancel_async_message (取消异步消息)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "cancel123",
+  "request": {
+    "subtype": "cancel_async_message",
+    "message_uuid": "msg-uuid-123"
+  }
+}
+```
+
+**响应**:
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "cancel123",
+    "response": {
+      "cancelled": true
+    }
+  }
+}
+```
+
+##### seed_read_state (种子读取状态)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "seed123",
+  "request": {
+    "subtype": "seed_read_state",
+    "path": "/path/to/file.ts",
+    "mtime": 1710000000
+  }
+}
+```
+
+用于在 Edit 校验时绕过 Read 检查（例如 compact 后 Read 被裁剪但客户端已观测过）。
+
+##### apply_flag_settings (应用标志设置)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "flags123",
+  "request": {
+    "subtype": "apply_flag_settings",
+    "settings": {
+      "verbose": true
+    }
+  }
+}
+```
+
+##### get_settings (获取设置)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "settings123",
+  "request": {
+    "subtype": "get_settings"
+  }
+}
+```
+
+**响应**:
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "settings123",
+    "response": {
+      "effective": { "verbose": true, "model": "claude-sonnet-4-6" },
+      "sources": [
+        { "source": "userSettings", "settings": {} },
+        { "source": "projectSettings", "settings": {} },
+        { "source": "localSettings", "settings": {} },
+        { "source": "flagSettings", "settings": {} },
+        { "source": "policySettings", "settings": {} }
+      ],
+      "applied": {
+        "model": "claude-sonnet-4-6",
+        "effort": "medium"
+      }
+    }
+  }
+}
+```
+
+### 取消控制请求 (control_cancel_request)
+
+取消一个当前正在等待响应的反向控制请求（如 can_use_tool）。
+
+```json
+{
+  "type": "control_cancel_request",
+  "request_id": "tool123"
+}
+```
+
+### 更新环境变量 (update_environment_variables)
+
+运行时更新 Claude 进程的环境变量。
+
+```json
+{
+  "type": "update_environment_variables",
+  "variables": {
+    "ANTHROPIC_BASE_URL": "https://new-endpoint.example.com"
+  }
+}
+```
+
+### 用户消息输入 (stdin)
+
+在双向通信模式下，用户提示通过 stdin 以 `type: "user"` 消息发送，**不是** control_request。
+
+```json
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": "帮我重构这个项目"
+  },
+  "uuid": "optional-msg-uuid",
+  "session_id": "optional-session-id",
+  "parent_tool_use_id": null,
+  "priority": "now"
+}
+```
+
+**字段说明**:
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| `type` | string | 固定为 `"user"` |
+| `message` | object | Anthropic API 格式的用户消息 |
+| `uuid` | string? | 消息唯一标识（用于 cancel_async_message） |
+| `session_id` | string? | 会话 ID |
+| `parent_tool_use_id` | string? | 父工具调用 ID（嵌套 agent 中使用） |
+| `priority` | string? | 消息优先级：`"now"` / `"next"` / `"later"` |
+| `isSynthetic` | boolean? | 是否为合成消息（非用户直接输入） |
+| `timestamp` | string? | ISO 格式时间戳 |
 
 ### 流式事件 (Stream Events)
 
@@ -617,23 +1053,20 @@ Claude 进程向父进程发送的请求，用于权限处理和回调。
 }
 ```
 
-#### summary (会话摘要)
+#### summary (回合摘要)
+
+实际上是 `type: "system"` 消息的一种 subtype：
 
 ```json
 {
-  "type": "summary",
-  "summary": "会话摘要内容"
+  "type": "system",
+  "subtype": "post_turn_summary",
+  "content": "回合摘要内容",
+  "session_id": "session-uuid"
 }
 ```
 
-#### custom-title (自定义标题)
-
-```json
-{
-  "type": "custom-title",
-  "title": "会话标题"
-}
-```
+> **注意**：不存在独立的 `type: "summary"` 消息类型。
 
 ---
 
@@ -660,6 +1093,11 @@ Claude 进程向父进程发送的请求，用于权限处理和回调。
   "slash_commands": ["debug", "simplify", "batch"],
   "agents": ["general-purpose", "Explore", "Plan"],
   "skills": ["debug", "simplify"],
+  "plugins": [
+    {"name": "my-plugin", "path": "/path/to/plugin", "source": "local"}
+  ],
+  "output_style": "default",
+  "betas": ["interleaved-thinking-2025-05-14"],
   "claude_code_version": "2.1.70",
   "fast_mode_state": "off"
 }
@@ -678,6 +1116,29 @@ Claude 进程向父进程发送的请求，用于权限处理和回调。
 | `slash_commands` | string[] | 可用斜杠命令 |
 | `agents` | string[] | 可用代理类型 |
 | `skills` | string[] | 可用技能 |
+| `plugins` | object[] | 已加载插件列表 |
+| `output_style` | string | 输出风格 |
+| `betas` | string[] | Beta 标志列表 |
+
+#### System 消息的其他 subtype
+
+| subtype | 描述 | 关键字段 |
+|---------|------|---------|
+| `api_retry` | API 重试通知 | `attempt`, `max_retries`, `retry_delay_ms` |
+| `status` | 状态变更 | `status`, `permissionMode?`, `fast_mode_state?` |
+| `compact_boundary` | 上下文压缩边界 | `compact_metadata.trigger` (manual/auto), `pre_tokens`, `post_tokens` |
+| `post_turn_summary` | 回合摘要（后台生成） | `content` |
+| `local_command_output` | 本地命令输出 | 输出内容 |
+| `hook_started` | Hook 开始执行 | Hook 元数据 |
+| `hook_progress` | Hook 执行进度 | 进度信息 |
+| `hook_response` | Hook 执行响应 | 响应内容 |
+| `files_persisted` | 文件持久化事件 | 文件列表 |
+| `task_notification` | 任务通知 | 通知内容 |
+| `task_started` | 任务开始 | 任务 ID |
+| `task_progress` | 任务进度 | 进度信息 |
+| `session_state_changed` | 会话状态变更 | 状态信息 |
+| `elicitation_complete` | Elicitation 完成 | 结果信息 |
+| `prompt_suggestion` | 提示建议 | 建议内容 |
 
 ### 2. Assistant 消息 (type: "assistant")
 
@@ -768,7 +1229,10 @@ Claude 的响应内容。
       "cacheReadInputTokens": 13696,
       "costUSD": 0.060107
     }
-  }
+  },
+  "permission_denials": [],
+  "structured_output": null,
+  "fast_mode_state": "off"
 }
 ```
 
@@ -783,7 +1247,15 @@ Claude 的响应内容。
   "duration_ms": 5000,
   "duration_api_ms": 4500,
   "is_error": true,
-  "num_turns": 10
+  "num_turns": 10,
+  "stop_reason": null,
+  "usage": {
+    "input_tokens": 10000,
+    "output_tokens": 500
+  },
+  "modelUsage": {},
+  "permission_denials": [],
+  "errors": ["Maximum turns exceeded"]
 }
 ```
 
@@ -794,6 +1266,8 @@ Claude 的响应内容。
 | `success` | 成功完成 |
 | `error_max_turns` | 超过最大轮次限制 |
 | `error_during_execution` | 执行期间发生错误 |
+| `error_max_budget_usd` | 超过 API 花费上限 |
+| `error_max_structured_output_retries` | 结构化输出重试次数超限 |
 
 ---
 
@@ -1000,9 +1474,11 @@ if (
 |------|------|
 | `default` | 标准权限检查 |
 | `acceptEdits` | 自动批准文件编辑操作 |
-| `bypassPermissions` | 跳过所有权限检查（谨慎使用） |
+| `bypassPermissions` | 跳过所有权限检查（需 `--allow-dangerously-skip-permissions` 或 `--dangerously-skip-permissions`） |
 | `plan` | 计划模式（只读，不修改） |
-| `dontAsk` | 不询问权限，自动进行 |
+| `dontAsk` | 不询问权限，未预批准则拒绝 |
+
+> **注意**：`auto` 模式不在标准 `PermissionModeSchema` 枚举中。它是 `[ANT-ONLY]` 的功能，通过 `--delegate-permissions` 或 `--dangerously-skip-permissions-with-classifiers`（均已废弃）触发，且需要 `TRANSCRIPT_CLASSIFIER` feature flag 启用。
 
 ### 权限行为
 
@@ -1226,10 +1702,12 @@ claude -p "List files" \
 
 ### 查询执行流程
 
+用户提示通过 stdin 以 `type: "user"` 消息发送，**不是** control_request。
+
 ```
 父进程                         Claude 进程
   |                               |
-  |--- control_request ---------->|  (query)
+  |--- user message ------------->|  (type: "user", message: {...})
   |                               |
   |<-- stream_event --------------|  (message_start)
   |<-- stream_event --------------|  (content_block_start)
@@ -1286,6 +1764,8 @@ export CLAUDE_CODE_DEBUG_LOGS_DIR=/path/to/logs
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.3 | 2026-04-09 | 对照 Claude Code 源码全面校验：修正 summary 为 system.post_turn_summary（非独立类型）；删除不存在的 custom-title 消息类型；修正 auto 不在标准权限枚举中；补充 error_max_budget_usd/error_max_structured_output_retries 两个 result subtype；补充 system 消息 15 个缺失 subtype；补充 CLI 参数（permission-prompt-tool、replay-user-messages、append-system-prompt、effort、setting-sources 等）；补充 can_use_tool 缺失字段（title/display_name/description）；补充 set_permission_mode 的 ultraplan 字段；修正 elicitation.mode 值为 form/url；补充 get_context_usage 响应缺失字段；补充 system init 缺失字段（plugins/output_style/betas） |
+| 2.2 | 2026-04-09 | 对照源码查漏补缺：修正 rewind_files 响应字段；修正流程图中 query 的发送方式；补充 12 个 control_request 子类型；补充 control_cancel_request、update_environment_variables、用户消息输入格式；补充 initialize 响应 schema；补充 CLI 参数（max-turns、max-budget-usd 等） |
 | 2.0 | 2026-03-13 | 合并 sdk.md 和 stream-api.md |
 | 1.0 | 2026-03-08 | 初始版本 |
 

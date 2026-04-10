@@ -150,9 +150,9 @@ const splitPaneElementToAgentId = new WeakMap()
 const splitPaneUserScrolledAway = ref({})
 const collapsedSplitPaneIds = ref({})
 const splitPaneWidths = ref({})
-const contentRef = ref(null)
+const contentElementRef = ref(null)
 const contentWidth = ref(0)
-const mainScrollRef = ref(null)
+const mainScrollElementRef = ref(null)
 const mainStageWidth = ref(0)
 const splitSideWidth = ref(360)
 const isDraggingSplitDivider = ref(false)
@@ -161,7 +161,7 @@ let splitDragStartX = 0
 let splitDragStartWidth = 360
 let paneResizeObserver = null
 const MIN_SPLIT_SIDE_WIDTH = 280
-const MIN_MAIN_STAGE_WIDTH = 320
+const MIN_MAIN_STAGE_WIDTH = 400
 const SPLIT_DIVIDER_WIDTH = 10
 
 function updateSplitPaneWidth(agentId, element) {
@@ -262,40 +262,6 @@ function setSplitPaneScrollRef(agentId, element) {
     unbindPaneWidth(agentId, previous)
   }
   splitPaneScrollRefs.delete(agentId)
-}
-
-function setMainScrollRef(element) {
-  const previous = mainScrollRef.value
-  if (previous && previous !== element) {
-    paneResizeObserver?.unobserve(previous)
-  }
-
-  if (element instanceof HTMLElement) {
-    mainScrollRef.value = element
-    updateMainStageWidth(element)
-    paneResizeObserver?.observe(element)
-    return
-  }
-
-  mainScrollRef.value = null
-  mainStageWidth.value = 0
-}
-
-function setContentRef(element) {
-  const previous = contentRef.value
-  if (previous && previous !== element) {
-    paneResizeObserver?.unobserve(previous)
-  }
-
-  if (element instanceof HTMLElement) {
-    contentRef.value = element
-    updateContentWidth(element)
-    paneResizeObserver?.observe(element)
-    return
-  }
-
-  contentRef.value = null
-  contentWidth.value = 0
 }
 
 function handleSplitPaneScroll(agentId, event) {
@@ -438,12 +404,12 @@ onMounted(() => {
         continue
       }
 
-      if (target === mainScrollRef.value) {
+      if (target === mainScrollElementRef.value) {
         updateMainStageWidth(target)
         continue
       }
 
-      if (target === contentRef.value) {
+      if (target === contentElementRef.value) {
         updateContentWidth(target)
         continue
       }
@@ -455,14 +421,14 @@ onMounted(() => {
     }
   })
 
-  if (mainScrollRef.value instanceof HTMLElement) {
-    updateMainStageWidth(mainScrollRef.value)
-    paneResizeObserver.observe(mainScrollRef.value)
+  if (mainScrollElementRef.value instanceof HTMLElement) {
+    updateMainStageWidth(mainScrollElementRef.value)
+    paneResizeObserver.observe(mainScrollElementRef.value)
   }
 
-  if (contentRef.value instanceof HTMLElement) {
-    updateContentWidth(contentRef.value)
-    paneResizeObserver.observe(contentRef.value)
+  if (contentElementRef.value instanceof HTMLElement) {
+    updateContentWidth(contentElementRef.value)
+    paneResizeObserver.observe(contentElementRef.value)
   }
 
   for (const [agentId, element] of splitPaneScrollRefs.entries()) {
@@ -873,7 +839,7 @@ const shouldShowRail = computed(() => {
     />
 
     <div
-      ref="setContentRef"
+      ref="contentElementRef"
       class="agent-workspace__content"
       :style="contentLayoutStyle"
     >
@@ -890,7 +856,7 @@ const shouldShowRail = computed(() => {
           @copy="forward('copySticky')"
           @scroll-to-user="forward('scrollToSticky')"
         />
-        <div ref="setMainScrollRef" class="agent-workspace__main-scroll" @scroll="handleContentScroll">
+        <div ref="mainScrollElementRef" class="agent-workspace__main-scroll" @scroll="handleContentScroll">
           <template v-if="splitMainSession?.isMain">
             <template v-for="renderBlock in renderableMainTimelineBlocks" :key="renderBlock.key">
               <template v-if="renderBlock.type === 'activity-group'">
@@ -1353,7 +1319,19 @@ const shouldShowRail = computed(() => {
   left: 50%;
   width: 1px;
   transform: translateX(-50%);
-  background: rgba(82, 82, 91, 0.42);
+  background: rgba(255, 255, 255, 0.05);
+  transition: width 0.15s ease, background-color 0.15s ease;
+}
+
+.agent-workspace__split-resizebar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+  background: transparent;
   transition: background-color 0.15s ease;
 }
 
@@ -1362,8 +1340,8 @@ const shouldShowRail = computed(() => {
   background: transparent;
 }
 
-.agent-workspace__split-resizebar:hover::before,
-.agent-workspace__split-resizebar.dragging::before {
+.agent-workspace__split-resizebar:hover::after,
+.agent-workspace__split-resizebar.dragging::after {
   background: #F97316;
 }
 

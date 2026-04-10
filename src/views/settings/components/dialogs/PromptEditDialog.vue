@@ -51,8 +51,19 @@ watch(() => props.prompt, (prompt) => {
   }
 }, { immediate: true })
 
+// 重置表单
+function resetForm() {
+  formData.value = {
+    name: '',
+    description: '',
+    content: '',
+    isBase: false
+  }
+}
+
 // 关闭对话框
 function handleClose() {
+  resetForm()
   emit('update:visible', false)
   emit('close')
 }

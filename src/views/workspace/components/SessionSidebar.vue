@@ -80,7 +80,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -92,6 +92,42 @@ const compactCountLabels = ref(new Set()) // Sessions with compact count labels
 const showSessionListMenu = ref(false)
 const sessionListMenuRef = ref(null)
 const sessionListDropdownRef = ref(null)
+
+const showConfigMenu = ref(false)
+const configMenuBtnRef = ref(null)
+const configMenuRef = ref(null)
+const configMenuDropdownStyle = ref({})
+
+function toggleConfigMenu() {
+  showConfigMenu.value = !showConfigMenu.value
+  if (showConfigMenu.value) {
+    updateConfigMenuPosition()
+  }
+}
+
+function closeConfigMenu() {
+  showConfigMenu.value = false
+}
+
+function updateConfigMenuPosition() {
+  nextTick(() => {
+    const btn = configMenuBtnRef.value
+    if (!btn) {
+      configMenuDropdownStyle.value = {}
+      return
+    }
+    const rect = btn.getBoundingClientRect()
+    const vw = window.innerWidth
+    const menuWidth = 180
+    configMenuDropdownStyle.value = {
+      position: 'fixed',
+      right: `${vw - rect.right}px`,
+      top: `${rect.bottom + 4}px`,
+      minWidth: `${menuWidth}px`,
+      zIndex: 1000
+    }
+  })
+}
 
 const contextMenuRef = ref(null)
 const contextMenu = ref({
@@ -183,6 +219,11 @@ function handleGlobalPointerDown(event) {
     if (sessionListDropdownRef.value?.contains(event.target)) return
     showSessionListMenu.value = false
   }
+  if (showConfigMenu.value) {
+    if (configMenuRef.value?.contains(event.target)) return
+    if (configMenuBtnRef.value?.contains(event.target)) return
+    closeConfigMenu()
+  }
 }
 
 function handleGlobalContextMenu(event) {
@@ -229,6 +270,10 @@ function updateSessionListDropdownPosition() {
 function handleViewportChange() {
   if (showSessionListMenu.value) {
     updateSessionListDropdownPosition()
+  }
+
+  if (showConfigMenu.value) {
+    updateConfigMenuPosition()
   }
 
   if (!contextMenu.value.show) return
@@ -922,7 +967,7 @@ watch([showConfigPanel, fileSectionHeight], () => {
         </svg>
       </IconButton>
     </div>
-    <!-- 第二行：项目名称 -->
+    <!-- 第二行：项目名称 | 配置菜单 -->
     <div class="sidebar-header-row2">
       <IconButton class="home-btn" size="sm" @click="emit('home')" title="返回首页">
         <svg class="home-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -934,25 +979,63 @@ watch([showConfigPanel, fileSectionHeight], () => {
       <div class="sidebar-title" :title="projectPath" @click="emit('switchProject')">
         <span class="project-name">{{ getProjectName(projectPath) }}</span>
       </div>
-      <IconButton class="file-toggle-btn" size="sm" @click.stop="emit('openProjectConfig')" title="项目配置">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="4" y1="21" x2="4" y2="14"/>
-          <line x1="4" y1="10" x2="4" y2="3"/>
-          <line x1="12" y1="21" x2="12" y2="12"/>
-          <line x1="12" y1="8" x2="12" y2="3"/>
-          <line x1="20" y1="21" x2="20" y2="16"/>
-          <line x1="20" y1="12" x2="20" y2="3"/>
-          <line x1="2" y1="14" x2="6" y2="14"/>
-          <line x1="10" y1="8" x2="14" y2="8"/>
-          <line x1="18" y1="16" x2="22" y2="16"/>
-        </svg>
-      </IconButton>
-      <IconButton class="app-settings-btn" size="sm" @click.stop="emit('openAppSettings')" title="软件配置">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-        </svg>
-      </IconButton>
+      <div class="config-menu-wrapper" ref="configMenuBtnRef">
+        <IconButton class="config-menu-btn" size="sm" @click.stop="toggleConfigMenu" title="配置">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </IconButton>
+        <Teleport to="body">
+          <div
+            v-if="showConfigMenu"
+            ref="configMenuRef"
+            class="config-menu-dropdown"
+            :style="configMenuDropdownStyle"
+            @click.stop
+          >
+            <button class="menu-item" @click="emit('openProjectConfig'); closeConfigMenu()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="4" y1="21" x2="4" y2="14"/>
+                <line x1="4" y1="10" x2="4" y2="3"/>
+                <line x1="12" y1="21" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12" y2="3"/>
+                <line x1="20" y1="21" x2="20" y2="16"/>
+                <line x1="20" y1="12" x2="20" y2="3"/>
+                <line x1="2" y1="14" x2="6" y2="14"/>
+                <line x1="10" y1="8" x2="14" y2="8"/>
+                <line x1="18" y1="16" x2="22" y2="16"/>
+              </svg>
+              项目配置
+            </button>
+            <button class="menu-item" @click="emit('openAppSettings'); closeConfigMenu()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              应用设置
+            </button>
+            <div class="menu-divider"></div>
+            <button class="menu-item" @click="emit('openSkillsDialog'); closeConfigMenu()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/>
+                <line x1="3" y1="6" x2="21" y2="6"/>
+                <path d="M16 10a4 4 0 0 1-8 0"/>
+              </svg>
+              技能管理
+            </button>
+            <button class="menu-item" @click="emit('openMcpDialog'); closeConfigMenu()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+                <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+                <line x1="6" y1="6" x2="6.01" y2="6"/>
+                <line x1="6" y1="18" x2="6.01" y2="18"/>
+              </svg>
+              MCP 服务
+            </button>
+          </div>
+        </Teleport>
+      </div>
     </div>
 
     <div class="sidebar-toolbar-row">
@@ -1356,6 +1439,52 @@ watch([showConfigPanel, fileSectionHeight], () => {
 .app-settings-btn {
   opacity: 0.72;
   transition: opacity 0.15s;
+}
+
+.config-menu-wrapper {
+  flex-shrink: 0;
+}
+
+.config-menu-btn {
+  opacity: 0.72;
+  transition: opacity 0.15s;
+}
+
+.config-menu-btn:hover {
+  opacity: 1;
+}
+
+.config-menu-dropdown {
+  background: #1E1E1E;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 180px;
+  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.5);
+}
+
+.config-menu-dropdown .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: #E4E4E7;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.config-menu-dropdown .menu-item:hover:not(:disabled) {
+  background: #27272A;
+}
+
+.config-menu-dropdown .menu-item:disabled {
+  color: #52525B;
+  cursor: default;
 }
 
 .toggle-btn {

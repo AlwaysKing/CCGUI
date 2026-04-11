@@ -338,8 +338,8 @@ function createWindow() {
           "default-src 'self' http://127.0.0.1:5173; " +
           "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:5173 ws://127.0.0.1:5173; " +
           "style-src 'self' 'unsafe-inline' http://127.0.0.1:5173; " +
-          "connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; " +
-          "img-src 'self' data: http://127.0.0.1:5173 ccgui-asset:; " +
+          "connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173 https: wss:; " +
+          "img-src 'self' data: http://127.0.0.1:5173 https: ccgui-asset:; " +
           "font-src 'self' data: http://127.0.0.1:5173; " +
           "worker-src 'self' blob: http://127.0.0.1:5173; " +
           "child-src 'self' blob: http://127.0.0.1:5173; " +
@@ -2830,6 +2830,1722 @@ ipcMain.handle('send-notification', async (event, { url }) => {
   }
 })
 
+ipcMain.handle('fetch-json', async (event, options) => {
+  try {
+    const https = require('https')
+    const http = require('http')
+    const url = typeof options === 'string' ? options : options.url
+    const method = options.method || 'GET'
+    const reqHeaders = options.headers || {}
+    const body = options.body || null
+    const parsedUrl = new URL(url)
+    const protocol = parsedUrl.protocol === 'https:' ? https : http
+
+    return new Promise((resolve) => {
+      const requestOptions = {
+        method,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'CCGUI/1.0',
+          ...reqHeaders
+        }
+      }
+      if (body) {
+        requestOptions.headers['Content-Length'] = Buffer.byteLength(body)
+      }
+
+      const req = protocol.request(url, requestOptions, (res) => {
+        if (res.statusCode >= 400) {
+          let errData = ''
+          res.on('data', chunk => { errData += chunk })
+          res.on('end', () => {
+            resolve({ success: false, error: `HTTP ${res.statusCode}: ${errData.slice(0, 200)}` })
+          })
+          return
+        }
+        let data = ''
+        res.on('data', chunk => { data += chunk })
+        res.on('end', () => {
+          try {
+            resolve({ success: true, data: JSON.parse(data) })
+          } catch (e) {
+            resolve({ success: false, error: e.message })
+          }
+        })
+      })
+      req.on('error', (error) => {
+        resolve({ success: false, error: error.message })
+      })
+      req.setTimeout(15000, () => {
+        req.destroy()
+        resolve({ success: false, error: 'Request timeout' })
+      })
+      if (body) {
+        req.write(body)
+      }
+      req.end()
+    })
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// ============================================
+// ClawHub Skill Download API
+// ============================================
+ipcMain.handle('download-skill', async (event, { slug }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const https = require('https')
+    const http = require('http')
+    const { execSync } = require('child_process')
+    const os = require('os')
+
+    const skillsDir = path.join(os.homedir(), '.ccgui', 'skills', 'clawhub')
+    const skillDir = path.join(skillsDir, slug)
+
+    // 如果已存在，先删除
+    if (fs.existsSync(skillDir)) {
+      fs.rmSync(skillDir, { recursive: true, force: true })
+    }
+
+    // 下载 zip
+    const downloadUrl = `https://clawhub.ai/api/v1/download?slug=${encodeURIComponent(slug)}`
+    const tmpZip = path.join(os.tmpdir(), `clawhub-${slug}-${Date.now()}.zip`)
+
+    await new Promise((resolve, reject) => {
+      const parsedUrl = new URL(downloadUrl)
+      const protocol = parsedUrl.protocol === 'https:' ? https : http
+
+      const req = protocol.get(downloadUrl, {
+        headers: {
+          'Accept': '*/*',
+          'User-Agent': 'CCGUI/1.0'
+        }
+      }, (res) => {
+        // 处理重定向
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const file = fs.createWriteStream(tmpZip)
+          const redirectReq = protocol.get(res.headers.location, (redirectRes) => {
+            redirectRes.pipe(file)
+            file.on('finish', () => { file.close(); resolve() })
+          })
+          redirectReq.on('error', reject)
+          return
+        }
+
+        if (res.statusCode >= 400) {
+          let errData = ''
+          res.on('data', chunk => { errData += chunk })
+          res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${errData.slice(0, 200)}`)))
+          return
+        }
+
+        const file = fs.createWriteStream(tmpZip)
+        res.pipe(file)
+        file.on('finish', () => { file.close(); resolve() })
+        file.on('error', reject)
+      })
+      req.on('error', reject)
+      req.setTimeout(60000, () => {
+        req.destroy()
+        reject(new Error('Download timeout'))
+      })
+    })
+
+    // 创建目标目录
+    fs.mkdirSync(skillDir, { recursive: true })
+
+    // 解压
+    try {
+      execSync(`unzip -o "${tmpZip}" -d "${skillDir}"`, { stdio: 'pipe' })
+    } catch (e) {
+      // unzip 可能返回非零退出码但有输出
+      if (!fs.existsSync(path.join(skillDir, 'SKILL.md'))) {
+        // 检查是否解压到了子目录（zip 内有根文件夹）
+        const entries = fs.readdirSync(skillDir)
+        if (entries.length === 1 && fs.statSync(path.join(skillDir, entries[0])).isDirectory()) {
+          const subDir = path.join(skillDir, entries[0])
+          const tmpMove = path.join(os.tmpdir(), `clawhub-move-${slug}-${Date.now()}`)
+          fs.renameSync(subDir, tmpMove)
+          fs.rmSync(skillDir, { recursive: true })
+          fs.renameSync(tmpMove, skillDir)
+        }
+      }
+    }
+
+    // 清理 zip
+    try { fs.unlinkSync(tmpZip) } catch (e) { /* ignore */ }
+
+    // 验证
+    if (!fs.existsSync(skillDir)) {
+      return { success: false, error: 'Extraction failed: directory not created' }
+    }
+
+    return { success: true, path: skillDir }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('check-skill-downloaded', async (event, { slug }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+    const skillDir = path.join(os.homedir(), '.ccgui', 'skills', 'clawhub', slug)
+    return { success: true, downloaded: fs.existsSync(skillDir) }
+  } catch (error) {
+    return { success: false, downloaded: false }
+  }
+})
+
+ipcMain.handle('list-downloaded-skills', async () => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    const skillsRoot = path.join(os.homedir(), '.ccgui', 'skills')
+    if (!fs.existsSync(skillsRoot)) return { success: true, skills: [] }
+
+    const skills = []
+
+    function readSkillMeta(skillPath, fallbackName) {
+      let name = fallbackName
+      let description = ''
+      try {
+        const skillMd = path.join(skillPath, 'SKILL.md')
+        if (fs.existsSync(skillMd)) {
+          const content = fs.readFileSync(skillMd, 'utf-8')
+          const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+          if (fmMatch) {
+            const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m)
+            if (nameMatch) {
+              name = nameMatch[1].trim().replace(/^["']|["']$/g, '')
+            }
+            const descMatch = fmMatch[1].match(/^(?:description|summary):\s*(.+)$/m)
+            if (descMatch) {
+              description = descMatch[1].trim().replace(/^["']|["']$/g, '')
+            }
+          }
+        }
+      } catch (e) { /* ignore */ }
+      return { name, description }
+    }
+
+    // 动态扫描所有来源目录
+    for (const sourceEntry of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
+      if (!sourceEntry.isDirectory()) continue
+      const sourceName = sourceEntry.name
+      const sourcePath = path.join(skillsRoot, sourceName)
+
+      for (const skillEntry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+        if (!skillEntry.isDirectory()) continue
+        const skillPath = path.join(sourcePath, skillEntry.name)
+        const meta = readSkillMeta(skillPath, skillEntry.name)
+        // Check symlink installation status
+        const installedTargets = []
+        const claudeLink = path.join(os.homedir(), '.claude', 'skills', skillEntry.name)
+        const codexLink = path.join(os.homedir(), '.codex', 'skills', skillEntry.name)
+        try { if (fs.lstatSync(claudeLink).isSymbolicLink() && fs.realpathSync(claudeLink) === skillPath) installedTargets.push('claude') } catch (_) {}
+        try { if (fs.lstatSync(codexLink).isSymbolicLink() && fs.realpathSync(codexLink) === skillPath) installedTargets.push('codex') } catch (_) {}
+
+        skills.push({ name: meta.name, slug: skillEntry.name, source: sourceName, path: skillPath, description: meta.description, installedTargets })
+      }
+    }
+
+    // 扫描外部技能（Claude/Codex 目录中非 CCGUI 管理的技能）
+    const ccguiPaths = new Set(skills.map(s => s.path))
+    const externalDirs = [
+      { target: 'claude', dir: path.join(os.homedir(), '.claude', 'skills') },
+      { target: 'codex', dir: path.join(os.homedir(), '.codex', 'skills') }
+    ]
+    const externalSkills = new Map()
+
+    for (const { target, dir } of externalDirs) {
+      if (!fs.existsSync(dir)) continue
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.')) continue
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+        const entryPath = path.join(dir, entry.name)
+
+        // 跳过指向 CCGUI 管理技能的 symlink
+        try {
+          const stat = fs.lstatSync(entryPath)
+          if (stat.isSymbolicLink() && ccguiPaths.has(fs.realpathSync(entryPath))) continue
+        } catch (_) {}
+
+        const meta = readSkillMeta(entryPath, entry.name)
+        const existing = externalSkills.get(entry.name)
+        if (existing) {
+          existing.installedTargets.push(target)
+        } else {
+          externalSkills.set(entry.name, {
+            name: meta.name,
+            slug: entry.name,
+            source: 'external',
+            path: entryPath,
+            description: meta.description,
+            installedTargets: [target],
+            external: true
+          })
+        }
+      }
+    }
+
+    skills.push(...externalSkills.values())
+
+    // 扫描 Codex 系统内置技能（~/.codex/skills/.system/）
+    const codexSystemDir = path.join(os.homedir(), '.codex', 'skills', '.system')
+    if (fs.existsSync(codexSystemDir)) {
+      for (const entry of fs.readdirSync(codexSystemDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+        const skillPath = path.join(codexSystemDir, entry.name)
+        const meta = readSkillMeta(skillPath, entry.name)
+        skills.push({
+          name: meta.name,
+          slug: entry.name,
+          source: 'codex-system',
+          path: skillPath,
+          description: meta.description,
+          installedTargets: ['codex'],
+          external: true,
+          system: true
+        })
+      }
+    }
+
+    return { success: true, skills }
+  } catch (error) {
+    return { success: false, skills: [] }
+  }
+})
+
+// ============================================
+// Manual Skill Install / Delete API
+// ============================================
+
+function extractArchiveTo(archivePath, targetDir) {
+  const fs = require('fs')
+  const path = require('path')
+  const { execSync } = require('child_process')
+  const os = require('os')
+
+  const tmpDir = path.join(os.tmpdir(), `ccgui-skill-extract-${Date.now()}`)
+  fs.mkdirSync(tmpDir, { recursive: true })
+
+  let extracted = false
+
+  // Detect archive type by magic bytes
+  try {
+    const buf = Buffer.alloc(4)
+    const fd = fs.openSync(archivePath, 'r')
+    fs.readSync(fd, buf, 0, 4, 0)
+    fs.closeSync(fd)
+
+    const isZip = buf[0] === 0x50 && buf[1] === 0x4B
+    const isGzip = buf[0] === 0x1F && buf[1] === 0x8B
+
+    if (isZip) {
+      execSync(`unzip -o "${archivePath}" -d "${tmpDir}"`, { stdio: 'pipe' })
+      extracted = true
+    } else if (isGzip) {
+      execSync(`tar -xzf "${archivePath}" -C "${tmpDir}"`, { stdio: 'pipe' })
+      extracted = true
+    } else {
+      // Fall back to extension
+      if (archivePath.endsWith('.tar.gz') || archivePath.endsWith('.tgz')) {
+        execSync(`tar -xzf "${archivePath}" -C "${tmpDir}"`, { stdio: 'pipe' })
+        extracted = true
+      } else if (archivePath.endsWith('.zip')) {
+        execSync(`unzip -o "${archivePath}" -d "${tmpDir}"`, { stdio: 'pipe' })
+        extracted = true
+      } else {
+        // Try both
+        try {
+          execSync(`unzip -o "${archivePath}" -d "${tmpDir}"`, { stdio: 'pipe' })
+          extracted = true
+        } catch (e) {
+          execSync(`tar -xzf "${archivePath}" -C "${tmpDir}"`, { stdio: 'pipe' })
+          extracted = true
+        }
+      }
+    }
+  } catch (e) {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) { /* ignore */ }
+    return { success: false, error: '无法解压文件，请确认是有效的 .zip 或 .tar.gz 压缩包' }
+  }
+
+  // 查找 SKILL.md
+  let skillRoot = tmpDir
+  if (!fs.existsSync(path.join(tmpDir, 'SKILL.md'))) {
+    const entries = fs.readdirSync(tmpDir)
+    if (entries.length === 1 && fs.statSync(path.join(tmpDir, entries[0])).isDirectory()) {
+      skillRoot = path.join(tmpDir, entries[0])
+    }
+    if (!fs.existsSync(path.join(skillRoot, 'SKILL.md'))) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) { /* ignore */ }
+      return { success: false, error: '压缩包中未找到 SKILL.md 文件，不是合法的技能包' }
+    }
+  }
+
+  // 从 SKILL.md 读取技能名称作为文件夹名
+  let skillName = path.basename(skillRoot)
+  try {
+    const content = fs.readFileSync(path.join(skillRoot, 'SKILL.md'), 'utf-8')
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+    if (fmMatch) {
+      const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m)
+      if (nameMatch) skillName = nameMatch[1].trim()
+    }
+  } catch (_) { /* 保留原始文件夹名 */ }
+  const destDir = path.join(targetDir, skillName)
+  if (fs.existsSync(destDir)) {
+    fs.rmSync(destDir, { recursive: true, force: true })
+  }
+  fs.cpSync(skillRoot, destDir, { recursive: true })
+
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) { /* ignore */ }
+  return { success: true, name: skillName, path: destDir }
+}
+
+ipcMain.handle('install-skill', async (event, { source }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+    const https = require('https')
+    const http = require('http')
+
+    const skillsRoot = path.join(os.homedir(), '.ccgui', 'skills')
+    fs.mkdirSync(skillsRoot, { recursive: true })
+
+    // URL → 先下载到 /tmp
+    if (/^https?:\/\//i.test(source)) {
+      const urlBasename = path.basename(new URL(source).pathname) || 'download.zip'
+      const tmpFile = path.join(os.tmpdir(), `ccgui-skill-url-${Date.now()}-${urlBasename}`)
+
+      await new Promise((resolve, reject) => {
+        const parsedUrl = new URL(source)
+        const protocol = parsedUrl.protocol === 'https:' ? https : http
+
+        const doRequest = (reqUrl) => {
+          const req = protocol.get(reqUrl, {
+            headers: { 'User-Agent': 'CCGUI/1.0' }
+          }, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              doRequest(res.headers.location)
+              return
+            }
+            if (res.statusCode >= 400) {
+              let errData = ''
+              res.on('data', chunk => { errData += chunk })
+              res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${errData.slice(0, 200)}`)))
+              return
+            }
+            const file = fs.createWriteStream(tmpFile)
+            res.pipe(file)
+            file.on('finish', () => { file.close(); resolve() })
+            file.on('error', reject)
+          })
+          req.on('error', reject)
+          req.setTimeout(120000, () => { req.destroy(); reject(new Error('下载超时')) })
+        }
+
+        doRequest(source)
+      })
+
+      // 从 URL 提取域名作为来源分类
+      const hostname = new URL(source).hostname
+      const domainParts = hostname.split('.')
+      const skipPrefixes = ['www', 'api', 'raw', 'cdn', 'dl']
+      while (domainParts.length > 1 && skipPrefixes.includes(domainParts[0])) domainParts.shift()
+      const domainName = domainParts[0] || 'local'
+
+      const urlSkillsDir = path.join(skillsRoot, domainName)
+      fs.mkdirSync(urlSkillsDir, { recursive: true })
+      const result = extractArchiveTo(tmpFile, urlSkillsDir)
+      try { fs.unlinkSync(tmpFile) } catch (_) { /* ignore */ }
+      return result
+    }
+
+    // 本地路径
+    const resolvedPath = path.resolve(source)
+    if (!fs.existsSync(resolvedPath)) {
+      return { success: false, error: '路径不存在' }
+    }
+
+    const stat = fs.statSync(resolvedPath)
+
+    if (stat.isDirectory()) {
+      // 目录 → 检查 SKILL.md → 复制
+      if (!fs.existsSync(path.join(resolvedPath, 'SKILL.md'))) {
+        return { success: false, error: '目录中未找到 SKILL.md 文件，不是合法的技能包' }
+      }
+
+      // 从 SKILL.md 读取技能名称
+      let skillName = path.basename(resolvedPath)
+      try {
+        const content = fs.readFileSync(path.join(resolvedPath, 'SKILL.md'), 'utf-8')
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+        if (fmMatch) {
+          const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m)
+          if (nameMatch) skillName = nameMatch[1].trim()
+        }
+      } catch (_) { /* 保留原始文件夹名 */ }
+      const destDir = path.join(skillsRoot, 'local', skillName)
+      if (fs.existsSync(destDir)) {
+        fs.rmSync(destDir, { recursive: true, force: true })
+      }
+      fs.cpSync(resolvedPath, destDir, { recursive: true })
+
+      return { success: true, name: skillName, path: destDir }
+    }
+
+    // 文件 → 当作压缩包
+    return extractArchiveTo(resolvedPath, path.join(skillsRoot, 'local'))
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('delete-skill', async (event, { name, source }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    const skillDir = path.join(os.homedir(), '.ccgui', 'skills', source, name)
+
+    if (!fs.existsSync(skillDir)) {
+      return { success: false, error: '技能不存在' }
+    }
+
+    // Clean up symlinks in target directories
+    const targetDirs = [
+      path.join(os.homedir(), '.claude', 'skills'),
+      path.join(os.homedir(), '.codex', 'skills')
+    ]
+    for (const targetDir of targetDirs) {
+      const linkPath = path.join(targetDir, name)
+      try {
+        const stat = fs.lstatSync(linkPath)
+        if (stat.isSymbolicLink() && fs.realpathSync(linkPath) === skillDir) {
+          fs.unlinkSync(linkPath)
+        }
+      } catch (_) {}
+    }
+
+    fs.rmSync(skillDir, { recursive: true, force: true })
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('read-skill-readme', async (event, { skillPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const readmePath = path.join(skillPath, 'SKILL.md')
+    if (!fs.existsSync(readmePath)) {
+      return { success: false, error: 'SKILL.md not found' }
+    }
+    const content = fs.readFileSync(readmePath, 'utf-8')
+    return { success: true, content }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('read-skill-extra', async (event, { skillPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+
+    // 读取 LICENSE
+    let license = null
+    for (const name of ['LICENSE.txt', 'LICENSE', 'LICENSE.md', 'license.txt']) {
+      const p = path.join(skillPath, name)
+      if (fs.existsSync(p)) {
+        license = fs.readFileSync(p, 'utf-8')
+        break
+      }
+    }
+
+    // 读取文件结构
+    function buildTree(dir) {
+      const entries = []
+      let items
+      try { items = fs.readdirSync(dir, { withFileTypes: true }) } catch (_) { return entries }
+      items.sort((a, b) => {
+        if (a.isDirectory() && !b.isDirectory()) return -1
+        if (!a.isDirectory() && b.isDirectory()) return 1
+        return a.name.localeCompare(b.name)
+      })
+      for (const item of items) {
+        if (item.name.startsWith('.')) continue
+        const fullPath = path.join(dir, item.name)
+        if (item.isDirectory()) {
+          entries.push({ name: item.name, type: 'dir', children: buildTree(fullPath) })
+        } else {
+          entries.push({ name: item.name, type: 'file' })
+        }
+      }
+      return entries
+    }
+
+    const tree = buildTree(skillPath)
+    return { success: true, license, tree }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('activate-skill', async (event, { slug, source, targets }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    const skillPath = path.join(os.homedir(), '.ccgui', 'skills', source, slug)
+    if (!fs.existsSync(skillPath)) {
+      return { success: false, error: '技能不存在' }
+    }
+
+    const targetDirs = {
+      claude: path.join(os.homedir(), '.claude', 'skills'),
+      codex: path.join(os.homedir(), '.codex', 'skills')
+    }
+
+    const activated = []
+    for (const target of (targets || [])) {
+      const dir = targetDirs[target]
+      if (!dir) continue
+
+      fs.mkdirSync(dir, { recursive: true })
+      const linkPath = path.join(dir, slug)
+
+      try {
+        const stat = fs.lstatSync(linkPath)
+        if (stat.isSymbolicLink()) {
+          fs.unlinkSync(linkPath)
+        } else if (stat.isDirectory()) {
+          // Don't overwrite user's manual install
+          continue
+        } else {
+          fs.unlinkSync(linkPath)
+        }
+      } catch (_) {}
+
+      fs.symlinkSync(skillPath, linkPath)
+      activated.push(target)
+    }
+
+    return { success: true, activated }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('deactivate-skill', async (event, { slug, targets }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    const targetDirs = {
+      claude: path.join(os.homedir(), '.claude', 'skills'),
+      codex: path.join(os.homedir(), '.codex', 'skills')
+    }
+
+    const deactivated = []
+    for (const target of (targets || [])) {
+      const dir = targetDirs[target]
+      if (!dir) continue
+
+      const linkPath = path.join(dir, slug)
+      try {
+        const stat = fs.lstatSync(linkPath)
+        if (stat.isSymbolicLink()) {
+          fs.unlinkSync(linkPath)
+          deactivated.push(target)
+        }
+      } catch (_) {}
+    }
+
+    return { success: true, deactivated }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// ============================================
+// MCP Registry IPC Handlers
+// ============================================
+
+function extractMcpSlug(name) {
+  if (!name) return ''
+  const parts = name.split('/')
+  return parts[parts.length - 1] || name
+}
+
+// 生成 Codex TOML 格式的 MCP 配置行
+function generateMcpTomlLines(config, slug) {
+  const lines = [`[mcp_servers.${slug}]`]
+  if (config.type) {
+    lines.push(`type = ${stringifyTomlString(config.type)}`)
+    if (config.url) lines.push(`url = ${stringifyTomlString(config.url)}`)
+    if (config.headers && Object.keys(config.headers).length > 0) {
+      for (const [hk, hv] of Object.entries(config.headers)) {
+        lines.push(`header_${hk} = ${stringifyTomlString(hv)}`)
+      }
+    }
+  } else if (config.command) {
+    lines.push(`command = ${stringifyTomlString(config.command)}`)
+    if (config.args?.length) {
+      const argsItems = config.args.map(a => stringifyTomlString(a)).join(', ')
+      lines.push(`args = [${argsItems}]`)
+    }
+  }
+  if (config.env && Object.keys(config.env).length > 0) {
+    for (const [ek, ev] of Object.entries(config.env)) {
+      lines.push(`env_${ek} = ${stringifyTomlString(ev)}`)
+    }
+  }
+  return lines
+}
+
+// 从 Codex config.toml 读取 mcp_servers slug 列表
+function readCodexMcpServers() {
+  const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml')
+  const result = {} // { slug: { command, args, type, url, ... } }
+  if (!fs.existsSync(codexConfigPath)) return result
+  const rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
+  let currentSection = null
+  let currentSlug = null
+  let currentConfig = null
+
+  for (const line of rawContent.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    const sectionMatch = trimmed.match(/^\[([^\]]+)\]$/)
+    if (sectionMatch) {
+      // 保存前一个 section
+      if (currentSlug && currentConfig) {
+        result[currentSlug] = currentConfig
+      }
+      const section = sectionMatch[1]
+      const mcpPrefix = 'mcp_servers.'
+      if (section.startsWith(mcpPrefix)) {
+        currentSection = section
+        currentSlug = section.slice(mcpPrefix.length)
+        currentConfig = {}
+      } else {
+        currentSection = null
+        currentSlug = null
+        currentConfig = null
+      }
+      continue
+    }
+    if (!currentSlug || !currentConfig) continue
+    const entryMatch = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/)
+    if (entryMatch) {
+      const key = entryMatch[1]
+      let value = entryMatch[2].trim()
+      // 解析简单值
+      if (value.startsWith('[')) {
+        // TOML 数组
+        try {
+          currentConfig[key] = JSON.parse(value.replace(/'/g, '"'))
+        } catch (_) {
+          currentConfig[key] = value
+        }
+      } else {
+        currentConfig[key] = parseTopLevelTomlValue(value)
+      }
+    }
+  }
+  // 最后一个
+  if (currentSlug && currentConfig) {
+    result[currentSlug] = currentConfig
+  }
+  return result
+}
+
+// 从 Codex config.toml 移除指定 mcp_servers section
+function removeCodexMcpSection(slug) {
+  const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml')
+  if (!fs.existsSync(codexConfigPath)) return
+  const rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
+  const sectionHeader = `[mcp_servers.${slug}]`
+  const lines = rawContent.split(/\r?\n/)
+  const output = []
+  let skipping = false
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === sectionHeader) {
+      skipping = true
+      continue
+    }
+    if (skipping) {
+      // 遇到新的 section 就停止跳过
+      if (trimmed.match(/^\[([^\]]+)\]$/)) {
+        skipping = false
+        output.push(line)
+      }
+      continue
+    }
+    output.push(line)
+  }
+  const finalContent = output.join('\n').replace(/\n{3,}/g, '\n\n') + '\n'
+  fs.writeFileSync(codexConfigPath, finalContent, 'utf-8')
+}
+
+// 向 Codex config.toml 追加 mcp_servers section
+function addCodexMcpSection(slug, config) {
+  const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml')
+  const codexDir = path.dirname(codexConfigPath)
+  if (!fs.existsSync(codexDir)) {
+    fs.mkdirSync(codexDir, { recursive: true })
+  }
+  // 先移除已有的
+  removeCodexMcpSection(slug)
+  // 重新读取
+  let rawContent = ''
+  if (fs.existsSync(codexConfigPath)) {
+    rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
+  }
+  const tomlLines = generateMcpTomlLines(config, slug)
+  const content = rawContent.replace(/\n+$/, '') + '\n\n' + tomlLines.join('\n') + '\n'
+  fs.writeFileSync(codexConfigPath, content.replace(/\n{3,}/g, '\n\n'), 'utf-8')
+}
+
+function generateMcpConfig(mcpData, envValues) {
+  // 优先使用 remotes（直接 URL 连接）
+  if (mcpData.remotes?.length) {
+    const remote = mcpData.remotes[0]
+    const config = { type: remote.type, url: remote.url }
+    // 合并 headers 中的 auth
+    if (remote.headers?.length) {
+      const headers = {}
+      for (const h of remote.headers) {
+        if (h.isRequired && envValues?.[h.name]) {
+          headers[h.name] = envValues[h.name]
+        }
+      }
+      if (Object.keys(headers).length > 0) {
+        config.headers = headers
+      }
+    }
+    return config
+  }
+
+  // 使用 packages
+  if (mcpData.packages?.length) {
+    const pkg = mcpData.packages[0]
+    const config = { command: '', args: [] }
+
+    if (pkg.registryType === 'npm') {
+      config.command = 'npx'
+      config.args = ['-y', pkg.identifier]
+      if (pkg.version) {
+        config.args[1] = `${pkg.identifier}@${pkg.version}`
+      }
+    } else if (pkg.registryType === 'pypi') {
+      config.command = 'uvx'
+      config.args = [pkg.identifier]
+    } else if (pkg.registryType === 'oci') {
+      config.command = 'docker'
+      config.args = ['run', '--rm', '-i', pkg.identifier]
+    } else {
+      // 通用 fallback
+      config.command = pkg.registryType || 'unknown'
+      config.args = [pkg.identifier]
+    }
+
+    // 环境变量
+    if (pkg.environmentVariables?.length || mcpData.environmentVariables?.length) {
+      const env = {}
+      const vars = pkg.environmentVariables || mcpData.environmentVariables || []
+      for (const ev of vars) {
+        if (envValues?.[ev.name]) {
+          env[ev.name] = envValues[ev.name]
+        }
+      }
+      if (Object.keys(env).length > 0) {
+        config.env = env
+      }
+    }
+
+    return config
+  }
+
+  return null
+}
+
+// 下载 MCP 服务器元数据到 ~/.ccgui/mcps/<slug>.json
+ipcMain.handle('download-mcp', async (event, { server }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    const slug = extractMcpSlug(server.name)
+    if (!slug) {
+      return { success: false, error: 'Invalid server name' }
+    }
+
+    const mcpsDir = path.join(os.homedir(), '.ccgui', 'mcps')
+    fs.mkdirSync(mcpsDir, { recursive: true })
+
+    const mcpFile = path.join(mcpsDir, `${slug}.json`)
+
+    // 收集环境变量
+    const envVars = []
+    if (server.packages?.length) {
+      for (const p of server.packages) {
+        if (p.environmentVariables) {
+          for (const ev of p.environmentVariables) {
+            if (!envVars.find(e => e.name === ev.name)) {
+              envVars.push(ev)
+            }
+          }
+        }
+      }
+    }
+    if (server.remotes?.length) {
+      for (const r of server.remotes) {
+        if (r.headers) {
+          for (const h of r.headers) {
+            if (h.isRequired && !envVars.find(e => e.name === h.name)) {
+              envVars.push({
+                name: h.name,
+                description: h.description,
+                isSecret: h.isSecret || false,
+                format: h.format || 'string'
+              })
+            }
+          }
+        }
+      }
+    }
+
+    const mcpData = {
+      name: server.name,
+      slug,
+      description: server.description || '',
+      version: server.version || '',
+      repository: server.repository?.url || '',
+      source: 'registry',
+      downloadedAt: new Date().toISOString(),
+      remotes: server.remotes || [],
+      packages: server.packages || [],
+      environmentVariables: envVars,
+      icons: server.icons || [],
+      title: server.title || slug
+    }
+
+    fs.writeFileSync(mcpFile, JSON.stringify(mcpData, null, 2), 'utf-8')
+    logger.info(`[MCP] Downloaded: ${slug}`)
+
+    return { success: true, slug }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 列出已下载的 MCP 服务器
+ipcMain.handle('list-downloaded-mcps', async () => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    const mcpsDir = path.join(os.homedir(), '.ccgui', 'mcps')
+    const mcps = []
+
+    if (fs.existsSync(mcpsDir)) {
+      const entries = fs.readdirSync(mcpsDir).filter(f => f.endsWith('.json'))
+      for (const file of entries) {
+        try {
+          const content = fs.readFileSync(path.join(mcpsDir, file), 'utf-8')
+          const data = JSON.parse(content)
+          mcps.push(data)
+        } catch (_) {}
+      }
+    }
+
+    // 检查安装状态
+    const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
+    let claudeMcpServers = {}
+    try {
+      if (fs.existsSync(claudeSettingsPath)) {
+        const content = fs.readFileSync(claudeSettingsPath, 'utf-8')
+        const settings = JSON.parse(content)
+        claudeMcpServers = settings.mcpServers || {}
+      }
+    } catch (_) {}
+
+    // 检查 Codex 安装状态
+    let codexMcpServers = {}
+    try {
+      codexMcpServers = readCodexMcpServers()
+    } catch (_) {}
+
+    // 标记安装状态
+    const ccguiSlugs = new Set(mcps.map(m => m.slug))
+    for (const mcp of mcps) {
+      const installedTargets = []
+      if (claudeMcpServers[mcp.slug]) {
+        installedTargets.push('claude')
+      }
+      if (codexMcpServers[mcp.slug]) {
+        installedTargets.push('codex')
+      }
+      mcp.installedTargets = installedTargets
+    }
+
+    // 检测外部 MCP（settings.json 中有但不在 CCGUI 管理的）
+    const seenExternal = new Set()
+    for (const [key, value] of Object.entries(claudeMcpServers)) {
+      if (!ccguiSlugs.has(key) && !seenExternal.has(key)) {
+        seenExternal.add(key)
+        mcps.push({
+          name: key,
+          slug: key,
+          description: value.type === 'streamable-http'
+            ? `远程服务: ${value.url || ''}`
+            : value.command
+              ? `${value.command} ${(value.args || []).join(' ')}`
+              : '',
+          version: '',
+          source: 'external',
+          external: true,
+          installedTargets: ['claude']
+        })
+      }
+    }
+    for (const [key, value] of Object.entries(codexMcpServers)) {
+      if (!ccguiSlugs.has(key) && !seenExternal.has(key)) {
+        seenExternal.add(key)
+        const desc = value.type
+          ? `远程服务: ${value.url || ''}`
+          : value.command
+            ? `${value.command} ${Array.isArray(value.args) ? value.args.join(' ') : ''}`
+            : ''
+        mcps.push({
+          name: key,
+          slug: key,
+          description: desc,
+          version: '',
+          source: 'external',
+          external: true,
+          installedTargets: ['codex']
+        })
+      } else if (seenExternal.has(key)) {
+        // 已经从 Claude 外部列表添加过了，补充 codex 目标
+        const existing = mcps.find(m => m.slug === key && m.external)
+        if (existing && !existing.installedTargets.includes('codex')) {
+          existing.installedTargets.push('codex')
+        }
+      }
+    }
+
+    return { success: true, mcps }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 安装 MCP 到目标（写入 settings.json）
+ipcMain.handle('install-mcp', async (event, { slug, target, envValues }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    // 读取 MCP 数据
+    const mcpFile = path.join(os.homedir(), '.ccgui', 'mcps', `${slug}.json`)
+    if (!fs.existsSync(mcpFile)) {
+      return { success: false, error: 'MCP 配置不存在' }
+    }
+
+    const mcpData = JSON.parse(fs.readFileSync(mcpFile, 'utf-8'))
+    const config = generateMcpConfig(mcpData, envValues)
+    if (!config) {
+      return { success: false, error: '无法生成 MCP 配置（缺少 remotes 和 packages）' }
+    }
+
+    if (target === 'claude') {
+      const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
+      let settings = {}
+      if (fs.existsSync(claudeSettingsPath)) {
+        settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
+      }
+      if (!settings.mcpServers) {
+        settings.mcpServers = {}
+      }
+      settings.mcpServers[slug] = config
+
+      const claudeDir = path.dirname(claudeSettingsPath)
+      if (!fs.existsSync(claudeDir)) {
+        fs.mkdirSync(claudeDir, { recursive: true })
+      }
+      fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+      logger.info(`[MCP] Installed ${slug} to Claude`)
+    } else if (target === 'codex') {
+      addCodexMcpSection(slug, config)
+      logger.info(`[MCP] Installed ${slug} to Codex`)
+    }
+
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 卸载 MCP（从 settings.json 移除）
+ipcMain.handle('uninstall-mcp', async (event, { slug, target }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    if (target === 'claude') {
+      const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
+      if (!fs.existsSync(claudeSettingsPath)) {
+        return { success: true }
+      }
+      const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
+      if (settings.mcpServers?.[slug]) {
+        delete settings.mcpServers[slug]
+        fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+        logger.info(`[MCP] Uninstalled ${slug} from Claude`)
+      }
+    } else if (target === 'codex') {
+      removeCodexMcpSection(slug)
+      logger.info(`[MCP] Uninstalled ${slug} from Codex`)
+    }
+
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 删除 MCP（卸载 + 删除 JSON 文件）
+ipcMain.handle('delete-mcp', async (event, { slug }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    // 先从所有 target 卸载
+    const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
+    try {
+      if (fs.existsSync(claudeSettingsPath)) {
+        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
+        if (settings.mcpServers?.[slug]) {
+          delete settings.mcpServers[slug]
+          fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+        }
+      }
+    } catch (_) {}
+
+    try {
+      removeCodexMcpSection(slug)
+    } catch (_) {}
+
+    // 删除 JSON 文件
+    const mcpFile = path.join(os.homedir(), '.ccgui', 'mcps', `${slug}.json`)
+    if (fs.existsSync(mcpFile)) {
+      fs.unlinkSync(mcpFile)
+    }
+
+    logger.info(`[MCP] Deleted: ${slug}`)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// ============================================
+// Project-Level Skill & MCP APIs
+// ============================================
+
+// 列出项目级已安装的 skills
+ipcMain.handle('list-project-skills', async (event, { projectPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    if (!projectPath) return { success: true, skills: [] }
+
+    // 获取全局下载的 skills（用于关联）
+    const globalSkillsRoot = path.join(os.homedir(), '.ccgui', 'skills')
+    const globalSkillsMap = new Map() // slug -> { source, skillPath }
+    if (fs.existsSync(globalSkillsRoot)) {
+      for (const sourceEntry of fs.readdirSync(globalSkillsRoot, { withFileTypes: true })) {
+        if (!sourceEntry.isDirectory()) continue
+        const sourcePath = path.join(globalSkillsRoot, sourceEntry.name)
+        for (const skillEntry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+          if (!skillEntry.isDirectory()) continue
+          globalSkillsMap.set(skillEntry.name, {
+            source: sourceEntry.name,
+            skillPath: path.join(sourcePath, skillEntry.name)
+          })
+        }
+      }
+    }
+
+    // 读取 SKILL.md 元数据的辅助函数
+    function readSkillMeta(skillPath, fallbackName) {
+      let name = fallbackName
+      let description = ''
+      try {
+        const skillMd = path.join(skillPath, 'SKILL.md')
+        if (fs.existsSync(skillMd)) {
+          const content = fs.readFileSync(skillMd, 'utf-8')
+          const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+          if (fmMatch) {
+            const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m)
+            if (nameMatch) name = nameMatch[1].trim().replace(/^["']|["']$/g, '')
+            const descMatch = fmMatch[1].match(/^(?:description|summary):\s*(.+)$/m)
+            if (descMatch) description = descMatch[1].trim().replace(/^["']|["']$/g, '')
+          }
+        }
+      } catch (_) {}
+      return { name, description }
+    }
+
+    const skills = []
+    const seenSlugs = new Set()
+
+    const projectTargets = [
+      { target: 'claude', dir: path.join(projectPath, '.claude', 'skills') },
+      { target: 'codex', dir: path.join(projectPath, '.codex', 'skills') }
+    ]
+
+    for (const { target, dir } of projectTargets) {
+      if (!fs.existsSync(dir)) continue
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.')) continue
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+        const entryPath = path.join(dir, entry.name)
+
+        if (seenSlugs.has(entry.name)) {
+          // 补充 target
+          const existing = skills.find(s => s.slug === entry.name)
+          if (existing && !existing.installedTargets.includes(target)) {
+            existing.installedTargets.push(target)
+          }
+          continue
+        }
+        seenSlugs.add(entry.name)
+
+        // 判断来源
+        let realPath = entryPath
+        try {
+          const stat = fs.lstatSync(entryPath)
+          if (stat.isSymbolicLink()) realPath = fs.realpathSync(entryPath)
+        } catch (_) {}
+
+        const globalInfo = globalSkillsMap.get(entry.name)
+        const source = globalInfo ? globalInfo.source : 'local'
+        const skillPath = globalInfo ? globalInfo.skillPath : realPath
+        const meta = readSkillMeta(skillPath, entry.name)
+
+        skills.push({
+          name: meta.name,
+          slug: entry.name,
+          source,
+          path: skillPath,
+          description: meta.description,
+          installedTargets: [target],
+          projectLevel: true
+        })
+      }
+    }
+
+    return { success: true, skills }
+  } catch (error) {
+    return { success: false, skills: [], error: error.message }
+  }
+})
+
+// 激活 skill 到项目级目录
+ipcMain.handle('activate-skill-to-project', async (event, { slug, source, targets, projectPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    if (!projectPath) return { success: false, error: '未指定项目路径' }
+
+    const skillPath = path.join(os.homedir(), '.ccgui', 'skills', source, slug)
+    if (!fs.existsSync(skillPath)) {
+      return { success: false, error: '技能不存在，请先从"已下载"中确认该技能已下载' }
+    }
+
+    const targetDirs = {
+      claude: path.join(projectPath, '.claude', 'skills'),
+      codex: path.join(projectPath, '.codex', 'skills')
+    }
+
+    const activated = []
+    for (const target of (targets || [])) {
+      const dir = targetDirs[target]
+      if (!dir) continue
+
+      fs.mkdirSync(dir, { recursive: true })
+      const linkPath = path.join(dir, slug)
+
+      try {
+        const stat = fs.lstatSync(linkPath)
+        if (stat.isSymbolicLink()) {
+          fs.unlinkSync(linkPath)
+        } else if (stat.isDirectory()) {
+          continue // 不覆盖用户手动安装的
+        } else {
+          fs.unlinkSync(linkPath)
+        }
+      } catch (_) {}
+
+      fs.symlinkSync(skillPath, linkPath)
+      activated.push(target)
+    }
+
+    logger.info(`[Skill] Activated ${slug} to project: ${activated.join(', ')}`)
+    return { success: true, activated }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 从项目级目录停用 skill
+ipcMain.handle('deactivate-skill-from-project', async (event, { slug, targets, projectPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+
+    if (!projectPath) return { success: false, error: '未指定项目路径' }
+
+    const targetDirs = {
+      claude: path.join(projectPath, '.claude', 'skills'),
+      codex: path.join(projectPath, '.codex', 'skills')
+    }
+
+    const deactivated = []
+    for (const target of (targets || [])) {
+      const dir = targetDirs[target]
+      if (!dir) continue
+      const linkPath = path.join(dir, slug)
+      try {
+        const stat = fs.lstatSync(linkPath)
+        if (stat.isSymbolicLink()) {
+          fs.unlinkSync(linkPath)
+          deactivated.push(target)
+        } else if (stat.isDirectory()) {
+          // 非符号链接的目录，不删除（用户手动安装的）
+        }
+      } catch (_) {}
+    }
+
+    logger.info(`[Skill] Deactivated ${slug} from project: ${deactivated.join(', ')}`)
+    return { success: true, deactivated }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 安装 skill 到项目级目录（从本地路径或 URL）
+ipcMain.handle('install-skill-to-project', async (event, { source, projectPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+    const https = require('https')
+    const http = require('http')
+
+    if (!projectPath) return { success: false, error: '未指定项目路径' }
+
+    // 安装到项目的 .claude/skills/ 目录
+    const projectSkillsDir = path.join(projectPath, '.claude', 'skills')
+    fs.mkdirSync(projectSkillsDir, { recursive: true })
+
+    if (/^https?:\/\//i.test(source)) {
+      const urlBasename = path.basename(new URL(source).pathname) || 'download.zip'
+      const tmpFile = path.join(os.tmpdir(), `ccgui-skill-url-${Date.now()}-${urlBasename}`)
+
+      await new Promise((resolve, reject) => {
+        const parsedUrl = new URL(source)
+        const protocol = parsedUrl.protocol === 'https:' ? https : http
+        const doRequest = (reqUrl) => {
+          const req = protocol.get(reqUrl, {
+            headers: { 'User-Agent': 'CCGUI/1.0' }
+          }, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              doRequest(res.headers.location)
+              return
+            }
+            if (res.statusCode >= 400) {
+              let errData = ''
+              res.on('data', chunk => { errData += chunk })
+              res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${errData.slice(0, 200)}`)))
+              return
+            }
+            const file = fs.createWriteStream(tmpFile)
+            res.pipe(file)
+            file.on('finish', () => { file.close(); resolve() })
+            file.on('error', reject)
+          })
+          req.on('error', reject)
+          req.setTimeout(120000, () => { req.destroy(); reject(new Error('下载超时')) })
+        }
+        doRequest(source)
+      })
+
+      const result = extractArchiveTo(tmpFile, projectSkillsDir)
+      try { fs.unlinkSync(tmpFile) } catch (_) {}
+      return result
+    }
+
+    // 本地路径
+    const resolvedPath = path.resolve(source)
+    if (!fs.existsSync(resolvedPath)) {
+      return { success: false, error: '路径不存在' }
+    }
+
+    const stat = fs.statSync(resolvedPath)
+    if (stat.isDirectory()) {
+      if (!fs.existsSync(path.join(resolvedPath, 'SKILL.md'))) {
+        return { success: false, error: '目录中未找到 SKILL.md 文件，不是合法的技能包' }
+      }
+      let skillName = path.basename(resolvedPath)
+      try {
+        const content = fs.readFileSync(path.join(resolvedPath, 'SKILL.md'), 'utf-8')
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+        if (fmMatch) {
+          const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m)
+          if (nameMatch) skillName = nameMatch[1].trim()
+        }
+      } catch (_) {}
+      const destDir = path.join(projectSkillsDir, skillName)
+      if (fs.existsSync(destDir)) {
+        fs.rmSync(destDir, { recursive: true, force: true })
+      }
+      fs.cpSync(resolvedPath, destDir, { recursive: true })
+      return { success: true, name: skillName, path: destDir }
+    }
+
+    return extractArchiveTo(resolvedPath, projectSkillsDir)
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 删除项目级 skill
+ipcMain.handle('delete-project-skill', async (event, { name, projectPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+
+    if (!projectPath) return { success: false, error: '未指定项目路径' }
+
+    const projectTargets = [
+      path.join(projectPath, '.claude', 'skills', name),
+      path.join(projectPath, '.codex', 'skills', name)
+    ]
+
+    for (const skillPath of projectTargets) {
+      if (!fs.existsSync(skillPath)) continue
+      const stat = fs.lstatSync(skillPath)
+      if (stat.isSymbolicLink()) {
+        fs.unlinkSync(skillPath)
+      } else if (stat.isDirectory()) {
+        fs.rmSync(skillPath, { recursive: true, force: true })
+      }
+    }
+
+    logger.info(`[Skill] Deleted from project: ${name}`)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 列出项目级已安装的 MCP 服务
+ipcMain.handle('list-project-mcps', async (event, { projectPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+
+    if (!projectPath) return { success: true, mcps: [] }
+
+    // 获取全局下载的 MCP（用于关联）
+    const globalMcpsDir = path.join(os.homedir, '.ccgui', 'mcps')
+    const globalMcpsMap = new Map() // slug -> data
+    if (fs.existsSync(globalMcpsDir)) {
+      for (const file of fs.readdirSync(globalMcpsDir).filter(f => f.endsWith('.json'))) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(globalMcpsDir, file), 'utf-8'))
+          globalMcpsMap.set(data.slug, data)
+        } catch (_) {}
+      }
+    }
+
+    const mcps = []
+    const seenSlugs = new Set()
+
+    // 读取 Claude 项目级 settings.json
+    const claudeSettingsPath = path.join(projectPath, '.claude', 'settings.json')
+    if (fs.existsSync(claudeSettingsPath)) {
+      try {
+        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
+        for (const [key, value] of Object.entries(settings.mcpServers || {})) {
+          seenSlugs.add(key)
+          const globalData = globalMcpsMap.get(key)
+          mcps.push({
+            name: globalData?.name || key,
+            slug: key,
+            title: globalData?.title || globalData?.name || key,
+            description: globalData?.description || (value.type === 'streamable-http' ? `远程服务: ${value.url || ''}` : value.command ? `${value.command} ${(value.args || []).join(' ')}` : ''),
+            version: globalData?.version || '',
+            source: globalData ? 'registry' : 'project-local',
+            installedTargets: ['claude'],
+            projectLevel: true
+          })
+        }
+      } catch (_) {}
+    }
+
+    // 读取 Codex 项目级 config.toml
+    const codexConfigPath = path.join(projectPath, '.codex', 'config.toml')
+    if (fs.existsSync(codexConfigPath)) {
+      try {
+        const projectCodexMcps = readTomlMcpServers(codexConfigPath)
+        for (const [key, value] of Object.entries(projectCodexMcps)) {
+          if (seenSlugs.has(key)) {
+            const existing = mcps.find(m => m.slug === key)
+            if (existing) existing.installedTargets.push('codex')
+            continue
+          }
+          seenSlugs.add(key)
+          const globalData = globalMcpsMap.get(key)
+          mcps.push({
+            name: globalData?.name || key,
+            slug: key,
+            title: globalData?.title || globalData?.name || key,
+            description: globalData?.description || (value.type ? `远程服务: ${value.url || ''}` : value.command ? `${value.command} ${Array.isArray(value.args) ? value.args.join(' ') : ''}` : ''),
+            version: globalData?.version || '',
+            source: globalData ? 'registry' : 'project-local',
+            installedTargets: ['codex'],
+            projectLevel: true
+          })
+        }
+      } catch (_) {}
+    }
+
+    return { success: true, mcps }
+  } catch (error) {
+    return { success: false, mcps: [], error: error.message }
+  }
+})
+
+// 从指定 toml 文件读取 mcp_servers sections（复用全局逻辑但支持自定义路径）
+function readTomlMcpServers(tomlPath) {
+  const fs = require('fs')
+  const result = {}
+  if (!fs.existsSync(tomlPath)) return result
+  const rawContent = fs.readFileSync(tomlPath, 'utf-8')
+  let currentSlug = null
+  let currentConfig = null
+
+  for (const line of rawContent.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    const sectionMatch = trimmed.match(/^\[([^\]]+)\]$/)
+    if (sectionMatch) {
+      if (currentSlug && currentConfig) result[currentSlug] = currentConfig
+      const section = sectionMatch[1]
+      const mcpPrefix = 'mcp_servers.'
+      if (section.startsWith(mcpPrefix)) {
+        currentSlug = section.slice(mcpPrefix.length)
+        currentConfig = {}
+      } else {
+        currentSlug = null
+        currentConfig = null
+      }
+      continue
+    }
+    if (!currentSlug || !currentConfig) continue
+    const entryMatch = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/)
+    if (entryMatch) {
+      const key = entryMatch[1]
+      let value = entryMatch[2].trim()
+      if (value.startsWith('[')) {
+        try { currentConfig[key] = JSON.parse(value.replace(/'/g, '"')) } catch (_) { currentConfig[key] = value }
+      } else {
+        currentConfig[key] = parseTopLevelTomlValue(value)
+      }
+    }
+  }
+  if (currentSlug && currentConfig) result[currentSlug] = currentConfig
+  return result
+}
+
+// 安装 MCP 到项目级配置
+ipcMain.handle('install-mcp-to-project', async (event, { slug, target, envValues, projectPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+    const os = require('os')
+
+    if (!projectPath) return { success: false, error: '未指定项目路径' }
+
+    // 读取 MCP 数据
+    const mcpFile = path.join(os.homedir(), '.ccgui', 'mcps', `${slug}.json`)
+    if (!fs.existsSync(mcpFile)) {
+      return { success: false, error: 'MCP 配置不存在，请先从"已下载"中确认该 MCP 已下载' }
+    }
+
+    const mcpData = JSON.parse(fs.readFileSync(mcpFile, 'utf-8'))
+    const config = generateMcpConfig(mcpData, envValues)
+    if (!config) {
+      return { success: false, error: '无法生成 MCP 配置' }
+    }
+
+    if (target === 'claude') {
+      const claudeDir = path.join(projectPath, '.claude')
+      const claudeSettingsPath = path.join(claudeDir, 'settings.json')
+      fs.mkdirSync(claudeDir, { recursive: true })
+
+      let settings = {}
+      if (fs.existsSync(claudeSettingsPath)) {
+        settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
+      }
+      if (!settings.mcpServers) settings.mcpServers = {}
+      settings.mcpServers[slug] = config
+      fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+      logger.info(`[MCP] Installed ${slug} to project Claude settings`)
+    } else if (target === 'codex') {
+      const codexDir = path.join(projectPath, '.codex')
+      const codexConfigPath = path.join(codexDir, 'config.toml')
+      fs.mkdirSync(codexDir, { recursive: true })
+
+      // 先移除已有的 section
+      removeTomlMcpSection(codexConfigPath, slug)
+
+      let rawContent = ''
+      if (fs.existsSync(codexConfigPath)) {
+        rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
+      }
+      const tomlLines = generateMcpTomlLines(config, slug)
+      const content = rawContent.replace(/\n+$/, '') + '\n\n' + tomlLines.join('\n') + '\n'
+      fs.writeFileSync(codexConfigPath, content.replace(/\n{3,}/g, '\n\n'), 'utf-8')
+      logger.info(`[MCP] Installed ${slug} to project Codex config`)
+    }
+
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 从项目级配置卸载 MCP
+ipcMain.handle('uninstall-mcp-from-project', async (event, { slug, target, projectPath }) => {
+  try {
+    const fs = require('fs')
+    const path = require('path')
+
+    if (!projectPath) return { success: false, error: '未指定项目路径' }
+
+    if (target === 'claude') {
+      const claudeSettingsPath = path.join(projectPath, '.claude', 'settings.json')
+      if (fs.existsSync(claudeSettingsPath)) {
+        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
+        if (settings.mcpServers?.[slug]) {
+          delete settings.mcpServers[slug]
+          fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+          logger.info(`[MCP] Uninstalled ${slug} from project Claude settings`)
+        }
+      }
+    } else if (target === 'codex') {
+      const codexConfigPath = path.join(projectPath, '.codex', 'config.toml')
+      removeTomlMcpSection(codexConfigPath, slug)
+      logger.info(`[MCP] Uninstalled ${slug} from project Codex config`)
+    }
+
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 从指定 toml 文件移除 mcp_servers section
+function removeTomlMcpSection(tomlPath, slug) {
+  const fs = require('fs')
+  if (!fs.existsSync(tomlPath)) return
+  const rawContent = fs.readFileSync(tomlPath, 'utf-8')
+  const sectionHeader = `[mcp_servers.${slug}]`
+  const lines = rawContent.split(/\r?\n/)
+  const output = []
+  let skipping = false
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === sectionHeader) {
+      skipping = true
+      continue
+    }
+    if (skipping) {
+      if (trimmed.match(/^\[([^\]]+)\]$/)) {
+        skipping = false
+        output.push(line)
+      }
+      continue
+    }
+    output.push(line)
+  }
+  const finalContent = output.join('\n').replace(/\n{3,}/g, '\n\n') + '\n'
+  fs.writeFileSync(tomlPath, finalContent, 'utf-8')
+}
+
+// 删除项目级 MCP
+ipcMain.handle('delete-project-mcp', async (event, { slug, projectPath }) => {
+  try {
+    if (!projectPath) return { success: false, error: '未指定项目路径' }
+
+    // 从两个目标中都移除
+    const fs = require('fs')
+    const path = require('path')
+
+    // Claude
+    const claudeSettingsPath = path.join(projectPath, '.claude', 'settings.json')
+    if (fs.existsSync(claudeSettingsPath)) {
+      try {
+        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
+        if (settings.mcpServers?.[slug]) {
+          delete settings.mcpServers[slug]
+          fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+        }
+      } catch (_) {}
+    }
+
+    // Codex
+    const codexConfigPath = path.join(projectPath, '.codex', 'config.toml')
+    removeTomlMcpSection(codexConfigPath, slug)
+
+    logger.info(`[MCP] Deleted from project: ${slug}`)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
 ipcMain.handle('show-message-box', async (event, options = {}) => {
   try {
     const targetWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow || null
@@ -3236,8 +4952,10 @@ function createNewWindow() {
 // App lifecycle
 
 app.whenReady().then(() => {
-  // 清理上次异常退出残留的 provider 进程
-  processRegistry.cleanupStaleInstances()
+  // 清理上次异常退出残留的 provider 进程（开发模式下跳过）
+  if (!isDevRuntime) {
+    processRegistry.cleanupStaleInstances()
+  }
 
   appStartupStartedAt = Date.now()
   // Update isDev flag now that app is ready

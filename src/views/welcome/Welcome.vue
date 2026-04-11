@@ -1,5 +1,5 @@
 <script setup>
-import { computed, defineAsyncComponent, onMounted, onUnmounted } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { IconButton } from '@/components/base'
 import { useAppStore } from '../../stores/useAppStore'
 import NewProjectDialog from './components/NewProjectDialog.vue'
@@ -9,6 +9,8 @@ import { useProjectDrop } from './hooks/useProjectDrop'
 import { useDialogStack } from '../../composables/useDialogStack'
 
 const SettingsDialog = defineAsyncComponent(() => import('@/views/settings/SettingsDialog.vue'))
+const SkillsDialog = defineAsyncComponent(() => import('@/views/tools/SkillsDialog.vue'))
+const McpDialog = defineAsyncComponent(() => import('@/views/tools/McpDialog.vue'))
 
 const store = useAppStore()
 const {
@@ -30,6 +32,51 @@ const {
   clearMissingProjects,
   formatLastActive
 } = useWelcomeProjects(store)
+
+const showConfigMenu = ref(false)
+const showSkillsDialog = ref(false)
+const showMcpDialog = ref(false)
+const configMenuRef = ref(null)
+const configMenuBtnRef = ref(null)
+const configMenuDropdownStyle = ref({})
+
+function updateConfigMenuPosition() {
+  nextTick(() => {
+    const btn = configMenuBtnRef.value
+    if (!btn) {
+      configMenuDropdownStyle.value = {}
+      return
+    }
+    const rect = btn.getBoundingClientRect()
+    const vw = window.innerWidth
+    const menuWidth = 180
+    configMenuDropdownStyle.value = {
+      position: 'fixed',
+      right: `${vw - rect.right}px`,
+      top: `${rect.bottom + 4}px`,
+      minWidth: `${menuWidth}px`,
+      zIndex: 1000
+    }
+  })
+}
+
+function toggleConfigMenu() {
+  showConfigMenu.value = !showConfigMenu.value
+  if (showConfigMenu.value) {
+    updateConfigMenuPosition()
+  }
+}
+
+function closeConfigMenu() {
+  showConfigMenu.value = false
+}
+
+function handleConfigMenuPointerDown(event) {
+  if (!showConfigMenu.value) return
+  if (configMenuRef.value?.contains(event.target)) return
+  if (configMenuBtnRef.value?.contains(event.target)) return
+  closeConfigMenu()
+}
 
 const {
   isDragging,
@@ -61,6 +108,8 @@ onMounted(async () => {
   })
 
   window.addEventListener('ccgui-shortcut', handleShortcutEvent)
+  window.addEventListener('pointerdown', handleConfigMenuPointerDown, true)
+  window.addEventListener('resize', updateConfigMenuPosition)
 
   logger.info('[Welcome] mount complete', {
     sinceMountedMs: Math.round(performance.now() - mountedAt)
@@ -69,6 +118,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('ccgui-shortcut', handleShortcutEvent)
+  window.removeEventListener('pointerdown', handleConfigMenuPointerDown, true)
+  window.removeEventListener('resize', updateConfigMenuPosition)
 })
 
 async function refreshProjects() {
@@ -94,6 +145,7 @@ function handleShortcutEvent(event) {
   const action = event?.detail?.action
 
   if (action === 'open-settings') {
+    closeConfigMenu()
     showSettingsDialog.value = true
     return
   }
@@ -113,13 +165,50 @@ function handleShortcutEvent(event) {
     @dragleave="handleDragLeave"
     @drop="handleDrop"
   >
-    <!-- Settings Button - 右上角齿轮图标 -->
-    <IconButton class="settings-btn" size="lg" @click="showSettingsDialog = true" title="应用设置">
-      <svg class="settings-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-      </svg>
-    </IconButton>
+    <!-- Config Menu Button - 右上角 -->
+    <div class="config-menu-wrapper" ref="configMenuBtnRef">
+      <IconButton class="settings-btn" size="lg" @click="toggleConfigMenu" title="配置">
+        <svg class="settings-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </IconButton>
+      <Teleport to="body">
+        <div
+          v-if="showConfigMenu"
+          ref="configMenuRef"
+          class="config-menu-dropdown"
+          :style="configMenuDropdownStyle"
+          @click.stop
+        >
+          <button class="menu-item" @click="showSettingsDialog = true; closeConfigMenu()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            设置
+          </button>
+          <div class="menu-divider"></div>
+          <button class="menu-item" @click="showSkillsDialog = true; closeConfigMenu()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/>
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <path d="M16 10a4 4 0 0 1-8 0"/>
+            </svg>
+            技能管理
+          </button>
+          <button class="menu-item" @click="showMcpDialog = true; closeConfigMenu()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+              <line x1="6" y1="6" x2="6.01" y2="6"/>
+              <line x1="6" y1="18" x2="6.01" y2="18"/>
+            </svg>
+            MCP 服务
+          </button>
+        </div>
+      </Teleport>
+    </div>
 
     <div class="welcome-header">
       <div class="logo">
@@ -374,6 +463,18 @@ function handleShortcutEvent(event) {
       @close="showSettingsDialog = false"
     />
 
+    <!-- Skills Dialog -->
+    <SkillsDialog
+      v-if="showSkillsDialog"
+      @close="showSkillsDialog = false"
+    />
+
+    <!-- MCP Dialog -->
+    <McpDialog
+      v-if="showMcpDialog"
+      @close="showMcpDialog = false"
+    />
+
     <!-- Delete Project Confirmation Dialog -->
     <div v-if="showDeleteConfirm" class="confirm-dialog-overlay">
       <div class="confirm-dialog" @click.stop>
@@ -443,12 +544,56 @@ function handleShortcutEvent(event) {
   z-index: 999;
 }
 
-.settings-btn {
+.config-menu-wrapper {
   position: absolute;
   top: 12px;
   right: 16px;
   z-index: 1000;
   -webkit-app-region: no-drag;
+}
+
+.config-menu-wrapper .settings-btn {
+  position: static;
+}
+
+.config-menu-dropdown {
+  background: #1E1E1E;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 180px;
+  z-index: 1000;
+  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.5);
+}
+
+.config-menu-dropdown .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: #E4E4E7;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.config-menu-dropdown .menu-item:hover:not(:disabled) {
+  background: #27272A;
+}
+
+.config-menu-dropdown .menu-item:disabled {
+  color: #52525B;
+  cursor: default;
+}
+
+.config-menu-dropdown .menu-divider {
+  height: 1px;
+  background: #3F3F46;
+  margin: 4px 8px;
 }
 
 .settings-icon {

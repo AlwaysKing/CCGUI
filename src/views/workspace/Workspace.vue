@@ -15,6 +15,8 @@ import SwitchConfirmDialog from './components/SwitchConfirmDialog.vue'
 import ProjectConfigDialog from './components/ProjectConfigDialog.vue'
 import SessionConfigDialog from './components/SessionConfigDialog.vue'
 import SettingsDialog from '@/views/settings/SettingsDialog.vue'
+import SkillsDialog from '@/views/tools/SkillsDialog.vue'
+import McpDialog from '@/views/tools/McpDialog.vue'
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout'
 import { useWorkspaceDialogs } from './hooks/useWorkspaceDialogs'
 import { useProjectWorkspacePersistence } from './hooks/useProjectWorkspacePersistence'
@@ -35,6 +37,8 @@ const isTerminalResizing = ref(false)
 const terminalRunningState = ref({ hasRunning: false, count: 0 })
 const showClaudeSessions = ref(true)
 const showCodexSessions = ref(true)
+const showSkillsDialog = ref(false)
+const showMcpDialog = ref(false)
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
 const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
@@ -500,6 +504,8 @@ async function handleDeleteInactiveSessions() {
         @switchProject="handleSwitchProject"
         @home="handleGoHomeFromSidebar"
         @openAppSettings="showSettingsDialog = true"
+        @openSkillsDialog="showSkillsDialog = true"
+        @openMcpDialog="showMcpDialog = true"
         @openProjectConfig="handleOpenProjectConfig"
         @openSessionConfig="handleOpenSessionConfig"
         @deleteSessionConfig="handleDeleteSessionConfig"
@@ -697,6 +703,18 @@ async function handleDeleteInactiveSessions() {
       v-if="showSettingsDialog"
       @saved="handleSettingsSaved"
       @close="showSettingsDialog = false"
+    />
+
+    <SkillsDialog
+      v-if="showSkillsDialog"
+      :project-path="store.currentProject?.path || ''"
+      @close="showSkillsDialog = false"
+    />
+
+    <McpDialog
+      v-if="showMcpDialog"
+      :project-path="store.currentProject?.path || ''"
+      @close="showMcpDialog = false"
     />
   </div>
 </template>

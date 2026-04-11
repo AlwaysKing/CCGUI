@@ -253,7 +253,43 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Notification API
   // ============================================
   sendNotification: (options) => ipcRenderer.invoke('send-notification', options),
-  playSystemSound: (options) => ipcRenderer.invoke('play-system-sound', options)
+  playSystemSound: (options) => ipcRenderer.invoke('play-system-sound', options),
+  fetchJSON: (options) => ipcRenderer.invoke('fetch-json', options),
+
+  // ============================================
+  // MCP Registry API
+  // ============================================
+  downloadMcp: (options) => ipcRenderer.invoke('download-mcp', options),
+  listDownloadedMcps: () => ipcRenderer.invoke('list-downloaded-mcps'),
+  installMcp: (options) => ipcRenderer.invoke('install-mcp', options),
+  uninstallMcp: (options) => ipcRenderer.invoke('uninstall-mcp', options),
+  deleteMcp: (options) => ipcRenderer.invoke('delete-mcp', options),
+
+  // ============================================
+  // ClawHub Skill Download API
+  // ============================================
+  downloadSkill: (options) => ipcRenderer.invoke('download-skill', options),
+  checkSkillDownloaded: (options) => ipcRenderer.invoke('check-skill-downloaded', options),
+  listDownloadedSkills: () => ipcRenderer.invoke('list-downloaded-skills'),
+  installSkill: (options) => ipcRenderer.invoke('install-skill', options),
+  deleteSkill: (options) => ipcRenderer.invoke('delete-skill', options),
+  readSkillReadme: (options) => ipcRenderer.invoke('read-skill-readme', options),
+  readSkillExtra: (options) => ipcRenderer.invoke('read-skill-extra', options),
+  activateSkill: (options) => ipcRenderer.invoke('activate-skill', options),
+  deactivateSkill: (options) => ipcRenderer.invoke('deactivate-skill', options),
+
+  // ============================================
+  // Project-Level Skill & MCP API
+  // ============================================
+  listProjectSkills: (options) => ipcRenderer.invoke('list-project-skills', options),
+  activateSkillToProject: (options) => ipcRenderer.invoke('activate-skill-to-project', options),
+  deactivateSkillFromProject: (options) => ipcRenderer.invoke('deactivate-skill-from-project', options),
+  installSkillToProject: (options) => ipcRenderer.invoke('install-skill-to-project', options),
+  deleteProjectSkill: (options) => ipcRenderer.invoke('delete-project-skill', options),
+  listProjectMcps: (options) => ipcRenderer.invoke('list-project-mcps', options),
+  installMcpToProject: (options) => ipcRenderer.invoke('install-mcp-to-project', options),
+  uninstallMcpFromProject: (options) => ipcRenderer.invoke('uninstall-mcp-from-project', options),
+  deleteProjectMcp: (options) => ipcRenderer.invoke('delete-project-mcp', options)
 })
 
 contextBridge.exposeInMainWorld('electronEvents', {

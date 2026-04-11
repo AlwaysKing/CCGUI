@@ -1142,7 +1142,6 @@ async function handlePreviewFile(event) {
           </span>
         </template>
         <template v-else>
-          <span class="tool-icon">{{ toolIcon }}</span>
           <span class="tool-name">{{ displayToolName }}</span>
         </template>
         <!-- 部分消息状态指示器 - 只在工具正在执行且没有输入数据时显示 -->
@@ -1961,6 +1960,20 @@ async function handlePreviewFile(event) {
 .tool-use-card.text-style .header-actions {
   gap: 4px;
   justify-content: flex-start;
+  margin-left: 0;
+}
+
+/* 简约模式下复制按钮跟随内容，不使用绝对定位 */
+.tool-use-card.text-style .copy-btn {
+  position: static;
+  transform: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tool-use-card.text-style .tool-header:hover .copy-btn {
+  opacity: 0.6;
+  pointer-events: auto;
 }
 
 .copy-btn {

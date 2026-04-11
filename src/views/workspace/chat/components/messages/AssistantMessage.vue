@@ -60,11 +60,11 @@ function copyContent() {
 
     <!-- 消息内容（单独气泡） -->
     <div v-if="message.content" class="message-text" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]" :style="assistantMessageStyle">
+      <MarkdownRenderer :content="message.content" />
       <CopyButton
         :is-copied="isCopied"
         @copy="copyContent"
       />
-      <MarkdownRenderer :content="message.content" />
     </div>
     <div v-else-if="showStreamingPlaceholder" class="message-streaming-placeholder" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]">
       <span class="placeholder-spinner"></span>
@@ -124,6 +124,32 @@ function copyContent() {
   background: transparent;
   border: none;
   border-radius: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+/* 简约模式下复制按钮跟随内容 */
+.message-text.surface-ghost :deep(.copy-btn) {
+  position: static;
+  opacity: 0;
+  pointer-events: none;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 2px;
+  margin-top: 2px;
+}
+
+.message-text.surface-ghost:hover :deep(.copy-btn) {
+  opacity: 0.6;
+  pointer-events: auto;
+}
+
+.message-text.surface-ghost :deep(.copy-btn:hover) {
+  opacity: 1 !important;
+  background: #27272A;
+  color: #A1A1AA;
 }
 
 .message-streaming-placeholder {

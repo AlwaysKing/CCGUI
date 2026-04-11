@@ -13,6 +13,17 @@ const STORAGE_KEYS = {
 let hasBoundSessionCompletionListener = false
 let hasBoundSessionStatusListener = false
 
+// 播放后台权限请求提示音
+async function playPermissionAlertSound() {
+  try {
+    const result = await window.electronAPI.getAppConfig()
+    const config = result?.config
+    if (config?.settings?.alertSoundEnabled === false) return
+    const sound = config?.settings?.alertSound || 'Glass'
+    await window.electronAPI?.playSystemSound?.({ sound })
+  } catch {}
+}
+
 // Helper to load from localStorage
 function loadFromStorage(key, defaultValue) {
   try {
@@ -105,6 +116,7 @@ export const useAppStore = defineStore('app', () => {
       processing: false,
       streaming: false,
       unseenCompleted: false,
+      pendingPermission: false,
       messageCount: 0,
       updatedAt: new Date().toISOString()
     }
@@ -215,12 +227,31 @@ export const useAppStore = defineStore('app', () => {
 
         break
 
+      case 'control-request':
+        patchSessionStatus(sessionId, {
+          pendingPermission: true,
+          updatedAt: new Date().toISOString()
+        })
+        // 后台 session 收到权限请求时播放提示音
+        if (sessionId !== currentSession.value?.id) {
+          playPermissionAlertSound()
+        }
+        break
+
+      case 'control-response':
+        patchSessionStatus(sessionId, {
+          pendingPermission: false,
+          updatedAt: new Date().toISOString()
+        })
+        break
+
       case 'normal-exit':
       case 'abnormal-exit':
         patchSessionStatus(sessionId, {
           ready: false,
           processing: false,
           streaming: false,
+          pendingPermission: false,
           updatedAt: new Date().toISOString()
         })
         break
@@ -470,6 +501,7 @@ export const useAppStore = defineStore('app', () => {
       }
 
       clearSessionUnseenCompleted(session.id)
+      patchSessionStatus(session.id, { pendingPermission: false })
 
       // 更新当前会话元信息
       currentSession.value = session

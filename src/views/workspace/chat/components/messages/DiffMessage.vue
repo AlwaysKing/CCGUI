@@ -517,6 +517,7 @@ async function handlePreviewFile(event) {
             <span class="status-badge executing" v-if="isExecuting">执行中...</span>
             <span class="status-badge error" v-else-if="isError">失败</span>
             <span class="status-badge success" v-else>完成</span>
+            <span v-if="!isExpanded && collapsedSummary" class="header-summary-inline">{{ collapsedSummary }}</span>
           </template>
         </div>
         <div class="header-actions">
@@ -535,10 +536,6 @@ async function handlePreviewFile(event) {
           </button>
           <CollapseToggle v-if="!isTextStyle" :collapsed="!isExpanded" @toggle="toggleExpand" />
         </div>
-      </div>
-
-      <div v-if="!isTextStyle && !isExpanded && collapsedSummary" class="collapsed-summary-line" @click="toggleExpand">
-        {{ collapsedSummary }}
       </div>
 
       <div v-if="isExpanded" class="diff-body">
@@ -817,6 +814,14 @@ async function handlePreviewFile(event) {
   border-radius: 0;
 }
 
+.diff-card.collapsed {
+  opacity: 0.85;
+}
+
+.diff-card.collapsed:hover {
+  opacity: 1;
+}
+
 .diff-card.error {
   border-color: #EF4444;
   border-left-color: #EF4444;
@@ -918,7 +923,7 @@ async function handlePreviewFile(event) {
 }
 
 .text-style-status.is-success {
-  color: #8B93A7;
+  color: #6EE7B7;
 }
 
 .text-style-status.is-error {
@@ -965,9 +970,9 @@ async function handlePreviewFile(event) {
 .section-copy-btn {
   font-size: 12px;
   color: #71717A;
-  background: rgba(39, 39, 42, 0.9);
+  background: transparent;
   border: none;
-  padding: 4px;
+  padding: 2px;
   border-radius: 4px;
   cursor: pointer;
   opacity: 0;
@@ -975,6 +980,7 @@ async function handlePreviewFile(event) {
   display: flex;
   align-items: center;
   justify-content: center;
+  line-height: 1;
 }
 
 .view-toggle-btn {
@@ -1014,20 +1020,15 @@ async function handlePreviewFile(event) {
   color: #A1A1AA;
 }
 
-.collapsed-summary-line {
-  padding: 8px 14px;
+.header-summary-inline {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #A1A1AA;
   font-size: 12px;
-  color: #94A3B8;
-  border-top: 1px solid rgba(59, 130, 246, 0.15);
-  cursor: pointer;
-  background: rgba(59, 130, 246, 0.03);
-}
-
-.diff-card.text-style .collapsed-summary-line {
-  padding: 0 0 8px 24px;
-  border-top: none;
-  background: transparent;
-  color: #8B93A7;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  flex: 1 1 auto;
 }
 
 .diff-body {

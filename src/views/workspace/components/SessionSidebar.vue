@@ -1208,7 +1208,11 @@ watch([showConfigPanel, fileSectionHeight], () => {
             :key="session.id"
             :data-session-id="session.id"
             class="session-item"
-            :class="{ active: currentSession?.id === session.id, unavailable: session.sessionAvailable === false }"
+            :class="{
+              active: currentSession?.id === session.id,
+              unavailable: session.sessionAvailable === false,
+              'permission-pending': sessionStatuses[session.id]?.pendingPermission && currentSession?.id !== session.id
+            }"
             @click="handleSelect(session)"
             @contextmenu="handleContextMenu($event, session)"
           >
@@ -1776,6 +1780,37 @@ watch([showConfigPanel, fileSectionHeight], () => {
 .session-item.active {
   background: rgba(249, 115, 22, 0.1);
   border-color: #F97316;
+}
+
+.session-item.permission-pending {
+  overflow: hidden;
+}
+
+.session-item.permission-pending::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(to right, rgba(34, 197, 94, 0.5), transparent 3%, transparent 97%, rgba(34, 197, 94, 0.5)),
+    linear-gradient(to bottom, rgba(34, 197, 94, 0.5), transparent 15%, transparent 85%, rgba(34, 197, 94, 0.5));
+  animation: permission-blink 1.5s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.session-item.permission-pending > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes permission-blink {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* Three-dot menu button - 默认隐藏 */

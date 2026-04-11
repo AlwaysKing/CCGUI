@@ -234,7 +234,7 @@ const effectiveAvatarMode = computed(() => {
 })
 
 const usesToolAvatarIcon = computed(() => {
-  return props.message.role === 'tool_use' || props.message.role === 'diff'
+  return props.message.role === 'tool_use' || props.message.role === 'diff' || props.message.role === 'task_complete'
 })
 
 // 头像字符
@@ -269,6 +269,13 @@ const avatarChar = computed(() => {
     case 'user': return 'U'
     case 'assistant': return 'C'
     case 'question': return '?'
+    case 'task_complete': {
+      const taskType = props.message.taskType
+      if (taskType === 'local_agent') return '🤖'
+      if (taskType === 'explore') return '🔍'
+      if (taskType === 'plan') return '📋'
+      return '⚙️'
+    }
     default: return 'S'
   }
 })
@@ -293,7 +300,6 @@ const showAvatar = computed(() => {
   return props.message.role !== 'status' &&
          props.message.role !== 'system' &&
          props.message.role !== 'system_notification' &&
-         props.message.role !== 'task_complete' &&
          props.message.role !== 'file_change_summary'
 })
 
@@ -1407,6 +1413,12 @@ watch(() => props.message, () => {
 
 .message.interrupt .message-avatar {
   background: #EF4444;
+  color: white;
+  font-size: 14px;
+}
+
+.message.task_complete .message-avatar {
+  background: rgba(59, 130, 246, 0.15);
   color: white;
   font-size: 14px;
 }

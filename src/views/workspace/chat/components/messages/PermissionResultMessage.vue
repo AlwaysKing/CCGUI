@@ -156,7 +156,6 @@ const displayToolName = computed(() => {
             </span>
           </template>
           <template v-else>
-            <span class="tool-icon">{{ parsedContent.isApproved ? '✓' : '✗' }}</span>
             <span class="tool-name">{{ displayToolName }}</span>
             <span class="text-style-status" :class="parsedContent.isDenied ? 'is-error' : 'is-success'" aria-hidden="true">
               <svg v-if="parsedContent.isDenied" viewBox="0 0 12 12" fill="none">
@@ -166,7 +165,7 @@ const displayToolName = computed(() => {
                 <path d="M2.2 6.2L4.7 8.7L9.8 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </span>
-            <span class="header-summary-inline">{{ parsedContent.summary }}</span>
+            <span v-if="isCollapsed" class="header-summary-inline">{{ parsedContent.summary }}</span>
           </template>
         </div>
         <div class="header-actions">
@@ -185,7 +184,7 @@ const displayToolName = computed(() => {
 
       <!-- 展开时显示详细内容 - 与 ToolUseMessage 的 tool-body 完全一致 -->
       <div v-if="!isCollapsed" class="tool-body" :class="{ 'text-style-body': isTextStyle }">
-        <div v-if="isTextStyle" class="text-style-body-card">
+        <div :class="{ 'text-style-body-card': isTextStyle }">
         <!-- 说明部分 - 与 ToolUseMessage 完全一致 -->
         <div v-if="parsedContent.description" class="tool-section">
           <div class="section-label">说明</div>
@@ -438,7 +437,21 @@ const displayToolName = computed(() => {
 
 .tool-use-card.text-style .header-actions {
   margin-left: 0;
+  gap: 4px;
   justify-content: flex-start;
+}
+
+/* 简约模式下复制按钮跟随内容，不使用绝对定位 */
+.tool-use-card.text-style .copy-btn {
+  position: static;
+  transform: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tool-use-card.text-style .tool-header:hover .copy-btn {
+  opacity: 0.6;
+  pointer-events: auto;
 }
 
 .copy-btn {

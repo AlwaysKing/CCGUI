@@ -18,7 +18,6 @@ import MessageDetailDialog from './components/dialogs/MessageDetailDialog.vue'
 import EnvInfoBar from './components/layout/EnvInfoBar.vue'
 import ChatInput from './components/layout/ChatInput.vue'
 import AgentWorkspace from './components/AgentWorkspace.vue'
-import TaskFloatingWindow from './components/TaskFloatingWindow.vue'
 
 // 引入 composables
 // useMessageList composable 的功能已移至 MessageList 组件
@@ -2390,14 +2389,6 @@ function handleToggleAgentRail() {
         </svg>
       </div>
     </div>
-
-    <!-- 任务浮动窗口 - 在 messages 容器外,不受滚动影响 -->
-    <TaskFloatingWindow
-      v-if="!isCollapsedByPreview"
-      :sidebar-collapsed="sidebarCollapsed"
-      :sidebar-width="sidebarWidth"
-      :content-bounds="contentViewport"
-    />
 
     <!-- 可拖拽的分隔条 -->
     <div

@@ -175,15 +175,16 @@ function scrollToUserMessage() {
 </template>
 
 <style scoped>
-/* 粘性头部 - 浮动在聊天内容上方 */
+/* 粘性头部 - 绝对定位浮动在聊天内容上方 */
 .sticky-header {
-  position: sticky;
-  top: 0;
+  position: absolute;
+  top: 2px;
+  right: 0;
   z-index: 50;
   display: flex;
   justify-content: flex-end;
   padding-right: 16px;
-  margin-top: -14px;
+  pointer-events: auto;
 }
 
 .sticky-content {
@@ -197,7 +198,6 @@ function scrollToUserMessage() {
   max-width: min(70%, var(--content-width, 100%));
   flex-direction: column;
   gap: 4px;
-  transform: translateY(-6px);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
   backdrop-filter: blur(12px);
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;

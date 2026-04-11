@@ -1,28 +1,12 @@
 <script setup>
 /**
  * TaskFloatingWindow - 任务浮动窗口组件
- * 每个任务是一个独立的悬浮窗
+ * 每个任务是一个独立的悬浮窗，定位在父容器（main-stage）内
  */
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useSessionStore } from '../../../../stores/useSessionStore'
 
 const sessionStore = useSessionStore()
-
-// Props
-const props = defineProps({
-  sidebarWidth: {
-    type: Number,
-    default: 260
-  },
-  sidebarCollapsed: {
-    type: Boolean,
-    default: false
-  },
-  contentBounds: {
-    type: Object,
-    default: () => ({ left: 0, right: 0, width: 0 })
-  }
-})
 
 // 当前活跃的任务列表
 const activeTasks = computed(() => {
@@ -33,7 +17,7 @@ const activeTasks = computed(() => {
 
 // 每个任务的状态 (位置、折叠状态、粘性状态)
 const taskStates = ref(new Map())
-const resizeObserver = ref(null)
+const containerRef = ref(null)
 const now = ref(Date.now())
 let timerHandle = null
 
@@ -52,7 +36,7 @@ function formatRunningTime(startTime) {
   const elapsed = now.value - startTime
   if (elapsed < 1000) return `${elapsed}ms`
   if (elapsed < 60000) return `${(elapsed / 1000).toFixed(1)}s`
-  return `${(elapsed / 60000).toFixed(1)}min`
+  return `${Math.floor(elapsed / 60000)}m ${Math.floor((elapsed % 60000) / 1000)}s`
 }
 
 // 获取任务进度
@@ -106,43 +90,25 @@ function toggleCollapse(taskId) {
   })
 }
 
-// 获取边界值
+// 获取父容器 (main-stage) 的边界
+function getContainerRect() {
+  if (!containerRef.value) return null
+  return containerRef.value.getBoundingClientRect()
+}
+
+// 获取边界值（基于父容器）
 function getBounds() {
   const PADDING = 12
-  const TOP_BOUND = 40
-  const LEFT_BOUND = Number.isFinite(props.contentBounds?.left) && props.contentBounds.left > 0
-    ? props.contentBounds.left + PADDING
-    : (props.sidebarCollapsed ? 12 : props.sidebarWidth + 12)
-
-  const resizeHandle = document.querySelector('.chat-window .resize-handle')
-  let bottomBound = 120
-  if (resizeHandle) {
-    bottomBound = window.innerHeight - resizeHandle.getBoundingClientRect().top + PADDING
-  }
+  const TOP_BOUND = 8
+  const rect = getContainerRect()
+  if (!rect) return { PADDING, TOP_BOUND, LEFT_BOUND: PADDING, RIGHT_BOUND: 300, BOTTOM_BOUND: PADDING }
 
   return {
     PADDING,
     TOP_BOUND,
-    LEFT_BOUND,
-    bottomBound,
-    RIGHT_BOUND: Number.isFinite(props.contentBounds?.right) && props.contentBounds.right > 0
-      ? window.innerWidth - props.contentBounds.right
-      : window.innerWidth
-  }
-}
-
-// 计算任务的默认位置 (从下往上堆叠)
-function getDefaultPosition(taskIndex) {
-  const { PADDING, LEFT_BOUND, bottomBound, RIGHT_BOUND } = getBounds()
-  const taskHeight = 60
-  const gap = 8
-
-  const x = RIGHT_BOUND - 320 - PADDING
-  const y = window.innerHeight - bottomBound - taskHeight - (taskIndex * (taskHeight + gap))
-
-  return {
-    x: Math.max(LEFT_BOUND, x),
-    y: Math.max(40, y)
+    LEFT_BOUND: PADDING,
+    RIGHT_BOUND: rect.width - PADDING,
+    BOTTOM_BOUND: rect.height - PADDING
   }
 }
 
@@ -158,7 +124,7 @@ function getTargetSize(taskId) {
 
 // 统一碰撞解析：所有窗口互不重叠，保持粘性
 function resolveCollisions() {
-  const { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound, RIGHT_BOUND } = getBounds()
+  const { PADDING, TOP_BOUND, LEFT_BOUND, RIGHT_BOUND, BOTTOM_BOUND } = getBounds()
   const GAP = 8
   const tasks = activeTasks.value
   if (tasks.length === 0) return
@@ -167,8 +133,8 @@ function resolveCollisions() {
   const items = tasks.map((task, index) => {
     const state = getTaskState(task.id)
     const size = getTargetSize(task.id)
-    const maxX = RIGHT_BOUND - size.width - PADDING
-    const maxY = window.innerHeight - size.height - bottomBound
+    const maxX = RIGHT_BOUND - size.width
+    const maxY = BOTTOM_BOUND - size.height
 
     let x, y
     if (state.position) {
@@ -269,14 +235,20 @@ function startDrag(event, taskId) {
 
     if (!dragState.value.isDragging) return
 
-    const { PADDING, TOP_BOUND, LEFT_BOUND, bottomBound, RIGHT_BOUND } = getBounds()
+    const { PADDING, TOP_BOUND, LEFT_BOUND, RIGHT_BOUND, BOTTOM_BOUND } = getBounds()
     const containerRect = container.getBoundingClientRect()
+    const parentRect = getContainerRect()
+    if (!parentRect) return
 
-    let newX = e.clientX - dragOffset.x
-    let newY = e.clientY - dragOffset.y
+    // 鼠标在父容器中的位置
+    const mouseXInParent = e.clientX - parentRect.left
+    const mouseYInParent = e.clientY - parentRect.top
 
-    const maxX = RIGHT_BOUND - containerRect.width - PADDING
-    const maxY = window.innerHeight - containerRect.height - bottomBound
+    let newX = mouseXInParent - dragOffset.x
+    let newY = mouseYInParent - dragOffset.y
+
+    const maxX = RIGHT_BOUND - containerRect.width
+    const maxY = BOTTOM_BOUND - containerRect.height
 
     newX = Math.max(LEFT_BOUND, Math.min(newX, maxX))
     newY = Math.max(TOP_BOUND, Math.min(newY, maxY))
@@ -304,10 +276,18 @@ function startDrag(event, taskId) {
 // 获取任务的位置样式
 function getTaskStyle(taskId, taskIndex) {
   const state = getTaskState(taskId)
-  const position = state.position || getDefaultPosition(taskIndex)
+  if (!state.position) {
+    const { RIGHT_BOUND, BOTTOM_BOUND } = getBounds()
+    const taskHeight = 60
+    const gap = 8
+    state.position = {
+      x: RIGHT_BOUND - (state.collapsed ? 260 : 300),
+      y: BOTTOM_BOUND - taskHeight - (taskIndex * (taskHeight + gap))
+    }
+  }
   return {
-    left: `${position.x}px`,
-    top: `${position.y}px`
+    left: `${state.position.x}px`,
+    bottom: `${getBounds().BOTTOM_BOUND - state.position.y - (getTargetSize(taskId).height)}px`
   }
 }
 
@@ -316,7 +296,13 @@ function initializeTaskPositions() {
   activeTasks.value.forEach((task, index) => {
     const state = getTaskState(task.id)
     if (!state.position) {
-      state.position = getDefaultPosition(index)
+      const { RIGHT_BOUND, BOTTOM_BOUND } = getBounds()
+      const taskHeight = 60
+      const gap = 8
+      state.position = {
+        x: RIGHT_BOUND - (state.collapsed ? 260 : 300),
+        y: BOTTOM_BOUND - taskHeight - (index * (taskHeight + gap))
+      }
       state.isStickyToRight = true
       state.isStickyToBottom = true
     }
@@ -332,47 +318,21 @@ watch(activeTasks, () => {
   })
 }, { deep: true })
 
-// 监听 sidebar 变化
-watch(() => props.sidebarWidth, () => {
-  const { LEFT_BOUND } = getBounds()
-  taskStates.value.forEach((state) => {
-    if (state.position && state.position.x < LEFT_BOUND) {
-      state.position.x = LEFT_BOUND
-    }
-  })
-  taskStates.value = new Map(taskStates.value)
-})
-
-watch(() => props.sidebarCollapsed, () => {
-  const { LEFT_BOUND } = getBounds()
-  taskStates.value.forEach((state) => {
-    if (state.position && state.position.x < LEFT_BOUND) {
-      state.position.x = LEFT_BOUND
-    }
-  })
-  taskStates.value = new Map(taskStates.value)
-})
-
-watch(() => props.contentBounds, () => {
-  nextTick(resolveCollisions)
-}, { deep: true })
-
+// 监听容器大小变化
+let resizeObserver = null
 
 onMounted(() => {
-  window.addEventListener('resize', resolveCollisions)
-
-  // 每秒刷新计时器
+  now.value = Date.now()
   timerHandle = setInterval(() => {
     now.value = Date.now()
   }, 1000)
 
-  // 监听 messages 容器大小变化
-  const messagesContainer = document.querySelector('.chat-window .messages')
-  if (messagesContainer) {
-    resizeObserver.value = new ResizeObserver(() => {
+  // 监听父容器大小变化
+  if (containerRef.value?.parentElement) {
+    resizeObserver = new ResizeObserver(() => {
       nextTick(resolveCollisions)
     })
-    resizeObserver.value.observe(messagesContainer)
+    resizeObserver.observe(containerRef.value.parentElement)
   }
 
   // 初始化位置
@@ -380,9 +340,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', resolveCollisions)
-  if (resizeObserver.value) {
-    resizeObserver.value.disconnect()
+  if (resizeObserver) {
+    resizeObserver.disconnect()
   }
   if (timerHandle) {
     clearInterval(timerHandle)
@@ -392,88 +351,97 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 每个任务是一个独立的悬浮窗 -->
-  <div
-    v-for="(task, index) in activeTasks"
-    :key="task.id"
-    :data-task-id="task.id"
-    class="task-floating-window"
-    :class="{ collapsed: getTaskState(task.id).collapsed }"
-    :style="getTaskStyle(task.id, index)"
-    @mousedown="startDrag($event, task.id)"
-  >
-    <!-- 折叠状态: 描述 + 进度 -->
-    <div class="task-summary" @click.stop="toggleCollapse(task.id)">
-      <span class="task-icon">{{ getTaskIcon(task.taskType) }}</span>
-      <div class="task-info">
-        <div class="task-description">{{ task.description || '任务运行中...' }}</div>
-        <div v-if="task.latestEvent" class="task-latest-event">{{ task.latestEvent }}</div>
-        <div class="task-meta">
-          <!-- 进度 -->
-          <template v-if="getTaskProgress(task)">
-            <span class="progress-text">{{ getTaskProgress(task).completed }}/{{ getTaskProgress(task).total }}</span>
-            <div class="progress-bar-mini">
-              <div class="progress-fill-mini" :style="{ width: getTaskProgress(task).percent + '%' }"></div>
-            </div>
-          </template>
-          <!-- 运行时间 -->
-          <span class="running-time">{{ formatRunningTime(task.startTime) }}</span>
-          <!-- 状态图标 -->
-          <span class="status-icon">{{ getTaskStatusIcon(task) }}</span>
+  <!-- 每个任务是一个独立的悬浮窗，相对于父容器定位 -->
+  <div ref="containerRef" class="task-floating-host">
+    <div
+      v-for="(task, index) in activeTasks"
+      :key="task.id"
+      :data-task-id="task.id"
+      class="task-floating-window"
+      :class="{ collapsed: getTaskState(task.id).collapsed }"
+      :style="getTaskStyle(task.id, index)"
+      @mousedown="startDrag($event, task.id)"
+    >
+      <!-- 折叠状态: 描述 + 进度 -->
+      <div class="task-summary" @click.stop="toggleCollapse(task.id)">
+        <span class="task-icon">{{ getTaskIcon(task.taskType) }}</span>
+        <div class="task-info">
+          <div class="task-description">{{ task.description || '任务运行中...' }}</div>
+          <div v-if="task.latestEvent" class="task-latest-event">{{ task.latestEvent }}</div>
+          <div class="task-meta">
+            <!-- 进度 -->
+            <template v-if="getTaskProgress(task)">
+              <span class="progress-text">{{ getTaskProgress(task).completed }}/{{ getTaskProgress(task).total }}</span>
+              <div class="progress-bar-mini">
+                <div class="progress-fill-mini" :style="{ width: getTaskProgress(task).percent + '%' }"></div>
+              </div>
+            </template>
+            <!-- 运行时间 -->
+            <span class="running-time">{{ formatRunningTime(task.startTime) }}</span>
+            <!-- 状态图标 -->
+            <span class="status-icon">{{ getTaskStatusIcon(task) }}</span>
+          </div>
         </div>
+        <span class="expand-btn">{{ getTaskState(task.id).collapsed ? '▶' : '▼' }}</span>
       </div>
-      <span class="expand-btn">{{ getTaskState(task.id).collapsed ? '▶' : '▼' }}</span>
-    </div>
 
-    <!-- 展开状态: 详细信息 -->
-    <div v-if="!getTaskState(task.id).collapsed" class="task-details">
-      <!-- TodoWrite: 显示 todos 列表 -->
-      <template v-if="task.taskType === 'todo' && task.todos">
-        <div class="todo-list">
-          <div
-            v-for="(todo, idx) in task.todos"
-            :key="idx"
-            class="todo-item"
-            :class="todo.status"
-          >
-            <span class="todo-status-icon">
-              {{ todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '🔄' : '⏳' }}
-            </span>
-            <span class="todo-content">{{ todo.content }}</span>
+      <!-- 展开状态: 详细信息 -->
+      <div v-if="!getTaskState(task.id).collapsed" class="task-details">
+        <!-- TodoWrite: 显示 todos 列表 -->
+        <template v-if="task.taskType === 'todo' && task.todos">
+          <div class="todo-list">
+            <div
+              v-for="(todo, idx) in task.todos"
+              :key="idx"
+              class="todo-item"
+              :class="todo.status"
+            >
+              <span class="todo-status-icon">
+                {{ todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '🔄' : '⏳' }}
+              </span>
+              <span class="todo-content">{{ todo.content }}</span>
+            </div>
           </div>
-        </div>
-      </template>
+        </template>
 
-      <!-- Agent Task: 显示 prompt/summary/usage -->
-      <template v-else>
-        <div v-if="task.prompt" class="detail-section">
-          <div class="detail-label">Prompt:</div>
-          <pre class="detail-content">{{ task.prompt }}</pre>
-        </div>
-
-        <div v-if="task.summary" class="detail-section">
-          <div class="detail-label">Progress:</div>
-          <div class="detail-content">{{ task.summary }}</div>
-        </div>
-
-        <div v-if="task.usage" class="detail-section">
-          <div class="usage-info">
-            <span v-if="task.usage.total_tokens">
-              {{ (task.usage.total_tokens / 1000).toFixed(1) }}k tokens
-            </span>
-            <span v-if="task.usage.tool_uses">
-              · {{ task.usage.tool_uses }} tools
-            </span>
+        <!-- Agent Task: 显示 prompt/summary/usage -->
+        <template v-else>
+          <div v-if="task.prompt" class="detail-section">
+            <div class="detail-label">Prompt:</div>
+            <pre class="detail-content">{{ task.prompt }}</pre>
           </div>
-        </div>
-      </template>
+
+          <div v-if="task.summary" class="detail-section">
+            <div class="detail-label">Progress:</div>
+            <div class="detail-content">{{ task.summary }}</div>
+          </div>
+
+          <div v-if="task.usage" class="detail-section">
+            <div class="usage-info">
+              <span v-if="task.usage.total_tokens">
+                {{ (task.usage.total_tokens / 1000).toFixed(1) }}k tokens
+              </span>
+              <span v-if="task.usage.tool_uses">
+                · {{ task.usage.tool_uses }} tools
+              </span>
+            </div>
+          </div>
+        </template>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.task-floating-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+}
+
 .task-floating-window {
-  position: fixed;
+  position: absolute;
   width: 300px;
   background: linear-gradient(135deg, #1a1a1f 0%, #1E1E1E 100%);
   border: 1px solid rgba(139, 92, 246, 0.2);
@@ -482,7 +450,7 @@ onUnmounted(() => {
     0 4px 20px rgba(0, 0, 0, 0.5),
     0 0 0 1px rgba(255, 255, 255, 0.05) inset;
   overflow: hidden;
-  z-index: 1000;
+  pointer-events: auto;
   cursor: move;
   user-select: none;
   transition: box-shadow 0.2s ease;

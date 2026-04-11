@@ -4,6 +4,7 @@ import MessageItem from './messages/MessageItem.vue'
 import ExecutionAgentCard from './messages/ExecutionAgentCard.vue'
 import ThinkingSection from './messages/ThinkingSection.vue'
 import StickyHeader from './layout/StickyHeader.vue'
+import TaskFloatingWindow from './TaskFloatingWindow.vue'
 import AgentWorkspaceTopRail from './AgentWorkspaceTopRail.vue'
 import { useMessage } from '../composables/useMessage'
 
@@ -1032,6 +1033,7 @@ const shouldShowRail = computed(() => {
             />
           </template>
         </div>
+        <TaskFloatingWindow />
       </div>
 
       <div
@@ -1285,6 +1287,7 @@ const shouldShowRail = computed(() => {
 }
 
 .agent-workspace__main-stage {
+  position: relative;
   min-width: 0;
   min-height: 0;
   height: 100%;

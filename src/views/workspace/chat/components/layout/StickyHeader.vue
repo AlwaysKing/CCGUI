@@ -179,6 +179,7 @@ function scrollToUserMessage() {
 .sticky-header {
   position: absolute;
   top: 2px;
+  left: 48px;
   right: 0;
   z-index: 50;
   display: flex;

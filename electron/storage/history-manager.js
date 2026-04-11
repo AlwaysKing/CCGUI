@@ -6,9 +6,155 @@
  */
 
 const fs = require('fs')
+const fsp = fs.promises
 const path = require('path')
 const os = require('os')
 const logger = require('../logger')
+
+// ============================================================
+// 异步写入队列：streaming 事件缓存 + 批量合并写入
+// ============================================================
+
+const STREAMING_EVENT_TYPES = new Set(['message-delta', 'message-update', 'message-replace'])
+
+const writeQueue = {
+  queue: [],
+  processing: false,
+  streamingBuffers: new Map() // key: `${projectId}\0${sessionId}\0${turnId}\0${messageId}`
+}
+
+function enqueue(task) {
+  writeQueue.queue.push(task)
+  if (!writeQueue.processing) {
+    writeQueue.processing = true
+    setImmediate(processQueue)
+  }
+}
+
+async function processQueue() {
+  while (writeQueue.queue.length > 0) {
+    const task = writeQueue.queue.shift()
+    try {
+      if (task.type === 'flush') {
+        await processFlushTask(task)
+      } else if (task.type === 'direct') {
+        appendTurnEventSync(task.projectId, task.sessionId, task.turnId, task.event)
+      }
+    } catch (error) {
+      logger.error('[HistoryManager] Write queue error', {
+        taskType: task.type,
+        error: error.message
+      })
+    }
+  }
+  writeQueue.processing = false
+}
+
+/**
+ * 合并同字段 delta，生成一个综合事件
+ * 按事件顺序处理：delta 拼接，update/replace 覆盖
+ */
+function mergeStreamEvents(events, completeEvent) {
+  let content = ''
+  let thinking = ''
+  let result = ''
+  const finalData = {}
+
+  for (const event of events) {
+    const eventType = event.eventType
+    if (eventType === 'message-delta') {
+      const field = event.data?.field
+      const delta = event.data?.delta || ''
+      if (field === 'thinking') thinking += delta
+      else if (field === 'result') result += delta
+      else content += delta
+    } else if (eventType === 'message-update') {
+      const updates = event.data?.updates || {}
+      if (updates.content !== undefined) content = String(updates.content)
+      if (updates.thinking !== undefined) thinking = String(updates.thinking)
+      if (updates.result !== undefined) result = String(updates.result)
+      Object.assign(finalData, updates)
+    } else if (eventType === 'message-replace') {
+      const replacement = event.data?.replacement || {}
+      if (replacement.content !== undefined) content = String(replacement.content)
+      if (replacement.thinking !== undefined) thinking = String(replacement.thinking)
+      if (replacement.result !== undefined) result = String(replacement.result)
+      Object.assign(finalData, replacement)
+    }
+  }
+
+  if (completeEvent?.data?.updates) {
+    Object.assign(finalData, completeEvent.data.updates)
+  }
+
+  if (content) finalData.content = content
+  if (thinking) finalData.thinking = thinking
+  if (result) finalData.result = result
+
+  const messageId = completeEvent?.data?.messageId || events[0]?.data?.messageId
+  const timestamp = completeEvent?.timestamp || new Date().toISOString()
+
+  // 返回两个标准事件：message-start（带完整内容）+ message-complete
+  // 这样历史回放时 handleSessionEvent 能正常识别
+  const mergedStart = {
+    eventType: 'message-start',
+    sessionId: completeEvent?.sessionId,
+    data: {
+      id: messageId,
+      role: 'assistant',
+      content: content || '',
+      thinking: thinking || '',
+      hasThinking: Boolean(thinking),
+      isStreaming: false,
+      ...finalData
+    },
+    timestamp
+  }
+
+  const mergedComplete = {
+    eventType: 'message-complete',
+    sessionId: completeEvent?.sessionId,
+    data: {
+      messageId,
+      updates: {
+        isStreaming: false,
+        ...(completeEvent?.data?.updates || {})
+      }
+    },
+    timestamp
+  }
+
+  return [mergedStart, mergedComplete]
+}
+
+/**
+ * 异步处理 flush 任务：合并写入 stream 文件 + 更新 index metadata
+ */
+async function processFlushTask({ projectId, sessionId, turnId, cachedEvents, completeEvent }) {
+  const [mergedStart, mergedComplete] = mergeStreamEvents(cachedEvents, completeEvent)
+
+  const entries = loadIndexEntries(projectId, sessionId)
+  const entryIndex = entries.findIndex(entry => entry?.turnId === turnId)
+  if (entryIndex === -1) return
+
+  ensureHistoryDir(projectId, sessionId)
+  ensureTurnsDir(projectId, sessionId)
+
+  const turn = entries[entryIndex]
+  const streamPath = getTurnStreamFilePath(projectId, sessionId, turn.streamFile)
+
+  // 写入两个标准事件（message-start + message-complete）
+  const lines = `${serializeMessage(mergedStart)}\n${serializeMessage(mergedComplete)}\n`
+  await fsp.appendFile(streamPath, lines, 'utf-8')
+
+  // 用 mergedStart 计算 metadata（status, hasAssistantResponse, registry）
+  const totalNewEvents = cachedEvents.length + 1
+  const metadataUpdates = buildTurnEventUpdates(turn, mergedStart)
+  metadataUpdates.eventCount = Number(turn.eventCount || 0) + totalNewEvents
+
+  entries[entryIndex] = { ...turn, ...metadataUpdates }
+  saveIndexEntries(projectId, sessionId, entries)
+}
 
 function getHistoryRoot() {
   return path.join(os.homedir(), '.ccgui', 'projects')
@@ -605,7 +751,10 @@ function updateTurn(projectId, sessionId, turnId, updates = {}) {
   }
 }
 
-function appendTurnEvent(projectId, sessionId, turnId, event) {
+/**
+ * 同步写入（内部使用，供 direct 任务调用）
+ */
+function appendTurnEventSync(projectId, sessionId, turnId, event) {
   try {
     const entries = loadIndexEntries(projectId, sessionId)
     const entryIndex = entries.findIndex(entry => entry?.turnId === turnId)
@@ -635,6 +784,49 @@ function appendTurnEvent(projectId, sessionId, turnId, event) {
     })
     return false
   }
+}
+
+/**
+ * 公共 API：streaming 事件走缓存，complete 触发 flush，其他走 direct 队列
+ */
+function appendTurnEvent(projectId, sessionId, turnId, event) {
+  const eventType = event?.eventType
+
+  // streaming 事件：缓存到内存，不写磁盘
+  if (STREAMING_EVENT_TYPES.has(eventType)) {
+    const messageId = event.data?.messageId
+    if (!messageId) {
+      // 没有 messageId 的 streaming 事件，降级为 direct
+      enqueue({ type: 'direct', projectId, sessionId, turnId, event })
+      return true
+    }
+    const cacheKey = `${projectId}\0${sessionId}\0${turnId}\0${messageId}`
+    if (!writeQueue.streamingBuffers.has(cacheKey)) {
+      writeQueue.streamingBuffers.set(cacheKey, [])
+    }
+    writeQueue.streamingBuffers.get(cacheKey).push(event)
+    return true
+  }
+
+  // message-complete：取出缓存，推入 flush 任务
+  if (eventType === 'message-complete') {
+    const messageId = event.data?.messageId
+    const cacheKey = `${projectId}\0${sessionId}\0${turnId}\0${messageId}`
+    const cachedEvents = writeQueue.streamingBuffers.get(cacheKey) || []
+    writeQueue.streamingBuffers.delete(cacheKey)
+
+    enqueue({
+      type: 'flush',
+      projectId, sessionId, turnId,
+      cachedEvents,
+      completeEvent: event
+    })
+    return true
+  }
+
+  // 其他事件：直接走队列
+  enqueue({ type: 'direct', projectId, sessionId, turnId, event })
+  return true
 }
 
 function buildTurnEventUpdates(turn, event) {

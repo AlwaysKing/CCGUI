@@ -605,6 +605,18 @@ const primaryContent = computed(() => {
         value: Array.isArray(input.permissions) ? input.permissions.join(', ') : (input.permissions || '权限请求'),
         description: input.description || null
       }
+    case 'TaskOutput':
+      return {
+        label: '任务输出',
+        value: input.task_id || input.taskId || '',
+        description: input.block ? '等待任务完成' : '获取任务结果'
+      }
+    case 'TaskStop':
+      return {
+        label: '停止任务',
+        value: input.task_id || input.taskId || '',
+        description: input.description || null
+      }
     default:
       if (input.description) {
         return { label: '描述', value: input.description, description: null }
@@ -848,6 +860,10 @@ const collapsedSummary = computed(() => {
       return input.tool || input.name || 'tool_call'
     case 'RequestPermissions':
       return input.description || '权限请求'
+    case 'TaskOutput':
+      return input.block ? '等待任务完成' : '获取任务结果'
+    case 'TaskStop':
+      return input.description || '停止任务'
     default:
       return ''
   }

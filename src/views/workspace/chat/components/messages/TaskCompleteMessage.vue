@@ -48,6 +48,19 @@ const textStyleSummary = computed(() => {
   return parts.join(' · ')
 })
 
+// 格式化 TaskOutput 合并的结果
+const formattedOutputResult = computed(() => {
+  const result = props.message.outputResult
+  if (!result) return null
+  if (typeof result === 'string') return result
+  if (Array.isArray(result)) {
+    return result
+      .map(item => (typeof item?.text === 'string' ? item.text : JSON.stringify(item, null, 2)))
+      .join('\n')
+  }
+  return JSON.stringify(result, null, 2)
+})
+
 // 简约模式下的 meta 信息
 const textStyleMeta = computed(() => {
   const usage = props.message.usage
@@ -160,6 +173,17 @@ function copyContent() {
               <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
             <div class="section-content description">{{ message.summary }}</div>
+          </div>
+        </div>
+
+        <div v-if="formattedOutputResult" class="tool-section has-copy">
+          <div class="section-label">输出结果</div>
+          <div class="section-content-wrapper">
+            <button class="section-copy-btn" @click.stop="copyContent" :title="isCopied ? '已复制' : '复制'">
+              <svg v-if="isCopied" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            </button>
+            <pre class="section-content result">{{ formattedOutputResult }}</pre>
           </div>
         </div>
 
@@ -480,6 +504,32 @@ function copyContent() {
   color: #A1A1AA;
   word-break: break-all;
   white-space: pre-wrap;
+}
+
+.section-content.result {
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  background: #18181B;
+  padding: 10px 12px;
+  border-radius: 6px;
+  max-height: 600px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #A1A1AA;
+}
+
+.section-content.result::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.section-content.result::-webkit-scrollbar-track {
+  background: #18181B;
+}
+
+.section-content.result::-webkit-scrollbar-thumb {
+  background: #3F3F46;
+  border-radius: 3px;
 }
 
 .usage-grid {

@@ -3480,6 +3480,28 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
+   * 查找与 taskId 匹配的 TaskOutput tool_use 消息，返回其 result 并标记为已合并
+   */
+  function findAndMergeTaskOutput(session, taskId) {
+    const normalizedTaskId = String(taskId || '')
+    if (!normalizedTaskId) return null
+
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      const msg = session.messages[i]
+      if (msg?.role !== 'tool_use' || msg?.toolName !== 'TaskOutput') continue
+      const msgTaskId = String(msg.toolInput?.task_id || msg.toolInput?.taskId || '')
+      if (msgTaskId !== normalizedTaskId) continue
+      // 找到匹配的 TaskOutput
+      const result = msg.result || null
+      if (result) {
+        msg.mergedIntoTaskComplete = true
+      }
+      return result
+    }
+    return null
+  }
+
+  /**
    * 处理子任务事件（started/progress/notification）
    */
   function handleTaskEvent(session, data) {
@@ -3543,6 +3565,7 @@ export const useSessionStore = defineStore('session', () => {
           message?.role === 'task_complete' && message?.taskId === taskId
         )
         if (!existingTaskComplete) {
+          const taskOutputResult = findAndMergeTaskOutput(session, taskId)
           session.messages.push({
             id: `task-complete-${taskId}`,
             role: 'task_complete',
@@ -3551,6 +3574,7 @@ export const useSessionStore = defineStore('session', () => {
             description: task.description,
             summary: task.summary,
             usage: task.usage,
+            outputResult: taskOutputResult,
             ccgui: taskCcgui,
             duration: Date.now() - task.startTime,
             timestamp: new Date()
@@ -3579,6 +3603,7 @@ export const useSessionStore = defineStore('session', () => {
                   }
                 }
               : (data.ccgui || null)
+            const taskOutputResult = findAndMergeTaskOutput(session, taskId)
             session.messages.push({
               id: `task-complete-${taskId}`,
               role: 'task_complete',
@@ -3587,6 +3612,7 @@ export const useSessionStore = defineStore('session', () => {
               description: data.description || null,
               summary: data.summary || null,
               usage: data.usage || null,
+              outputResult: taskOutputResult,
               ccgui: taskCcgui,
               duration: data.duration || 0,
               timestamp: new Date()

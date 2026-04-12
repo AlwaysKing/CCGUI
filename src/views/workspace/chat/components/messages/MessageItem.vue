@@ -176,6 +176,10 @@ const shouldHide = computed(() => {
   if (isDialogOnlyTurnError(props.message)) {
     return true
   }
+  // 已合并到 task_complete 的 TaskOutput tool_use 隐藏
+  if (props.message.mergedIntoTaskComplete) {
+    return true
+  }
   if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
     return false
   }

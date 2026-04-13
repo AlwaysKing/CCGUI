@@ -663,6 +663,11 @@ class CodexAdapter extends CodexClient {
         this.handleToolOutputDelta(params)
         break
 
+      case 'item/commandExecution/terminalInteraction':
+      case 'command/exec/terminalInteraction':
+        this.handleCommandTerminalInteraction(params)
+        break
+
       case 'turn/diff/updated':
         this.handleTurnDiffUpdated(params)
         break
@@ -1537,6 +1542,33 @@ class CodexAdapter extends CodexClient {
       messageId,
       field: 'result',
       delta: params.delta
+    })
+  }
+
+  handleCommandTerminalInteraction(params = {}) {
+    const itemId = params.itemId || params.callId || null
+    const stdin = typeof params.stdin === 'string' ? params.stdin : ''
+    const itemState = itemId ? this.itemState.get(itemId) : null
+
+    if (itemId && itemState?.type === 'commandExecution') {
+      this.itemState.set(itemId, {
+        ...itemState,
+        lastTerminalInteractionAt: new Date().toISOString(),
+        ...(stdin ? { lastTerminalInput: stdin } : {})
+      })
+    }
+
+    this.emit('silent-message', {
+      messageType: 'item/commandExecution/terminalInteraction',
+      provider: 'codex',
+      params: {
+        itemId,
+        processId: params.processId || null,
+        threadId: params.threadId || this.currentThreadId || null,
+        turnId: params.turnId || this.currentTurnId || null,
+        stdin,
+        timestamp: new Date().toISOString()
+      }
     })
   }
 

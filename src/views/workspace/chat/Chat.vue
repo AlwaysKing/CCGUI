@@ -162,6 +162,7 @@ let durationTimer = null // 消耗时间更新定时器
 let previousWindowHeight = null // 上一次窗口高度
 let chatPanelHeight = ref(0) // chat-panel 容器的高度
 let chatPanelResizeObserver = null // ResizeObserver 实例
+let mainScrollContentResizeObserver = null // 主消息内容尺寸监听
 const suppressSessionControlWatchers = ref(false)
 const skipNextProviderRefreshSessionId = ref('')
 const skipNextSubModelRefreshSessionId = ref('')
@@ -457,7 +458,7 @@ async function flushQueuedMessages() {
   const sessionId = activeQueueSessionId.value
 
   try {
-    await sessionStore.sendMessage(nextItem.content)
+    await sessionStore.sendMessage(nextItem.content, { clearDraft: false })
     const queue = queuedMessagesBySession.value[sessionId] || []
     queue.shift()
     queuedMessagesBySession.value = {
@@ -749,6 +750,7 @@ onMounted(async () => {
   await loadProviderSubModels()
   await loadSessionEffortCapabilities()
   await nextTick()
+  syncMainScrollContentResizeObserver()
   messagesViewportWidth.value = messagesContainer.value?.getBoundingClientRect?.().width || 0
   updateContentViewport()
 
@@ -788,6 +790,10 @@ onUnmounted(() => {
   if (chatPanelResizeObserver) {
     chatPanelResizeObserver.disconnect()
     chatPanelResizeObserver = null
+  }
+  if (mainScrollContentResizeObserver) {
+    mainScrollContentResizeObserver.disconnect()
+    mainScrollContentResizeObserver = null
   }
 })
 
@@ -949,6 +955,7 @@ watch(
   ],
   async () => {
     await nextTick()
+    syncMainScrollContentResizeObserver()
     updateContentViewport()
   },
   { immediate: false }
@@ -1037,7 +1044,7 @@ watch(() => {
   }
 
   const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < SYSTEM_NEAR_BOTTOM_PX
-  if (!wasNearBottom && userScrolledAway) {
+  if (!wasNearBottom && !autoScrollActive) {
     return
   }
 
@@ -1056,6 +1063,8 @@ watch(() => sessionStore.currentSessionId, async (newSessionId, oldSessionId) =>
 
     // 等待 DOM 更新和 session 数据初始化完成
     await nextTick()
+    autoScrollActive = true
+    syncMainScrollContentResizeObserver()
 
     // 获取当前会话
     const currentSession = sessionStore.currentSession
@@ -1408,6 +1417,7 @@ async function handleSendMessage(userText) {
   if (!runtimeActive.value) {
     enqueueMessage(userText)
     inputMessage.value = ''
+    autoScrollActive = true
     scrollToBottom(true)
     emit('startSession', { id: sessionStore.currentSession?.id })
     return
@@ -1416,6 +1426,7 @@ async function handleSendMessage(userText) {
   if (isProcessing.value || pendingPermission.value || pendingControlRequest.value || isFlushingQueuedMessage.value) {
     enqueueMessage(userText)
     inputMessage.value = ''
+    autoScrollActive = true
     scrollToBottom(true)
     return
   }
@@ -1430,6 +1441,7 @@ async function handleSendMessage(userText) {
   }
 
   inputMessage.value = ''
+  autoScrollActive = true
   scrollToBottom(true) // 用户发送消息时强制滚动
 
   try {
@@ -1467,8 +1479,8 @@ function handleRewindNoticeClick(rewindToMessageId) {
   scrollToMessage(rewindToMessageId)
 }
 
-// 记录用户是否主动滚动离开底部
-let userScrolledAway = false
+// 记录当前是否处于自动滚动跟随状态
+let autoScrollActive = true
 // 程序化滚动计数器（用于忽略程序化滚动触发的 scroll 事件）
 let programmaticScrollCounter = 0
 
@@ -1510,29 +1522,52 @@ function getScrollContainer() {
   return document.querySelector('.chat-window .agent-workspace__main-scroll') || messagesContainer.value || null
 }
 
+function getDistanceFromBottom(container) {
+  if (!container) return 0
+  return Math.max(0, container.scrollHeight - container.scrollTop - container.clientHeight)
+}
+
+function isContainerAtBottom(container, threshold = AUTO_SCROLL_NEAR_BOTTOM_PX) {
+  return getDistanceFromBottom(container) < threshold
+}
+
+function syncMainScrollContentResizeObserver() {
+  if (mainScrollContentResizeObserver) {
+    mainScrollContentResizeObserver.disconnect()
+    mainScrollContentResizeObserver = null
+  }
+
+  const container = getScrollContainer()
+  if (!(container instanceof HTMLElement)) {
+    return
+  }
+
+  const content = container.querySelector('.agent-workspace__content') || container.firstElementChild || container
+  if (!(content instanceof HTMLElement)) {
+    return
+  }
+
+  mainScrollContentResizeObserver = new ResizeObserver(() => {
+    if (!autoScrollActive) {
+      return
+    }
+    scrollToBottom(true)
+  })
+
+  mainScrollContentResizeObserver.observe(content)
+}
+
 // 滚动到底部
 let pendingScrollRAF = null
 function scrollToBottom(forceScroll = false) {
   const container = getScrollContainer()
   if (!container) return
 
-  // 如果不强制滚动，检查当前是否接近底部
-  if (!forceScroll) {
-    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < AUTO_SCROLL_NEAR_BOTTOM_PX
-
-    // 如果用户已经滚动离开底部，不要自动滚动
-    if (userScrolledAway && !isNearBottom) {
-      return
-    }
-
-    // 如果当前不在底部，也不滚动
-    if (!isNearBottom) {
-      return
-    }
+  if (!forceScroll && !autoScrollActive) {
+    return
   }
 
-  // 重置用户滚动标记
-  userScrolledAway = false
+  autoScrollActive = true
 
   // 取消上一次待处理的 RAF 滚动，避免流式更新时重叠
   if (pendingScrollRAF) {
@@ -1572,15 +1607,7 @@ function handleUserScroll() {
 
   const container = getScrollContainer()
   if (!container) return
-  const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < AUTO_SCROLL_NEAR_BOTTOM_PX
-
-  // 如果用户滚动离开底部，设置标记
-  if (!isNearBottom) {
-    userScrolledAway = true
-  } else {
-    // 如果用户滚动到底部，重置标记
-    userScrolledAway = false
-  }
+  autoScrollActive = isContainerAtBottom(container)
 
   // 计算当前粘性显示的用户消息
   updateStickyMessage()

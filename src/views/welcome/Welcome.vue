@@ -11,6 +11,7 @@ import { useDialogStack } from '../../composables/useDialogStack'
 const SettingsDialog = defineAsyncComponent(() => import('@/views/settings/SettingsDialog.vue'))
 const SkillsDialog = defineAsyncComponent(() => import('@/views/tools/SkillsDialog.vue'))
 const McpDialog = defineAsyncComponent(() => import('@/views/tools/McpDialog.vue'))
+const TaskTemplatesDialog = defineAsyncComponent(() => import('@/views/tools/TaskTemplatesDialog.vue'))
 
 const store = useAppStore()
 const {
@@ -36,6 +37,7 @@ const {
 const showConfigMenu = ref(false)
 const showSkillsDialog = ref(false)
 const showMcpDialog = ref(false)
+const showTaskTemplatesDialog = ref(false)
 const configMenuRef = ref(null)
 const configMenuBtnRef = ref(null)
 const configMenuDropdownStyle = ref({})
@@ -205,6 +207,16 @@ function handleShortcutEvent(event) {
               <line x1="6" y1="18" x2="6.01" y2="18"/>
             </svg>
             MCP 服务
+          </button>
+          <div class="menu-divider"></div>
+          <button class="menu-item" @click="showTaskTemplatesDialog = true; closeConfigMenu()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2H3V5z"/>
+              <path d="M3 9h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z"/>
+              <path d="M8 13h8"/>
+              <path d="M12 9v8"/>
+            </svg>
+            任务模板
           </button>
         </div>
       </Teleport>
@@ -473,6 +485,12 @@ function handleShortcutEvent(event) {
     <McpDialog
       v-if="showMcpDialog"
       @close="showMcpDialog = false"
+    />
+
+    <TaskTemplatesDialog
+      v-if="showTaskTemplatesDialog"
+      :project-id="''"
+      @close="showTaskTemplatesDialog = false"
     />
 
     <!-- Delete Project Confirmation Dialog -->

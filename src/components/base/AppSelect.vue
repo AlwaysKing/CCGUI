@@ -29,6 +29,10 @@ const props = defineProps({
   selectedLabel: {
     type: String,
     default: ''
+  },
+  menuMinWidth: {
+    type: [String, Number],
+    default: ''
   }
 })
 
@@ -38,6 +42,8 @@ const rootRef = ref(null)
 const triggerRef = ref(null)
 const isOpen = ref(false)
 const menuStyle = ref({})
+let positionFrame = 0
+let resizeObserver = null
 
 const flatOptions = computed(() => {
   if (props.groups.length > 0) {
@@ -58,25 +64,49 @@ const triggerLabel = computed(() => {
 function updatePosition() {
   if (!triggerRef.value) return
   const rect = triggerRef.value.getBoundingClientRect()
+  const normalizedMenuMinWidth = Number.isFinite(Number(props.menuMinWidth))
+    ? `${Number(props.menuMinWidth)}px`
+    : String(props.menuMinWidth || '').trim()
+
   menuStyle.value = {
     position: 'fixed',
     top: `${rect.bottom + 6}px`,
     left: `${rect.left}px`,
     width: `${rect.width}px`,
+    minWidth: normalizedMenuMinWidth || `${rect.width}px`,
     zIndex: 9999
   }
+}
+
+function cancelScheduledPosition() {
+  if (positionFrame) {
+    window.cancelAnimationFrame(positionFrame)
+    positionFrame = 0
+  }
+}
+
+function scheduleUpdatePosition() {
+  cancelScheduledPosition()
+  positionFrame = window.requestAnimationFrame(() => {
+    positionFrame = window.requestAnimationFrame(() => {
+      positionFrame = 0
+      updatePosition()
+    })
+  })
 }
 
 function close() {
   isOpen.value = false
   menuStyle.value = {}
+  cancelScheduledPosition()
 }
 
 function toggle() {
   if (props.disabled) return
   isOpen.value = !isOpen.value
   if (isOpen.value) {
-    nextTick(() => nextTick(updatePosition))
+    updatePosition()
+    nextTick(() => scheduleUpdatePosition())
   }
 }
 
@@ -110,9 +140,19 @@ onMounted(() => {
   document.addEventListener('keydown', handleEscape)
   window.addEventListener('scroll', handleScroll, true)
   window.addEventListener('resize', handleScroll)
+  if (typeof ResizeObserver !== 'undefined' && triggerRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      if (isOpen.value) {
+        scheduleUpdatePosition()
+      }
+    })
+    resizeObserver.observe(triggerRef.value)
+  }
 })
 
 onBeforeUnmount(() => {
+  cancelScheduledPosition()
+  resizeObserver?.disconnect()
   document.removeEventListener('mousedown', handlePointerDown)
   document.removeEventListener('keydown', handleEscape)
   window.removeEventListener('scroll', handleScroll, true)

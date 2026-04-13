@@ -6,6 +6,10 @@ import { findProviderModel } from '../../../utils/provider-models'
 import FileTreePanel from './FileTreePanel.vue'
 
 const props = defineProps({
+  primaryView: {
+    type: String,
+    default: 'chat'
+  },
   sessions: {
     type: Array,
     default: () => []
@@ -80,7 +84,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openTaskTemplatesDialog', 'selectPrimaryView'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -1033,6 +1037,16 @@ watch([showConfigPanel, fileSectionHeight], () => {
               </svg>
               MCP 服务
             </button>
+            <div class="menu-divider"></div>
+            <button class="menu-item" @click="emit('openTaskTemplatesDialog'); closeConfigMenu()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2H3V5z"/>
+                <path d="M3 9h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z"/>
+                <path d="M8 13h8"/>
+                <path d="M12 9v8"/>
+              </svg>
+              任务模板
+            </button>
           </div>
         </Teleport>
       </div>
@@ -1085,6 +1099,18 @@ watch([showConfigPanel, fileSectionHeight], () => {
         >
           {{ terminalRunningCount > 9 ? '9+' : terminalRunningCount }}
         </span>
+      </IconButton>
+      <IconButton
+        class="file-toggle-btn"
+        size="sm"
+        :class="{ active: primaryView === 'tasks' }"
+        :title="primaryView === 'tasks' ? '切换到会话视图' : '切换到任务视图'"
+        @click="emit('selectPrimaryView', primaryView === 'tasks' ? 'chat' : 'tasks')"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 11l3 3L22 4"/>
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+        </svg>
       </IconButton>
       <IconButton
         class="file-toggle-btn finder-btn"

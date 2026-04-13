@@ -6,6 +6,7 @@ import { useFileBrowserStore } from '../../stores/useFileBrowserStore'
 import SessionSidebar from './components/SessionSidebar.vue'
 import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
+import TaskWorkspace from './components/TaskWorkspace.vue'
 import Chat from './chat/Chat.vue'
 import NewSessionDialog from './components/NewSessionDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -17,6 +18,7 @@ import SessionConfigDialog from './components/SessionConfigDialog.vue'
 import SettingsDialog from '@/views/settings/SettingsDialog.vue'
 import SkillsDialog from '@/views/tools/SkillsDialog.vue'
 import McpDialog from '@/views/tools/McpDialog.vue'
+import TaskTemplatesDialog from '@/views/tools/TaskTemplatesDialog.vue'
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout'
 import { useWorkspaceDialogs } from './hooks/useWorkspaceDialogs'
 import { useProjectWorkspacePersistence } from './hooks/useProjectWorkspacePersistence'
@@ -39,6 +41,9 @@ const showClaudeSessions = ref(true)
 const showCodexSessions = ref(true)
 const showSkillsDialog = ref(false)
 const showMcpDialog = ref(false)
+const showTaskTemplatesDialog = ref(false)
+const taskTemplatesInitialSection = ref('routine')
+const primaryView = ref('chat')
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
 const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
@@ -112,6 +117,20 @@ async function handlePreviewFile(node) {
 
 async function handlePinFile(node) {
   await fileBrowserStore.pinFile(node.path)
+}
+
+function handleSelectPrimaryView(nextView) {
+  primaryView.value = nextView === 'tasks' ? 'tasks' : 'chat'
+}
+
+function openTaskTemplatesDialog(section = 'routine') {
+  taskTemplatesInitialSection.value = section === 'run' ? 'run' : 'routine'
+  showTaskTemplatesDialog.value = true
+}
+
+async function handleSelectSessionWithView(session) {
+  primaryView.value = 'chat'
+  await handleSelectSession(session)
 }
 
 const {
@@ -331,6 +350,8 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
     return
   }
 
+  primaryView.value = 'chat'
+
   if (fileBrowserStore.shouldShowPreviewPanel && isChatCollapsed.value) {
     expandChatPanel(true)
   }
@@ -476,6 +497,7 @@ async function handleDeleteInactiveSessions() {
         ref="sessionSidebarRef"
         v-show="!sidebarCollapsed"
         :style="{ width: `${sidebarWidth}px` }"
+        :primary-view="primaryView"
         :sessions="filteredProjectSessions"
         :current-session="store.currentSession"
         :session-statuses="store.sessionStatuses"
@@ -494,7 +516,7 @@ async function handleDeleteInactiveSessions() {
         :preview-panel-visible="fileBrowserStore.shouldShowPreviewPanel"
         :terminal-panel-visible="terminalPanelVisible"
         :terminal-running-count="terminalRunningState.count"
-        @select="handleSelectSession"
+        @select="handleSelectSessionWithView"
         @delete="handleDeleteSession"
         @start="handleStartSession"
         @close="handleCloseSession"
@@ -506,6 +528,7 @@ async function handleDeleteInactiveSessions() {
         @openAppSettings="showSettingsDialog = true"
         @openSkillsDialog="showSkillsDialog = true"
         @openMcpDialog="showMcpDialog = true"
+        @openTaskTemplatesDialog="openTaskTemplatesDialog"
         @openProjectConfig="handleOpenProjectConfig"
         @openSessionConfig="handleOpenSessionConfig"
         @deleteSessionConfig="handleDeleteSessionConfig"
@@ -528,6 +551,7 @@ async function handleDeleteInactiveSessions() {
         @toggleShowClaude="handleToggleShowClaude"
         @toggleShowCodex="handleToggleShowCodex"
         @deleteInactiveSessions="handleDeleteInactiveSessions"
+        @selectPrimaryView="handleSelectPrimaryView"
       />
 
       <!-- Resize Handle -->
@@ -568,12 +592,22 @@ async function handleDeleteInactiveSessions() {
           ></div>
 
           <div
-            v-if="store.currentSession"
+            v-if="store.currentSession || primaryView === 'tasks'"
             class="chat-panel-host"
             :class="{ collapsed: !shouldShowChatPanel }"
             :style="chatPanelHostStyle"
           >
+            <TaskWorkspace
+              v-if="primaryView === 'tasks'"
+              class="chat-panel"
+              :project-id="store.currentProject?.id || ''"
+              :project-path="store.currentProject?.path || ''"
+              :show-sidebar-toggle="sidebarCollapsed && !fileBrowserStore.shouldShowPreviewPanel"
+              @openTaskTemplatesDialog="openTaskTemplatesDialog"
+              @toggleSidebar="toggleSidebar"
+            />
             <Chat
+              v-else
               class="chat-panel"
               ref="chatRef"
               :sidebar-collapsed="sidebarCollapsed"
@@ -587,7 +621,7 @@ async function handleDeleteInactiveSessions() {
               @closeSession="handleCloseSession"
             />
           </div>
-          <div v-if="!store.currentSession" class="empty-state-wrapper">
+          <div v-if="!store.currentSession && primaryView !== 'tasks'" class="empty-state-wrapper">
             <div class="empty-top-bar" :class="{ 'with-sidebar-toggle': sidebarCollapsed }">
               <div v-if="sidebarCollapsed" class="sidebar-safe-spacer">
                 <button class="sidebar-safe-btn" @click="toggleSidebar" title="展开侧边栏">
@@ -715,6 +749,14 @@ async function handleDeleteInactiveSessions() {
       v-if="showMcpDialog"
       :project-path="store.currentProject?.path || ''"
       @close="showMcpDialog = false"
+    />
+
+    <TaskTemplatesDialog
+      v-if="showTaskTemplatesDialog"
+      :project-id="store.currentProject?.id || ''"
+      :project-path="store.currentProject?.path || ''"
+      :initial-section="taskTemplatesInitialSection"
+      @close="showTaskTemplatesDialog = false"
     />
   </div>
 </template>

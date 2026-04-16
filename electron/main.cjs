@@ -27,8 +27,7 @@ let isDev = isDevRuntime
 
 let mainWindow
 let sessionManager
-let projectFileWatcher = null
-let projectFileWatcherPath = ''
+const projectFileWatchers = new Map()
 let terminalSequence = 0
 const terminalSessions = new Map()
 let terminalHostProcess = null
@@ -381,7 +380,7 @@ function createWindow() {
   const mainWindowWebContentsId = mainWindow.webContents.id
   mainWindow.on('closed', () => {
     disposeTerminalsForWebContents(mainWindowWebContentsId)
-    stopProjectFileWatcher()
+    stopProjectFileWatcher(mainWindowWebContentsId)
     mainWindow = null
   })
 }
@@ -824,12 +823,22 @@ async function openFileWithApplication(targetPath, application = 'default') {
   }
 }
 
-function stopProjectFileWatcher() {
-  if (projectFileWatcher) {
-    projectFileWatcher.close()
-    projectFileWatcher = null
-    projectFileWatcherPath = ''
+function stopProjectFileWatcher(webContentsId = null) {
+  if (webContentsId == null) {
+    for (const watcherEntry of projectFileWatchers.values()) {
+      watcherEntry.watcher.close()
+    }
+    projectFileWatchers.clear()
+    return
   }
+
+  const watcherEntry = projectFileWatchers.get(webContentsId)
+  if (!watcherEntry) {
+    return
+  }
+
+  watcherEntry.watcher.close()
+  projectFileWatchers.delete(webContentsId)
 }
 
 function shouldIgnoreWatchedPath(relativePath = '') {
@@ -838,6 +847,45 @@ function shouldIgnoreWatchedPath(relativePath = '') {
 
   const segments = normalizedPath.split('/').filter(Boolean)
   return segments.some(segment => FILE_TREE_IGNORES.has(segment))
+}
+
+async function getOrCreateHydratedSession({
+  sessionId,
+  projectId = null,
+  projectPath = null,
+  webContents,
+  createIfNotExists = true
+}) {
+  const resolvedProjectPath = projectPath || (projectId ? decodeProjectPath(projectId) : null)
+  const resolvedProjectId = projectId || (resolvedProjectPath ? encodeProjectPath(resolvedProjectPath) : null)
+  const sessionExisted = sessionManager.hasSession(sessionId)
+  let hasPersistedHistory = false
+
+  if (resolvedProjectId) {
+    try {
+      await projectService.ensureSessionHistoryHydrated(resolvedProjectId, sessionId)
+      hasPersistedHistory = historyManager.hasHistoryIndex(resolvedProjectId, sessionId)
+    } catch (error) {
+      logger.warn('[IPC] Failed to hydrate session history on demand', {
+        sessionId,
+        projectId: resolvedProjectId,
+        error: error.message
+      })
+    }
+  }
+
+  const session = await sessionManager.getOrCreateSession(
+    sessionId,
+    resolvedProjectPath,
+    webContents,
+    createIfNotExists
+  )
+
+  if (sessionExisted && hasPersistedHistory && typeof session?.refreshStoredHistoryIfEmpty === 'function') {
+    await session.refreshStoredHistoryIfEmpty()
+  }
+
+  return session
 }
 
 
@@ -903,12 +951,13 @@ ipcMain.handle('select-session', async (event, { sessionId, projectId, projectPa
   try {
     // Get or create the session instance, passing the caller's webContents
     // This ensures events are sent to the correct window (supports multi-window)
-    const sessionInstance = await sessionManager.getOrCreateSession(
+    const sessionInstance = await getOrCreateHydratedSession({
       sessionId,
+      projectId,
       projectPath,
-      event.sender, // webContents of the calling window
-      true
-    )
+      webContents: event.sender,
+      createIfNotExists: true
+    })
 
     // Return the session state
     return {
@@ -1172,7 +1221,12 @@ ipcMain.handle('start-session', async (event, { sessionId, projectPath, reason, 
 
   try {
     // Use select-session internally, passing webContents for multi-window support
-    const session = await sessionManager.getOrCreateSession(sessionId, projectPath, event.sender, true)
+    const session = await getOrCreateHydratedSession({
+      sessionId,
+      projectPath,
+      webContents: event.sender,
+      createIfNotExists: true
+    })
 
     // Start runtime process
     await session.start({ reason, postStartNotification })
@@ -1388,12 +1442,13 @@ ipcMain.handle('set-session-model', async (event, {
       throw new Error('Missing sessionId')
     }
 
-    const session = await sessionManager.getOrCreateSession(
+    const session = await getOrCreateHydratedSession({
       sessionId,
-      workingDirectory || decodeProjectPath(projectId),
-      event.sender,
-      true
-    )
+      projectId,
+      projectPath: workingDirectory || decodeProjectPath(projectId),
+      webContents: event.sender,
+      createIfNotExists: true
+    })
 
     const result = await session.setSessionModel({
       mode,
@@ -1425,12 +1480,13 @@ ipcMain.handle('set-session-target', async (event, {
       throw new Error('Missing sessionId')
     }
 
-    const session = await sessionManager.getOrCreateSession(
+    const session = await getOrCreateHydratedSession({
       sessionId,
-      workingDirectory || decodeProjectPath(projectId),
-      event.sender,
-      true
-    )
+      projectId,
+      projectPath: workingDirectory || decodeProjectPath(projectId),
+      webContents: event.sender,
+      createIfNotExists: true
+    })
 
     const result = await session.setSessionTarget({
       targetId,
@@ -1464,12 +1520,13 @@ ipcMain.handle('set-session-effort', async (event, {
     if (!normalizedEffort) {
       throw new Error('Missing effort')
     }
-    const session = await sessionManager.getOrCreateSession(
+    const session = await getOrCreateHydratedSession({
       sessionId,
-      workingDirectory || decodeProjectPath(projectId),
-      event.sender,
-      true
-    )
+      projectId,
+      projectPath: workingDirectory || decodeProjectPath(projectId),
+      webContents: event.sender,
+      createIfNotExists: true
+    })
     const result = await session.setSessionEffort(normalizedEffort, {
       projectId,
       workingDirectory,
@@ -1680,6 +1737,7 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
 
     // Store window-project mapping
     newWindow.projectId = projectId
+    const newWindowWebContentsId = newWindow.webContents.id
 
     // Load app with project ID
     if (isDev) {
@@ -1694,6 +1752,7 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
 
     // Handle window close
     newWindow.on('closed', () => {
+      stopProjectFileWatcher(newWindowWebContentsId)
       logger.info('[Window] Closed window', { projectId })
     })
 
@@ -1841,14 +1900,16 @@ ipcMain.handle('watch-project-files', async (event, { projectPath }) => {
       throw new Error('缺少项目路径')
     }
 
+    const senderId = event.sender.id
     const absoluteProjectPath = path.resolve(projectPath)
-    if (projectFileWatcher && projectFileWatcherPath === absoluteProjectPath) {
+    const currentWatcher = projectFileWatchers.get(senderId) || null
+    if (currentWatcher?.path === absoluteProjectPath) {
       return { success: true }
     }
 
-    stopProjectFileWatcher()
+    stopProjectFileWatcher(senderId)
 
-    projectFileWatcher = fs.watch(
+    const watcher = fs.watch(
       absoluteProjectPath,
       { recursive: process.platform === 'darwin' || process.platform === 'win32' },
       (eventType, filename) => {
@@ -1859,7 +1920,7 @@ ipcMain.handle('watch-project-files', async (event, { projectPath }) => {
 
         // 检查 webContents 是否已被销毁
         if (event.sender.isDestroyed()) {
-          stopProjectFileWatcher()
+          stopProjectFileWatcher(senderId)
           return
         }
 
@@ -1871,17 +1932,20 @@ ipcMain.handle('watch-project-files', async (event, { projectPath }) => {
       }
     )
 
-    projectFileWatcherPath = absoluteProjectPath
+    projectFileWatchers.set(senderId, {
+      watcher,
+      path: absoluteProjectPath
+    })
     return { success: true }
   } catch (error) {
     logger.error('[Files] Failed to watch project files', { projectPath, error: error.message })
-    stopProjectFileWatcher()
+    stopProjectFileWatcher(event.sender.id)
     return { success: false, error: error.message }
   }
 })
 
-ipcMain.handle('unwatch-project-files', async () => {
-  stopProjectFileWatcher()
+ipcMain.handle('unwatch-project-files', async (event) => {
+  stopProjectFileWatcher(event.sender.id)
   return { success: true }
 })
 
@@ -4943,6 +5007,7 @@ function createNewWindow() {
 
   newWindow.on('closed', () => {
     disposeTerminalsForWebContents(newWindowWebContentsId)
+    stopProjectFileWatcher(newWindowWebContentsId)
     logger.info('[Window] Closed new window')
   })
 

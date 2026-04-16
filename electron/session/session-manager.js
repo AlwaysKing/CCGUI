@@ -20,7 +20,11 @@ class SessionManager {
   async getOrCreateSession(sessionId, projectPath, webContents, createIfNotExists = true) {
     // 如果已存在，直接返回
     if (this.sessions.has(sessionId)) {
-      return this.sessions.get(sessionId)
+      const existingSession = this.sessions.get(sessionId)
+      if (typeof existingSession?.attachWebContents === 'function') {
+        existingSession.attachWebContents(webContents)
+      }
+      return existingSession
     }
 
     if (!createIfNotExists) {

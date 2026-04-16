@@ -29,6 +29,12 @@ const { resolveProjectSettings, resolveSessionSettings } = require('../config-re
 const pendingHistoryImports = new Map()
 const pendingHistoryRetries = new Map()
 const HISTORY_RETRY_DELAY_MS = 5000
+const ON_DEMAND_HISTORY_WAIT_MS = 1200
+const ON_DEMAND_HISTORY_RETRY_MS = 200
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
 function buildScannedProjectDefaultSettings() {
   return {
@@ -1001,6 +1007,18 @@ function ensureProviderSessions(projectId, providerSessions, preferredLinkedSess
   }
 }
 
+function ensureProviderSessionConfigs(projectId, providerSessions, preferredLinkedSessions = new Map()) {
+  for (const providerSession of providerSessions.values()) {
+    const identity = buildProviderSessionIdentity(providerSession)
+    const linkedSession = identity?.key ? preferredLinkedSessions.get(identity.key) : null
+    if (linkedSession) {
+      continue
+    }
+
+    ensureSessionConfig(projectId, providerSession)
+  }
+}
+
 function scanCCGUIProjects() {
   try {
     const projects = projectConfigManager.getAllProjects() || []
@@ -1142,7 +1160,7 @@ async function getProjectSessions(projectId) {
     }
   }
 
-  ensureProviderSessions(projectId, providerSessions, preferredLinkedSessions)
+  ensureProviderSessionConfigs(projectId, providerSessions, preferredLinkedSessions)
 
   const mergedSessions = []
   const processedIds = new Set()
@@ -1448,6 +1466,54 @@ async function openSession(sessionId) {
   return null
 }
 
+async function ensureSessionHistoryHydrated(projectId, sessionId, options = {}) {
+  if (!projectId || !sessionId || historyManager.hasHistoryIndex(projectId, sessionId)) {
+    return { success: true, imported: false }
+  }
+
+  const sessions = await getProjectSessions(projectId)
+  const session = sessions.find(item => item.id === sessionId) || null
+  if (!session) {
+    return { success: false, imported: false, error: 'Session not found' }
+  }
+
+  const provider = resolveLinkedSessionProvider(session)
+  const source = provider ? providerSessionSourcesById[provider] : null
+  if (!provider || !source?.loadSessionHistory) {
+    return { success: true, imported: false }
+  }
+
+  const maxWaitMs = Number.isFinite(options?.maxWaitMs)
+    ? Math.max(0, options.maxWaitMs)
+    : ON_DEMAND_HISTORY_WAIT_MS
+  const deadline = Date.now() + maxWaitMs
+
+  while (!historyManager.hasHistoryIndex(projectId, sessionId)) {
+    try {
+      await importProviderSessionHistory(projectId, session, sessionId)
+    } catch (error) {
+      if (!error?.retryable) {
+        throw error
+      }
+
+      if (Date.now() >= deadline) {
+        scheduleProviderSessionHistoryImportToTarget(projectId, session, sessionId)
+        break
+      }
+
+      await sleep(Math.min(ON_DEMAND_HISTORY_RETRY_MS, Math.max(1, deadline - Date.now())))
+      continue
+    }
+
+    break
+  }
+
+  return {
+    success: true,
+    imported: historyManager.hasHistoryIndex(projectId, sessionId)
+  }
+}
+
 async function renameSession(sessionId, projectId, name) {
   let targetProjectId = projectId
 
@@ -1649,6 +1715,7 @@ module.exports = {
   getSessionConfig,
   getSessionAvailable,
   getSessionMessages,
+  ensureSessionHistoryHydrated,
   getModelConfigSummary,
   getAvailableTargets,
   validateSessionTarget,

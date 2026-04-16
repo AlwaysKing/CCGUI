@@ -315,8 +315,9 @@ function convertClaudeHistoryEntry(entry, index) {
   return null
 }
 
-function loadClaudeSessionHistory({ projectId, sessionId }) {
-  const sessionFile = resolveSessionFilePath(projectId, sessionId)
+function loadClaudeSessionHistory({ projectId, sessionId, session }) {
+  const nativeSessionId = session?.settings?.toolBinding?.nativeSessionId || sessionId
+  const sessionFile = resolveSessionFilePath(projectId, nativeSessionId)
   if (!fs.existsSync(sessionFile)) {
     return []
   }

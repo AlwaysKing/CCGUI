@@ -1,546 +1,386 @@
 # CCGUI 任务系统设计文档
 
-## 1. 概述
+## 1. 定位
 
-CCGUI 任务系统基于项目目录下的 `task.md` 文件，提供任务的可视化管理和自动化执行能力。通过 MCP 协议建立 CCGUI 与各 Session 之间的通讯通道，实现任务状态汇报、跨 Session 消息传递等功能。
+CCGUI 任务系统是项目级的任务定义与可视化管理模块，当前以项目根目录下的 `task.md` 作为唯一任务数据源。
 
-### 核心概念
+它的职责是：
 
-- **task.md**：项目根目录下的任务定义文件，人类可读、机器可解析
-- **MCP Server**：CCGUI 内置的 MCP 服务，作为所有 Session 的通讯枢纽
-- **MCP Bridge**：CLI 侧的 MCP 进程，桥接 CLI（stdio）与 CCGUI MCP Server（unix socket）
-- **模板**：预定义的 prompt 模板，用于指导 Session 执行特定类型的任务
+- 维护任务结构化数据
+- 提供任务看板与详情编辑界面
+- 维护任务依赖、设计文档引用、运行模板引用
+- 管理常规任务模板与运行模板
+- 为后续任务执行能力提供统一入口
 
----
-
-## 2. 整体架构
-
-```
-CCGUI (Electron)
-  │
-  ├── MCP Server（监听 /tmp/ccgui-{pid}.sock）
-  │     ├── 管理所有已注册的 Session 身份信息
-  │     ├── 处理 MCP tool calls（状态汇报、消息转发）
-  │     └── 维护消息路由和队列
-  │
-  ├── Task Manager
-  │     ├── 解析/写回 task.md
-  │     └── 管理任务状态（pending / running / completed / error）
-  │
-  ├── List / Board 视图
-  │     ├── 任务列表和看板展示
-  │     └── 启动、暂停、查看任务操作
-  │
-  ├── Session A（Task #1）
-  │     └── MCP Bridge
-  │           ├── ←stdio→ CLI（标准 MCP stdio）
-  │           └── ←unix socket→ CCGUI MCP Server
-  │
-  └── Session B（Task #2）
-        └── MCP Bridge
-              ├── ←stdio→ CLI
-              └── ←unix socket→ CCGUI MCP Server
-```
+它**不负责** Session 之间的底层通讯，也不直接定义跨 Session 的消息协议。相关能力已经从本设计中拆出，单独归入 [内部通讯系统](/Users/alwaysking/AKProject/CCGUI/plain/内部通讯系统.md)。
 
 ---
 
-## 3. 通讯模型
+## 2. 当前落地情况
 
-### 3.1 通讯通道
+截至当前版本，任务系统已经有一套可用的前端与文件层实现，核心落地点如下：
 
-| 方向 | 通道 | 说明 |
-|------|------|------|
-| CLI → CCGUI | MCP tool call | Session 主动调用 MCP 工具，可靠 |
-| CCGUI → CLI | 现有 sendMessage（模拟用户消息） | 复用已有 stdin 管道，可靠 |
-| Session → Session | MCP → CCGUI → sendMessage 转发 | 两段都可靠 |
+- 已集成独立任务视图 `TaskWorkspace`
+- 已支持自动读取、创建、写回项目根目录 `task.md`
+- 已支持任务新增、编辑、删除、复制、归档
+- 已支持按状态看板展示任务
+- 已支持按优先级和关键词过滤任务
+- 已支持 `plain/` 目录下设计文档的选择与打开
+- 已支持任务依赖配置与循环依赖校验
+- 已支持常规任务模板与运行模板管理
+- 已支持通过“运行常规任务”快速生成任务条目
+- 已支持监听 `task.md` 外部变更并刷新界面
 
-### 3.2 CLI → CCGUI（MCP tool calls）
+当前仍未落地或只完成了占位语义的部分：
 
-Session 通过 MCP Bridge 调用工具，MCP Bridge 通过 unix socket 转发给 CCGUI MCP Server。
+- 任务启动后自动创建 Session
+- 任务与真实 Session 的绑定和回写
+- 运行模板自动注入到某个会话中执行
+- 任务状态与 Agent/Session 执行结果联动
+- 基于内部通讯系统的任务协作、汇报、求助、转发
 
-提供的工具：
-
-```
-report_task_status(task_id, status, message)
-  - status: "completed" | "error" | "needs_info" | "progress"
-  - Session 主动汇报任务状态
-
-get_task_info(task_id)
-  - 返回任务的描述、依赖、验收标准等
-
-send_to_session(target_session_id, message)
-  - 向另一个 Session 发送消息
-  - 消息经 CCGUI 路由转发
-
-request_help(reason)
-  - 请求用户协助，CCGUI 弹出通知
-  
-get_team_number(team_id)
-  - 返回当前team的成员信息和状态
-```
-
-### 3.3 CCGUI → CLI（模拟用户消息）
-
-CCGUI 收到需要传递给 Session 的消息后，直接调用现有的 `sendMessage` 机制注入：
-
-```
-CCGUI 收到需要转发的消息
-  │
-  ├─ 目标 Session 空闲 → 直接 sendMessage
-  │
-  └─ 目标 Session 忙碌 → 加入待发送队列
-                          Session 处理完当前消息后自动发送下一条
-```
-
-消息队列复用现有的 `pendingPermissions` 队列模式。
-
-### 3.4 初始化流程
-
-```
-1. CCGUI 启动时
-   ├── 启动 MCP Server，监听 /tmp/ccgui-{pid}.sock
-
-2. CCGUI 创建 Task Session 时
-   ├── 生成 Session 身份信息：
-   │     session_id, project_path, team_name, team_role, task_id
-   ├── CLI 启动参数中包含：
-   │     --mcp-config 或通过环境变量传递 MCP Bridge 的启动配置
-   └── MCP Bridge 启动参数包含：
-         --socket-path /tmp/ccgui-{pid}.sock
-         --session-id <id>
-         --task-id <task_id>
-         --team-id <team_id>
-         --team-name <name>
-         --team-role <role>
-
-3. MCP Bridge 启动后
-   ├── 通过 unix socket 连接 CCGUI MCP Server
-   ├── 注册身份信息
-   └── 等待 CLI 的 stdio 通讯
-
-4. CLI 通过 MCP 发现可用工具
-   └── Claude 获知 report_task_status 等工具，可在执行中调用
-```
+因此，当前任务系统本质上已经是“任务定义 + 看板管理 + 模板管理”模块，而不是旧文档里描述的“完整任务编排系统”。
 
 ---
 
-## 4. task.md 格式定义
+## 3. 与内部通讯系统的关系
 
-### 4.1 格式规范
+任务系统与内部通讯系统是上下层关系：
+
+- 任务系统负责“任务是什么”
+- 内部通讯系统负责“Session 之间如何通信”
+
+任务系统未来会依赖内部通讯系统提供这些基础能力：
+
+- 注册执行任务的 Session 身份
+- 向目标 Session 投递运行提示词
+- 接收执行中的进度、错误、完成事件
+- 进行 Session 间转发、协作与求助
+
+但任务系统本身仍然应保持独立，至少以下能力不能依赖内部通讯系统才能工作：
+
+- 解析与写回 `task.md`
+- 展示任务看板
+- 编辑任务属性
+- 管理模板库
+- 维护依赖关系
+
+---
+
+## 4. 当前数据模型
+
+### 4.1 文件位置
+
+- 项目根目录：`task.md`
+
+### 4.2 当前任务块格式
+
+当前实现已经不再使用早期文档中的 `## TASK-001: 标题` 结构，而是使用更利于稳定读写的块格式：
 
 ```markdown
 # 项目任务
 
-## TASK-001: 实现用户登录页面
+## TaskID
 
-- **status**: pending
-- **priority**: high
-- **assignee**: -
-- **template**: feature-dev
-- **design-doc**: plain/TASK-001-登录页设计.md
-- **session**: null
-- **created**: 2026-04-13
-- **updated**: 2026-04-13
+0b9ec1df-0c77-4f0d-8f6f-b4d6f4f7c61f
+
+### 标题
+
+实现登录页
 
 ### 描述
 
-实现一个包含邮箱密码登录的页面，支持表单验证和错误提示。
+实现邮箱密码登录页，包含错误提示与 loading 状态。
 
 ### 设计文档
 
-- [登录页交互与视觉设计](plain/TASK-001-登录页设计.md)
+plain/登录页设计.md
 
-### 验收标准
+### 属性
 
-- [ ] 邮箱格式验证
-- [ ] 密码强度提示
-- [ ] 登录失败错误提示
-- [ ] Loading 状态
+- **status**: pending
+- **priority**: high
+- **depends-on**:
+- **session**: null
+- **created**: 2026-04-14
+- **updated**: 2026-04-14
+- **run-template**: app:app-default-run-template
+```
 
-### 依赖
+### 4.3 解析规则
 
-- TASK-000（项目初始化）
+- 文档标题来自首个 `# 标题`
+- 每个任务块以 `## TaskID` 开始
+- `TaskID` 下方的第一段非空文本是任务唯一 ID
+- `### 属性` 段中的 `- **key**: value` 会解析为元数据
+- `### 标题`、`### 描述`、`### 设计文档` 是当前内置识别字段
+- 其余 `### 子段落` 会保留并在写回时继续输出
+- 写回时会保持统一结构化格式，不再试图兼容早期旧版文档排版
+
+### 4.4 当前元数据字段
+
+| 字段 | 含义 |
+|------|------|
+| `status` | 任务状态 |
+| `priority` | 优先级：`high / medium / low` |
+| `depends-on` | 依赖的任务 ID 列表，逗号分隔 |
+| `session` | 预留字段，当前默认 `null` |
+| `created` | 创建日期 |
+| `updated` | 更新日期 |
+| `run-template` | 绑定的运行模板引用 |
+| `archived` | 可选字段，归档完成任务时使用 |
+
+### 4.5 设计文档约定
+
+- UI 侧当前只从项目 `plain/` 目录读取可选 Markdown 文件
+- 存入 `task.md` 的是文件名，写回时会渲染成 `plain/<文件名>`
+- 设计文档打开动作直接定位到项目中的真实文件
+
+这意味着当前实现假设设计文档主要放在 `plain/` 目录，而不是任意路径。
 
 ---
 
-## TASK-002: 实现用户注册 API
+## 5. 状态模型
 
-- **status**: pending
-- **priority**: medium
-- **template**: api-dev
-- **design-doc**: -
-- **session**: null
-- **created**: 2026-04-13
-- **updated**: 2026-04-13
+### 5.1 当前已落地状态
 
-### 描述
-
-实现注册接口，包含参数校验和密码加密。
-```
-
-### 4.2 状态定义
+当前任务系统实际使用以下四种主状态：
 
 | 状态 | 含义 |
 |------|------|
 | `pending` | 未开始 |
-| `running` | 进行中，已关联 Session |
+| `running` | 进行中 |
 | `completed` | 已完成 |
-| `error` | 异常，需要人工介入 |
+| `error` | 异常 |
 
-### 4.3 设计文档引用约定
+### 5.2 当前状态流转
 
-- 使用元数据字段 `- **design-doc**: <path>` 表示任务绑定的设计文档路径
-- 路径默认相对于项目根目录，推荐引用 `plain/` 目录下的 Markdown 文档
-- 无设计文档时使用 `-` 或省略该字段
-- 如果需要同时保留可读链接，可在任务正文增加 `### 设计文档` 段落
-- `design-doc` 是机器读取的主字段，`### 设计文档` 是面向人类阅读的补充展示
+当前看板上的动作是本地状态流转，不会触发真实 Session 编排：
 
-### 4.4 解析规则
+- `pending -> running`：开始任务
+- `running -> pending`：停止任务
+- `error -> running`：重试任务
+- `completed -> archived=true`：归档任务
 
-- 每个任务以 `## TASK-{NNN}: {标题}` 开头
-- 元数据为 `- **key**: value` 格式的列表
-- `### 描述`、`### 验收标准`、`### 依赖` 为固定子段落
-- `### 设计文档` 为可选子段落，用于展示链接或补充说明
-- 解析器优先读取 `design-doc` 元数据作为结构化字段
-- 若存在 `### 设计文档` 段落，可将其原文保留在任务详情中，但不作为主数据源
-- 任务之间以 `---` 分隔
-- 解析时保留原文格式，写回时不能丢失自定义内容
+这里的“开始任务”目前只是把状态改为 `running` 并写回 `task.md`，还没有创建或驱动真实执行 Session。
 
----
+### 5.3 后续扩展建议
 
-## 5. MCP Server 设计
+等内部通讯系统接入后，建议把“状态”与“事件”分离：
 
-### 5.1 传输方式
+- 任务状态继续由任务系统维护
+- 执行进度、求助、错误、完成由 Session 事件驱动
 
-- **Unix Socket**：`/tmp/ccgui-{pid}.sock`
-- **协议**：JSON-RPC 2.0 over socket
-- **连接管理**：每个 MCP Bridge 建立一个持久连接
+届时可以考虑补充：
 
-### 5.2 内部数据结构
+- `blocked`
+- `paused`
+- `cancelled`
 
-```javascript
-// MCP Server 维护的状态
-{
-  // 已注册的 Session
-  sessions: Map<session_id, {
-    socket: Socket,
-    identity: {
-      session_id: string,
-      project_path: string,
-      task_id: string | null,
-      team_name: string | null,
-      team_role: string | null,
-    },
-    connected_at: Date,
-  }>,
-
-  // 待发送消息队列
-  messageQueue: Map<session_id, Message[]>,
-
-  // 任务状态缓存
-  taskStatus: Map<task_id, {
-    status: string,
-    message: string,
-    updated_at: Date,
-  }>
-
-  // 任务结构化信息缓存
-  taskMeta: Map<task_id, {
-    design_doc: string | null,
-  }>
-}
-```
-
-### 5.3 MCP Bridge 设计
-
-MCP Bridge 是一个轻量的 Node.js 进程，职责：
-
-1. 作为 CLI 的 MCP Server（stdio 传输）
-2. 作为 CCGUI MCP Server 的 Client（unix socket 传输）
-3. 双向转发 JSON-RPC 消息
-4. 处理身份注入（启动参数 → register 调用）
-
-```
-CLI ←──stdio──→ MCP Bridge ←──unix socket──→ CCGUI MCP Server
-     (MCP stdio)       (协议转换)           (JSON-RPC over socket)
-```
+但这不是当前文档要强行落地的前提。
 
 ---
 
-## 6. UI 设计
+## 6. 当前界面与交互
 
-### 6.1 任务列表视图（List View）
+### 6.1 入口位置
 
-```
-┌─────────────────────────────────────────────────────┐
-│  任务管理                              [列表] [看板]  │
-├─────────────────────────────────────────────────────┤
-│  筛选: [全部 ▾]  优先级: [全部 ▾]  搜索: [______]    │
-├──────┬──────────────────┬────────┬──────┬───────────┤
-│ 编号 │ 任务名称          │ 优先级  │ 状态 │ 操作       │
-├──────┼──────────────────┼────────┼──────┼───────────┤
-│ 001  │ 实现用户登录页面   │ 高     │ ● 未  │ 设计│[▶ 启动]│
-│ 002  │ 实现注册 API       │ 中     │ ● 未  │    │[▶ 启动]│
-│ 003  │ 编写单元测试       │ 低     │ ● 进  │ 设计│[📋 查看]│
-│ 004  │ 部署配置          │ 中     │ ● 完  │    │[📋 查看]│
-│ 005  │ 性能优化          │ 高     │ ● 异  │ 设计│[↻ 重试]│
-└──────┴──────────────────┴────────┴──────┴───────────┘
-```
+任务系统当前作为工作区主视图之一，与聊天视图并列：
 
-- 列表中增加“设计”标记列，存在 `design-doc` 时展示 `设计`
-- 点击“设计”标记或详情中的文档路径，可直接打开对应 Markdown 文档
+- `chat` 视图：会话工作区
+- `tasks` 视图：任务工作区
 
-### 6.2 任务看板视图（Board View）
+### 6.2 任务看板
 
-```
-┌──────────────┬──────────────┬──────────────┬──────────────┐
-│   未开始 (3)  │  进行中 (1)  │  已完成 (1)  │   异常 (1)   │
-├──────────────┼──────────────┼──────────────┼──────────────┤
-│ ┌──────────┐ │ ┌──────────┐ │ ┌──────────┐ │ ┌──────────┐ │
-│ │ TASK-001 │ │ │ TASK-003 │ │ │ TASK-004 │ │ │ TASK-005 │ │
-│ │ 登录页面  │ │ │ 单元测试  │ │ │ 部署配置  │ │ │ 性能优化  │ │
-│ │ 优先级:高 │ │ │ 优先级:低 │ │ │ 优先级:中 │ │ │ 优先级:高 │ │
-│ │ [▶ 启动] │ │ │ [📋 查看]│ │ │ [📋 查看]│ │ │ [↻ 重试] │ │
-│ └──────────┘ │ └──────────┘ │ └──────────┘ │ └──────────┘ │
-│ ┌──────────┐ │              │              │              │
-│ │ TASK-002 │ │              │              │              │
-│ │ 注册 API │ │              │              │              │
-│ │ 优先级:中 │ │              │              │              │
-│ │ [▶ 启动] │ │              │              │              │
-│ └──────────┘ │              │              │              │
-└──────────────┴──────────────┴──────────────┴──────────────┘
-```
+当前已实现的核心布局：
 
-### 6.3 任务启动流程
+- 左侧顶部提供优先级筛选、关键词搜索、刷新
+- 第一列是“常规任务”
+- 其后四列分别是 `未开始 / 进行中 / 已完成 / 异常`
+- 点击任务卡片可打开浮动详情面板
+- `pending` 列支持直接新建任务
 
-```
-用户点击 [▶ 启动]
-  │
-  ├─ 1. 弹出模板选择对话框
-  │     ┌─────────────────────────────┐
-  │     │  选择启动模板                │
-  │     │                             │
-  │     │  ○ feature-dev  功能开发     │
-  │     │  ○ api-dev      接口开发     │
-  │     │  ○ bugfix       缺陷修复     │
-  │     │  ○ refactor     代码重构     │
-  │     │  ○ 自定义 prompt            │
-  │     │                             │
-  │     │  权限模式: [默认 ▾]          │
-  │     │                             │
-  │     │        [取消]   [启动]       │
-  │     └─────────────────────────────┘
-  │
-  ├─ 2. 创建 Session，注入身份信息和 MCP 配置
-  │
-  ├─ 3. 更新 task.md：status → running，session → session_id
-  │
-  └─ 4. 自动发送模板消息给 Session
-        "你正在执行 TASK-001：实现用户登录页面
-         关联设计文档：plain/TASK-001-登录页设计.md
-         [模板内容]
-         完成后请使用 report_task_status 工具报告结果。"
-```
+### 6.3 任务详情面板
 
-### 6.4 任务详情面板
+当前详情面板支持编辑：
 
-点击任务卡片/行时展开或弹窗：
+- 任务标题
+- 状态
+- 优先级
+- 运行模板
+- 设计文档
+- 依赖任务
+- 描述
 
-```
-┌─────────────────────────────────────┐
-│  TASK-001: 实现用户登录页面           │
-│  状态: 进行中    优先级: 高           │
-│  Session: session-abc123            │
-│  设计文档: plain/TASK-001-登录页设计.md│
-│  创建: 2026-04-13                   │
-│  更新: 2026-04-13 14:30             │
-├─────────────────────────────────────┤
-│  描述                               │
-│  实现一个包含邮箱密码登录的页面...      │
-│                                     │
-│  设计文档                           │
-│  [登录页交互与视觉设计]              │
-│                                     │
-│  验收标准                           │
-│  ☐ 邮箱格式验证                     │
-│  ☐ 密码强度提示                     │
-│  ☐ 登录失败错误提示                  │
-├─────────────────────────────────────┤
-│  Session 日志                       │
-│  14:30 启动任务                      │
-│  14:35 正在实现表单组件...            │
-│  14:40 report_task_status: progress │
-├─────────────────────────────────────┤
-│  [📋 跳转Session] [⏸ 暂停] [⏹ 终止] │
-└─────────────────────────────────────┘
-```
+并支持以下操作：
+
+- 保存
+- 删除
+- 复制任务
+- 打开设计文档
+
+### 6.4 常规任务面板
+
+“常规任务”是模板化任务条目，不直接写入 `task.md`，而是先保存在模板库中，再按需生成真正任务。
+
+当前支持：
+
+- 浏览 App 级 / 项目级常规任务
+- 编辑常规任务模板
+- 选择运行模板后快速生成任务
+- 预览运行模板替换结果
 
 ---
 
 ## 7. 模板系统
 
-### 7.1 模板定义
+当前模板系统已经实际落地，并分为两类。
 
-模板存储在 CCGUI 配置目录下：`~/.ccgui/templates/{template-name}.md`
+### 7.1 常规任务模板
 
-### 7.2 模板格式
+用途：
 
-```markdown
----
-name: feature-dev
-description: 功能开发模板
-version: 1.0
----
+- 复用高频任务描述
+- 快速生成标准化任务草稿
 
-# 功能开发任务
+存储范围：
 
-你正在执行一个功能开发任务。
+- App 级模板
+- Project 级模板
 
-## 任务信息
+### 7.2 运行模板
 
-- 任务编号: {{task_id}}
-- 任务标题: {{task_title}}
-- 任务描述: {{task_description}}
-- 关联设计文档: {{task_design_doc}}
+用途：
 
-## 设计约束
+- 描述“任务准备交给模型执行时，应该如何组织提示词”
+- 与具体任务条目绑定
+- 为后续任务执行系统预留 prompt 渲染入口
 
-{{task_design_doc_content}}
+当前内置了默认运行模板：
 
-## 验收标准
+- `app-default-run-template`
 
-{{task_criteria}}
+默认模板已经支持以下变量替换：
 
-## 执行指引
+- `{{task_id}}`
+- `{{task_title}}`
+- `{{task_document}}`
 
-1. 先阅读相关的现有代码，了解上下文
-2. 制定实现方案，说明你的计划
-3. 按计划逐步实现
-4. 确保所有验收标准都满足
+其中 `{{task_document}}` 会被渲染为当前任务的嵌入式引用块，用于直接塞进对话内容。
 
-## 状态汇报
+### 7.3 模板存储
 
-- 开始执行时，调用 report_task_status("progress", "开始执行")
-- 关键里程碑时，调用 report_task_status("progress", "里程碑描述")
-- 完成时，调用 report_task_status("completed", "完成摘要")
-- 遇到无法解决的问题时，调用 report_task_status("error", "错误描述")
-```
+当前模板不是保存在单独文件中，而是保存在配置中：
 
-### 7.3 模板变量
+- App 级：应用配置
+- Project 级：项目配置
 
-| 变量 | 来源 |
-|------|------|
-| `{{task_id}}` | task.md 中的任务编号 |
-| `{{task_title}}` | task.md 中的任务标题 |
-| `{{task_description}}` | task.md 中的描述段落 |
-| `{{task_design_doc}}` | `design-doc` 元数据中的文档路径，没有则为 `-` |
-| `{{task_design_doc_content}}` | 设计文档摘要或原文引用，没有则为空 |
-| `{{task_criteria}}` | task.md 中的验收标准段落 |
-| `{{task_dependencies}}` | task.md 中的依赖段落 |
+数据结构上分为：
+
+- `taskLibrary.routines`
+- `taskRunTemplates.items`
 
 ---
 
-## 8. 实施计划
+## 8. 依赖关系
 
-### Phase 1：基础能力
+### 8.1 当前规则
 
-**目标**：task.md 解析 + MCP 通讯基础
+任务系统当前支持 `depends-on` 元数据，并在 UI 中以多选方式维护。
 
-- [ ] task.md 格式定义和解析器（Parser）
-- [ ] task.md 写回逻辑（Writer，保留自定义内容）
-- [ ] MCP Server（CCGUI 侧）
-  - [ ] Unix socket 监听
-  - [ ] Session 注册和身份管理
-  - [ ] `report_task_status` 工具实现
-  - [ ] `get_task_info` 工具实现
-- [ ] MCP Bridge（CLI 侧）
-  - [ ] stdio ↔ unix socket 双向转发
-  - [ ] 身份注入（启动参数 → 注册）
-  - [ ] CLI 启动参数集成
+支持的能力：
 
-### Phase 2：UI 和任务管理
+- 选择多个依赖任务
+- 自动排除自身
+- 检测循环依赖
+- 卡片上展示依赖任务名称
 
-**目标**：可视化任务管理
+### 8.2 当前限制
 
-- [ ] Task Store（Pinia）
-  - [ ] 任务列表状态管理
-  - [ ] task.md 文件监听（watch）
-  - [ ] 任务 CRUD 操作
-- [ ] List 视图
-  - [ ] 任务列表展示
-  - [ ] 筛选、搜索、排序
-- [ ] Board 视图
-  - [ ] 四列看板
-  - [ ] 任务卡片
-  - [ ] 状态流转
-- [ ] 任务详情面板
-  - [ ] 任务信息展示
-  - [ ] Session 日志
+当前依赖关系只用于管理和展示，不驱动自动执行：
 
-### Phase 3：任务执行
+- 不会自动阻止用户手动开始未满足依赖的任务
+- 不会在前置任务完成后自动启动后续任务
+- 不会生成跨任务调度计划
 
-**目标**：一键启动任务
-
-- [ ] 模板系统
-  - [ ] 模板存储和管理
-  - [ ] 模板变量替换
-  - [ ] 模板选择 UI
-- [ ] 任务启动流程
-  - [ ] 创建 Task Session（注入身份和 MCP 配置）
-  - [ ] 更新 task.md 状态
-  - [ ] 自动发送模板消息
-- [ ] 状态反馈
-  - [ ] 监听 MCP `report_task_status` 调用
-  - [ ] 自动更新任务状态
-  - [ ] 任务完成/异常通知
-
-### Phase 4：跨 Session 通讯
-
-**目标**：三方通讯
-
-- [ ] `send_to_session` 工具实现
-- [ ] 消息路由（CCGUI 中转）
-- [ ] 消息队列（忙碌 Session 排队）
-- [ ] `request_help` 工具和通知
-- [ ] 任务依赖自动触发（前置任务完成 → 自动启动后续任务）
+这些能力要等执行系统与内部邮件系统接入后再补。
 
 ---
 
-## 9. 技术细节备忘
+## 9. 文件监听与同步
 
-### 9.1 MCP Bridge 作为 CLI 的 MCP Server
+当前已经实现项目文件监听联动：
 
-CLI 通过 stdio 与 MCP Bridge 通讯，MCP Bridge 需要完整实现 MCP Server 协议：
+- `task.md` 被外部修改后，任务视图自动重新加载
+- 设计文档选项来自 `plain/` 目录文件列表
+- 模板管理更新后会通过前端事件刷新任务视图
 
-```
-CLI 发送 tools/list → MCP Bridge 返回工具列表
-CLI 发送 tools/call → MCP Bridge 转发到 CCGUI → 返回结果
-```
+当前刷新机制已经满足“手动编辑文件 + 图形界面并行使用”的基本需求。
 
-### 9.2 Unix Socket 协议
+---
 
-CCGUI MCP Server 与 MCP Bridge 之间使用简化协议：
+## 10. 当前实现边界
 
-```json
-// 请求
-{ "type": "tool_call", "tool": "report_task_status", "arguments": {...}, "request_id": "xxx" }
+为了避免文档继续脱离代码，当前任务系统边界明确如下：
 
-// 响应
-{ "type": "tool_response", "request_id": "xxx", "result": {...} }
+### 已实现
 
-// 注册
-{ "type": "register", "identity": { "session_id": "...", "task_id": "...", ... } }
-```
+- `task.md` 结构化读写
+- 看板式任务管理
+- 浮动详情编辑
+- 常规任务模板
+- 运行模板
+- 设计文档关联
+- 依赖关系校验
+- 归档语义
 
-### 9.3 文件监听
+### 未实现
 
-- 使用 `chokidar` 或 `fs.watch` 监听 task.md 变化
-- 外部编辑时自动重新解析
-- CCGUI 写入时跳过触发（通过标志位）
+- 任务启动即创建 Session
+- 任务与具体会话自动绑定
+- Session 执行日志回填到任务详情
+- 执行完成自动变更任务状态
+- 多 Session 协同执行任务
+- 用户协助请求
+- 任务依赖驱动的自动编排
 
-### 9.4 错误处理
+---
 
-- Session 进程意外退出 → 任务标记为 error
-- MCP Bridge 连接断开 → 清理注册信息，任务标记为 error
-- task.md 格式错误 → 忽略错误任务，展示可解析的部分
-- 模板变量缺失 → 使用空字符串替代
+## 11. 后续演进方向
+
+### Phase A：保持当前任务定义能力稳定
+
+- 稳定 `task.md` 结构
+- 明确哪些字段属于核心字段，哪些属于扩展字段
+- 避免再次引入与当前实现不一致的旧格式描述
+
+### Phase B：与内部邮件系统对接
+
+- 为任务运行建立 Session 身份规范
+- 将运行模板真正发送到执行 Session
+- 接收 Session 的完成、错误、求助、进度事件
+- 把执行事件映射为任务状态和任务日志
+
+### Phase C：任务执行系统
+
+- 启动任务时自动创建或复用执行 Session
+- 记录一次任务执行实例
+- 支持失败重试、继续执行、历史查看
+
+### Phase D：依赖驱动的任务编排
+
+- 自动识别可执行任务
+- 前置任务完成后触发后续任务
+- 支持多 Session 协同推进
+
+---
+
+## 12. 结论
+
+任务系统现在应该被定义为：
+
+**一个已经落地的项目任务管理模块，负责任务定义、看板管理、模板管理与后续执行接入准备。**
+
+而不是旧文档中那种“已经完整打通 MCP 编排与 Session 通讯的任务执行框架”。
+
+后续真正涉及 Session 间投递、事件回传、协作消息、求助通知的部分，统一归到 [内部邮件系统](/Users/alwaysking/AKProject/CCGUI/plain/内部邮件系统.md) 设计中。

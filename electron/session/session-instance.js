@@ -718,6 +718,14 @@ class SessionInstance {
     this.activeResponseUserMessageId = null
   }
 
+  attachWebContents(webContents) {
+    if (!webContents || webContents.isDestroyed?.()) {
+      return
+    }
+
+    this.webContents = webContents
+  }
+
   getMainAgentId() {
     return 'master'
   }
@@ -1125,6 +1133,49 @@ class SessionInstance {
     } catch (e) {
       logger.error(`[SessionInstance] Error loading history: ${e.message}`)
     }
+  }
+
+  async refreshStoredHistoryIfEmpty() {
+    if (this.isProcessing) {
+      return false
+    }
+
+    const persistedTurns = historyManager.loadIndexEntries(this.projectId, this.id)
+    if (!Array.isArray(persistedTurns) || persistedTurns.length === 0) {
+      return false
+    }
+
+    const persistedMessages = persistedTurns.map(buildHistoryIndexMessage)
+    const persistedIds = new Set()
+    const currentMessagesById = new Map()
+
+    for (const message of this.messages) {
+      if (message?.id) {
+        currentMessagesById.set(message.id, message)
+      }
+    }
+
+    const mergedMessages = persistedMessages.map(message => {
+      if (message?.id) {
+        persistedIds.add(message.id)
+        this.savedMessageIds.add(message.id)
+        return currentMessagesById.get(message.id) || message
+      }
+
+      return message
+    })
+
+    for (const message of this.messages) {
+      if (!message?.id || !persistedIds.has(message.id)) {
+        mergedMessages.push(message)
+      }
+    }
+
+    this.historyTurns = persistedTurns
+    this.messages = mergedMessages
+    this.inputHistory = mergeInputHistory(this.inputHistory, persistedMessages)
+
+    return true
   }
 
   /**

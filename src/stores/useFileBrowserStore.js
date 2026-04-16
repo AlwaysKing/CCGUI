@@ -936,8 +936,12 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     isPreviewPanelVisible.value = Boolean(state?.isPreviewPanelVisible)
   }
 
-  watch(projectPath, (nextProjectPath, previousProjectPath) => {
-    if (nextProjectPath === previousProjectPath) return
+  watch([projectPath, isFilePanelVisible], ([nextProjectPath, nextVisible], previous = []) => {
+    const [previousProjectPath, previousVisible] = previous
+    const projectChanged = nextProjectPath !== previousProjectPath
+    const visibilityChanged = nextVisible !== previousVisible
+
+    if (!projectChanged && !visibilityChanged) return
 
     projectInitializationToken += 1
     const currentToken = projectInitializationToken
@@ -947,18 +951,26 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       projectInitializationTimer = null
     }
 
-    resetState()
+    void window.electronAPI.unwatchProjectFiles?.()
+
+    if (projectChanged) {
+      resetState()
+    }
+
+    if (!nextProjectPath || !nextVisible) {
+      return
+    }
+
     projectInitializationTimer = setTimeout(() => {
       projectInitializationTimer = null
 
       void (async () => {
-        await window.electronAPI.unwatchProjectFiles?.()
-        if (!nextProjectPath || currentToken !== projectInitializationToken) {
+        if (currentToken !== projectInitializationToken) {
           return
         }
 
         await refreshTree()
-        if (currentToken !== projectInitializationToken) {
+        if (currentToken !== projectInitializationToken || !isFilePanelVisible.value) {
           return
         }
 

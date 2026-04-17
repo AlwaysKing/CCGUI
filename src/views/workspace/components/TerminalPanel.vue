@@ -35,6 +35,12 @@ const terminalResizeCleanup = new Map()
 
 const activeTerminal = computed(() => terminals.value.find(item => item.id === activeTerminalId.value) || null)
 const runningTerminalCount = computed(() => terminals.value.filter(isTerminalRunning).length)
+const runningTaskLabels = computed(() => {
+  return terminals.value
+    .filter(terminal => getTerminalKind(terminal) === TASK_TERMINAL_KIND && isTerminalRunning(terminal))
+    .map(terminal => String(terminal.taskLabel || '').trim())
+    .filter(Boolean)
+})
 const terminalSidebarStyle = computed(() => ({
   width: `${terminalSidebarWidth.value}px`,
   flex: `0 0 ${terminalSidebarWidth.value}px`
@@ -48,6 +54,9 @@ const terminalSurfaceStyle = computed(() => {
 })
 const TERMINAL_SIDEBAR_MIN_WIDTH = 72
 const TERMINAL_SIDEBAR_MAX_WIDTH = 180
+const TASK_TERMINAL_KIND = 'task'
+const USER_TERMINAL_KIND = 'user'
+const suppressAutoCreateOnce = ref(false)
 
 function getTerminalMeta(terminalId) {
   return terminals.value.find(item => item.id === terminalId) || null
@@ -55,6 +64,17 @@ function getTerminalMeta(terminalId) {
 
 function getTerminalLabel(index) {
   return `终端 ${index + 1}`
+}
+
+function getTerminalKind(terminal) {
+  return terminal?.kind === TASK_TERMINAL_KIND ? TASK_TERMINAL_KIND : USER_TERMINAL_KIND
+}
+
+function getTerminalDisplayTitle(terminal, index) {
+  if (getTerminalKind(terminal) === TASK_TERMINAL_KIND) {
+    return terminal?.taskLabel || `任务终端 ${index + 1}`
+  }
+  return getTerminalLabel(index)
 }
 
 function getTerminalCommandLabel(terminal) {
@@ -66,6 +86,15 @@ function isTerminalRunning(terminal) {
   const shellLabel = terminal.shellLabel || 'shell'
   const currentCommand = terminal.currentCommand || shellLabel
   return currentCommand !== shellLabel && currentCommand !== 'shell'
+}
+
+function isReusableTaskTerminal(terminal) {
+  return Boolean(
+    terminal &&
+    !terminal.exited &&
+    getTerminalKind(terminal) === TASK_TERMINAL_KIND &&
+    !isTerminalRunning(terminal)
+  )
 }
 
 function getTerminalTheme(themeKey) {
@@ -223,14 +252,14 @@ function estimateTerminalSize() {
   }
 }
 
-async function createTerminal() {
+async function createTerminal(terminalOptions = {}) {
   if (isCreatingTerminal.value) return
   isCreatingTerminal.value = true
 
   try {
     const { cols, rows } = estimateTerminalSize()
     const result = await window.electronAPI.createTerminal({
-      cwd: props.projectPath,
+      cwd: terminalOptions.cwd || props.projectPath,
       cols,
       rows
     })
@@ -248,6 +277,8 @@ async function createTerminal() {
         shell: result.terminal.shell,
         shellLabel: result.terminal.shell?.split('/').pop() || 'shell',
         currentCommand: result.terminal.command || result.terminal.shell?.split('/').pop() || 'shell',
+        kind: terminalOptions.kind || USER_TERMINAL_KIND,
+        taskLabel: terminalOptions.taskLabel || '',
         exited: false,
         buffer: ''
       }
@@ -261,6 +292,77 @@ async function createTerminal() {
   } finally {
     isCreatingTerminal.value = false
   }
+}
+
+async function runTaskInTerminal(task) {
+  if (!task?.commandLine) {
+    throw new Error('缺少可执行的任务命令')
+  }
+
+  let terminalMeta = terminals.value.find(isReusableTaskTerminal) || null
+  if (!terminalMeta) {
+    await createTerminal({
+      cwd: task.cwd || props.projectPath,
+      kind: TASK_TERMINAL_KIND,
+      taskLabel: task.label || ''
+    })
+    terminalMeta = getTerminalMeta(activeTerminalId.value)
+  } else {
+    terminalMeta.cwd = task.cwd || terminalMeta.cwd || props.projectPath
+    terminalMeta.taskLabel = task.label || terminalMeta.taskLabel || ''
+    terminalMeta.kind = TASK_TERMINAL_KIND
+    activeTerminalId.value = terminalMeta.id
+  }
+
+  if (!terminalMeta?.id) {
+    throw new Error('任务终端创建失败')
+  }
+
+  terminalMeta.exited = false
+  activeTerminalId.value = terminalMeta.id
+  await nextTick()
+  mountTerminal(terminalMeta.id, false)
+
+  if (task.cwd && task.cwd !== terminalMeta.cwd) {
+    terminalMeta.cwd = task.cwd
+  }
+
+  const commands = []
+  if (task.cwd) {
+    commands.push(`cd ${JSON.stringify(task.cwd)}`)
+  }
+  commands.push(task.commandLine)
+  await window.electronAPI.writeTerminal({
+    terminalId: terminalMeta.id,
+    data: `${commands.join('\r')}\r`
+  })
+
+  return terminalMeta.id
+}
+
+async function stopTaskTerminal(task) {
+  const taskLabel = String(task?.label || '').trim()
+  if (!taskLabel) {
+    return false
+  }
+
+  const terminalMeta = terminals.value.find(terminal => {
+    return (
+      getTerminalKind(terminal) === TASK_TERMINAL_KIND &&
+      String(terminal.taskLabel || '').trim() === taskLabel &&
+      !terminal.exited
+    )
+  })
+
+  if (!terminalMeta?.id) {
+    return false
+  }
+
+  await window.electronAPI.writeTerminal({
+    terminalId: terminalMeta.id,
+    data: '\u0003'
+  })
+  return true
 }
 
 function disposeTerminalInstance(terminalId) {
@@ -528,6 +630,11 @@ async function resetTerminals() {
 
 watch(() => props.visible, async visible => {
   if (!visible) return
+  if (suppressAutoCreateOnce.value) {
+    suppressAutoCreateOnce.value = false
+    fitActiveTerminal()
+    return
+  }
   if (terminals.value.length === 0) {
     await createTerminal()
     return
@@ -542,9 +649,18 @@ watch(activeTerminalId, () => {
 watch(runningTerminalCount, count => {
   emit('running-change', {
     hasRunning: count > 0,
-    count
+    count,
+    taskLabels: runningTaskLabels.value
   })
 }, { immediate: true })
+
+watch(runningTaskLabels, labels => {
+  emit('running-change', {
+    hasRunning: runningTerminalCount.value > 0,
+    count: runningTerminalCount.value,
+    taskLabels: labels
+  })
+})
 
 watch(() => props.projectPath, async (nextPath, previousPath) => {
   if (!previousPath || nextPath === previousPath) return
@@ -585,8 +701,17 @@ onUnmounted(async () => {
 })
 
 defineExpose({
+  prepareTaskLaunch() {
+    suppressAutoCreateOnce.value = true
+  },
   createTerminal,
   fitActiveTerminal,
+  async runTaskTerminal(task) {
+    return runTaskInTerminal(task)
+  },
+  async stopTaskTerminal(task) {
+    return stopTaskTerminal(task)
+  },
   async refreshAppearance() {
     await loadTerminalAppearance()
     applyTerminalAppearance()
@@ -645,12 +770,24 @@ defineExpose({
           :key="terminal.id"
           class="terminal-sidebar-btn terminal-tab-btn"
           :class="{ active: activeTerminalId === terminal.id }"
-          :title="`${getTerminalLabel(index)} · ${getTerminalCommandLabel(terminal)}`"
+          :title="`${getTerminalDisplayTitle(terminal, index)} · ${getTerminalCommandLabel(terminal)}`"
           @click="handleActivateTerminal(terminal.id)"
         >
           <span class="terminal-tab-main">
-            <span class="terminal-tab-index">{{ index + 1 }}</span>
+            <span
+              class="terminal-tab-index"
+              :class="{ task: getTerminalKind(terminal) === TASK_TERMINAL_KIND }"
+            >
+              {{ getTerminalKind(terminal) === TASK_TERMINAL_KIND ? 'T' : index + 1 }}
+            </span>
             <span class="terminal-tab-command">{{ getTerminalCommandLabel(terminal) }}</span>
+          </span>
+          <span
+            v-if="getTerminalKind(terminal) === TASK_TERMINAL_KIND"
+            class="terminal-task-badge"
+            :title="terminal.taskLabel || '任务终端'"
+          >
+            任务
           </span>
           <span class="terminal-tab-close" title="关闭终端" @click="handleCloseTerminal($event, terminal.id)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -873,6 +1010,10 @@ defineExpose({
   flex: 0 0 auto;
 }
 
+.terminal-tab-index.task {
+  color: #F97316;
+}
+
 .terminal-tab-command {
   flex: 1;
   font-size: 11px;
@@ -882,6 +1023,18 @@ defineExpose({
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.terminal-task-badge {
+  flex: 0 0 auto;
+  margin-right: 2px;
+  padding: 1px 5px;
+  border: 1px solid rgba(249, 115, 22, 0.35);
+  border-radius: 999px;
+  color: #FDBA74;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .terminal-tab-close {

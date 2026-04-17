@@ -74,6 +74,14 @@ const props = defineProps({
     type: Number,
     default: 0
   },
+  taskLauncherTasks: {
+    type: Array,
+    default: () => []
+  },
+  runningTaskLabels: {
+    type: Array,
+    default: () => []
+  },
   showClaudeFilter: {
     type: Boolean,
     default: true
@@ -84,7 +92,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openTaskTemplatesDialog', 'selectPrimaryView'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openTaskTemplatesDialog', 'selectPrimaryView'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -101,6 +109,16 @@ const showConfigMenu = ref(false)
 const configMenuBtnRef = ref(null)
 const configMenuRef = ref(null)
 const configMenuDropdownStyle = ref({})
+const fileLauncherRef = ref(null)
+const fileLauncherTriggerRef = ref(null)
+const fileLauncherMenuRef = ref(null)
+const fileLauncherMenuStyle = ref({})
+const showFileLauncherMenu = ref(false)
+const taskLauncherRef = ref(null)
+const taskLauncherTriggerRef = ref(null)
+const taskLauncherMenuRef = ref(null)
+const taskLauncherMenuStyle = ref({})
+const showTaskLauncherMenu = ref(false)
 
 function toggleConfigMenu() {
   showConfigMenu.value = !showConfigMenu.value
@@ -111,6 +129,68 @@ function toggleConfigMenu() {
 
 function closeConfigMenu() {
   showConfigMenu.value = false
+}
+
+function toggleFileLauncherMenu() {
+  showFileLauncherMenu.value = !showFileLauncherMenu.value
+  if (showFileLauncherMenu.value) {
+    updateFileLauncherMenuPosition()
+  }
+}
+
+function closeFileLauncherMenu() {
+  showFileLauncherMenu.value = false
+}
+
+function toggleTaskLauncherMenu() {
+  showTaskLauncherMenu.value = !showTaskLauncherMenu.value
+  if (showTaskLauncherMenu.value) {
+    updateTaskLauncherMenuPosition()
+  }
+}
+
+function closeTaskLauncherMenu() {
+  showTaskLauncherMenu.value = false
+}
+
+function handleRunTaskLauncher(task) {
+  if (!task) return
+  emit('runTaskLauncher', task)
+  closeTaskLauncherMenu()
+}
+
+function handleToggleTaskLauncher(task) {
+  if (!task) return
+  emit('toggleTaskLauncher', task)
+}
+
+function handleDeleteTaskLauncher(task) {
+  if (!task) return
+  emit('deleteTaskLauncher', task)
+}
+
+function isTaskRunning(task) {
+  const taskLabel = String(task?.label || '').trim()
+  return Boolean(taskLabel && props.runningTaskLabels.includes(taskLabel))
+}
+
+function handleOpenTaskLauncherConfig() {
+  emit('openTaskLauncherConfig')
+  closeTaskLauncherMenu()
+}
+
+function handleOpenTaskLauncherFile() {
+  emit('openTaskLauncherFile')
+  closeTaskLauncherMenu()
+}
+
+function handleRefreshTaskLauncherTasks() {
+  emit('refreshTaskLauncherTasks')
+}
+
+function handleOpenProjectDirectory() {
+  void openProjectInFinder()
+  closeFileLauncherMenu()
 }
 
 function updateConfigMenuPosition() {
@@ -129,6 +209,54 @@ function updateConfigMenuPosition() {
       top: `${rect.bottom + 4}px`,
       minWidth: `${menuWidth}px`,
       zIndex: 1000
+    }
+  })
+}
+
+function updateTaskLauncherMenuPosition() {
+  nextTick(() => {
+    const trigger = taskLauncherTriggerRef.value
+    if (!trigger) {
+      taskLauncherMenuStyle.value = {}
+      return
+    }
+
+    const rect = trigger.getBoundingClientRect()
+    const viewportWidth = window.innerWidth
+    const estimatedMenuWidth = 320
+    const left = Math.min(rect.left - 8, viewportWidth - estimatedMenuWidth - 12)
+
+    taskLauncherMenuStyle.value = {
+      position: 'fixed',
+      left: `${Math.max(12, left)}px`,
+      top: `${rect.bottom + 6}px`,
+      minWidth: '260px',
+      maxWidth: '320px',
+      zIndex: 1400
+    }
+  })
+}
+
+function updateFileLauncherMenuPosition() {
+  nextTick(() => {
+    const trigger = fileLauncherTriggerRef.value
+    if (!trigger) {
+      fileLauncherMenuStyle.value = {}
+      return
+    }
+
+    const rect = trigger.getBoundingClientRect()
+    const viewportWidth = window.innerWidth
+    const estimatedMenuWidth = 250
+    const left = Math.min(rect.left - 8, viewportWidth - estimatedMenuWidth - 12)
+
+    fileLauncherMenuStyle.value = {
+      position: 'fixed',
+      left: `${Math.max(12, left)}px`,
+      top: `${rect.bottom + 6}px`,
+      minWidth: '220px',
+      maxWidth: '260px',
+      zIndex: 1400
     }
   })
 }
@@ -218,6 +346,18 @@ function handleGlobalPointerDown(event) {
     if (contextMenuRef.value?.contains(event.target)) return
     closeContextMenu()
   }
+
+  if (showTaskLauncherMenu.value) {
+    if (taskLauncherRef.value?.contains(event.target)) return
+    if (taskLauncherMenuRef.value?.contains(event.target)) return
+    closeTaskLauncherMenu()
+  }
+
+  if (showFileLauncherMenu.value) {
+    if (fileLauncherRef.value?.contains(event.target)) return
+    if (fileLauncherMenuRef.value?.contains(event.target)) return
+    closeFileLauncherMenu()
+  }
   if (showSessionListMenu.value) {
     if (sessionListMenuRef.value?.contains(event.target)) return
     if (sessionListDropdownRef.value?.contains(event.target)) return
@@ -278,6 +418,14 @@ function handleViewportChange() {
 
   if (showConfigMenu.value) {
     updateConfigMenuPosition()
+  }
+
+  if (showTaskLauncherMenu.value) {
+    updateTaskLauncherMenuPosition()
+  }
+
+  if (showFileLauncherMenu.value) {
+    updateFileLauncherMenuPosition()
   }
 
   if (!contextMenu.value.show) return
@@ -1053,53 +1201,179 @@ watch([showConfigPanel, fileSectionHeight], () => {
     </div>
 
     <div class="sidebar-toolbar-row">
-      <IconButton
-        class="file-toggle-btn"
-        size="sm"
-        :class="{ active: previewPanelVisible }"
-        @click="emit('togglePreviewPanel')"
-        :title="previewPanelVisible ? '隐藏预览区' : '显示预览区'"
+      <div
+        ref="fileLauncherRef"
+        class="terminal-launcher"
+        :class="{ active: isFilePanelVisible || showFileLauncherMenu }"
       >
-        <svg v-if="previewPanelVisible" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="4" width="18" height="16" rx="2"/>
-          <path d="M9 4v16"/>
-        </svg>
-        <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="4" width="18" height="16" rx="2"/>
-          <path d="M15 4v16"/>
-        </svg>
-      </IconButton>
-      <IconButton
-        class="file-toggle-btn"
-        size="sm"
-        :class="{ active: isFilePanelVisible }"
-        @click="emit('toggleFilePanel')"
-        :title="isFilePanelVisible ? '隐藏文件列表' : '显示文件列表'"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
-        </svg>
-      </IconButton>
-      <IconButton
-        class="file-toggle-btn"
-        size="sm"
-        :class="{ active: terminalPanelVisible }"
-        @click="emit('toggleTerminalPanel')"
-        :title="terminalPanelVisible ? '隐藏终端面板' : '显示终端面板'"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/>
-          <path d="M7 9l3 3-3 3"/>
-          <path d="M12 15h5"/>
-        </svg>
-        <span
-          v-if="!terminalPanelVisible && terminalRunningCount > 0"
-          class="terminal-running-badge"
-          :title="`有 ${terminalRunningCount} 个终端正在运行命令`"
+        <IconButton
+          class="file-toggle-btn terminal-launcher-main"
+          size="sm"
+          :class="{ active: isFilePanelVisible }"
+          @click="emit('toggleFilePanel'); closeFileLauncherMenu()"
+          :title="isFilePanelVisible ? '隐藏文件列表' : '显示文件列表'"
         >
-          {{ terminalRunningCount > 9 ? '9+' : terminalRunningCount }}
-        </span>
-      </IconButton>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+          </svg>
+        </IconButton>
+        <button
+          ref="fileLauncherTriggerRef"
+          class="terminal-launcher-trigger"
+          :class="{ active: showFileLauncherMenu }"
+          title="打开文件菜单"
+          @click.stop="toggleFileLauncherMenu"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <Teleport to="body">
+          <div
+            v-if="showFileLauncherMenu"
+            ref="fileLauncherMenuRef"
+            class="terminal-launcher-menu"
+            :style="fileLauncherMenuStyle"
+            @click.stop
+          >
+            <button class="terminal-launcher-item" @click="emit('togglePreviewPanel')">
+              <span class="terminal-launcher-item-label">{{ previewPanelVisible ? '隐藏预览区' : '显示预览区' }}</span>
+              <span class="terminal-launcher-item-detail">切换右侧文件预览面板</span>
+            </button>
+            <div class="terminal-launcher-divider"></div>
+            <button class="terminal-launcher-item" @click="handleOpenProjectDirectory">
+              <span class="terminal-launcher-item-label">打开目录</span>
+              <span class="terminal-launcher-item-detail">在 Finder 中打开当前项目</span>
+            </button>
+          </div>
+        </Teleport>
+      </div>
+      <div
+        ref="taskLauncherRef"
+        class="terminal-launcher"
+        :class="{ active: terminalPanelVisible || showTaskLauncherMenu }"
+      >
+        <IconButton
+          class="file-toggle-btn terminal-launcher-main"
+          size="sm"
+          :class="{ active: terminalPanelVisible }"
+          @click="emit('toggleTerminalPanel'); closeTaskLauncherMenu()"
+          :title="terminalPanelVisible ? '隐藏终端面板' : '显示终端面板'"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/>
+            <path d="M7 9l3 3-3 3"/>
+            <path d="M12 15h5"/>
+          </svg>
+          <span
+            v-if="!terminalPanelVisible && terminalRunningCount > 0"
+            class="terminal-running-badge"
+            :title="`有 ${terminalRunningCount} 个终端正在运行命令`"
+          >
+            {{ terminalRunningCount > 9 ? '9+' : terminalRunningCount }}
+          </span>
+        </IconButton>
+        <button
+          ref="taskLauncherTriggerRef"
+          class="terminal-launcher-trigger"
+          :class="{ active: showTaskLauncherMenu }"
+          title="打开终端启动菜单"
+          @click.stop="toggleTaskLauncherMenu"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <Teleport to="body">
+          <div
+            v-if="showTaskLauncherMenu"
+            ref="taskLauncherMenuRef"
+            class="terminal-launcher-menu"
+            :style="taskLauncherMenuStyle"
+            @click.stop
+          >
+            <div class="terminal-launcher-inline-actions">
+              <button class="terminal-launcher-inline-main" @click="handleOpenTaskLauncherConfig">
+                <span class="terminal-launcher-inline-plus">+</span>
+                <span class="terminal-launcher-inline-text">新建快捷命令</span>
+              </button>
+              <button class="terminal-launcher-inline-icon" title="刷新任务列表" @click="handleRefreshTaskLauncherTasks">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 2v6h-6"/>
+                  <path d="M3 12a9 9 0 0 1 15.55-6.36L21 8"/>
+                  <path d="M3 22v-6h6"/>
+                  <path d="M21 12a9 9 0 0 1-15.55 6.36L3 16"/>
+                </svg>
+              </button>
+              <button class="terminal-launcher-inline-icon" title="打开配置文件" @click="handleOpenTaskLauncherFile">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 3h7v7"/>
+                  <path d="M10 14L21 3"/>
+                  <path d="M21 14v7H3V3h7"/>
+                </svg>
+              </button>
+            </div>
+            <div v-if="taskLauncherTasks.length > 0" class="terminal-launcher-divider"></div>
+            <button
+              v-for="task in taskLauncherTasks"
+              :key="task.id"
+              class="terminal-launcher-item task-launcher-task-item"
+              :title="task.commandLine"
+            >
+              <span class="terminal-launcher-item-content">
+                <span class="terminal-launcher-item-label">{{ task.label }}</span>
+                <span v-if="task.detail" class="terminal-launcher-item-detail">{{ task.detail }}</span>
+                <span class="terminal-launcher-item-command">{{ task.commandLine }}</span>
+              </span>
+              <span class="terminal-launcher-item-actions">
+                <button
+                  class="terminal-task-action terminal-task-toggle"
+                  :class="{ running: isTaskRunning(task) }"
+                  :title="isTaskRunning(task) ? '停止任务' : '启动任务'"
+                  @click.stop="handleToggleTaskLauncher(task)"
+                >
+                  <svg
+                    v-if="!isTaskRunning(task)"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path d="M8 5.5v13l10-6.5-10-6.5Z"/>
+                  </svg>
+                  <svg
+                    v-else
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <rect x="7" y="7" width="10" height="10" rx="1.5"/>
+                  </svg>
+                </button>
+                <button
+                  class="terminal-task-action terminal-task-delete"
+                  title="删除任务"
+                  @click.stop="handleDeleteTaskLauncher(task)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18"/>
+                    <path d="M8 6V4h8v2"/>
+                    <path d="M19 6l-1 14H6L5 6"/>
+                    <path d="M10 11v6"/>
+                    <path d="M14 11v6"/>
+                  </svg>
+                </button>
+              </span>
+            </button>
+            <div v-if="taskLauncherTasks.length === 0" class="terminal-launcher-empty">
+              没有可运行的 tasks.json 任务
+            </div>
+          </div>
+        </Teleport>
+      </div>
       <IconButton
         class="file-toggle-btn"
         size="sm"
@@ -1110,16 +1384,6 @@ watch([showConfigPanel, fileSectionHeight], () => {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M9 11l3 3L22 4"/>
           <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-        </svg>
-      </IconButton>
-      <IconButton
-        class="file-toggle-btn finder-btn"
-        size="sm"
-        title="在 Finder 中打开项目"
-        @click="openProjectInFinder"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>
         </svg>
       </IconButton>
     </div>
@@ -1540,11 +1804,10 @@ watch([showConfigPanel, fileSectionHeight], () => {
   justify-content: flex-start;
   gap: 8px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 6;
+  overflow: visible;
   -webkit-app-region: no-drag;
-}
-
-.sidebar-toolbar-row .finder-btn {
-  margin-left: auto;
 }
 
 .home-btn {
@@ -1604,6 +1867,227 @@ watch([showConfigPanel, fileSectionHeight], () => {
 .file-toggle-btn {
   flex-shrink: 0;
   position: relative;
+}
+
+.terminal-launcher {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  gap: 0;
+}
+
+.terminal-launcher-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.terminal-launcher-trigger {
+  width: 13px;
+  padding: 0;
+  border: none;
+  margin-left: -3px;
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+  background: transparent;
+  color: #71717A;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.terminal-launcher-trigger:hover,
+.terminal-launcher-trigger.active {
+  background: rgba(255, 255, 255, 0.04);
+  color: #F4F4F5;
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+
+.terminal-launcher-menu {
+  padding: 6px;
+  border: 1px solid #3F3F46;
+  border-radius: 10px;
+  background: #15171c;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.36);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.terminal-launcher-item {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #E4E4E7;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+}
+
+.terminal-launcher-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.task-launcher-task-item {
+  flex-direction: row;
+  align-items: center;
+}
+
+.terminal-launcher-item-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+}
+
+.terminal-launcher-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-left: 10px;
+}
+
+.terminal-launcher-item-create {
+  border: 1px solid rgba(249, 115, 22, 0.16);
+  background: rgba(249, 115, 22, 0.06);
+}
+
+.terminal-launcher-inline-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.terminal-launcher-inline-main,
+.terminal-launcher-inline-icon {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #6B7280;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.terminal-launcher-inline-main {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.terminal-launcher-inline-icon {
+  flex: 0 0 auto;
+  width: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.terminal-launcher-inline-main:hover,
+.terminal-launcher-inline-icon:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #D4D4D8;
+}
+
+.terminal-launcher-inline-plus {
+  color: #FDBA74;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.terminal-launcher-inline-text {
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-launcher-divider {
+  height: 1px;
+  margin: 2px 4px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.terminal-launcher-item-label {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.terminal-launcher-item-detail {
+  font-size: 11px;
+  color: #A1A1AA;
+}
+
+.terminal-launcher-item-command {
+  font-size: 10px;
+  color: #71717A;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-task-action {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #6B7280;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.terminal-task-action:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #D4D4D8;
+}
+
+.terminal-task-toggle {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.terminal-task-toggle.running {
+  color: #F87171;
+}
+
+.terminal-task-toggle.running:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #F87171;
+}
+
+.terminal-task-delete {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.terminal-task-delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #F87171;
+}
+
+.terminal-launcher-empty {
+  padding: 10px;
+  color: #A1A1AA;
+  font-size: 12px;
 }
 
 .file-toggle-btn.active {

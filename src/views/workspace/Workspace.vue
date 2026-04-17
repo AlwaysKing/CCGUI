@@ -7,6 +7,7 @@ import SessionSidebar from './components/SessionSidebar.vue'
 import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
 import TaskWorkspace from './components/TaskWorkspace.vue'
+import TaskLauncherConfigDialog from './components/TaskLauncherConfigDialog.vue'
 import Chat from './chat/Chat.vue'
 import NewSessionDialog from './components/NewSessionDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -22,6 +23,7 @@ import TaskTemplatesDialog from '@/views/tools/TaskTemplatesDialog.vue'
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout'
 import { useWorkspaceDialogs } from './hooks/useWorkspaceDialogs'
 import { useProjectWorkspacePersistence } from './hooks/useProjectWorkspacePersistence'
+import { createSimpleTaskDefinition, parseSupportedTasksJson, parseTasksDocument, serializeTasksDocument } from '@/utils/vscodeTasks'
 
 const SESSION_FILTER_STORAGE_KEY = 'ccgui_session_list_filters'
 
@@ -42,8 +44,14 @@ const showCodexSessions = ref(true)
 const showSkillsDialog = ref(false)
 const showMcpDialog = ref(false)
 const showTaskTemplatesDialog = ref(false)
+const showTaskLauncherConfigDialog = ref(false)
 const taskTemplatesInitialSection = ref('routine')
 const primaryView = ref('chat')
+const taskLauncherTasks = ref([])
+const taskLauncherConfigDocument = ref({ version: '2.0.0', tasks: [] })
+const taskLauncherUnsupportedTasks = ref([])
+const taskLauncherConfigSaving = ref(false)
+const runningTaskLabels = ref([])
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
 const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
@@ -176,11 +184,238 @@ async function toggleTerminalPanel() {
   }
 }
 
+async function loadTaskLauncherTasks(projectPath = store.currentProject?.path || '') {
+  if (!projectPath) {
+    taskLauncherTasks.value = []
+    taskLauncherUnsupportedTasks.value = []
+    taskLauncherConfigDocument.value = { version: '2.0.0', tasks: [] }
+    return
+  }
+
+  const result = await window.electronAPI.readProjectFile({
+    projectPath,
+    filePath: '.vscode/tasks.json'
+  })
+
+  if (!result?.success) {
+    taskLauncherTasks.value = []
+    taskLauncherUnsupportedTasks.value = []
+    taskLauncherConfigDocument.value = { version: '2.0.0', tasks: [] }
+    return
+  }
+
+  try {
+    const content = result.file?.content || ''
+    taskLauncherTasks.value = parseSupportedTasksJson(content, projectPath)
+
+    const document = parseTasksDocument(content)
+    const allTasks = Array.isArray(document.tasks) ? document.tasks : []
+    taskLauncherConfigDocument.value = document
+
+    taskLauncherUnsupportedTasks.value = allTasks.filter(task => {
+      const type = String(task?.type || 'shell')
+      if (!['shell', 'process'].includes(type)) return true
+      if (!String(task?.label || '').trim() || !String(task?.command || '').trim()) return true
+      return Boolean(task?.options?.env) || Boolean(task?.dependsOn)
+    })
+  } catch (error) {
+    console.error('[Workspace] Failed to parse .vscode/tasks.json:', error)
+    taskLauncherTasks.value = []
+    taskLauncherUnsupportedTasks.value = []
+    taskLauncherConfigDocument.value = { version: '2.0.0', tasks: [] }
+  }
+}
+
+async function handleRunTaskLauncher(task) {
+  if (!task?.commandLine) {
+    return
+  }
+
+  try {
+    await terminalPanelRef.value?.runTaskTerminal?.(task)
+  } catch (error) {
+    console.error('[Workspace] Failed to run launcher task:', error)
+  }
+}
+
+async function handleOpenTaskLauncherConfig() {
+  const projectPath = store.currentProject?.path || ''
+  if (!projectPath) {
+    return
+  }
+
+  try {
+    const ensureVsCodeDirResult = await window.electronAPI.createProjectEntry({
+      projectPath,
+      parentPath: '',
+      entryType: 'directory',
+      name: '.vscode'
+    })
+
+    if (!ensureVsCodeDirResult?.success && !String(ensureVsCodeDirResult?.error || '').includes('已存在')) {
+      throw new Error(ensureVsCodeDirResult?.error || '创建 .vscode 目录失败')
+    }
+
+    const taskConfigPath = '.vscode/tasks.json'
+    const readResult = await window.electronAPI.readProjectFile({ projectPath, filePath: taskConfigPath })
+
+    if (!readResult?.success) {
+      const defaultTaskConfig = `{
+  "version": "2.0.0",
+  "tasks": []
+}
+`
+
+      const writeResult = await window.electronAPI.writeProjectFile({
+        projectPath,
+        filePath: taskConfigPath,
+        content: defaultTaskConfig
+      })
+
+      if (!writeResult?.success) {
+        throw new Error(writeResult?.error || '写入 tasks.json 失败')
+      }
+    }
+
+    await loadTaskLauncherTasks(projectPath)
+    await fileBrowserStore.refreshTree()
+    showTaskLauncherConfigDialog.value = true
+  } catch (error) {
+    console.error('[Workspace] Failed to open task launcher config:', error)
+  }
+}
+
+async function handleSaveTaskLauncherConfig(task) {
+  const projectPath = store.currentProject?.path || ''
+  if (!projectPath) {
+    return
+  }
+
+  taskLauncherConfigSaving.value = true
+  try {
+    const nextDocument = {
+      ...taskLauncherConfigDocument.value,
+      version: taskLauncherConfigDocument.value?.version || '2.0.0',
+      tasks: [
+        ...((Array.isArray(taskLauncherConfigDocument.value?.tasks) ? taskLauncherConfigDocument.value.tasks : [])
+          .filter(existingTask => !taskLauncherUnsupportedTasks.value.includes(existingTask))),
+        createSimpleTaskDefinition(task),
+        ...taskLauncherUnsupportedTasks.value
+      ]
+    }
+
+    const result = await window.electronAPI.writeProjectFile({
+      projectPath,
+      filePath: '.vscode/tasks.json',
+      content: serializeTasksDocument(nextDocument)
+    })
+
+    if (!result?.success) {
+      throw new Error(result?.error || '保存 tasks.json 失败')
+    }
+
+    await loadTaskLauncherTasks(projectPath)
+    await fileBrowserStore.refreshTree()
+    showTaskLauncherConfigDialog.value = false
+  } catch (error) {
+    console.error('[Workspace] Failed to save task launcher config:', error)
+  } finally {
+    taskLauncherConfigSaving.value = false
+  }
+}
+
+async function handleOpenTaskLauncherFile() {
+  const projectPath = store.currentProject?.path || ''
+  if (!projectPath) {
+    return
+  }
+
+  try {
+    await handleOpenTaskLauncherConfig()
+    showTaskLauncherConfigDialog.value = false
+    await fileBrowserStore.previewFile('.vscode/tasks.json')
+  } catch (error) {
+    console.error('[Workspace] Failed to open raw task launcher file:', error)
+  }
+}
+
+async function handleToggleTaskLauncher(task) {
+  const taskLabel = String(task?.label || '').trim()
+  if (!taskLabel) {
+    return
+  }
+
+  if (runningTaskLabels.value.includes(taskLabel)) {
+    try {
+      await terminalPanelRef.value?.stopTaskTerminal?.(task)
+    } catch (error) {
+      console.error('[Workspace] Failed to stop launcher task:', error)
+    }
+    return
+  }
+
+  await handleRunTaskLauncher(task)
+}
+
+async function handleDeleteTaskLauncher(task) {
+  const projectPath = store.currentProject?.path || ''
+  if (!projectPath) {
+    return
+  }
+
+  confirmDialogConfig.value = {
+    title: '删除快捷命令',
+    message: `确定要删除快捷命令“${String(task?.label || '').trim() || '未命名任务'}”吗？`,
+    onConfirm: async () => {
+      try {
+        if (runningTaskLabels.value.includes(String(task?.label || '').trim())) {
+          await terminalPanelRef.value?.stopTaskTerminal?.(task)
+        }
+
+        const currentTasks = Array.isArray(taskLauncherConfigDocument.value?.tasks)
+          ? taskLauncherConfigDocument.value.tasks
+          : []
+
+        const nextTasks = currentTasks.filter(existingTask => {
+          const isSameSimpleTask =
+            ['shell', 'process'].includes(String(existingTask?.type || 'shell')) &&
+            String(existingTask?.label || '').trim() === String(task?.label || '').trim() &&
+            String(existingTask?.command || '').trim() === String(task?.command || '').trim()
+
+          return !isSameSimpleTask
+        })
+
+        const result = await window.electronAPI.writeProjectFile({
+          projectPath,
+          filePath: '.vscode/tasks.json',
+          content: serializeTasksDocument({
+            ...taskLauncherConfigDocument.value,
+            version: taskLauncherConfigDocument.value?.version || '2.0.0',
+            tasks: nextTasks
+          })
+        })
+
+        if (!result?.success) {
+          throw new Error(result?.error || '删除 tasks.json 任务失败')
+        }
+
+        await loadTaskLauncherTasks(projectPath)
+        await fileBrowserStore.refreshTree()
+        showConfirmDialog.value = false
+      } catch (error) {
+        console.error('[Workspace] Failed to delete launcher task:', error)
+      }
+    }
+  }
+  showConfirmDialog.value = true
+}
+
 function handleTerminalRunningChange(nextState) {
   terminalRunningState.value = {
     hasRunning: Boolean(nextState?.hasRunning),
     count: Number(nextState?.count || 0)
   }
+  runningTaskLabels.value = Array.isArray(nextState?.taskLabels) ? nextState.taskLabels : []
 }
 
 const shouldShowChatPanel = computed(() => {
@@ -357,6 +592,10 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
   }
 })
 
+watch(() => store.currentProject?.path, nextProjectPath => {
+  void loadTaskLauncherTasks(nextProjectPath || '')
+}, { immediate: true })
+
 // Initialize
 onMounted(async () => {
   loadSessionFilterState()
@@ -516,6 +755,8 @@ async function handleDeleteInactiveSessions() {
         :preview-panel-visible="fileBrowserStore.shouldShowPreviewPanel"
         :terminal-panel-visible="terminalPanelVisible"
         :terminal-running-count="terminalRunningState.count"
+        :task-launcher-tasks="taskLauncherTasks"
+        :running-task-labels="runningTaskLabels"
         @select="handleSelectSessionWithView"
         @delete="handleDeleteSession"
         @start="handleStartSession"
@@ -535,6 +776,12 @@ async function handleDeleteInactiveSessions() {
         @copySession="handleCopySession"
         @toggleFilePanel="fileBrowserStore.toggleFilePanel"
         @togglePreviewPanel="fileBrowserStore.togglePreviewPanel"
+        @runTaskLauncher="handleRunTaskLauncher"
+        @toggleTaskLauncher="handleToggleTaskLauncher"
+        @deleteTaskLauncher="handleDeleteTaskLauncher"
+        @openTaskLauncherConfig="handleOpenTaskLauncherConfig"
+        @openTaskLauncherFile="handleOpenTaskLauncherFile"
+        @refreshTaskLauncherTasks="() => loadTaskLauncherTasks(store.currentProject?.path || '')"
         @refreshFileTree="fileBrowserStore.refreshTree"
         @toggleDirectory="fileBrowserStore.toggleDirectory"
         @previewFile="handlePreviewFile"
@@ -757,6 +1004,12 @@ async function handleDeleteInactiveSessions() {
       :project-path="store.currentProject?.path || ''"
       :initial-section="taskTemplatesInitialSection"
       @close="showTaskTemplatesDialog = false"
+    />
+
+    <TaskLauncherConfigDialog
+      v-model="showTaskLauncherConfigDialog"
+      :saving="taskLauncherConfigSaving"
+      @save="handleSaveTaskLauncherConfig"
     />
   </div>
 </template>

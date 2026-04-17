@@ -316,6 +316,11 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       return
     }
 
+    if (normalizedPath === '.ccgui/hidden') {
+      await refreshTree()
+      return
+    }
+
     await refreshGitStatus()
     if (window.electronAPI?.statProjectEntry == null) {
       return

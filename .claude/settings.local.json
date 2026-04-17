@@ -154,7 +154,8 @@
       "Bash(curl -s \"https://clawhub.ai/api/v1/skills/notion\")",
       "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/node --check /Users/alwaysking/AKProject/CCGUI/electron/main.cjs)",
       "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/node --check /Users/alwaysking/AKProject/CCGUI/electron/preload.js)",
-      "Bash(tar czf:*)"
+      "Bash(tar czf:*)",
+      "Read(//tmp/**)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

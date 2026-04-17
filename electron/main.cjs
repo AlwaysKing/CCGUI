@@ -393,21 +393,254 @@ function initSessionManager() {
   sessionManager = new SessionManager()
 }
 
-const FILE_TREE_IGNORES = new Set([
-  '.git',
-  'node_modules',
-  '.DS_Store',
-  '.idea',
-  '.vscode',
-  'dist',
-  'build',
-  'output'
-])
+const PROJECT_HIDDEN_RULES_RELATIVE_PATH = '.ccgui/hidden'
+const FILE_TREE_DEFAULT_HIDDEN_RULES = ['.DS_Store']
+const projectHiddenRuleCache = new Map()
 
 const MAX_PREVIEW_FILE_SIZE = 1024 * 1024
 
 function normalizePathSlashes(value = '') {
   return String(value || '').replace(/\\/g, '/')
+}
+
+function normalizeProjectRelativePath(value = '') {
+  return normalizePathSlashes(value).replace(/^\/+|\/+$/g, '')
+}
+
+function isProtectedProjectPath(relativePath = '') {
+  const normalizedPath = normalizeProjectRelativePath(relativePath)
+  return normalizedPath === '.ccgui' || normalizedPath.startsWith('.ccgui/')
+}
+
+function parseProjectHiddenRule(rawLine = '') {
+  const trimmedLine = String(rawLine || '').trim()
+  if (!trimmedLine) return null
+
+  let line = trimmedLine
+  if (line.startsWith('\\#') || line.startsWith('\\!')) {
+    line = line.slice(1)
+  } else if (line.startsWith('#')) {
+    return null
+  }
+
+  let negated = false
+  if (line.startsWith('!')) {
+    negated = true
+    line = line.slice(1)
+  }
+
+  line = normalizePathSlashes(line.trim())
+  if (!line) return null
+
+  const directoryOnly = line.endsWith('/')
+  const patternBody = directoryOnly ? line.slice(0, -1) : line
+  const anchored = patternBody.startsWith('/') || patternBody.includes('/')
+  const normalizedPattern = normalizeProjectRelativePath(patternBody.replace(/^\/+/, ''))
+  if (!normalizedPattern) return null
+
+  return {
+    negated,
+    directoryOnly,
+    basenameOnly: !anchored,
+    segments: normalizedPattern.split('/').filter(Boolean)
+  }
+}
+
+function compileProjectHiddenRules(rawContent = '') {
+  return [...FILE_TREE_DEFAULT_HIDDEN_RULES, ...String(rawContent || '').split(/\r?\n/)]
+    .map(parseProjectHiddenRule)
+    .filter(Boolean)
+}
+
+function getProjectHiddenRules(projectPath) {
+  const absoluteProjectPath = path.resolve(projectPath)
+  const configPath = path.join(absoluteProjectPath, '.ccgui', 'hidden')
+  let fingerprint = 'missing'
+  let rawContent = ''
+
+  try {
+    const stat = fs.statSync(configPath)
+    if (stat.isFile()) {
+      fingerprint = `${stat.size}:${stat.mtimeMs}`
+      rawContent = fs.readFileSync(configPath, 'utf8')
+    }
+  } catch (_) {
+    fingerprint = 'missing'
+  }
+
+  const cached = projectHiddenRuleCache.get(absoluteProjectPath)
+  if (cached?.fingerprint === fingerprint) {
+    return cached.rules
+  }
+
+  const rules = compileProjectHiddenRules(rawContent)
+  projectHiddenRuleCache.set(absoluteProjectPath, { fingerprint, rules })
+  return rules
+}
+
+function matchHiddenRuleSegment(pattern = '', value = '') {
+  let patternIndex = 0
+  let valueIndex = 0
+  let starIndex = -1
+  let starMatchIndex = 0
+
+  while (valueIndex < value.length) {
+    const patternChar = pattern[patternIndex]
+
+    if (patternChar === '?' || patternChar === value[valueIndex]) {
+      patternIndex += 1
+      valueIndex += 1
+      continue
+    }
+
+    if (patternChar === '*') {
+      starIndex = patternIndex
+      starMatchIndex = valueIndex
+      patternIndex += 1
+      continue
+    }
+
+    if (starIndex !== -1) {
+      patternIndex = starIndex + 1
+      starMatchIndex += 1
+      valueIndex = starMatchIndex
+      continue
+    }
+
+    return false
+  }
+
+  while (pattern[patternIndex] === '*') {
+    patternIndex += 1
+  }
+
+  return patternIndex === pattern.length
+}
+
+function matchHiddenRuleSegments(patternSegments = [], pathSegments = [], patternIndex = 0, pathIndex = 0) {
+  if (patternIndex >= patternSegments.length) {
+    return pathIndex >= pathSegments.length
+  }
+
+  const patternSegment = patternSegments[patternIndex]
+  if (patternSegment === '**') {
+    if (patternIndex === patternSegments.length - 1) {
+      return true
+    }
+
+    for (let nextPathIndex = pathIndex; nextPathIndex <= pathSegments.length; nextPathIndex += 1) {
+      if (matchHiddenRuleSegments(patternSegments, pathSegments, patternIndex + 1, nextPathIndex)) {
+        return true
+      }
+    }
+    return false
+  }
+  if (pathIndex >= pathSegments.length) {
+    return false
+  }
+
+  if (!matchHiddenRuleSegment(patternSegment, pathSegments[pathIndex])) {
+    return false
+  }
+
+  return matchHiddenRuleSegments(patternSegments, pathSegments, patternIndex + 1, pathIndex + 1)
+}
+
+function doesProjectHiddenRuleMatch(rule, relativePath = '', isDirectory = false) {
+  if (!rule) return false
+  if (rule.directoryOnly && !isDirectory) {
+    return false
+  }
+
+  const normalizedPath = normalizeProjectRelativePath(relativePath)
+  if (!normalizedPath) return false
+
+  if (rule.basenameOnly) {
+    const baseName = normalizedPath.split('/').pop() || normalizedPath
+    return matchHiddenRuleSegment(rule.segments[0] || '', baseName)
+  }
+
+  return matchHiddenRuleSegments(rule.segments, normalizedPath.split('/').filter(Boolean))
+}
+
+function isProjectPathHidden(projectPath, relativePath = '', options = {}) {
+  const normalizedPath = normalizeProjectRelativePath(relativePath)
+  if (!normalizedPath || isProtectedProjectPath(normalizedPath)) {
+    return false
+  }
+
+  const { isDirectory = false, includeAncestors = false } = options
+  const rules = getProjectHiddenRules(projectPath)
+  if (rules.length === 0) return false
+
+  const matchTargets = [{ path: normalizedPath, isDirectory }]
+  if (includeAncestors) {
+    const segments = normalizedPath.split('/').filter(Boolean)
+    while (segments.length > 1) {
+      segments.pop()
+      matchTargets.push({ path: segments.join('/'), isDirectory: true })
+    }
+  }
+
+  let hidden = false
+  for (const rule of rules) {
+    if (matchTargets.some(target => doesProjectHiddenRuleMatch(rule, target.path, target.isDirectory))) {
+      hidden = !rule.negated
+    }
+  }
+
+  return hidden
+}
+
+function directoryHasVisibleDescendants(projectPath, directoryPath) {
+  let dirEntries = []
+
+  try {
+    dirEntries = fs.readdirSync(directoryPath, { withFileTypes: true })
+  } catch (_) {
+    return false
+  }
+
+  for (const entry of dirEntries) {
+    const entryAbsolutePath = path.join(directoryPath, entry.name)
+    const entryRelativePath = normalizeProjectRelativePath(path.relative(projectPath, entryAbsolutePath))
+    const entryHidden = isProjectPathHidden(projectPath, entryRelativePath, {
+      isDirectory: entry.isDirectory(),
+      includeAncestors: true
+    })
+
+    if (!entryHidden) {
+      return true
+    }
+
+    if (entry.isDirectory() && directoryHasVisibleDescendants(projectPath, entryAbsolutePath)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function listVisibleDirectoryEntries(projectPath, targetDir) {
+  return fs.readdirSync(targetDir, { withFileTypes: true })
+    .filter(entry => {
+      const entryAbsolutePath = path.join(targetDir, entry.name)
+      const entryRelativePath = normalizeProjectRelativePath(path.relative(projectPath, entryAbsolutePath))
+      const hidden = isProjectPathHidden(projectPath, entryRelativePath, {
+        isDirectory: entry.isDirectory(),
+        includeAncestors: true
+      })
+
+      if (!hidden) {
+        return true
+      }
+
+      if (!entry.isDirectory()) {
+        return false
+      }
+
+      return directoryHasVisibleDescendants(projectPath, entryAbsolutePath)
+    })
 }
 
 function resolveProjectTargetPath(projectPath, targetPath = '') {
@@ -480,16 +713,15 @@ function listDirectoryEntries(projectPath, relativePath = '') {
     throw new Error('目标不是目录')
   }
 
-  return fs.readdirSync(targetDir, { withFileTypes: true })
-    .filter(entry => !FILE_TREE_IGNORES.has(entry.name))
+  return listVisibleDirectoryEntries(projectPath, targetDir)
     .map(entry => {
       const entryAbsolutePath = path.join(targetDir, entry.name)
-      const entryRelativePath = path.relative(projectPath, entryAbsolutePath)
+      const entryRelativePath = normalizeProjectRelativePath(path.relative(projectPath, entryAbsolutePath))
       let hasChildren = false
 
       if (entry.isDirectory()) {
         try {
-          hasChildren = fs.readdirSync(entryAbsolutePath).some(childName => !FILE_TREE_IGNORES.has(childName))
+          hasChildren = listVisibleDirectoryEntries(projectPath, entryAbsolutePath).length > 0
         } catch (error) {
           hasChildren = false
         }
@@ -695,7 +927,8 @@ function collectNestedGitRepoRoots(projectPath) {
 
     for (const entry of dirEntries) {
       if (!entry.isDirectory()) continue
-      if (FILE_TREE_IGNORES.has(entry.name)) continue
+      const relativeEntryPath = normalizeProjectRelativePath(path.relative(absoluteProjectPath, path.join(currentPath, entry.name)))
+      if (isProjectPathHidden(absoluteProjectPath, relativeEntryPath, { isDirectory: true })) continue
       queue.push(path.join(currentPath, entry.name))
     }
   }
@@ -842,11 +1075,9 @@ function stopProjectFileWatcher(webContentsId = null) {
 }
 
 function shouldIgnoreWatchedPath(relativePath = '') {
-  const normalizedPath = normalizePathSlashes(relativePath)
+  const normalizedPath = normalizeProjectRelativePath(relativePath)
   if (!normalizedPath) return false
-
-  const segments = normalizedPath.split('/').filter(Boolean)
-  return segments.some(segment => FILE_TREE_IGNORES.has(segment))
+  return false
 }
 
 async function getOrCreateHydratedSession({
@@ -1914,7 +2145,7 @@ ipcMain.handle('watch-project-files', async (event, { projectPath }) => {
       { recursive: process.platform === 'darwin' || process.platform === 'win32' },
       (eventType, filename) => {
         const relativePath = normalizePathSlashes(filename || '')
-        if (shouldIgnoreWatchedPath(relativePath)) {
+        if (shouldIgnoreWatchedPath(relativePath) || isProjectPathHidden(absoluteProjectPath, relativePath, { includeAncestors: true })) {
           return
         }
 
@@ -2076,11 +2307,22 @@ ipcMain.handle('stat-project-entry', async (event, { projectPath, targetPath }) 
 
     const stat = fs.statSync(absoluteTargetPath)
     const isDirectory = stat.isDirectory()
+    const normalizedTargetPath = normalizeProjectRelativePath(targetPath)
+
+    const isHidden = isProjectPathHidden(projectPath, normalizedTargetPath, {
+      isDirectory,
+      includeAncestors: true
+    })
+
+    if (isHidden && (!isDirectory || !directoryHasVisibleDescendants(projectPath, absoluteTargetPath))) {
+      return { success: true, exists: false }
+    }
+
     let hasChildren = false
 
     if (isDirectory) {
       try {
-        hasChildren = fs.readdirSync(absoluteTargetPath).some(childName => !FILE_TREE_IGNORES.has(childName))
+        hasChildren = listVisibleDirectoryEntries(projectPath, absoluteTargetPath).length > 0
       } catch (error) {
         hasChildren = false
       }
@@ -2091,7 +2333,7 @@ ipcMain.handle('stat-project-entry', async (event, { projectPath, targetPath }) 
       exists: true,
       entry: {
         name: path.basename(absoluteTargetPath),
-        path: normalizePathSlashes(path.relative(projectPath, absoluteTargetPath)),
+        path: normalizeProjectRelativePath(path.relative(projectPath, absoluteTargetPath)),
         type: isDirectory ? 'directory' : 'file',
         extension: isDirectory ? '' : path.extname(absoluteTargetPath).toLowerCase(),
         hasChildren

@@ -4,6 +4,7 @@ const path = require('path')
 const { execFileSync } = require('child_process')
 const yaml = require('js-yaml')
 const appService = require('./app-service')
+const codexAppServer = require('./codex-app-server')
 
 function fileExists(targetPath) {
   if (!targetPath) return false
@@ -431,6 +432,161 @@ function parseCodexFeatureFlag(rawContent = '', featureName = '') {
   return featurePattern.test(rawContent) || topLevelPattern.test(rawContent)
 }
 
+function readTextFileSafe(targetPath, fallback = '') {
+  try {
+    if (!fileExists(targetPath)) return fallback
+    return fs.readFileSync(targetPath, 'utf-8')
+  } catch {
+    return fallback
+  }
+}
+
+function resolveCodexServiceAssetPath(assetPath = '', sourcePath = '') {
+  const rawAssetPath = String(assetPath || '').trim()
+  if (!rawAssetPath) return ''
+  if (
+    rawAssetPath.startsWith('http://') ||
+    rawAssetPath.startsWith('https://') ||
+    rawAssetPath.startsWith('data:') ||
+    rawAssetPath.startsWith('ccgui-asset://')
+  ) {
+    return rawAssetPath
+  }
+  if (path.isAbsolute(rawAssetPath)) {
+    return rawAssetPath
+  }
+
+  const resolvedSourcePath = String(sourcePath || '').trim()
+  if (!resolvedSourcePath) return rawAssetPath
+
+  try {
+    if (fileExists(resolvedSourcePath) && fs.statSync(resolvedSourcePath).isDirectory()) {
+      return path.resolve(resolvedSourcePath, rawAssetPath)
+    }
+  } catch {
+    // Fall back to resolving relative to the source file directory.
+  }
+
+  return path.resolve(path.dirname(resolvedSourcePath), rawAssetPath)
+}
+
+function parseCodexPluginStates(rawContent = '') {
+  const states = new Map()
+  if (!rawContent) return states
+
+  const legacyEnabled = parseTomlStringArray(rawContent, 'enabled_plugins')
+  for (const pluginId of legacyEnabled) {
+    states.set(pluginId, {
+      id: pluginId,
+      enabled: true,
+      legacy: true
+    })
+  }
+
+  const sectionPattern = /^\[plugins\."([^"]+)"\]\s*$([\s\S]*?)(?=^\[|\Z)/gm
+  let match
+  while ((match = sectionPattern.exec(rawContent))) {
+    const pluginId = String(match[1] || '').trim()
+    if (!pluginId) continue
+    const body = String(match[2] || '')
+    const enabledMatch = body.match(/^\s*enabled\s*=\s*(true|false)\s*$/m)
+    states.set(pluginId, {
+      id: pluginId,
+      enabled: enabledMatch ? enabledMatch[1] === 'true' : true,
+      legacy: false
+    })
+  }
+
+  return states
+}
+
+function compareVersionSegments(a = '', b = '') {
+  const aParts = String(a || '').split(/[^\dA-Za-z]+/).filter(Boolean)
+  const bParts = String(b || '').split(/[^\dA-Za-z]+/).filter(Boolean)
+  const length = Math.max(aParts.length, bParts.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const aPart = aParts[index] || ''
+    const bPart = bParts[index] || ''
+    const aNumber = Number(aPart)
+    const bNumber = Number(bPart)
+    const bothNumeric = Number.isFinite(aNumber) && Number.isFinite(bNumber) && aPart !== '' && bPart !== ''
+
+    if (bothNumeric) {
+      if (aNumber !== bNumber) return aNumber - bNumber
+      continue
+    }
+
+    const compared = aPart.localeCompare(bPart, undefined, { numeric: true, sensitivity: 'base' })
+    if (compared !== 0) return compared
+  }
+
+  return 0
+}
+
+function selectNewestVersionDir(rootDir = '') {
+  if (!fileExists(rootDir)) return ''
+  const versions = listDir(rootDir)
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+    .sort((a, b) => compareVersionSegments(b, a))
+  return versions[0] ? path.join(rootDir, versions[0]) : ''
+}
+
+function findCodexCachedPluginDir(pluginName = '', marketplaceName = '') {
+  const cacheRoot = path.join(os.homedir(), '.codex', 'plugins', 'cache')
+  if (!pluginName) return ''
+
+  const roots = marketplaceName
+    ? [path.join(cacheRoot, marketplaceName, pluginName)]
+    : listDir(cacheRoot)
+      .filter(entry => entry.isDirectory())
+      .map(entry => path.join(cacheRoot, entry.name, pluginName))
+
+  for (const root of roots) {
+    const selected = selectNewestVersionDir(root)
+    if (selected) return selected
+  }
+
+  return ''
+}
+
+function resolveCodexPluginRefCandidates(name = '', marketplaceName = '') {
+  const candidates = []
+  if (name && marketplaceName) candidates.push(`${name}@${marketplaceName}`)
+  if (name) candidates.push(name)
+  return Array.from(new Set(candidates.filter(Boolean)))
+}
+
+function resolveCodexPluginState(name = '', marketplaceName = '', userStates = new Map(), projectStates = new Map()) {
+  const candidates = resolveCodexPluginRefCandidates(name, marketplaceName)
+  for (const pluginId of candidates) {
+    if (projectStates.has(pluginId)) {
+      return {
+        pluginRef: pluginId,
+        scope: 'project',
+        enabled: projectStates.get(pluginId)?.enabled !== false,
+        configured: true
+      }
+    }
+    if (userStates.has(pluginId)) {
+      return {
+        pluginRef: pluginId,
+        scope: 'user',
+        enabled: userStates.get(pluginId)?.enabled !== false,
+        configured: true
+      }
+    }
+  }
+
+  return {
+    pluginRef: candidates[0] || name || '',
+    scope: '',
+    enabled: false,
+    configured: false
+  }
+}
+
 function normalizeClaudePluginManifestPath(pluginPath = '') {
   if (!pluginPath) return ''
 
@@ -795,48 +951,110 @@ function inspectClaudeProvider(options = {}) {
   }
 }
 
-function discoverCodexPlugins(projectPath = '', rawConfig = '', options = {}) {
+function discoverCodexPlugins(projectPath = '', userRawConfig = '', projectRawConfig = '', options = {}) {
   const includeCounts = options.includeCounts === true
   const includeDetails = options.includeDetails === true
-  const enabledPlugins = new Set(parseTomlStringArray(rawConfig, 'enabled_plugins'))
+  const userPluginStates = parseCodexPluginStates(userRawConfig)
+  const projectPluginStates = parseCodexPluginStates(projectRawConfig)
   const roots = [
-    { root: path.join(os.homedir(), '.codex', 'plugins'), scope: 'user' },
+    { root: path.join(os.homedir(), '.codex', 'plugins'), scope: 'user-root' },
+    { root: path.join(os.homedir(), '.codex', 'plugins', 'cache'), scope: 'cache' },
     { root: path.join(os.homedir(), '.codex', '.tmp', 'plugins', 'plugins'), scope: 'catalog' },
-    ...(projectPath ? [{ root: path.join(projectPath, '.codex', 'plugins'), scope: 'project' }] : [])
+    { root: path.join(os.homedir(), '.codex', '.tmp', 'bundled-marketplaces'), scope: 'bundled-marketplaces' },
+    ...(projectPath ? [{ root: path.join(projectPath, '.codex', 'plugins'), scope: 'project-root' }] : [])
   ]
   const discovered = []
 
   for (const { root, scope } of roots) {
     if (!fileExists(root)) continue
-    for (const entry of listDir(root)) {
-      if (!entry.isDirectory()) continue
-      const pluginPath = path.join(root, entry.name)
+    const candidateDirs = []
+
+    if (scope === 'cache') {
+      for (const marketplaceEntry of listDir(root)) {
+        if (!marketplaceEntry.isDirectory()) continue
+        const marketplaceRoot = path.join(root, marketplaceEntry.name)
+        for (const pluginEntry of listDir(marketplaceRoot)) {
+          if (!pluginEntry.isDirectory()) continue
+          const pluginRoot = path.join(marketplaceRoot, pluginEntry.name)
+          const selectedDir = selectNewestVersionDir(pluginRoot)
+          if (!selectedDir) continue
+          candidateDirs.push({
+            pluginPath: selectedDir,
+            sourceScope: scope,
+            marketplaceName: marketplaceEntry.name
+          })
+        }
+      }
+    } else if (scope === 'bundled-marketplaces') {
+      for (const marketplaceEntry of listDir(root)) {
+        if (!marketplaceEntry.isDirectory()) continue
+        const pluginsRoot = path.join(root, marketplaceEntry.name, 'plugins')
+        if (!fileExists(pluginsRoot)) continue
+        for (const pluginEntry of listDir(pluginsRoot)) {
+          if (!pluginEntry.isDirectory()) continue
+          candidateDirs.push({
+            pluginPath: path.join(pluginsRoot, pluginEntry.name),
+            sourceScope: scope,
+            marketplaceName: marketplaceEntry.name
+          })
+        }
+      }
+    } else {
+      for (const entry of listDir(root)) {
+        if (!entry.isDirectory()) continue
+        candidateDirs.push({
+          pluginPath: path.join(root, entry.name),
+          sourceScope: scope,
+          marketplaceName: ''
+        })
+      }
+    }
+
+    for (const candidate of candidateDirs) {
+      const pluginPath = candidate.pluginPath
       const manifestPath = path.join(pluginPath, '.codex-plugin', 'plugin.json')
       const manifest = safeReadJson(manifestPath, null)
       if (!manifest || typeof manifest !== 'object') continue
 
+      const rawName = manifest.name || path.basename(pluginPath)
+      const state = resolveCodexPluginState(rawName, candidate.marketplaceName, userPluginStates, projectPluginStates)
+      const resolvedScope = state.scope || (
+        candidate.sourceScope === 'project-root'
+          ? 'project'
+          : candidate.sourceScope === 'bundled-marketplaces'
+            ? 'catalog'
+          : candidate.sourceScope === 'catalog'
+            ? 'catalog'
+            : 'user'
+      )
       const counts = detectPluginCountsFromDir(pluginPath, manifest)
+      const pluginId = state.pluginRef || rawName
+
       discovered.push({
-        id: `${scope}:${manifest.name || entry.name}`,
-        name: manifest.name || entry.name,
-        displayName: manifest.interface?.displayName || manifest.name || entry.name,
+        id: `${resolvedScope}:${pluginId}`,
+        pluginRef: pluginId,
+        name: rawName,
+        displayName: manifest.interface?.displayName || rawName,
         description: manifest.description || manifest.interface?.shortDescription || '',
         version: manifest.version || '',
-        scope,
-        enabled: enabledPlugins.has(manifest.name || entry.name),
+        scope: resolvedScope,
+        enabled: state.enabled,
+        configured: state.configured,
+        marketplaceName: candidate.marketplaceName || '',
         sourcePath: pluginPath,
         manifestPath,
         repository: manifest.repository || '',
         homepage: manifest.homepage || manifest.interface?.websiteURL || '',
         developerName: manifest.interface?.developerName || manifest.author?.name || '',
+        logoPath: resolvePluginAssetPath(pluginPath, manifest.interface?.logo || manifest.interface?.composerIcon || ''),
         counts: includeCounts ? counts : null,
         details: includeDetails ? buildPluginDetails({
           provider: 'codex',
-          id: `${scope}:${manifest.name || entry.name}`,
-          name: manifest.name || entry.name,
-          displayName: manifest.interface?.displayName || manifest.name || entry.name,
-          enabled: enabledPlugins.has(manifest.name || entry.name),
-          scope,
+          id: `${resolvedScope}:${pluginId}`,
+          name: rawName,
+          displayName: manifest.interface?.displayName || rawName,
+          enabled: state.enabled,
+          scope: resolvedScope,
           sourcePath: pluginPath,
           manifestPath
         }) : null
@@ -844,12 +1062,146 @@ function discoverCodexPlugins(projectPath = '', rawConfig = '', options = {}) {
     }
   }
 
-  return uniqueBy(discovered, plugin => plugin.id || plugin.manifestPath)
+  for (const [pluginScope, stateMap] of [['project', projectPluginStates], ['user', userPluginStates]]) {
+    for (const [pluginId, pluginState] of stateMap.entries()) {
+      if (discovered.some(plugin => plugin.pluginRef === pluginId && plugin.scope === pluginScope)) {
+        continue
+      }
+
+      const [rawName, marketplaceName = ''] = pluginId.split('@')
+      const preferredPath = pluginScope === 'project'
+        ? path.join(projectPath || '', '.codex', 'plugins', rawName)
+        : path.join(os.homedir(), '.codex', 'plugins', rawName)
+      const fallbackPath = findCodexCachedPluginDir(rawName, marketplaceName)
+      const pluginPath = fileExists(preferredPath) ? preferredPath : fallbackPath
+      const manifestPath = pluginPath ? path.join(pluginPath, '.codex-plugin', 'plugin.json') : ''
+      const manifest = manifestPath ? safeReadJson(manifestPath, null) : null
+
+      discovered.push({
+        id: `${pluginScope}:${pluginId}`,
+        pluginRef: pluginId,
+        name: manifest?.name || rawName,
+        displayName: manifest?.interface?.displayName || manifest?.name || rawName,
+        description: manifest?.description || manifest?.interface?.shortDescription || '',
+        version: manifest?.version || '',
+        scope: pluginScope,
+        enabled: pluginState?.enabled !== false,
+        configured: true,
+        marketplaceName,
+        sourcePath: pluginPath || '',
+        manifestPath,
+        repository: manifest?.repository || '',
+        homepage: manifest?.homepage || manifest?.interface?.websiteURL || '',
+        developerName: manifest?.interface?.developerName || manifest?.author?.name || '',
+        logoPath: resolvePluginAssetPath(pluginPath, manifest?.interface?.logo || manifest?.interface?.composerIcon || ''),
+        counts: includeCounts && pluginPath ? detectPluginCountsFromDir(pluginPath, manifest || {}) : null,
+        details: includeDetails && pluginPath ? buildPluginDetails({
+          provider: 'codex',
+          id: `${pluginScope}:${pluginId}`,
+          name: manifest?.name || rawName,
+          displayName: manifest?.interface?.displayName || manifest?.name || rawName,
+          enabled: pluginState?.enabled !== false,
+          scope: pluginScope,
+          sourcePath: pluginPath,
+          manifestPath
+        }) : null
+      })
+    }
+  }
+
+  return uniqueBy(discovered, plugin => plugin.id || `${plugin.scope}:${plugin.pluginRef || plugin.manifestPath}`)
+}
+
+function discoverCodexMarketplaces(projectPath = '', userRawConfig = '', projectRawConfig = '') {
+  const plugins = discoverCodexPlugins(projectPath, userRawConfig, projectRawConfig, {
+    includeCounts: true,
+    includeDetails: true
+  })
+  const grouped = new Map()
+
+  for (const plugin of plugins) {
+    const pluginRef = plugin.pluginRef || plugin.name || plugin.id || ''
+    if (!pluginRef) continue
+    if (!grouped.has(pluginRef)) {
+      grouped.set(pluginRef, {
+        catalogPlugin: null,
+        installedPlugin: null
+      })
+    }
+
+    const bucket = grouped.get(pluginRef)
+    if (plugin.scope === 'catalog' || plugin.marketplaceName) {
+      if (!bucket.catalogPlugin) bucket.catalogPlugin = plugin
+      continue
+    }
+    if ((plugin.scope === 'user' || plugin.scope === 'project') && plugin.configured) {
+      if (!bucket.installedPlugin || plugin.scope === 'project') {
+        bucket.installedPlugin = plugin
+      }
+    }
+  }
+
+  const marketplaces = new Map()
+
+  for (const [pluginRef, bucket] of grouped.entries()) {
+    const sourcePlugin = bucket.catalogPlugin || bucket.installedPlugin
+    if (!sourcePlugin) continue
+    const marketplaceName = sourcePlugin.marketplaceName || '内置目录'
+    if (!marketplaces.has(marketplaceName)) {
+      marketplaces.set(marketplaceName, {
+        id: marketplaceName,
+        name: marketplaceName,
+        description: '',
+        version: '',
+        ownerName: '',
+        sourceType: sourcePlugin.marketplaceName ? 'marketplace' : 'catalog',
+        repo: '',
+        url: '',
+        installLocation: sourcePlugin.sourcePath || '',
+        pluginCount: 0,
+        plugins: []
+      })
+    }
+
+    const installedPlugin = bucket.installedPlugin
+    const pluginItem = {
+      id: pluginRef,
+      pluginRef,
+      name: sourcePlugin.name || pluginRef,
+      displayName: sourcePlugin.displayName || sourcePlugin.name || pluginRef,
+      description: sourcePlugin.description || '',
+      version: sourcePlugin.version || '',
+      installed: Boolean(installedPlugin),
+      installedPluginId: installedPlugin?.id || '',
+      installedScope: installedPlugin?.scope || '',
+      enabled: installedPlugin ? installedPlugin.enabled !== false : false,
+      configured: installedPlugin ? installedPlugin.configured !== false : false,
+      marketplaceName,
+      logoPath: sourcePlugin.logoPath || '',
+      counts: sourcePlugin.counts || null
+    }
+
+    marketplaces.get(marketplaceName).plugins.push(pluginItem)
+  }
+
+  return Array.from(marketplaces.values())
+    .map(marketplace => ({
+      ...marketplace,
+      pluginCount: marketplace.plugins.length,
+      plugins: marketplace.plugins.sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name))
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 function readPluginManifest(plugin = {}) {
   if (!plugin?.manifestPath) return {}
   return safeReadJson(plugin.manifestPath, {}) || {}
+}
+
+function resolvePluginAssetPath(pluginPath = '', assetPath = '') {
+  if (!pluginPath || !assetPath || typeof assetPath !== 'string') return ''
+  if (path.isAbsolute(assetPath)) return assetPath
+  return path.resolve(pluginPath, assetPath)
 }
 
 function extractPluginSkills(plugin = {}) {
@@ -1120,7 +1472,9 @@ function collectPlugins(options = {}) {
 
     if (provider === 'codex') {
       const codexConfig = appService.readCodexConfigFile()
-      const plugins = discoverCodexPlugins(projectPath, codexConfig.rawContent || '', {
+      const projectConfigPath = projectPath ? path.join(projectPath, '.codex', 'config.toml') : ''
+      const projectRawConfig = readTextFileSafe(projectConfigPath, '')
+      const plugins = discoverCodexPlugins(projectPath, codexConfig.rawContent || '', projectRawConfig, {
         contents: requestedContents,
         includeCounts: false
       }).map(plugin => ({
@@ -1151,10 +1505,269 @@ function collectPlugins(options = {}) {
   return result
 }
 
-function inspectCodexProvider(options = {}) {
+function normalizeCodexServiceDetail(pluginDetail = null, pluginSummary = {}, marketplace = {}) {
+  const summary = pluginDetail?.summary || pluginSummary || {}
+  const summaryInterface = summary?.interface || {}
+  const sourcePath = summary?.source?.path || ''
+  const skills = Array.isArray(pluginDetail?.skills)
+    ? pluginDetail.skills.map((skill, index) => ({
+        id: `${summary.id || summary.name || pluginSummary.id || pluginSummary.name || 'plugin'}:skill:${index}`,
+        name: skill?.interface?.displayName || skill?.name || `skill-${index + 1}`,
+        slug: skill?.name || '',
+        description: skill?.shortDescription || skill?.interface?.shortDescription || skill?.description || '',
+        path: skill?.path || '',
+        provider: 'codex'
+      }))
+    : []
+  const mcp = Array.isArray(pluginDetail?.mcpServers)
+    ? pluginDetail.mcpServers.map((server, index) => ({
+        id: `${summary.id || summary.name || pluginSummary.id || pluginSummary.name || 'plugin'}:mcp:${index}`,
+        name: server?.name || `mcp-${index + 1}`,
+        slug: server?.name || '',
+        description: buildMcpDescription(server),
+        transport: getMcpTransport(server),
+        provider: 'codex'
+      }))
+    : []
+  const apps = Array.isArray(pluginDetail?.apps)
+    ? pluginDetail.apps.map((app, index) => ({
+        id: app?.id || `${summary.id || summary.name || pluginSummary.id || pluginSummary.name || 'plugin'}:app:${index}`,
+        name: app?.name || `app-${index + 1}`,
+        description: app?.description || '',
+        installUrl: app?.installUrl || '',
+        needsAuth: app?.needsAuth === true
+      }))
+    : []
+
+  return {
+    details: {
+      skills,
+      hooks: [],
+      mcp,
+      agents: [],
+      apps
+    },
+    counts: {
+      skills: skills.length,
+      hooks: 0,
+      mcp: mcp.length,
+      apps: apps.length,
+      agents: 0
+    },
+    description:
+      pluginDetail?.description ||
+      summaryInterface?.shortDescription ||
+      summaryInterface?.longDescription ||
+      '',
+    longDescription:
+      summaryInterface?.longDescription ||
+      pluginDetail?.description ||
+      summaryInterface?.shortDescription ||
+      '',
+    logoPath: resolveCodexServiceAssetPath(
+      summaryInterface?.logo || summaryInterface?.composerIcon || '',
+      sourcePath
+    ),
+    homepage: summaryInterface?.websiteUrl || '',
+    developerName: summaryInterface?.developerName || '',
+    category: summaryInterface?.category || '',
+    capabilities: Array.isArray(summaryInterface?.capabilities)
+      ? summaryInterface.capabilities.filter(Boolean)
+      : [],
+    marketplaceDisplayName: marketplace?.interface?.displayName || marketplace?.name || '',
+    sourcePath
+  }
+}
+
+function buildCodexPluginsFromService(serviceData = {}, userRawConfig = '', projectRawConfig = '') {
+  const marketplaces = Array.isArray(serviceData?.marketplaces) ? serviceData.marketplaces : []
+  const detailMap = serviceData?.detailMap && typeof serviceData.detailMap === 'object'
+    ? serviceData.detailMap
+    : {}
+  const userPluginStates = parseCodexPluginStates(userRawConfig)
+  const projectPluginStates = parseCodexPluginStates(projectRawConfig)
+  const discovered = []
+  const seenPluginIds = new Set()
+
+  for (const marketplace of marketplaces) {
+    const marketplacePath = marketplace?.path || ''
+    const marketplaceLabel = marketplace?.interface?.displayName || marketplace?.name || 'Codex Marketplace'
+    const plugins = Array.isArray(marketplace?.plugins) ? marketplace.plugins : []
+
+    for (const plugin of plugins) {
+      const pluginId = plugin?.id || ''
+      if (!pluginId) continue
+      seenPluginIds.add(pluginId)
+
+      const detailKey = `${marketplacePath}::${plugin?.name || ''}`
+      const pluginDetail = detailMap[detailKey] || null
+      const normalizedDetail = normalizeCodexServiceDetail(pluginDetail, plugin, marketplace)
+      const pluginInterface = plugin?.interface || {}
+      const base = {
+        pluginId,
+        pluginRef: pluginId,
+        name: plugin?.name || pluginId,
+        displayName: pluginInterface?.displayName || plugin?.name || pluginId,
+        description: normalizedDetail.description,
+        longDescription: normalizedDetail.longDescription,
+        version: pluginDetail?.summary?.version || plugin?.version || '',
+        marketplaceName: marketplaceLabel,
+        marketplacePath,
+        sourcePath: normalizedDetail.sourcePath,
+        manifestPath: '',
+        repository: '',
+        homepage: normalizedDetail.homepage,
+        developerName: normalizedDetail.developerName,
+        category: normalizedDetail.category,
+        capabilities: normalizedDetail.capabilities,
+        logoPath: normalizedDetail.logoPath,
+        counts: normalizedDetail.counts,
+        details: normalizedDetail.details,
+        installPolicy: plugin?.installPolicy || '',
+        authPolicy: plugin?.authPolicy || '',
+        provider: 'codex'
+      }
+
+      discovered.push({
+        ...base,
+        id: `catalog:${pluginId}`,
+        scope: 'catalog',
+        enabled: plugin?.enabled === true,
+        configured: false
+      })
+
+      if (plugin?.installed === true || userPluginStates.has(pluginId)) {
+        discovered.push({
+          ...base,
+          id: `user:${pluginId}`,
+          scope: 'user',
+          enabled: userPluginStates.get(pluginId)?.enabled !== false && plugin?.enabled !== false,
+          configured: true
+        })
+      }
+
+      if (projectPluginStates.has(pluginId)) {
+        discovered.push({
+          ...base,
+          id: `project:${pluginId}`,
+          scope: 'project',
+          enabled: projectPluginStates.get(pluginId)?.enabled !== false,
+          configured: true
+        })
+      }
+    }
+  }
+
+  for (const [scope, stateMap] of [['user', userPluginStates], ['project', projectPluginStates]]) {
+    for (const [pluginId, pluginState] of stateMap.entries()) {
+      if (seenPluginIds.has(pluginId)) continue
+      discovered.push({
+        id: `${scope}:${pluginId}`,
+        pluginId,
+        pluginRef: pluginId,
+        name: pluginId,
+        displayName: pluginId,
+        description: '',
+        version: '',
+        scope,
+        enabled: pluginState?.enabled !== false,
+        configured: true,
+        marketplaceName: '',
+        marketplacePath: '',
+        sourcePath: '',
+        manifestPath: '',
+        repository: '',
+        homepage: '',
+        developerName: '',
+        category: '',
+        capabilities: [],
+        logoPath: '',
+        counts: null,
+        details: {
+          skills: [],
+          hooks: [],
+          mcp: [],
+          agents: [],
+          apps: []
+        },
+        installPolicy: '',
+        authPolicy: '',
+        provider: 'codex'
+      })
+    }
+  }
+
+  return uniqueBy(discovered, plugin => plugin.id || `${plugin.scope}:${plugin.pluginId}`)
+}
+
+function buildCodexMarketplacesFromService(serviceData = {}, userRawConfig = '', projectRawConfig = '') {
+  const marketplaces = Array.isArray(serviceData?.marketplaces) ? serviceData.marketplaces : []
+  const detailMap = serviceData?.detailMap && typeof serviceData.detailMap === 'object'
+    ? serviceData.detailMap
+    : {}
+  const userPluginStates = parseCodexPluginStates(userRawConfig)
+  const projectPluginStates = parseCodexPluginStates(projectRawConfig)
+
+  return marketplaces.map((marketplace) => {
+    const marketplacePath = marketplace?.path || ''
+    const marketplaceLabel = marketplace?.interface?.displayName || marketplace?.name || 'Codex Marketplace'
+    const plugins = Array.isArray(marketplace?.plugins) ? marketplace.plugins : []
+
+    return {
+      id: marketplacePath || marketplaceLabel,
+      name: marketplaceLabel,
+      description: '',
+      version: '',
+      ownerName: '',
+      sourceType: 'marketplace',
+      repo: '',
+      url: '',
+      installLocation: marketplacePath,
+      pluginCount: plugins.length,
+      plugins: plugins.map((plugin) => {
+        const detailKey = `${marketplacePath}::${plugin?.name || ''}`
+        const pluginDetail = detailMap[detailKey] || null
+        const normalizedDetail = normalizeCodexServiceDetail(pluginDetail, plugin, marketplace)
+        const projectInstalled = projectPluginStates.has(plugin?.id || '')
+        const userInstalled = userPluginStates.has(plugin?.id || '') || plugin?.installed === true
+
+        return {
+          id: plugin?.id || plugin?.name || '',
+          pluginId: plugin?.id || '',
+          pluginRef: plugin?.id || '',
+          pluginName: plugin?.name || '',
+          marketplacePath,
+          name: plugin?.name || '',
+          displayName: plugin?.interface?.displayName || plugin?.name || '',
+          description: normalizedDetail.description,
+          version: pluginDetail?.summary?.version || plugin?.version || '',
+          installed: userInstalled || projectInstalled,
+          installedPluginId: plugin?.id || '',
+          installedScope: projectInstalled ? 'project' : (userInstalled ? 'user' : ''),
+          enabled: projectInstalled
+            ? projectPluginStates.get(plugin?.id || '')?.enabled !== false
+            : (userInstalled ? (userPluginStates.get(plugin?.id || '')?.enabled !== false && plugin?.enabled !== false) : false),
+          configured: userInstalled || projectInstalled,
+          marketplaceName: marketplaceLabel,
+          logoPath: normalizedDetail.logoPath,
+          developerName: normalizedDetail.developerName,
+          category: normalizedDetail.category,
+          capabilities: normalizedDetail.capabilities,
+          counts: normalizedDetail.counts,
+          details: normalizedDetail.details
+        }
+      })
+    }
+  })
+}
+
+async function inspectCodexProvider(options = {}) {
   const projectPath = options.projectPath || ''
   const codexConfig = appService.readCodexConfigFile()
   const codexAuth = appService.readCodexAuthFile()
+  const userConfigPath = appService.getCodexConfigPath()
+  const projectConfigPath = projectPath ? path.join(projectPath, '.codex', 'config.toml') : ''
+  const projectRawConfig = readTextFileSafe(projectConfigPath, '')
   const globalHooksPath = path.join(os.homedir(), '.codex', 'hooks.json')
   const projectHooksPath = projectPath ? path.join(projectPath, '.codex', 'hooks.json') : ''
   const globalHooksConfig = safeReadJson(globalHooksPath, null)
@@ -1175,7 +1788,12 @@ function inspectCodexProvider(options = {}) {
     ...globalHooks,
     ...projectHooks
   ]
-  const hookFeatureEnabled = parseCodexFeatureFlag(codexConfig.rawContent || '', 'codex_hooks')
+  const hookFeatureState = {
+    user: parseCodexFeatureFlag(codexConfig.rawContent || '', 'codex_hooks'),
+    project: parseCodexFeatureFlag(projectRawConfig, 'codex_hooks')
+  }
+  const hookFeatureEnabled = hookFeatureState.user || hookFeatureState.project
+  const serviceData = await codexAppServer.listPluginsWithDetails(projectPath)
   const hookSources = [
     createHookSource({
       provider: 'codex',
@@ -1185,7 +1803,7 @@ function inspectCodexProvider(options = {}) {
       fileType: 'hooks.json',
       hasHooksField: Boolean(globalHooksConfig && (globalHooksConfig.hooks || Object.keys(globalHooksConfig || {}).length > 0)),
       hooks: globalHooks,
-      featureEnabled: hookFeatureEnabled,
+      featureEnabled: hookFeatureState.user,
       note: fileExists(globalHooksPath) ? '' : '未发现 hooks.json'
     }),
     createHookSource({
@@ -1196,21 +1814,38 @@ function inspectCodexProvider(options = {}) {
       fileType: 'hooks.json',
       hasHooksField: Boolean(projectHooksConfig && (projectHooksConfig.hooks || Object.keys(projectHooksConfig || {}).length > 0)),
       hooks: projectHooks,
-      featureEnabled: hookFeatureEnabled,
+      featureEnabled: hookFeatureState.project,
       note: projectHooksPath && !fileExists(projectHooksPath) ? '未发现项目 hooks.json' : ''
     }),
     createHookSource({
       provider: 'codex',
-      scope: 'config',
+      scope: 'user-config',
       sourceLabel: '用户 config.toml',
-      sourcePath: appService.getCodexConfigPath(),
+      sourcePath: userConfigPath,
       fileType: 'config.toml',
       hasHooksField: /\bhook/i.test(codexConfig.rawContent || ''),
       hooks: [],
-      featureEnabled: hookFeatureEnabled,
-      note: hookFeatureEnabled
+      featureEnabled: hookFeatureState.user,
+      note: hookFeatureState.user
         ? '已解析 config.toml 的 Hook 特性开关'
         : '当前未在 config.toml 中发现已启用的 Hook 特性'
+    }),
+    createHookSource({
+      provider: 'codex',
+      scope: 'project-config',
+      sourceLabel: '项目 config.toml',
+      sourcePath: projectConfigPath,
+      fileType: 'config.toml',
+      hasHooksField: /\bhook/i.test(projectRawConfig || ''),
+      hooks: [],
+      featureEnabled: hookFeatureState.project,
+      note: projectConfigPath
+        ? (
+            hookFeatureState.project
+              ? '已解析项目 config.toml 的 Hook 特性开关'
+              : (!fileExists(projectConfigPath) ? '未发现项目 config.toml' : '当前未在项目 config.toml 中发现已启用的 Hook 特性')
+          )
+        : ''
     })
   ]
 
@@ -1218,21 +1853,17 @@ function inspectCodexProvider(options = {}) {
     provider: 'codex',
     projectPath,
     configPaths: {
-      user: appService.getCodexConfigPath(),
-      project: projectPath ? path.join(projectPath, '.codex', 'config.toml') : '',
+      user: userConfigPath,
+      project: projectConfigPath,
       globalHooks: globalHooksPath,
       projectHooks: projectHooksPath
     },
     hookFeatureEnabled,
+    hookFeatureState,
     hooks: uniqueBy(hooks, hook => hook.id),
     hookSources: uniqueBy(hookSources, source => source.id),
-    plugins: discoverCodexPlugins(projectPath, codexConfig.rawContent || '', {
-      includeCounts: true,
-      includeDetails: true
-    }).map(plugin => ({
-      ...plugin,
-      provider: 'codex'
-    })),
+    plugins: buildCodexPluginsFromService(serviceData, codexConfig.rawContent || '', projectRawConfig),
+    marketplaces: buildCodexMarketplacesFromService(serviceData, codexConfig.rawContent || '', projectRawConfig),
     runtime: {
       authMode: codexAuth.authMode || 'provider',
       model: codexConfig.model || '',
@@ -1243,14 +1874,43 @@ function inspectCodexProvider(options = {}) {
   }
 }
 
-function inspectProviderSetup(options = {}) {
+async function inspectProviderSetup(options = {}) {
   const provider = options.provider === 'codex' ? 'codex' : 'claude'
   return provider === 'codex'
     ? inspectCodexProvider(options)
     : inspectClaudeProvider(options)
 }
 
+async function readCodexPluginDetail(options = {}) {
+  const projectPath = options.projectPath || ''
+  const marketplacePath = options.marketplacePath || ''
+  const pluginName = options.pluginName || ''
+  const result = await codexAppServer.readPluginDetail(projectPath, marketplacePath, pluginName)
+  const plugin = result?.plugin || null
+  if (!plugin) {
+    throw new Error('未找到插件详情')
+  }
+
+  const normalizedDetail = normalizeCodexServiceDetail(plugin, plugin.summary || {}, {
+    name: plugin.marketplaceName || '',
+    path: plugin.marketplacePath || ''
+  })
+
+  return {
+    details: normalizedDetail.details,
+    counts: normalizedDetail.counts,
+    description: normalizedDetail.description,
+    longDescription: normalizedDetail.longDescription,
+    logoPath: normalizedDetail.logoPath,
+    homepage: normalizedDetail.homepage,
+    developerName: normalizedDetail.developerName,
+    category: normalizedDetail.category,
+    capabilities: normalizedDetail.capabilities
+  }
+}
+
 module.exports = {
   inspectProviderSetup,
-  collectPlugins
+  collectPlugins,
+  readCodexPluginDetail
 }

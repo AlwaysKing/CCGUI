@@ -10,6 +10,7 @@ const { encodeProjectPath, decodeProjectPath } = require('./project-paths')
 const appService = require('./services/app-service')
 const projectService = require('./services/project-service')
 const attachmentService = require('./services/attachment-service')
+const codexAppServer = require('./services/codex-app-server')
 const providerInspector = require('./services/provider-inspector')
 const historyManager = require('./storage/history-manager')
 const processRegistry = require('./services/process-registry')
@@ -2913,7 +2914,7 @@ ipcMain.handle('manage-claude-hook', async (event, options = {}) => {
     return {
       success: true,
       settingsPath,
-      data: providerInspector.inspectProviderSetup({
+      data: await providerInspector.inspectProviderSetup({
         provider: 'claude',
         projectPath
       })
@@ -2946,13 +2947,78 @@ ipcMain.handle('manage-claude-hook-settings', async (event, options = {}) => {
     return {
       success: true,
       settingsPath,
-      data: providerInspector.inspectProviderSetup({
+      data: await providerInspector.inspectProviderSetup({
         provider: 'claude',
         projectPath
       })
     }
   } catch (error) {
     logger.error('[ClaudeHookSettings] Failed to update Claude hook settings', {
+      scope: options?.scope || '',
+      error: error.message
+    })
+    return { success: false, error: error.message || 'Hook 设置更新失败' }
+  }
+})
+
+ipcMain.handle('manage-codex-hook', async (event, options = {}) => {
+  try {
+    const action = options?.action || ''
+    const scope = options?.scope || 'user'
+    const projectPath = options?.projectPath || ''
+    const settingsPath = getCodexHookSettingsPath(scope, projectPath)
+    const existingSettings = readJsonFileSafe(settingsPath, {})
+    let nextSettings = existingSettings
+
+    if (action === 'create') {
+      nextSettings = appendClaudeHook(existingSettings, options.payload || {})
+    } else if (action === 'update') {
+      nextSettings = removeClaudeHook(existingSettings, options.target || {})
+      nextSettings = appendClaudeHook(nextSettings, options.payload || {})
+    } else if (action === 'delete') {
+      nextSettings = removeClaudeHook(existingSettings, options.target || {})
+    } else {
+      throw new Error('无效的 Hook 操作')
+    }
+
+    ensureParentDir(settingsPath)
+    fs.writeFileSync(settingsPath, JSON.stringify(nextSettings, null, 2), 'utf-8')
+
+    return {
+      success: true,
+      settingsPath,
+      data: await providerInspector.inspectProviderSetup({
+        provider: 'codex',
+        projectPath
+      })
+    }
+  } catch (error) {
+    logger.error('[CodexHook] Failed to manage Codex hook', {
+      action: options?.action || '',
+      scope: options?.scope || '',
+      error: error.message
+    })
+    return { success: false, error: error.message || 'Hook 操作失败' }
+  }
+})
+
+ipcMain.handle('manage-codex-hook-settings', async (event, options = {}) => {
+  try {
+    const scope = options?.scope || 'user'
+    const projectPath = options?.projectPath || ''
+    const enabled = options?.enabled === true
+    const settingsPath = updateCodexHookFeature(scope, projectPath, enabled)
+
+    return {
+      success: true,
+      settingsPath,
+      data: await providerInspector.inspectProviderSetup({
+        provider: 'codex',
+        projectPath
+      })
+    }
+  } catch (error) {
+    logger.error('[CodexHookSettings] Failed to update Codex hook settings', {
       scope: options?.scope || '',
       error: error.message
     })
@@ -2988,7 +3054,7 @@ ipcMain.handle('manage-claude-subagent', async (event, options = {}) => {
 
     return {
       success: true,
-      data: providerInspector.inspectProviderSetup({
+      data: await providerInspector.inspectProviderSetup({
         provider: 'claude',
         projectPath
       })
@@ -3198,6 +3264,123 @@ function removeClaudeHook(settings = {}, target = {}) {
   }
 
   return nextSettings
+}
+
+function readTextFileSafe(targetPath, fallback = '') {
+  try {
+    if (!fs.existsSync(targetPath)) return fallback
+    return fs.readFileSync(targetPath, 'utf-8')
+  } catch {
+    return fallback
+  }
+}
+
+function getCodexProjectConfigPath(projectPath = '') {
+  if (!projectPath) throw new Error('缺少项目路径')
+  return path.join(projectPath, '.codex', 'config.toml')
+}
+
+function getCodexHookSettingsPath(scope = 'user', projectPath = '') {
+  if (scope === 'project') {
+    if (!projectPath) throw new Error('缺少项目路径')
+    return path.join(projectPath, '.codex', 'hooks.json')
+  }
+  return path.join(os.homedir(), '.codex', 'hooks.json')
+}
+
+function getCodexConfigFilePath(scope = 'user', projectPath = '') {
+  if (scope === 'project') {
+    return getCodexProjectConfigPath(projectPath)
+  }
+  return getCodexConfigPath()
+}
+
+function upsertTomlSectionKey(rawContent = '', sectionName = '', key = '', value = '') {
+  const lines = rawContent ? rawContent.split(/\r?\n/) : []
+  const header = `[${sectionName}]`
+  const nextLine = `${key} = ${value}`
+  const sectionIndex = lines.findIndex(line => line.trim() === header)
+
+  if (sectionIndex === -1) {
+    const output = [...lines]
+    while (output.length > 0 && output[output.length - 1].trim() === '') output.pop()
+    if (output.length > 0) output.push('')
+    output.push(header)
+    output.push(nextLine)
+    return `${output.join('\n')}\n`
+  }
+
+  let endIndex = lines.length
+  for (let index = sectionIndex + 1; index < lines.length; index += 1) {
+    if (/^\s*\[.+\]\s*$/.test(lines[index])) {
+      endIndex = index
+      break
+    }
+  }
+
+  const existingKeyIndex = lines.findIndex((line, index) => {
+    if (index <= sectionIndex || index >= endIndex) return false
+    return new RegExp(`^\\s*${key}\\s*=`).test(line)
+  })
+
+  const output = [...lines]
+  if (existingKeyIndex !== -1) {
+    output[existingKeyIndex] = nextLine
+  } else {
+    output.splice(endIndex, 0, nextLine)
+  }
+
+  return `${output.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/g, '')}\n`
+}
+
+function updateCodexPluginState(scope = 'user', projectPath = '', pluginId = '', enabled = true) {
+  if (!pluginId) throw new Error('缺少插件标识')
+  const configPath = getCodexConfigFilePath(scope, projectPath)
+  const rawContent = readTextFileSafe(configPath, '')
+  const nextContent = upsertTomlSectionKey(rawContent, `plugins.${stringifyTomlString(pluginId)}`, 'enabled', enabled ? 'true' : 'false')
+  ensureParentDir(configPath)
+  fs.writeFileSync(configPath, nextContent, 'utf-8')
+  return configPath
+}
+
+function removeCodexPluginState(scope = 'user', projectPath = '', pluginId = '') {
+  if (!pluginId) throw new Error('缺少插件标识')
+  const configPath = getCodexConfigFilePath(scope, projectPath)
+  if (!fs.existsSync(configPath)) return configPath
+
+  const sectionHeader = `[plugins.${stringifyTomlString(pluginId)}]`
+  const lines = fs.readFileSync(configPath, 'utf-8').split(/\r?\n/)
+  const output = []
+  let skipping = false
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === sectionHeader) {
+      skipping = true
+      continue
+    }
+    if (skipping) {
+      if (/^\s*\[.+\]\s*$/.test(trimmed)) {
+        skipping = false
+        output.push(line)
+      }
+      continue
+    }
+    output.push(line)
+  }
+
+  const nextContent = `${output.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/g, '')}\n`
+  fs.writeFileSync(configPath, nextContent, 'utf-8')
+  return configPath
+}
+
+function updateCodexHookFeature(scope = 'user', projectPath = '', enabled = true) {
+  const configPath = getCodexConfigFilePath(scope, projectPath)
+  const rawContent = readTextFileSafe(configPath, '')
+  const nextContent = upsertTomlSectionKey(rawContent, 'features', 'codex_hooks', enabled ? 'true' : 'false')
+  ensureParentDir(configPath)
+  fs.writeFileSync(configPath, nextContent, 'utf-8')
+  return configPath
 }
 
 function getCodexAuthPath() {
@@ -3418,7 +3601,7 @@ ipcMain.handle('sync-codex-model-providers', async () => {
 
 ipcMain.handle('inspect-provider-setup', async (event, options = {}) => {
   try {
-    const result = providerInspector.inspectProviderSetup(options || {})
+    const result = await providerInspector.inspectProviderSetup(options || {})
     return {
       success: true,
       data: result
@@ -3435,13 +3618,33 @@ ipcMain.handle('inspect-provider-setup', async (event, options = {}) => {
   }
 })
 
+ipcMain.handle('read-codex-plugin-detail', async (event, options = {}) => {
+  try {
+    const detail = await providerInspector.readCodexPluginDetail(options || {})
+    return {
+      success: true,
+      data: detail
+    }
+  } catch (error) {
+    logger.error('[CodexPlugin] Failed to read Codex plugin detail', {
+      pluginName: options?.pluginName || '',
+      marketplacePath: options?.marketplacePath || '',
+      error: error.message
+    })
+    return {
+      success: false,
+      error: error.message
+    }
+  }
+})
+
 ipcMain.handle('manage-claude-plugin', async (event, options = {}) => {
   try {
     const args = buildClaudePluginCommand(options)
     const { stdout, stderr } = await execFileAsync('claude', args, {
       cwd: options.projectPath || process.cwd()
     })
-    const data = providerInspector.inspectProviderSetup({
+    const data = await providerInspector.inspectProviderSetup({
       provider: 'claude',
       projectPath: options.projectPath || ''
     })
@@ -3454,6 +3657,58 @@ ipcMain.handle('manage-claude-plugin', async (event, options = {}) => {
     }
   } catch (error) {
     logger.error('[ClaudePlugin] Failed to manage Claude plugin', {
+      action: options?.action || '',
+      error: error.message
+    })
+    return {
+      success: false,
+      error: error.message
+    }
+  }
+})
+
+ipcMain.handle('manage-codex-plugin', async (event, options = {}) => {
+  try {
+    const action = options?.action || ''
+    const scope = options?.scope || 'user'
+    const projectPath = options?.projectPath || ''
+    const pluginId = options?.pluginId || ''
+    const pluginName = options?.pluginName || ''
+    const marketplacePath = options?.marketplacePath || ''
+
+    if (!['installPlugin', 'uninstallPlugin', 'enablePlugin', 'disablePlugin'].includes(action)) {
+      throw new Error('不支持的 Codex 插件操作')
+    }
+
+    if (action === 'installPlugin') {
+      await codexAppServer.installPlugin(scope, projectPath, {
+        pluginId,
+        pluginName,
+        marketplacePath
+      })
+    } else if (action === 'uninstallPlugin') {
+      await codexAppServer.uninstallPlugin(scope, projectPath, {
+        pluginId
+      })
+    } else {
+      await codexAppServer.setPluginEnabled(
+        scope,
+        projectPath,
+        pluginId,
+        action === 'enablePlugin'
+      )
+    }
+    const data = await providerInspector.inspectProviderSetup({
+      provider: 'codex',
+      projectPath
+    })
+
+    return {
+      success: true,
+      data
+    }
+  } catch (error) {
+    logger.error('[CodexPlugin] Failed to manage Codex plugin', {
       action: options?.action || '',
       error: error.message
     })
@@ -4058,7 +4313,11 @@ ipcMain.handle('read-skill-readme', async (event, { skillPath }) => {
   try {
     const fs = require('fs')
     const path = require('path')
-    const readmePath = path.join(skillPath, 'SKILL.md')
+    const resolvedInputPath = path.resolve(String(skillPath || ''))
+    const stat = fs.existsSync(resolvedInputPath) ? fs.statSync(resolvedInputPath) : null
+    const readmePath = stat?.isFile()
+      ? resolvedInputPath
+      : path.join(resolvedInputPath, 'SKILL.md')
     if (!fs.existsSync(readmePath)) {
       return { success: false, error: 'SKILL.md not found' }
     }
@@ -4073,11 +4332,16 @@ ipcMain.handle('read-skill-extra', async (event, { skillPath }) => {
   try {
     const fs = require('fs')
     const path = require('path')
+    const resolvedInputPath = path.resolve(String(skillPath || ''))
+    const stat = fs.existsSync(resolvedInputPath) ? fs.statSync(resolvedInputPath) : null
+    const skillRoot = stat?.isFile()
+      ? path.dirname(resolvedInputPath)
+      : resolvedInputPath
 
     // 读取 LICENSE
     let license = null
     for (const name of ['LICENSE.txt', 'LICENSE', 'LICENSE.md', 'license.txt']) {
-      const p = path.join(skillPath, name)
+      const p = path.join(skillRoot, name)
       if (fs.existsSync(p)) {
         license = fs.readFileSync(p, 'utf-8')
         break
@@ -4106,7 +4370,7 @@ ipcMain.handle('read-skill-extra', async (event, { skillPath }) => {
       return entries
     }
 
-    const tree = buildTree(skillPath)
+    const tree = buildTree(skillRoot)
     return { success: true, license, tree }
   } catch (error) {
     return { success: false, error: error.message }

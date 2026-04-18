@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { IconButton, MarkdownRenderer } from '@/components/base'
+import { toAttachmentUrl } from '@/utils/chatAttachments'
 import { useDialogStack } from '../../composables/useDialogStack'
 import { useSettingsData } from '@/views/settings/hooks/useSettingsData'
 import BaseDialog from '@/components/base/BaseDialog.vue'
@@ -40,7 +41,9 @@ const showMarketplaceDialog = ref(false)
 const showPluginInstallDialog = ref(false)
 const selectedMarketplace = ref(null)
 const installingMarketplacePlugin = ref(null)
-const pluginActionScope = ref('user')
+const codexMarketplaceInstallFilter = ref(['installed', 'uninstalled'])
+const codexMarketplaceSearch = ref('')
+const pluginActionScope = ref('all')
 const showPluginDetail = ref(false)
 const selectedPlugin = ref(null)
 const pluginDetailTab = ref('skills')
@@ -78,6 +81,10 @@ const inspectorData = ref({
 const normalizedProvider = computed(() => props.provider === 'codex' ? 'codex' : 'claude')
 const providerLabel = computed(() => normalizedProvider.value === 'codex' ? 'Codex' : 'Claude')
 
+function resolvePluginLogoSrc(logoPath = '') {
+  return toAttachmentUrl(logoPath)
+}
+
 const sections = computed(() => [
   { id: 'model', label: '模型', icon: 'model' },
   { id: 'hooks', label: 'Hooks', icon: 'hooks' },
@@ -88,14 +95,25 @@ const sections = computed(() => [
         { id: 'marketplace-spacer', spacer: true },
         { id: 'marketplace', label: '插件市场', icon: 'marketplace', bottom: true }
       ]
-    : [])
+    : [
+        { id: 'marketplace-spacer', spacer: true },
+        { id: 'marketplace', label: '插件市场', icon: 'marketplace', bottom: true }
+      ])
 ])
 
-const hookFeatureEnabled = computed(() => inspectorData.value?.hookFeatureEnabled !== false)
-const hookLocationOptions = computed(() => [
-  { value: 'user', label: '用户' },
-  ...(props.projectPath ? [{ value: 'project', label: '项目' }, { value: 'local', label: '本地' }] : [])
-])
+const hookFeatureState = computed(() => ({
+  user: inspectorData.value?.hookFeatureState?.user === true,
+  project: inspectorData.value?.hookFeatureState?.project === true
+}))
+const hookLocationOptions = computed(() => normalizedProvider.value === 'codex'
+  ? [
+      { value: 'user', label: '用户' },
+      ...(props.projectPath ? [{ value: 'project', label: '项目' }] : [])
+    ]
+  : [
+      { value: 'user', label: '用户' },
+      ...(props.projectPath ? [{ value: 'project', label: '项目' }, { value: 'local', label: '本地' }] : [])
+    ])
 const hookModeOptions = computed(() => [
   { value: 'config', label: '配置' },
   { value: 'plugin', label: '插件' }
@@ -114,10 +132,23 @@ const hookDisableScopeOptions = computed(() => {
   const options = [{ value: 'user', label: '用户' }]
   if (props.projectPath) {
     options.push({ value: 'project', label: '项目' })
-    options.push({ value: 'local', label: '本地' })
+    if (normalizedProvider.value !== 'codex') {
+      options.push({ value: 'local', label: '本地' })
+    }
   }
   return options
 })
+const pluginScopeOptions = computed(() => normalizedProvider.value === 'codex'
+  ? [
+      { value: 'all', label: '全部' },
+      { value: 'enabled', label: '已启用' },
+      { value: 'disabled', label: '已禁用' }
+    ]
+  : [
+      { value: 'all', label: '全部' },
+      { value: 'user', label: '用户' },
+      ...(props.projectPath ? [{ value: 'project', label: '项目' }] : [])
+    ])
 const pluginInstallScopeOptions = computed(() => (
   props.projectPath
     ? [
@@ -143,6 +174,19 @@ const filteredHooks = computed(() => {
   })
 })
 const plugins = computed(() => Array.isArray(inspectorData.value?.plugins) ? inspectorData.value.plugins : [])
+const filteredPlugins = computed(() => {
+  const sourcePlugins = normalizedProvider.value === 'codex'
+    ? plugins.value.filter(plugin => ['user', 'project'].includes(plugin.scope || ''))
+    : plugins.value
+  const scope = pluginActionScope.value
+  if (!scope || scope === 'all') return sourcePlugins
+  if (normalizedProvider.value === 'codex') {
+    if (scope === 'enabled') return sourcePlugins.filter(plugin => plugin.enabled !== false)
+    if (scope === 'disabled') return sourcePlugins.filter(plugin => plugin.enabled === false)
+    return sourcePlugins
+  }
+  return sourcePlugins.filter(plugin => (plugin.scope || '') === scope)
+})
 const subagents = computed(() => {
   const scoped = Array.isArray(inspectorData.value?.subagents) ? inspectorData.value.subagents : []
   const pluginItems = []
@@ -169,6 +213,36 @@ const filteredMarketplaces = computed(() => marketplaces.value.filter(marketplac
   }
   return ['user', 'project'].includes(getMarketplaceScope(marketplace))
 }))
+const filteredCodexMarketplacePlugins = computed(() => {
+  const plugins = Array.isArray(selectedMarketplace.value?.plugins) ? selectedMarketplace.value.plugins : []
+  const installFilter = Array.isArray(codexMarketplaceInstallFilter.value)
+    ? codexMarketplaceInstallFilter.value
+    : []
+  const keyword = String(codexMarketplaceSearch.value || '').trim().toLowerCase()
+
+  return plugins.filter((plugin) => {
+    const state = codexMarketplacePluginState(plugin)
+    const allowInstalled = installFilter.length === 0 || installFilter.includes('installed')
+    const allowUninstalled = installFilter.length === 0 || installFilter.includes('uninstalled')
+    const installMatch = state.installed ? allowInstalled : allowUninstalled
+
+    if (!installMatch) return false
+    if (!keyword) return true
+
+    const haystack = [
+      plugin.displayName,
+      plugin.name,
+      plugin.description,
+      plugin.developerName,
+      plugin.category
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+
+    return haystack.includes(keyword)
+  })
+})
 const marketplacePluginCount = computed(() => filteredMarketplaces.value.reduce((total, marketplace) => {
   const items = Array.isArray(marketplace?.plugins) ? marketplace.plugins.length : 0
   return total + items
@@ -231,14 +305,18 @@ function normalizeHookScope(scope = '') {
     user: '用户',
     project: '项目',
     local: '本地',
+    catalog: '市场',
     plugin: '插件'
   }
   return map[scope] || scope || '未知'
 }
 
 function createEmptyHookForm() {
+  const isCodexProvider = props.provider === 'codex'
   return {
-    scope: props.projectPath ? 'local' : 'user',
+    scope: isCodexProvider
+      ? (props.projectPath ? 'project' : 'user')
+      : (props.projectPath ? 'local' : 'user'),
     eventName: 'SessionStart',
     matcherValues: ['startup'],
     type: 'command',
@@ -354,7 +432,10 @@ function getHookModeLabel(hook = {}) {
 }
 
 function isHookEditable(hook = {}) {
-  return normalizedProvider.value === 'claude' && ['user', 'project', 'local'].includes(hook?.scope || '')
+  if (normalizedProvider.value === 'codex') {
+    return ['user', 'project'].includes(hook?.scope || '')
+  }
+  return ['user', 'project', 'local'].includes(hook?.scope || '')
 }
 
 function isPluginDisabled(plugin = {}) {
@@ -384,7 +465,9 @@ const hookEditableScopeOptions = computed(() => {
   const options = [{ value: 'user', label: '用户' }]
   if (props.projectPath) {
     options.push({ value: 'project', label: '项目' })
-    options.push({ value: 'local', label: '本地' })
+    if (normalizedProvider.value !== 'codex') {
+      options.push({ value: 'local', label: '本地' })
+    }
   }
   return options
 })
@@ -557,6 +640,30 @@ function openMarketplaceDetail(marketplace = {}) {
 
 function closeMarketplaceDetail() {
   selectedMarketplace.value = null
+  codexMarketplaceInstallFilter.value = ['installed', 'uninstalled']
+  codexMarketplaceSearch.value = ''
+}
+
+function toggleCodexMarketplaceInstallFilter(value = '') {
+  if (!value) return
+  const current = Array.isArray(codexMarketplaceInstallFilter.value)
+    ? [...codexMarketplaceInstallFilter.value]
+    : []
+  const index = current.indexOf(value)
+  if (index >= 0) {
+    current.splice(index, 1)
+  } else {
+    current.push(value)
+  }
+  codexMarketplaceInstallFilter.value = current
+}
+
+function codexMarketplacePluginState(plugin = {}) {
+  return {
+    installed: plugin?.configured === true || plugin?.installed === true,
+    enabled: plugin?.enabled === true,
+    scope: plugin?.installedScope || plugin?.scope || ''
+  }
 }
 
 function openCreateSubagentDialog() {
@@ -626,9 +733,45 @@ function pluginDetailItems(plugin = {}, key = '') {
   return items
 }
 
+function codexPluginIncludedSections(plugin = {}) {
+  return [
+    {
+      key: 'skills',
+      label: '技能',
+      items: pluginDetailItems(plugin, 'skills')
+    },
+    {
+      key: 'mcp',
+      label: 'MCP',
+      items: pluginDetailItems(plugin, 'mcp')
+    }
+  ].filter(section => section.items.length > 0)
+}
+
+function codexPluginInfoRows(plugin = {}) {
+  return [
+    {
+      key: 'capabilities',
+      label: '功能',
+      value: Array.isArray(plugin?.capabilities) ? plugin.capabilities.filter(Boolean).join(', ') : ''
+    },
+    {
+      key: 'category',
+      label: '类别',
+      value: plugin?.category || ''
+    },
+    {
+      key: 'developer',
+      label: '开发者',
+      value: plugin?.developerName || ''
+    }
+  ].filter(row => String(row.value || '').trim())
+}
+
 function pluginDetailTabs(plugin = {}) {
   const tabs = [
     { key: 'skills', label: '技能', count: pluginDetailItems(plugin, 'skills').length },
+    { key: 'apps', label: '应用', count: pluginDetailItems(plugin, 'apps').length },
     { key: 'hooks', label: 'Hooks', count: pluginDetailItems(plugin, 'hooks').length },
     { key: 'mcp', label: 'MCP', count: pluginDetailItems(plugin, 'mcp').length },
     { key: 'agents', label: 'Agents', count: pluginDetailItems(plugin, 'agents').length }
@@ -646,6 +789,27 @@ function openPluginDetail(plugin = {}) {
 function closePluginDetail() {
   showPluginDetail.value = false
   selectedPlugin.value = null
+}
+
+function syncSelectedPlugin(data = null) {
+  if (!selectedPlugin.value) return
+
+  const selectedId = selectedPlugin.value.id || ''
+  const selectedPluginId = selectedPlugin.value.pluginId || selectedPlugin.value.pluginRef || selectedPlugin.value.name || ''
+
+  const providerPlugins = Array.isArray(data?.plugins) ? data.plugins : []
+  const marketplacePlugins = Array.isArray(data?.marketplaces)
+    ? data.marketplaces.flatMap(item => Array.isArray(item?.plugins) ? item.plugins : [])
+    : []
+
+  const matched = [...providerPlugins, ...marketplacePlugins].find((plugin) => {
+    const pluginId = plugin?.pluginId || plugin?.pluginRef || plugin?.name || ''
+    return (selectedId && plugin?.id === selectedId) || (selectedPluginId && pluginId === selectedPluginId)
+  })
+
+  if (matched) {
+    selectedPlugin.value = matched
+  }
 }
 
 async function openPluginSkillDetail(skill = {}) {
@@ -800,6 +964,7 @@ async function handleClaudePluginAction(action, payload = {}) {
         .find(item => item?.id === selectedMarketplace.value.id)
       selectedMarketplace.value = nextMarketplace || null
     }
+    syncSelectedPlugin(result.data || inspectorData.value)
     pluginActionMessage.value = payload.successMessage || '操作已完成'
 
     if (action === 'addMarketplace') {
@@ -807,6 +972,40 @@ async function handleClaudePluginAction(action, payload = {}) {
       showMarketplaceDialog.value = false
       activeSection.value = 'marketplace'
     }
+  } catch (error) {
+    pluginActionError.value = error.message || '插件操作失败'
+  } finally {
+    pluginBusy.value = false
+  }
+}
+
+async function handleCodexPluginAction(action, payload = {}) {
+  pluginBusy.value = true
+  pluginActionError.value = ''
+  pluginActionMessage.value = ''
+
+  try {
+    const result = await window.electronAPI.manageCodexPlugin({
+      action,
+      projectPath: props.projectPath || '',
+      scope: payload.scope || 'user',
+      pluginId: payload.pluginId || '',
+      pluginName: payload.pluginName || '',
+      marketplacePath: payload.marketplacePath || ''
+    })
+
+    if (!result?.success) {
+      throw new Error(result?.error || '插件操作失败')
+    }
+
+    inspectorData.value = result.data || inspectorData.value
+    if (selectedMarketplace.value?.id) {
+      const nextMarketplace = (result.data?.marketplaces || inspectorData.value?.marketplaces || [])
+        .find(item => item?.id === selectedMarketplace.value.id)
+      selectedMarketplace.value = nextMarketplace || null
+    }
+    syncSelectedPlugin(result.data || inspectorData.value)
+    pluginActionMessage.value = payload.successMessage || '操作已完成'
   } catch (error) {
     pluginActionError.value = error.message || '插件操作失败'
   } finally {
@@ -829,11 +1028,21 @@ function closeMarketplaceDialog() {
 
 function openPluginInstallDialog(plugin = {}) {
   if (!props.projectPath) {
-    handleClaudePluginAction('installPlugin', {
-      pluginId: plugin.id,
-      scope: 'user',
-      successMessage: '插件已安装'
-    })
+    if (normalizedProvider.value === 'codex') {
+      handleCodexPluginAction('installPlugin', {
+        pluginId: plugin.pluginId || plugin.pluginRef || plugin.id,
+        pluginName: plugin.pluginName || plugin.name,
+        marketplacePath: plugin.marketplacePath || '',
+        scope: 'user',
+        successMessage: '插件已安装'
+      })
+    } else {
+      handleClaudePluginAction('installPlugin', {
+        pluginId: plugin.id,
+        scope: 'user',
+        successMessage: '插件已安装'
+      })
+    }
     return
   }
 
@@ -867,7 +1076,11 @@ function openEditHookDialog(hook = {}) {
   hookEditorMode.value = 'update'
   editingHook.value = hook
   hookForm.value = {
-    scope: hook.scope || (props.projectPath ? 'local' : 'user'),
+    scope: hook.scope || (
+      normalizedProvider.value === 'codex'
+        ? (props.projectPath ? 'project' : 'user')
+        : (props.projectPath ? 'local' : 'user')
+    ),
     eventName: hook.eventName || 'SessionStart',
     matcherValues: String(hook.matcher || '')
       .split('|')
@@ -909,12 +1122,33 @@ async function submitHookForm() {
   hookActionMessage.value = ''
 
   try {
-    const result = await window.electronAPI.manageClaudeHook({
-      action: hookEditorMode.value === 'create' ? 'create' : 'update',
-      projectPath: props.projectPath || '',
-      scope: hookForm.value.scope,
-      target: editingHook.value
-        ? {
+    const result = await (normalizedProvider.value === 'codex'
+      ? window.electronAPI.manageCodexHook({
+          action: hookEditorMode.value === 'create' ? 'create' : 'update',
+          projectPath: props.projectPath || '',
+          scope: hookForm.value.scope,
+          target: editingHook.value
+            ? {
+                eventName: editingHook.value.eventName,
+                groupIndex: editingHook.value.groupIndex,
+                hookIndex: editingHook.value.hookIndex
+              }
+            : undefined,
+          payload: {
+            eventName: hookForm.value.eventName,
+            matcher: Array.isArray(hookForm.value.matcherValues) ? hookForm.value.matcherValues.join('|') : '',
+            type: hookForm.value.type,
+            content: hookForm.value.content,
+            async: hookForm.value.async,
+            timeout: hookForm.value.timeout
+          }
+        })
+      : window.electronAPI.manageClaudeHook({
+          action: hookEditorMode.value === 'create' ? 'create' : 'update',
+          projectPath: props.projectPath || '',
+          scope: hookForm.value.scope,
+          target: editingHook.value
+            ? {
             eventName: editingHook.value.eventName,
             groupIndex: editingHook.value.groupIndex,
             hookIndex: editingHook.value.hookIndex
@@ -925,10 +1159,10 @@ async function submitHookForm() {
         matcher: Array.isArray(hookForm.value.matcherValues) ? hookForm.value.matcherValues.join('|') : '',
         type: hookForm.value.type,
         content: hookForm.value.content,
-        async: hookForm.value.async,
-        timeout: hookForm.value.timeout
-      }
-    })
+            async: hookForm.value.async,
+            timeout: hookForm.value.timeout
+          }
+        }))
 
     if (!result?.success) {
       throw new Error(result?.error || '保存 Hook 失败')
@@ -951,16 +1185,27 @@ async function confirmDeleteHook() {
   hookActionMessage.value = ''
 
   try {
-    const result = await window.electronAPI.manageClaudeHook({
-      action: 'delete',
-      projectPath: props.projectPath || '',
-      scope: deletingHook.value.scope,
-      target: {
-        eventName: deletingHook.value.eventName,
-        groupIndex: deletingHook.value.groupIndex,
-        hookIndex: deletingHook.value.hookIndex
-      }
-    })
+    const result = await (normalizedProvider.value === 'codex'
+      ? window.electronAPI.manageCodexHook({
+          action: 'delete',
+          projectPath: props.projectPath || '',
+          scope: deletingHook.value.scope,
+          target: {
+            eventName: deletingHook.value.eventName,
+            groupIndex: deletingHook.value.groupIndex,
+            hookIndex: deletingHook.value.hookIndex
+          }
+        })
+      : window.electronAPI.manageClaudeHook({
+          action: 'delete',
+          projectPath: props.projectPath || '',
+          scope: deletingHook.value.scope,
+          target: {
+            eventName: deletingHook.value.eventName,
+            groupIndex: deletingHook.value.groupIndex,
+            hookIndex: deletingHook.value.hookIndex
+          }
+        }))
 
     if (!result?.success) {
       throw new Error(result?.error || '删除 Hook 失败')
@@ -1001,6 +1246,31 @@ async function handleToggleDisableAllHooks(scope = '', checked = false) {
   }
 }
 
+async function handleToggleCodexHookFeature(scope = '', enabled = false) {
+  if (!scope) return
+  hookScopeToggleBusy.value = scope
+  hookActionError.value = ''
+  hookActionMessage.value = ''
+
+  try {
+    const result = await window.electronAPI.manageCodexHookSettings({
+      projectPath: props.projectPath || '',
+      scope,
+      enabled
+    })
+
+    if (!result?.success) {
+      throw new Error(result?.error || '更新 Hook 开关失败')
+    }
+
+    inspectorData.value = result.data || inspectorData.value
+  } catch (error) {
+    hookActionError.value = error.message || '更新 Hook 开关失败'
+  } finally {
+    hookScopeToggleBusy.value = ''
+  }
+}
+
 async function handleAddMarketplace() {
   const source = marketplaceForm.value.source.trim()
   if (!source) {
@@ -1018,11 +1288,21 @@ async function handleAddMarketplace() {
 
 async function confirmInstallMarketplacePlugin() {
   if (!installingMarketplacePlugin.value) return
-  await handleClaudePluginAction('installPlugin', {
-    pluginId: installingMarketplacePlugin.value.id,
-    scope: pluginInstallForm.value.scope || 'user',
-    successMessage: '插件已安装'
-  })
+  if (normalizedProvider.value === 'codex') {
+    await handleCodexPluginAction('installPlugin', {
+      pluginId: installingMarketplacePlugin.value.pluginId || installingMarketplacePlugin.value.pluginRef || installingMarketplacePlugin.value.id,
+      pluginName: installingMarketplacePlugin.value.pluginName || installingMarketplacePlugin.value.name,
+      marketplacePath: installingMarketplacePlugin.value.marketplacePath || '',
+      scope: pluginInstallForm.value.scope || 'user',
+      successMessage: '插件已安装'
+    })
+  } else {
+    await handleClaudePluginAction('installPlugin', {
+      pluginId: installingMarketplacePlugin.value.id,
+      scope: pluginInstallForm.value.scope || 'user',
+      successMessage: '插件已安装'
+    })
+  }
   closePluginInstallDialog()
 }
 
@@ -1094,14 +1374,24 @@ async function confirmDeleteSubagent() {
   }
 }
 
-onMounted(refreshAll)
+onMounted(() => {
+  pluginActionScope.value = normalizedProvider.value === 'codex' ? 'user' : 'all'
+  refreshAll()
+})
 
 watch(() => props.projectPath, () => {
   selectedHookLocations.value = hookLocationOptions.value.map(option => option.value)
   selectedHookModes.value = hookModeOptions.value.map(option => option.value)
   selectedSubagentSources.value = subagentSourceOptions.value.map(option => option.value)
+  pluginActionScope.value = normalizedProvider.value === 'codex' ? 'user' : 'all'
   selectedMarketplace.value = null
   refreshInspector()
+})
+
+watch(() => normalizedProvider.value, () => {
+  selectedHookLocations.value = hookLocationOptions.value.map(option => option.value)
+  selectedHookModes.value = hookModeOptions.value.map(option => option.value)
+  pluginActionScope.value = normalizedProvider.value === 'codex' ? 'user' : 'all'
 })
 
 watch(() => activeSection.value, (section) => {
@@ -1245,7 +1535,6 @@ watch(() => activeSection.value, (section) => {
                 <div class="panel-header-right hook-header-top">
                   <span class="count-badge">{{ filteredHooks.length }}</span>
                   <IconButton
-                    v-if="normalizedProvider === 'claude'"
                     size="sm"
                     title="添加 Hook"
                     :disabled="hookActionBusy"
@@ -1274,20 +1563,13 @@ watch(() => activeSection.value, (section) => {
                       按主体
                     </button>
                   </div>
-                  <span
-                    v-if="normalizedProvider === 'codex'"
-                    class="status-pill"
-                    :class="{ active: hookFeatureEnabled }"
-                  >
-                    {{ normalizedProvider === 'codex' ? (hookFeatureEnabled ? '已启用' : '未启用') : '' }}
-                  </span>
                 </div>
               </div>
               <div
-                v-if="normalizedProvider === 'claude'"
                 class="hook-header-bottom"
+                :class="{ codex: normalizedProvider === 'codex' }"
               >
-                <div class="hook-disable-bar">
+                <div v-if="normalizedProvider === 'claude'" class="hook-disable-bar">
                   <div class="hook-disable-switches">
                     <div
                       v-for="option in hookDisableScopeOptions"
@@ -1301,6 +1583,37 @@ watch(() => activeSection.value, (section) => {
                           :checked="!disableAllHooksState[option.value]"
                           :disabled="hookScopeToggleBusy === option.value"
                           @change="handleToggleDisableAllHooks(option.value, !$event.target.checked)"
+                        >
+                        <span class="toggle-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="hook-disable-bar codex-feature-bar">
+                  <div class="hook-disable-switches">
+                    <div class="hook-disable-switch-item">
+                      <span class="hook-disable-switch-label">用户</span>
+                      <label class="toggle-switch compact">
+                        <input
+                          type="checkbox"
+                          :checked="hookFeatureState.user"
+                          :disabled="hookScopeToggleBusy === 'user'"
+                          @change="handleToggleCodexHookFeature('user', $event.target.checked)"
+                        >
+                        <span class="toggle-slider"></span>
+                      </label>
+                    </div>
+                    <div
+                      v-if="props.projectPath"
+                      class="hook-disable-switch-item"
+                    >
+                      <span class="hook-disable-switch-label">项目</span>
+                      <label class="toggle-switch compact">
+                        <input
+                          type="checkbox"
+                          :checked="hookFeatureState.project"
+                          :disabled="hookScopeToggleBusy === 'project'"
+                          @change="handleToggleCodexHookFeature('project', $event.target.checked)"
                         >
                         <span class="toggle-slider"></span>
                       </label>
@@ -1597,10 +1910,10 @@ watch(() => activeSection.value, (section) => {
           <div v-if="activeSection === 'plugins'" class="tab-panel plugins-panel">
             <div class="panel-header">
               <div class="hook-filter-bar">
-                <span class="hook-filter-label">作用域</span>
+                <span class="hook-filter-label">{{ normalizedProvider === 'codex' ? '启用状态' : '作用域' }}</span>
                 <div class="hook-filter-options">
                   <button
-                    v-for="option in hookEditableScopeOptions"
+                    v-for="option in pluginScopeOptions"
                     :key="`plugin-scope-${option.value}`"
                     type="button"
                     class="hook-filter-btn"
@@ -1612,7 +1925,7 @@ watch(() => activeSection.value, (section) => {
                 </div>
               </div>
               <div class="panel-header-right">
-                <span class="count-badge">{{ plugins.length }}</span>
+                <span class="count-badge">{{ filteredPlugins.length }}</span>
                 <IconButton
                   size="sm"
                   title="刷新插件"
@@ -1629,6 +1942,7 @@ watch(() => activeSection.value, (section) => {
               </div>
             </div>
             <p v-if="inspectorError" class="error-msg">{{ inspectorError }}</p>
+            <p v-else-if="pluginActionError" class="error-msg">{{ pluginActionError }}</p>
 
             <div v-if="inspectorLoading" class="loading-state">
               <div class="spinner"></div>
@@ -1636,9 +1950,9 @@ watch(() => activeSection.value, (section) => {
             </div>
 
             <template v-else-if="normalizedProvider === 'claude'">
-              <div v-if="plugins.length > 0" class="plugin-list">
+              <div v-if="filteredPlugins.length > 0" class="plugin-list">
                 <div
-                  v-for="plugin in plugins"
+                  v-for="plugin in filteredPlugins"
                   :key="plugin.id"
                   class="plugin-list-card"
                   :class="{ disabled: isPluginDisabled(plugin) }"
@@ -1733,29 +2047,82 @@ watch(() => activeSection.value, (section) => {
               </div>
             </template>
 
-            <div v-else-if="plugins.length > 0" class="plugin-list">
+            <div v-else-if="filteredPlugins.length > 0" class="plugin-list">
               <div
-                v-for="plugin in plugins"
+                v-for="plugin in filteredPlugins"
                 :key="plugin.id"
-                class="plugin-list-card"
+                class="plugin-list-card codex-plugin-list-card"
                 :class="{ disabled: isPluginDisabled(plugin) }"
                 @click="openPluginDetail(plugin)"
-              >
-                <div class="plugin-list-header">
-                  <div class="plugin-list-header-main">
-                    <span class="provider-card-title">{{ plugin.displayName || plugin.name }}</span>
-                    <span v-if="plugin.scope" class="meta-chip plugin-scope-chip">{{ plugin.scope }}</span>
-                    <span v-if="isPluginDisabled(plugin)" class="meta-chip disabled-state-badge">已禁用</span>
+                >
+                  <div class="marketplace-plugin-top">
+                    <img
+                      v-if="plugin.logoPath"
+                      :src="resolvePluginLogoSrc(plugin.logoPath)"
+                      alt=""
+                      class="plugin-avatar marketplace-plugin-avatar"
+                    >
+                    <div v-else class="plugin-avatar plugin-avatar-placeholder marketplace-plugin-avatar">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 4h6v6"/>
+                        <path d="M10 20H4v-6"/>
+                        <path d="M20 10V4h-6"/>
+                        <path d="M4 14v6h6"/>
+                        <path d="M9 9h6v6H9z"/>
+                      </svg>
+                    </div>
+                    <div class="marketplace-plugin-main">
+                      <div class="marketplace-plugin-title-row">
+                        <span class="provider-card-title marketplace-plugin-title">{{ plugin.displayName || plugin.name }}</span>
+                      </div>
+                      <div class="provider-card-badges marketplace-plugin-badges">
+                        <span v-if="plugin.version" class="meta-chip">v{{ plugin.version }}</span>
+                        <span v-if="plugin.developerName" class="meta-chip">作者: {{ plugin.developerName }}</span>
+                        <span v-if="isPluginDisabled(plugin)" class="meta-chip disabled-state-badge">已禁用</span>
+                        <span class="meta-chip">{{ pluginSummary(plugin) }}</span>
+                      </div>
+                    </div>
+                    <div v-if="['user', 'project'].includes(plugin.scope || '')" class="card-actions marketplace-plugin-actions codex-scope-actions">
+                      <IconButton
+                        size="sm"
+                        :title="plugin.enabled ? '禁用插件' : '启用插件'"
+                        :disabled="pluginBusy"
+                        @click.stop="handleCodexPluginAction(plugin.enabled ? 'disablePlugin' : 'enablePlugin', {
+                          pluginId: plugin.pluginId || plugin.pluginRef || plugin.name,
+                          scope: 'user',
+                          successMessage: plugin.enabled ? '插件已禁用' : '插件已启用'
+                        })"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <template v-if="plugin.enabled">
+                            <circle cx="12" cy="12" r="9"/>
+                            <path d="M5.64 18.36L18.36 5.64"/>
+                          </template>
+                          <template v-else>
+                            <path d="M12 2v10"/>
+                            <path d="M18.36 6.64a9 9 0 1 1-12.72 0"/>
+                          </template>
+                        </svg>
+                      </IconButton>
+                      <IconButton
+                        size="sm"
+                        danger
+                        title="卸载插件"
+                        :disabled="pluginBusy"
+                        @click.stop="handleCodexPluginAction('uninstallPlugin', {
+                          pluginId: plugin.pluginId || plugin.pluginRef || plugin.name,
+                          scope: 'user',
+                          successMessage: '插件已卸载'
+                        })"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                      </IconButton>
+                    </div>
                   </div>
-                </div>
-
-                <div class="plugin-list-meta">
-                  <span v-if="plugin.version" class="meta-chip">版本: v{{ plugin.version }}</span>
-                  <span v-if="plugin.scope" class="meta-chip">来源: {{ plugin.scope }}</span>
-                  <span class="meta-chip">{{ pluginSummary(plugin) }}</span>
-                </div>
-
-                <p class="provider-card-desc plugin-list-desc">{{ plugin.description || '暂无描述' }}</p>
+                  <p class="provider-card-desc marketplace-plugin-desc">{{ plugin.description || '暂无描述' }}</p>
               </div>
             </div>
 
@@ -1995,87 +2362,89 @@ watch(() => activeSection.value, (section) => {
                   :key="plugin.id"
                   class="marketplace-plugin-row"
                 >
-                  <div class="marketplace-plugin-main">
-                      <div class="plugin-list-header">
-                        <div class="plugin-list-header-main">
+                  <div class="claude-marketplace-plugin-top">
+                    <div class="marketplace-plugin-main">
+                      <div class="claude-marketplace-plugin-header">
+                        <div class="claude-marketplace-plugin-header-main">
                           <span class="provider-card-title marketplace-plugin-title">{{ plugin.displayName || plugin.name }}</span>
                           <span v-if="plugin.version" class="meta-chip">v{{ plugin.version }}</span>
                           <span v-if="plugin.installed" class="meta-chip active">已安装</span>
                           <span v-if="plugin.source?.repo" class="meta-chip">{{ plugin.source.repo }}</span>
                         </div>
                       </div>
-                      <p class="provider-card-desc plugin-list-desc">{{ plugin.description || '暂无描述' }}</p>
+                      <p class="provider-card-desc claude-marketplace-plugin-desc">{{ plugin.description || '暂无描述' }}</p>
                     </div>
 
-                  <div class="card-actions">
-                    <IconButton
-                      v-if="!plugin.installed"
-                      size="sm"
-                      title="安装插件"
-                      :disabled="pluginBusy"
-                      @click="openPluginInstallDialog(plugin)"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="12" y1="5" x2="12" y2="19"/>
-                        <line x1="5" y1="12" x2="19" y2="12"/>
-                      </svg>
-                    </IconButton>
-                    <template v-else>
+                    <div class="card-actions marketplace-plugin-actions">
                       <IconButton
+                        v-if="!plugin.installed"
                         size="sm"
-                        :title="plugin.enabled ? '禁用插件' : '启用插件'"
+                        title="安装插件"
                         :disabled="pluginBusy"
-                        @click="handleClaudePluginAction(plugin.enabled ? 'disablePlugin' : 'enablePlugin', {
-                          pluginId: plugin.installedPluginId || plugin.id,
-                          scope: plugin.installedScope || getMarketplaceDefaultScope(),
-                          successMessage: plugin.enabled ? '插件已禁用' : '插件已启用'
-                        })"
+                        @click="openPluginInstallDialog(plugin)"
                       >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <template v-if="plugin.enabled">
-                            <circle cx="12" cy="12" r="9"/>
-                            <path d="M5.64 18.36L18.36 5.64"/>
-                          </template>
-                          <template v-else>
-                            <path d="M12 2v10"/>
-                            <path d="M18.36 6.64a9 9 0 1 1-12.72 0"/>
-                          </template>
+                          <line x1="12" y1="5" x2="12" y2="19"/>
+                          <line x1="5" y1="12" x2="19" y2="12"/>
                         </svg>
                       </IconButton>
-                      <IconButton
-                        size="sm"
-                        title="更新插件"
-                        :disabled="pluginBusy"
-                        @click="handleClaudePluginAction('updatePlugin', {
-                          pluginId: plugin.installedPluginId || plugin.id,
-                          scope: plugin.installedScope || getMarketplaceDefaultScope(),
-                          successMessage: '插件已更新'
-                        })"
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <polyline points="23 4 23 10 17 10"/>
-                          <polyline points="1 20 1 14 7 14"/>
-                          <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"/>
-                          <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"/>
-                        </svg>
-                      </IconButton>
-                      <IconButton
-                        size="sm"
-                        danger
-                        title="卸载插件"
-                        :disabled="pluginBusy"
-                        @click="handleClaudePluginAction('uninstallPlugin', {
-                          pluginId: plugin.installedPluginId || plugin.id,
-                          scope: plugin.installedScope || getMarketplaceDefaultScope(),
-                          successMessage: '插件已卸载'
-                        })"
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <polyline points="3 6 5 6 21 6"/>
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                        </svg>
-                      </IconButton>
-                    </template>
+                      <template v-else>
+                        <IconButton
+                          size="sm"
+                          :title="plugin.enabled ? '禁用插件' : '启用插件'"
+                          :disabled="pluginBusy"
+                          @click="handleClaudePluginAction(plugin.enabled ? 'disablePlugin' : 'enablePlugin', {
+                            pluginId: plugin.installedPluginId || plugin.id,
+                            scope: plugin.installedScope || getMarketplaceDefaultScope(),
+                            successMessage: plugin.enabled ? '插件已禁用' : '插件已启用'
+                          })"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <template v-if="plugin.enabled">
+                              <circle cx="12" cy="12" r="9"/>
+                              <path d="M5.64 18.36L18.36 5.64"/>
+                            </template>
+                            <template v-else>
+                              <path d="M12 2v10"/>
+                              <path d="M18.36 6.64a9 9 0 1 1-12.72 0"/>
+                            </template>
+                          </svg>
+                        </IconButton>
+                        <IconButton
+                          size="sm"
+                          title="更新插件"
+                          :disabled="pluginBusy"
+                          @click="handleClaudePluginAction('updatePlugin', {
+                            pluginId: plugin.installedPluginId || plugin.id,
+                            scope: plugin.installedScope || getMarketplaceDefaultScope(),
+                            successMessage: '插件已更新'
+                          })"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <polyline points="1 20 1 14 7 14"/>
+                            <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"/>
+                            <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"/>
+                          </svg>
+                        </IconButton>
+                        <IconButton
+                          size="sm"
+                          danger
+                          title="卸载插件"
+                          :disabled="pluginBusy"
+                          @click="handleClaudePluginAction('uninstallPlugin', {
+                            pluginId: plugin.installedPluginId || plugin.id,
+                            scope: plugin.installedScope || getMarketplaceDefaultScope(),
+                            successMessage: '插件已卸载'
+                          })"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                          </svg>
+                        </IconButton>
+                      </template>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2083,6 +2452,218 @@ watch(() => activeSection.value, (section) => {
               <div v-else class="empty-state">
                 <p>{{ selectedMarketplace ? '当前市场暂无插件' : '暂无插件市场' }}</p>
                 <p class="hint">{{ selectedMarketplace ? '这个市场还没有可展示的插件' : '可以添加 Claude 插件市场并直接在这里安装插件' }}</p>
+              </div>
+            </template>
+          </div>
+
+          <div v-if="activeSection === 'marketplace' && normalizedProvider === 'codex'" class="tab-panel marketplace-panel">
+            <div class="panel-header">
+              <div class="marketplace-header-left">
+                <IconButton
+                  v-if="selectedMarketplace"
+                  size="sm"
+                  title="返回市场列表"
+                  @click="closeMarketplaceDetail"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                </IconButton>
+                <span v-if="selectedMarketplace" class="provider-card-title marketplace-header-title">
+                  {{ selectedMarketplace.name }}
+                </span>
+              </div>
+              <div class="panel-header-right">
+                <template v-if="selectedMarketplace">
+                  <div class="marketplace-controls inline">
+                    <div class="hook-filter-bar">
+                      <div class="hook-filter-options">
+                        <button
+                          type="button"
+                          class="hook-filter-btn"
+                          :class="{ active: codexMarketplaceInstallFilter.includes('installed') }"
+                          @click="toggleCodexMarketplaceInstallFilter('installed')"
+                        >
+                          已安装
+                        </button>
+                        <button
+                          type="button"
+                          class="hook-filter-btn"
+                          :class="{ active: codexMarketplaceInstallFilter.includes('uninstalled') }"
+                          @click="toggleCodexMarketplaceInstallFilter('uninstalled')"
+                        >
+                          未安装
+                        </button>
+                      </div>
+                    </div>
+                    <div class="marketplace-search">
+                      <input
+                        v-model="codexMarketplaceSearch"
+                        type="text"
+                        class="marketplace-search-input"
+                        placeholder="搜索插件名称、描述、开发者..."
+                      >
+                    </div>
+                  </div>
+                </template>
+                <span class="count-badge">{{ selectedMarketplace ? selectedMarketplace.pluginCount : filteredMarketplaces.length }}</span>
+                <IconButton
+                  size="sm"
+                  title="刷新市场"
+                  :disabled="pluginBusy || inspectorLoading"
+                  @click="refreshInspector"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <polyline points="1 20 1 14 7 14"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"/>
+                    <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"/>
+                  </svg>
+                </IconButton>
+              </div>
+            </div>
+
+            <p v-if="inspectorError" class="error-msg">{{ inspectorError }}</p>
+            <p v-else-if="pluginActionError" class="error-msg">{{ pluginActionError }}</p>
+
+            <div v-if="inspectorLoading" class="loading-state">
+              <div class="spinner"></div>
+              <p>读取插件市场中...</p>
+            </div>
+
+            <template v-else>
+              <div v-if="!selectedMarketplace && filteredMarketplaces.length > 0" class="marketplace-list">
+                <div
+                  v-for="marketplace in filteredMarketplaces"
+                  :key="marketplace.id"
+                  class="marketplace-card"
+                  @click="openMarketplaceDetail(marketplace)"
+                >
+                  <div class="marketplace-header">
+                    <div class="marketplace-main">
+                      <div class="plugin-list-header-main">
+                        <div class="plugin-avatar plugin-avatar-placeholder">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 3H5a2 2 0 0 0-2 2v4"/>
+                            <path d="M15 3h4a2 2 0 0 1 2 2v4"/>
+                            <path d="M21 15v4a2 2 0 0 1-2 2h-4"/>
+                            <path d="M3 15v4a2 2 0 0 0 2 2h4"/>
+                            <path d="M9 9h6v6H9z"/>
+                          </svg>
+                        </div>
+                        <span class="provider-card-title">{{ marketplace.name }}</span>
+                        <span class="meta-chip">{{ marketplace.pluginCount }} 个插件</span>
+                      </div>
+                      <div class="plugin-list-meta">
+                        <span class="meta-chip">来源: {{ marketplace.sourceType || 'catalog' }}</span>
+                      </div>
+                      <p class="provider-card-desc">{{ marketplace.description || '来自 Codex 本地 catalog / cache 的可浏览插件集合' }}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <template v-else-if="selectedMarketplace">
+                <div class="marketplace-plugin-list">
+                <div
+                  v-for="plugin in filteredCodexMarketplacePlugins"
+                  :key="plugin.id"
+                  class="marketplace-plugin-row"
+                  @click="openPluginDetail(plugin)"
+                >
+                  <div class="marketplace-plugin-top">
+                    <img
+                      v-if="plugin.logoPath"
+                      :src="resolvePluginLogoSrc(plugin.logoPath)"
+                      alt=""
+                      class="plugin-avatar marketplace-plugin-avatar"
+                    >
+                    <div v-else class="plugin-avatar plugin-avatar-placeholder marketplace-plugin-avatar">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 4h6v6"/>
+                        <path d="M10 20H4v-6"/>
+                        <path d="M20 10V4h-6"/>
+                        <path d="M4 14v6h6"/>
+                        <path d="M9 9h6v6H9z"/>
+                      </svg>
+                    </div>
+                    <div class="marketplace-plugin-main">
+                      <div class="marketplace-plugin-title-row">
+                        <span class="provider-card-title marketplace-plugin-title">{{ plugin.displayName || plugin.name }}</span>
+                        <span v-if="codexMarketplacePluginState(plugin).installed" class="meta-chip active">已安装</span>
+                      </div>
+                      <div class="provider-card-badges marketplace-plugin-badges">
+                        <span v-if="plugin.version" class="meta-chip">v{{ plugin.version }}</span>
+                        <span v-if="plugin.developerName" class="meta-chip">作者: {{ plugin.developerName }}</span>
+                        <span v-if="codexMarketplacePluginState(plugin).installed && !codexMarketplacePluginState(plugin).enabled" class="meta-chip disabled-state-badge">已禁用</span>
+                        <span class="meta-chip">{{ pluginSummary(plugin) }}</span>
+                      </div>
+                    </div>
+                    <div class="card-actions marketplace-plugin-actions">
+                        <IconButton
+                          v-if="!codexMarketplacePluginState(plugin).installed"
+                          size="sm"
+                          title="安装插件"
+                          :disabled="pluginBusy"
+                          @click.stop="openPluginInstallDialog(plugin)"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19"/>
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                          </svg>
+                        </IconButton>
+                        <template v-else>
+                          <IconButton
+                            size="sm"
+                            :title="codexMarketplacePluginState(plugin).enabled ? '禁用插件' : '启用插件'"
+                            :disabled="pluginBusy"
+                            @click.stop="handleCodexPluginAction(codexMarketplacePluginState(plugin).enabled ? 'disablePlugin' : 'enablePlugin', {
+                              pluginId: plugin.pluginId || plugin.pluginRef || plugin.id,
+                              scope: 'user',
+                              successMessage: codexMarketplacePluginState(plugin).enabled ? '插件已禁用' : '插件已启用'
+                            })"
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <template v-if="codexMarketplacePluginState(plugin).enabled">
+                                <circle cx="12" cy="12" r="9"/>
+                                <path d="M5.64 18.36L18.36 5.64"/>
+                              </template>
+                              <template v-else>
+                                <path d="M12 2v10"/>
+                                <path d="M18.36 6.64a9 9 0 1 1-12.72 0"/>
+                              </template>
+                            </svg>
+                          </IconButton>
+                          <IconButton
+                            size="sm"
+                            danger
+                            title="卸载插件"
+                            :disabled="pluginBusy"
+                            @click.stop="handleCodexPluginAction('uninstallPlugin', {
+                              pluginId: plugin.pluginId || plugin.pluginRef || plugin.id,
+                              scope: codexMarketplacePluginState(plugin).scope || pluginInstallForm.scope || 'user',
+                              successMessage: '插件已卸载'
+                            })"
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <polyline points="3 6 5 6 21 6"/>
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            </svg>
+                          </IconButton>
+                        </template>
+                    </div>
+                  </div>
+                  <p class="provider-card-desc marketplace-plugin-desc">{{ plugin.description || '暂无描述' }}</p>
+                </div>
+                </div>
+                <div v-if="filteredCodexMarketplacePlugins.length === 0" class="empty-state compact">
+                  <p>没有符合条件的插件</p>
+                </div>
+              </template>
+
+              <div v-else class="empty-state">
+                <p>暂无可展示的插件市场</p>
+                <p class="hint">当前没有从 Codex 本地 catalog / cache 解析到市场数据</p>
               </div>
             </template>
           </div>
@@ -2242,150 +2823,258 @@ watch(() => activeSection.value, (section) => {
             width="760px"
             @close="closePluginDetail"
           >
+            <template v-if="normalizedProvider === 'codex' && selectedPlugin" #header>
+              <div class="plugin-detail-dialog-title">
+                <img
+                  v-if="selectedPlugin.logoPath"
+                  :src="resolvePluginLogoSrc(selectedPlugin.logoPath)"
+                  alt=""
+                  class="plugin-detail-dialog-avatar"
+                >
+                <div v-else class="plugin-avatar plugin-avatar-placeholder plugin-detail-dialog-avatar">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 4h6v6"/>
+                    <path d="M10 20H4v-6"/>
+                    <path d="M20 10V4h-6"/>
+                    <path d="M4 14v6h6"/>
+                    <path d="M9 9h6v6H9z"/>
+                  </svg>
+                </div>
+                <span class="plugin-detail-dialog-title-text">
+                  {{ selectedPlugin.displayName || selectedPlugin.name || '插件详情' }}
+                </span>
+              </div>
+            </template>
             <div v-if="selectedPlugin" class="plugin-detail">
               <div class="plugin-detail-meta">
-                <span v-if="selectedPlugin.scope" class="meta-chip plugin-scope-chip">{{ selectedPlugin.scope }}</span>
                 <span v-if="isPluginDisabled(selectedPlugin)" class="meta-chip disabled-state-badge">已禁用</span>
                 <span v-if="selectedPlugin.version" class="meta-chip">版本: v{{ selectedPlugin.version }}</span>
                 <span class="meta-chip">{{ pluginSummary(selectedPlugin) }}</span>
               </div>
 
-              <p v-if="selectedPlugin.description" class="provider-card-desc plugin-detail-desc">{{ selectedPlugin.description }}</p>
+              <p
+                v-if="(normalizedProvider === 'codex' ? (selectedPlugin.longDescription || selectedPlugin.description) : selectedPlugin.description)"
+                class="provider-card-desc plugin-detail-desc"
+              >
+                {{ normalizedProvider === 'codex' ? (selectedPlugin.longDescription || selectedPlugin.description) : selectedPlugin.description }}
+              </p>
 
-              <div class="detail-tabs">
-                <button
-                  v-for="tab in pluginDetailTabs(selectedPlugin)"
-                  :key="`plugin-detail-${tab.key}`"
-                  type="button"
-                  class="detail-tab"
-                  :class="{ active: pluginDetailTab === tab.key }"
-                  @click="pluginDetailTab = tab.key"
-                >
-                  {{ tab.label }}
-                  <span class="count-badge small">{{ tab.count }}</span>
-                </button>
-              </div>
-
-              <div v-if="pluginDetailTab === 'skills'" class="plugin-detail-list">
-                <div v-if="pluginDetailItems(selectedPlugin, 'skills').length > 0">
-                  <div
-                    v-for="skill in pluginDetailItems(selectedPlugin, 'skills')"
-                    :key="skill.id"
-                    class="plugin-detail-item"
-                    @click="openPluginSkillDetail(skill)"
-                  >
-                    <div class="plugin-detail-item-title">{{ skill.name }}</div>
-                    <p class="plugin-detail-item-desc">{{ skill.description || '暂无描述' }}</p>
-                  </div>
-                </div>
-                <div v-else class="empty-state compact">
-                  <p>暂无技能内容</p>
-                </div>
-              </div>
-
-              <div v-else-if="pluginDetailTab === 'hooks'" class="plugin-detail-list">
-                <div v-if="pluginDetailItems(selectedPlugin, 'hooks').length > 0">
-                  <div
-                    v-for="hook in pluginDetailItems(selectedPlugin, 'hooks')"
-                    :key="hook.id"
-                    class="hook-entry-card"
-                  >
-                    <div class="hook-entry-meta-row compact left-aligned">
-                      <span class="hook-entry-heading">{{ hook.pluginName || hook.eventName }}</span>
-                    </div>
-                    <div class="hook-inline-row">
-                      <span class="hook-field-label">Matcher:</span>
-                      <div class="provider-card-badges">
-                        <span
-                          v-for="token in String(hook.matcher || '默认匹配').split('|').filter(Boolean)"
-                          :key="`${hook.id}-detail-matcher-${token}`"
-                          class="source-badge"
-                        >
-                          {{ token }}
-                        </span>
-                      </div>
-                    </div>
-                    <div class="hook-inline-row command">
-                      <span class="hook-field-label">{{ getHookContentLabel(hook) }}:</span>
-                      <div class="provider-card-badges inline hook-command-badges">
-                        <span class="source-badge">{{ hook.async ? 'ASYNC' : 'SYNC' }}</span>
-                      </div>
-                      <div class="hook-command-value">{{ hook.summary || '暂无内容' }}</div>
-                    </div>
-                  </div>
-                </div>
-                <div v-else class="empty-state compact">
-                  <p>暂无 Hook 内容</p>
-                </div>
-              </div>
-
-              <div v-else-if="pluginDetailTab === 'mcp'" class="plugin-detail-list">
-                <div v-if="pluginDetailItems(selectedPlugin, 'mcp').length > 0">
-                  <div
-                    v-for="mcp in pluginDetailItems(selectedPlugin, 'mcp')"
-                    :key="mcp.id"
-                    class="plugin-detail-mcp-card"
-                    :class="{ disabled: mcp.pluginEnabled === false }"
-                  >
-                    <div class="plugin-detail-mcp-header">
-                      <div class="plugin-list-header-main">
-                        <span class="plugin-detail-mcp-name">{{ mcp.title || mcp.name }}</span>
-                        <span v-if="mcp.transport" class="meta-chip plugin-detail-inline-chip">{{ mcp.transport }}</span>
-                      </div>
-                      <div class="plugin-detail-mcp-badges">
-                        <span v-if="mcp.pluginEnabled === false" class="plugin-detail-source-badge disabled-state-badge">已禁用</span>
-                        <span v-if="mcp.version" class="version-badge">v{{ mcp.version }}</span>
-                      </div>
-                    </div>
-                    <p class="plugin-detail-mcp-desc">{{ mcp.description || '暂无描述' }}</p>
-                  </div>
-                </div>
-                <div v-else class="empty-state compact">
-                  <p>暂无 MCP 内容</p>
-                </div>
-              </div>
-
-              <div v-else-if="pluginDetailTab === 'agents'" class="plugin-detail-list">
-                <div v-if="pluginDetailItems(selectedPlugin, 'agents').length > 0">
-                  <div
-                    v-for="agent in pluginDetailItems(selectedPlugin, 'agents')"
-                    :key="agent.id"
-                    class="plugin-detail-item"
-                    @click="openPluginAgentDetail(agent)"
+              <template v-if="normalizedProvider === 'codex'">
+                <div class="plugin-detail-section">
+                  <div class="plugin-detail-section-title">包含</div>
+                  <div v-if="codexPluginIncludedSections(selectedPlugin).length > 0" class="plugin-detail-included">
+                    <div
+                      v-for="section in codexPluginIncludedSections(selectedPlugin)"
+                      :key="`codex-detail-${section.key}`"
+                      class="plugin-detail-included-group"
                     >
-                    <div class="plugin-detail-item-title-row plugin-agent-title-row">
-                      <div class="plugin-list-header-main">
-                        <div class="plugin-detail-item-title">{{ agent.title || agent.name }}</div>
+                      <div class="plugin-detail-included-title">{{ section.label }}</div>
+                      <div class="plugin-detail-list">
+                        <div
+                          v-for="item in section.items"
+                          :key="item.id"
+                          class="plugin-detail-item"
+                          @click="section.key === 'skills' ? openPluginSkillDetail(item) : undefined"
+                        >
+                          <div class="plugin-detail-item-title-row">
+                            <div class="plugin-detail-item-title">
+                              {{ item.title || item.name }}
+                            </div>
+                            <span v-if="section.key === 'mcp' && item.transport" class="meta-chip plugin-detail-inline-chip">
+                              {{ item.transport }}
+                            </span>
+                          </div>
+                          <p class="plugin-detail-item-desc">{{ item.description || '暂无描述' }}</p>
+                        </div>
                       </div>
                     </div>
-                    <div class="subagent-item-body plugin-agent-item-body">
-                      <p class="plugin-detail-item-desc">
-                        <span class="subagent-field-label">description:</span>
-                        {{ agent.description || '暂无描述' }}
-                      </p>
-                      <p v-if="agent.tools?.length" class="plugin-detail-item-desc">
-                        <span class="subagent-field-label">tools:</span>
-                        {{ agent.tools.join(', ') }}
-                      </p>
-                      <p v-if="agent.model" class="plugin-detail-item-desc">
-                        <span class="subagent-field-label">model:</span>
-                        {{ agent.model }}
-                      </p>
-                      <p v-if="agent.permissionMode" class="plugin-detail-item-desc">
-                        <span class="subagent-field-label">permissionMode:</span>
-                        {{ agent.permissionMode }}
-                      </p>
-                      <p v-if="agent.skills?.length" class="plugin-detail-item-desc">
-                        <span class="subagent-field-label">skills:</span>
-                        {{ agent.skills.join(', ') }}
-                      </p>
+                  </div>
+                  <div v-else class="empty-state compact">
+                    <p>暂无可展示内容</p>
+                  </div>
+                </div>
+
+                <div v-if="codexPluginInfoRows(selectedPlugin).length > 0" class="plugin-detail-section">
+                  <div class="plugin-detail-section-title">信息</div>
+                  <div class="plugin-detail-info-table">
+                    <div
+                      v-for="row in codexPluginInfoRows(selectedPlugin)"
+                      :key="`codex-info-${row.key}`"
+                      class="plugin-detail-info-row"
+                    >
+                      <div class="plugin-detail-info-label">{{ row.label }}</div>
+                      <div class="plugin-detail-info-value">{{ row.value }}</div>
                     </div>
                   </div>
                 </div>
-                <div v-else class="empty-state compact">
-                  <p>暂无 Agent 内容</p>
+              </template>
+
+              <template v-else>
+                <div class="detail-tabs">
+                  <button
+                    v-for="tab in pluginDetailTabs(selectedPlugin)"
+                    :key="`plugin-detail-${tab.key}`"
+                    type="button"
+                    class="detail-tab"
+                    :class="{ active: pluginDetailTab === tab.key }"
+                    @click="pluginDetailTab = tab.key"
+                  >
+                    {{ tab.label }}
+                    <span class="count-badge small">{{ tab.count }}</span>
+                  </button>
                 </div>
-              </div>
+
+                <div v-if="pluginDetailTab === 'skills'" class="plugin-detail-list">
+                  <div v-if="pluginDetailItems(selectedPlugin, 'skills').length > 0">
+                    <div
+                      v-for="skill in pluginDetailItems(selectedPlugin, 'skills')"
+                      :key="skill.id"
+                      class="plugin-detail-item"
+                      @click="openPluginSkillDetail(skill)"
+                    >
+                      <div class="plugin-detail-item-title">{{ skill.name }}</div>
+                      <p class="plugin-detail-item-desc">{{ skill.description || '暂无描述' }}</p>
+                    </div>
+                  </div>
+                  <div v-else class="empty-state compact">
+                    <p>暂无技能内容</p>
+                  </div>
+                </div>
+
+                <div v-else-if="pluginDetailTab === 'apps'" class="plugin-detail-list">
+                  <div v-if="pluginDetailItems(selectedPlugin, 'apps').length > 0">
+                    <div
+                      v-for="app in pluginDetailItems(selectedPlugin, 'apps')"
+                      :key="app.id"
+                      class="plugin-detail-item"
+                    >
+                      <div class="plugin-detail-item-title-row plugin-agent-title-row">
+                        <div class="plugin-list-header-main">
+                          <div class="plugin-detail-item-title">{{ app.name }}</div>
+                          <span v-if="app.needsAuth" class="meta-chip">需要授权</span>
+                        </div>
+                      </div>
+                      <div class="subagent-item-body plugin-agent-item-body">
+                        <p class="plugin-detail-item-desc">
+                          <span class="subagent-field-label">description:</span>
+                          {{ app.description || '暂无描述' }}
+                        </p>
+                        <p v-if="app.installUrl" class="plugin-detail-item-desc">
+                          <span class="subagent-field-label">installUrl:</span>
+                          {{ app.installUrl }}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="empty-state compact">
+                    <p>暂无应用内容</p>
+                  </div>
+                </div>
+
+                <div v-else-if="pluginDetailTab === 'hooks'" class="plugin-detail-list">
+                  <div v-if="pluginDetailItems(selectedPlugin, 'hooks').length > 0">
+                    <div
+                      v-for="hook in pluginDetailItems(selectedPlugin, 'hooks')"
+                      :key="hook.id"
+                      class="hook-entry-card"
+                    >
+                      <div class="hook-entry-meta-row compact left-aligned">
+                        <span class="hook-entry-heading">{{ hook.pluginName || hook.eventName }}</span>
+                      </div>
+                      <div class="hook-inline-row">
+                        <span class="hook-field-label">Matcher:</span>
+                        <div class="provider-card-badges">
+                          <span
+                            v-for="token in String(hook.matcher || '默认匹配').split('|').filter(Boolean)"
+                            :key="`${hook.id}-detail-matcher-${token}`"
+                            class="source-badge"
+                          >
+                            {{ token }}
+                          </span>
+                        </div>
+                      </div>
+                      <div class="hook-inline-row command">
+                        <span class="hook-field-label">{{ getHookContentLabel(hook) }}:</span>
+                        <div class="provider-card-badges inline hook-command-badges">
+                          <span class="source-badge">{{ hook.async ? 'ASYNC' : 'SYNC' }}</span>
+                        </div>
+                        <div class="hook-command-value">{{ hook.summary || '暂无内容' }}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="empty-state compact">
+                    <p>暂无 Hook 内容</p>
+                  </div>
+                </div>
+
+                <div v-else-if="pluginDetailTab === 'mcp'" class="plugin-detail-list">
+                  <div v-if="pluginDetailItems(selectedPlugin, 'mcp').length > 0">
+                    <div
+                      v-for="mcp in pluginDetailItems(selectedPlugin, 'mcp')"
+                      :key="mcp.id"
+                      class="plugin-detail-mcp-card"
+                      :class="{ disabled: mcp.pluginEnabled === false }"
+                    >
+                      <div class="plugin-detail-mcp-header">
+                        <div class="plugin-list-header-main">
+                          <span class="plugin-detail-mcp-name">{{ mcp.title || mcp.name }}</span>
+                          <span v-if="mcp.transport" class="meta-chip plugin-detail-inline-chip">{{ mcp.transport }}</span>
+                        </div>
+                        <div class="plugin-detail-mcp-badges">
+                          <span v-if="mcp.pluginEnabled === false" class="plugin-detail-source-badge disabled-state-badge">已禁用</span>
+                          <span v-if="mcp.version" class="version-badge">v{{ mcp.version }}</span>
+                        </div>
+                      </div>
+                      <p class="plugin-detail-mcp-desc">{{ mcp.description || '暂无描述' }}</p>
+                    </div>
+                  </div>
+                  <div v-else class="empty-state compact">
+                    <p>暂无 MCP 内容</p>
+                  </div>
+                </div>
+
+                <div v-else-if="pluginDetailTab === 'agents'" class="plugin-detail-list">
+                  <div v-if="pluginDetailItems(selectedPlugin, 'agents').length > 0">
+                    <div
+                      v-for="agent in pluginDetailItems(selectedPlugin, 'agents')"
+                      :key="agent.id"
+                      class="plugin-detail-item"
+                      @click="openPluginAgentDetail(agent)"
+                      >
+                      <div class="plugin-detail-item-title-row plugin-agent-title-row">
+                        <div class="plugin-list-header-main">
+                          <div class="plugin-detail-item-title">{{ agent.title || agent.name }}</div>
+                        </div>
+                      </div>
+                      <div class="subagent-item-body plugin-agent-item-body">
+                        <p class="plugin-detail-item-desc">
+                          <span class="subagent-field-label">description:</span>
+                          {{ agent.description || '暂无描述' }}
+                        </p>
+                        <p v-if="agent.tools?.length" class="plugin-detail-item-desc">
+                          <span class="subagent-field-label">tools:</span>
+                          {{ agent.tools.join(', ') }}
+                        </p>
+                        <p v-if="agent.model" class="plugin-detail-item-desc">
+                          <span class="subagent-field-label">model:</span>
+                          {{ agent.model }}
+                        </p>
+                        <p v-if="agent.permissionMode" class="plugin-detail-item-desc">
+                          <span class="subagent-field-label">permissionMode:</span>
+                          {{ agent.permissionMode }}
+                        </p>
+                        <p v-if="agent.skills?.length" class="plugin-detail-item-desc">
+                          <span class="subagent-field-label">skills:</span>
+                          {{ agent.skills.join(', ') }}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="empty-state compact">
+                    <p>暂无 Agent 内容</p>
+                  </div>
+                </div>
+              </template>
             </div>
           </BaseDialog>
 
@@ -2668,6 +3357,10 @@ watch(() => activeSection.value, (section) => {
   border: none;
   border-radius: 0;
   padding: 0;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .hooks-panel {
@@ -3346,6 +4039,13 @@ watch(() => activeSection.value, (section) => {
   cursor: pointer;
 }
 
+.codex-plugin-list-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+}
+
 .plugin-list-card.disabled {
   border-color: rgba(249, 115, 22, 0.3);
   background: #232329;
@@ -3390,6 +4090,23 @@ watch(() => activeSection.value, (section) => {
   flex-wrap: wrap;
 }
 
+.plugin-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid #3F3F46;
+  background: #232329;
+}
+
+.plugin-avatar-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #A1A1AA;
+}
+
 .plugin-list-meta {
   display: flex;
   align-items: center;
@@ -3407,12 +4124,35 @@ watch(() => activeSection.value, (section) => {
   line-height: 1.2;
 }
 
+.codex-plugin-list-card .meta-chip {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 .plugin-detail {
   display: flex;
   flex-direction: column;
   gap: 14px;
   height: 560px;
   min-height: 560px;
+}
+
+.plugin-detail-dialog-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.plugin-detail-dialog-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.plugin-detail-dialog-title-text {
+  min-width: 0;
 }
 
 .plugin-detail-meta {
@@ -3424,6 +4164,72 @@ watch(() => activeSection.value, (section) => {
 
 .plugin-detail-desc {
   margin: 0;
+}
+
+.plugin-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.plugin-detail-section + .plugin-detail-section {
+  margin-top: 20px;
+}
+
+.plugin-detail-section-title {
+  color: #F4F4F5;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.plugin-detail-included {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.plugin-detail-included-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plugin-detail-included-title {
+  color: #A1A1AA;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plugin-detail-info-table {
+  border: 1px solid #3F3F46;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #232329;
+}
+
+.plugin-detail-info-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 14px 16px;
+}
+
+.plugin-detail-info-row + .plugin-detail-info-row {
+  border-top: 1px solid #3F3F46;
+}
+
+.plugin-detail-info-label {
+  color: #A1A1AA;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plugin-detail-info-value {
+  color: #F4F4F5;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
 }
 
 .detail-tabs {
@@ -3660,6 +4466,11 @@ watch(() => activeSection.value, (section) => {
   gap: 8px;
 }
 
+.codex-scope-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .plugin-toolbar {
   justify-content: space-between;
   margin-bottom: 14px;
@@ -3772,21 +4583,145 @@ watch(() => activeSection.value, (section) => {
   padding-right: 4px;
 }
 
-.marketplace-plugin-row {
+.marketplace-controls {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
+  margin-top: 14px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.marketplace-controls.inline {
+  margin: 0;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.marketplace-controls.inline .hook-filter-options {
+  flex-wrap: nowrap;
+}
+
+.marketplace-controls.inline .hook-filter-btn {
+  white-space: nowrap;
+}
+
+.marketplace-controls.inline .hook-filter-bar {
+  flex-shrink: 0;
+}
+
+.marketplace-search {
+  min-width: 180px;
+  flex: 1;
+  max-width: 260px;
+}
+
+.marketplace-controls.inline .marketplace-search {
+  flex: 0 0 200px;
+  min-width: 200px;
+  max-width: 200px;
+}
+
+.marketplace-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #3F3F46;
+  background: #232329;
+  color: #F4F4F5;
+  outline: none;
+  font-size: 12px;
+}
+
+.marketplace-search-input::placeholder {
+  color: #71717A;
+}
+
+.marketplace-plugin-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding: 14px;
+  cursor: pointer;
+}
+
+.claude-marketplace-plugin-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.claude-marketplace-plugin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.claude-marketplace-plugin-header-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.claude-marketplace-plugin-desc {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.marketplace-plugin-top {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.marketplace-plugin-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .marketplace-plugin-main {
   min-width: 0;
-  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.marketplace-plugin-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .marketplace-plugin-title {
   font-size: 15px;
+}
+
+.marketplace-plugin-actions {
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+
+.marketplace-plugin-badges {
+  gap: 6px;
+  align-items: center;
+}
+
+.marketplace-plugin-desc {
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-left: 0;
 }
 
 .subagent-item-body {

@@ -3,12 +3,14 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { execFile, fork, spawn } = require('child_process')
+const yaml = require('js-yaml')
 const { SessionManager } = require('./session/session-manager')
 const logger = require('./logger')
 const { encodeProjectPath, decodeProjectPath } = require('./project-paths')
 const appService = require('./services/app-service')
 const projectService = require('./services/project-service')
 const attachmentService = require('./services/attachment-service')
+const providerInspector = require('./services/provider-inspector')
 const historyManager = require('./storage/history-manager')
 const processRegistry = require('./services/process-registry')
 
@@ -779,6 +781,44 @@ function execFileAsync(command, args = [], options = {}) {
       resolve({ stdout, stderr })
     })
   })
+}
+
+function buildClaudePluginCommand(options = {}) {
+  const action = options.action || ''
+  const scope = options.scope || ''
+  const pluginId = options.pluginId || ''
+  const marketplaceName = options.marketplaceName || ''
+  const source = options.source || ''
+
+  switch (action) {
+    case 'installPlugin':
+      if (!pluginId) throw new Error('缺少插件标识')
+      return ['plugin', 'install', pluginId, ...(scope ? ['--scope', scope] : [])]
+    case 'uninstallPlugin':
+      if (!pluginId) throw new Error('缺少插件标识')
+      return ['plugin', 'uninstall', pluginId, ...(scope ? ['--scope', scope] : [])]
+    case 'enablePlugin':
+      if (!pluginId) throw new Error('缺少插件标识')
+      return ['plugin', 'enable', pluginId, ...(scope ? ['--scope', scope] : [])]
+    case 'disablePlugin':
+      if (!pluginId) throw new Error('缺少插件标识')
+      return ['plugin', 'disable', pluginId, ...(scope ? ['--scope', scope] : [])]
+    case 'updatePlugin':
+      if (!pluginId) throw new Error('缺少插件标识')
+      return ['plugin', 'update', pluginId, ...(scope ? ['--scope', scope] : [])]
+    case 'addMarketplace':
+      if (!source) throw new Error('缺少市场来源')
+      return ['plugin', 'marketplace', 'add', source, ...(scope ? ['--scope', scope] : [])]
+    case 'removeMarketplace':
+      if (!marketplaceName) throw new Error('缺少市场名称')
+      return ['plugin', 'marketplace', 'remove', marketplaceName]
+    case 'updateMarketplace':
+      return marketplaceName
+        ? ['plugin', 'marketplace', 'update', marketplaceName]
+        : ['plugin', 'marketplace', 'update']
+    default:
+      throw new Error('不支持的 Claude 插件操作')
+  }
 }
 
 function normalizeProcessName(command = '') {
@@ -2847,6 +2887,122 @@ ipcMain.handle('update-claude-settings', async (event, { updates, clearMappings 
   }
 })
 
+ipcMain.handle('manage-claude-hook', async (event, options = {}) => {
+  try {
+    const action = options?.action || ''
+    const scope = options?.scope || 'user'
+    const projectPath = options?.projectPath || ''
+    const settingsPath = getClaudeHookSettingsPath(scope, projectPath)
+    const existingSettings = readJsonFileSafe(settingsPath, {})
+    let nextSettings = existingSettings
+
+    if (action === 'create') {
+      nextSettings = appendClaudeHook(existingSettings, options.payload || {})
+    } else if (action === 'update') {
+      nextSettings = removeClaudeHook(existingSettings, options.target || {})
+      nextSettings = appendClaudeHook(nextSettings, options.payload || {})
+    } else if (action === 'delete') {
+      nextSettings = removeClaudeHook(existingSettings, options.target || {})
+    } else {
+      throw new Error('无效的 Hook 操作')
+    }
+
+    ensureParentDir(settingsPath)
+    fs.writeFileSync(settingsPath, JSON.stringify(nextSettings, null, 2), 'utf-8')
+
+    return {
+      success: true,
+      settingsPath,
+      data: providerInspector.inspectProviderSetup({
+        provider: 'claude',
+        projectPath
+      })
+    }
+  } catch (error) {
+    logger.error('[ClaudeHook] Failed to manage Claude hook', {
+      action: options?.action || '',
+      scope: options?.scope || '',
+      error: error.message
+    })
+    return { success: false, error: error.message || 'Hook 操作失败' }
+  }
+})
+
+ipcMain.handle('manage-claude-hook-settings', async (event, options = {}) => {
+  try {
+    const scope = options?.scope || 'user'
+    const projectPath = options?.projectPath || ''
+    const settingsPath = getClaudeHookSettingsPath(scope, projectPath)
+    const existingSettings = readJsonFileSafe(settingsPath, {})
+    const nextSettings = existingSettings && typeof existingSettings === 'object'
+      ? { ...existingSettings }
+      : {}
+
+    nextSettings.disableAllHooks = options?.disableAllHooks === true
+
+    ensureParentDir(settingsPath)
+    fs.writeFileSync(settingsPath, JSON.stringify(nextSettings, null, 2), 'utf-8')
+
+    return {
+      success: true,
+      settingsPath,
+      data: providerInspector.inspectProviderSetup({
+        provider: 'claude',
+        projectPath
+      })
+    }
+  } catch (error) {
+    logger.error('[ClaudeHookSettings] Failed to update Claude hook settings', {
+      scope: options?.scope || '',
+      error: error.message
+    })
+    return { success: false, error: error.message || 'Hook 设置更新失败' }
+  }
+})
+
+ipcMain.handle('manage-claude-subagent', async (event, options = {}) => {
+  try {
+    const action = options?.action || ''
+    const scope = options?.scope || 'user'
+    const projectPath = options?.projectPath || ''
+
+    if (!['create', 'update', 'delete'].includes(action)) {
+      throw new Error('无效的 SubAgent 操作')
+    }
+
+    if (action === 'delete') {
+      const targetPath = resolveClaudeSubagentPath(scope, projectPath, options?.target?.name || '', options?.target?.path || '')
+      if (!targetPath || !fs.existsSync(targetPath)) {
+        throw new Error('未找到目标 SubAgent')
+      }
+      fs.unlinkSync(targetPath)
+    } else {
+      const payload = options?.payload || {}
+      const targetPath = action === 'update'
+        ? resolveClaudeSubagentPath(scope, projectPath, options?.target?.name || '', options?.target?.path || '')
+        : buildClaudeSubagentPath(scope, projectPath, payload.name || '')
+      const nextContent = buildClaudeSubagentMarkdown(payload)
+      ensureParentDir(targetPath)
+      fs.writeFileSync(targetPath, nextContent, 'utf-8')
+    }
+
+    return {
+      success: true,
+      data: providerInspector.inspectProviderSetup({
+        provider: 'claude',
+        projectPath
+      })
+    }
+  } catch (error) {
+    logger.error('[ClaudeSubAgent] Failed to manage Claude subagent', {
+      action: options?.action || '',
+      scope: options?.scope || '',
+      error: error.message
+    })
+    return { success: false, error: error.message || 'SubAgent 操作失败' }
+  }
+})
+
 ipcMain.handle('list-claude-models', async (event, options) => {
   try {
     const result = await appService.listClaudeModels(options || {})
@@ -2859,6 +3015,189 @@ ipcMain.handle('list-claude-models', async (event, options) => {
 
 function getCodexConfigPath() {
   return path.join(os.homedir(), '.codex', 'config.toml')
+}
+
+function getClaudeSubagentDir(scope = 'user', projectPath = '') {
+  if (scope === 'project') {
+    if (!projectPath) throw new Error('缺少项目路径')
+    return path.join(projectPath, '.claude', 'agents')
+  }
+  return path.join(os.homedir(), '.claude', 'agents')
+}
+
+function slugifySubagentName(name = '') {
+  const value = String(name || '').trim()
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  return slug || 'subagent'
+}
+
+function buildClaudeSubagentPath(scope = 'user', projectPath = '', name = '') {
+  const dir = getClaudeSubagentDir(scope, projectPath)
+  return path.join(dir, `${slugifySubagentName(name)}.md`)
+}
+
+function resolveClaudeSubagentPath(scope = 'user', projectPath = '', name = '', currentPath = '') {
+  if (currentPath) return currentPath
+  return buildClaudeSubagentPath(scope, projectPath, name)
+}
+
+function buildClaudeSubagentMarkdown(payload = {}) {
+  const name = String(payload.name || '').trim()
+  const description = String(payload.description || '').trim()
+  const model = String(payload.model || '').trim()
+  const prompt = String(payload.prompt || '').trim()
+  const tools = Array.isArray(payload.tools)
+    ? payload.tools.map(item => String(item || '').trim()).filter(Boolean)
+    : []
+
+  if (!name) throw new Error('缺少 SubAgent 名称')
+  if (!description) throw new Error('缺少 SubAgent 描述')
+  if (!prompt) throw new Error('缺少 SubAgent 提示词')
+
+  const frontmatter = {
+    name,
+    description
+  }
+  if (model) frontmatter.model = model
+  if (tools.length > 0) frontmatter.tools = tools
+
+  const yamlText = yaml.dump(frontmatter, {
+    lineWidth: -1,
+    noRefs: true
+  }).trim()
+
+  return `---\n${yamlText}\n---\n\n${prompt}\n`
+}
+
+function getClaudeHookSettingsPath(scope = 'user', projectPath = '') {
+  if (scope === 'project') {
+    if (!projectPath) throw new Error('缺少项目路径')
+    return path.join(projectPath, '.claude', 'settings.json')
+  }
+  if (scope === 'local') {
+    if (!projectPath) throw new Error('缺少项目路径')
+    return path.join(projectPath, '.claude', 'settings.local.json')
+  }
+  return path.join(os.homedir(), '.claude', 'settings.json')
+}
+
+function readJsonFileSafe(targetPath, fallback = {}) {
+  try {
+    if (!fs.existsSync(targetPath)) return fallback
+    return JSON.parse(fs.readFileSync(targetPath, 'utf-8'))
+  } catch {
+    return fallback
+  }
+}
+
+function ensureParentDir(filePath) {
+  const dirPath = path.dirname(filePath)
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true })
+  }
+}
+
+function buildClaudeHookEntry(payload = {}) {
+  const type = payload.type || 'command'
+  const handler = {
+    type,
+    async: payload.async === true
+  }
+
+  const contentValue = typeof payload.content === 'string' ? payload.content.trim() : ''
+  if (!contentValue) {
+    throw new Error('缺少 Hook 内容')
+  }
+
+  if (type === 'command') handler.command = contentValue
+  else if (type === 'http') handler.url = contentValue
+  else if (type === 'prompt') handler.prompt = contentValue
+  else if (type === 'agent') handler.agent = contentValue
+  else handler.content = contentValue
+
+  if (payload.timeout !== undefined && payload.timeout !== null && String(payload.timeout).trim() !== '') {
+    const timeout = Number(payload.timeout)
+    if (!Number.isFinite(timeout) || timeout < 0) {
+      throw new Error('timeout 必须是非负数字')
+    }
+    handler.timeout = timeout
+  }
+
+  return {
+    matcher: typeof payload.matcher === 'string' ? payload.matcher.trim() : '',
+    hook: handler
+  }
+}
+
+function appendClaudeHook(settings = {}, payload = {}) {
+  const eventName = typeof payload.eventName === 'string' ? payload.eventName.trim() : ''
+  if (!eventName) throw new Error('缺少 Hook 点')
+
+  const nextSettings = settings && typeof settings === 'object' ? { ...settings } : {}
+  const hooksRoot = nextSettings.hooks && typeof nextSettings.hooks === 'object' && !Array.isArray(nextSettings.hooks)
+    ? { ...nextSettings.hooks }
+    : {}
+  const entries = Array.isArray(hooksRoot[eventName]) ? [...hooksRoot[eventName]] : []
+  const built = buildClaudeHookEntry(payload)
+
+  entries.push({
+    matcher: built.matcher || undefined,
+    hooks: [built.hook]
+  })
+
+  hooksRoot[eventName] = entries
+  nextSettings.hooks = hooksRoot
+  return nextSettings
+}
+
+function removeClaudeHook(settings = {}, target = {}) {
+  const eventName = target?.eventName || ''
+  const groupIndex = Number(target?.groupIndex ?? -1)
+  const hookIndex = Number(target?.hookIndex ?? -1)
+  if (!eventName) throw new Error('缺少目标 Hook 点')
+
+  const nextSettings = settings && typeof settings === 'object' ? { ...settings } : {}
+  const hooksRoot = nextSettings.hooks && typeof nextSettings.hooks === 'object' && !Array.isArray(nextSettings.hooks)
+    ? { ...nextSettings.hooks }
+    : {}
+  const eventEntries = Array.isArray(hooksRoot[eventName]) ? [...hooksRoot[eventName]] : null
+
+  if (!eventEntries || !eventEntries[groupIndex]) {
+    throw new Error('未找到目标 Hook')
+  }
+
+  const rawEntry = eventEntries[groupIndex]
+  if (Array.isArray(rawEntry?.hooks) && rawEntry.hooks.length > 0) {
+    const nextHooks = rawEntry.hooks.filter((_, index) => index !== hookIndex)
+    if (nextHooks.length > 0) {
+      eventEntries[groupIndex] = {
+        ...rawEntry,
+        hooks: nextHooks
+      }
+    } else {
+      eventEntries.splice(groupIndex, 1)
+    }
+  } else {
+    eventEntries.splice(groupIndex, 1)
+  }
+
+  if (eventEntries.length > 0) {
+    hooksRoot[eventName] = eventEntries
+  } else {
+    delete hooksRoot[eventName]
+  }
+
+  if (Object.keys(hooksRoot).length > 0) {
+    nextSettings.hooks = hooksRoot
+  } else {
+    delete nextSettings.hooks
+  }
+
+  return nextSettings
 }
 
 function getCodexAuthPath() {
@@ -3074,6 +3413,54 @@ ipcMain.handle('sync-codex-model-providers', async () => {
   } catch (error) {
     logger.error('[CodexSettings] Failed to sync model providers', { error: error.message })
     return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('inspect-provider-setup', async (event, options = {}) => {
+  try {
+    const result = providerInspector.inspectProviderSetup(options || {})
+    return {
+      success: true,
+      data: result
+    }
+  } catch (error) {
+    logger.error('[ProviderInspector] Failed to inspect provider setup', {
+      provider: options?.provider || 'claude',
+      error: error.message
+    })
+    return {
+      success: false,
+      error: error.message
+    }
+  }
+})
+
+ipcMain.handle('manage-claude-plugin', async (event, options = {}) => {
+  try {
+    const args = buildClaudePluginCommand(options)
+    const { stdout, stderr } = await execFileAsync('claude', args, {
+      cwd: options.projectPath || process.cwd()
+    })
+    const data = providerInspector.inspectProviderSetup({
+      provider: 'claude',
+      projectPath: options.projectPath || ''
+    })
+
+    return {
+      success: true,
+      stdout: stdout || '',
+      stderr: stderr || '',
+      data
+    }
+  } catch (error) {
+    logger.error('[ClaudePlugin] Failed to manage Claude plugin', {
+      action: options?.action || '',
+      error: error.message
+    })
+    return {
+      success: false,
+      error: error.message
+    }
   }
 })
 
@@ -3309,56 +3696,30 @@ ipcMain.handle('check-skill-downloaded', async (event, { slug }) => {
 
 ipcMain.handle('list-downloaded-skills', async () => {
   try {
-    const fs = require('fs')
-    const path = require('path')
-    const os = require('os')
-
     const skillsRoot = path.join(os.homedir(), '.ccgui', 'skills')
-    if (!fs.existsSync(skillsRoot)) return { success: true, skills: [] }
 
     const skills = []
 
-    function readSkillMeta(skillPath, fallbackName) {
-      let name = fallbackName
-      let description = ''
-      try {
-        const skillMd = path.join(skillPath, 'SKILL.md')
-        if (fs.existsSync(skillMd)) {
-          const content = fs.readFileSync(skillMd, 'utf-8')
-          const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
-          if (fmMatch) {
-            const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m)
-            if (nameMatch) {
-              name = nameMatch[1].trim().replace(/^["']|["']$/g, '')
-            }
-            const descMatch = fmMatch[1].match(/^(?:description|summary):\s*(.+)$/m)
-            if (descMatch) {
-              description = descMatch[1].trim().replace(/^["']|["']$/g, '')
-            }
-          }
-        }
-      } catch (e) { /* ignore */ }
-      return { name, description }
-    }
-
     // 动态扫描所有来源目录
-    for (const sourceEntry of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
-      if (!sourceEntry.isDirectory()) continue
-      const sourceName = sourceEntry.name
-      const sourcePath = path.join(skillsRoot, sourceName)
+    if (fs.existsSync(skillsRoot)) {
+      for (const sourceEntry of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
+        if (!sourceEntry.isDirectory()) continue
+        const sourceName = sourceEntry.name
+        const sourcePath = path.join(skillsRoot, sourceName)
 
-      for (const skillEntry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
-        if (!skillEntry.isDirectory()) continue
-        const skillPath = path.join(sourcePath, skillEntry.name)
-        const meta = readSkillMeta(skillPath, skillEntry.name)
-        // Check symlink installation status
-        const installedTargets = []
-        const claudeLink = path.join(os.homedir(), '.claude', 'skills', skillEntry.name)
-        const codexLink = path.join(os.homedir(), '.codex', 'skills', skillEntry.name)
-        try { if (fs.lstatSync(claudeLink).isSymbolicLink() && fs.realpathSync(claudeLink) === skillPath) installedTargets.push('claude') } catch (_) {}
-        try { if (fs.lstatSync(codexLink).isSymbolicLink() && fs.realpathSync(codexLink) === skillPath) installedTargets.push('codex') } catch (_) {}
+        for (const skillEntry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+          if (!skillEntry.isDirectory()) continue
+          const skillPath = path.join(sourcePath, skillEntry.name)
+          const meta = readSkillMetaFromPath(skillPath, skillEntry.name)
+          // Check symlink installation status
+          const installedTargets = []
+          const claudeLink = path.join(os.homedir(), '.claude', 'skills', skillEntry.name)
+          const codexLink = path.join(os.homedir(), '.codex', 'skills', skillEntry.name)
+          try { if (fs.lstatSync(claudeLink).isSymbolicLink() && fs.realpathSync(claudeLink) === skillPath) installedTargets.push('claude') } catch (_) {}
+          try { if (fs.lstatSync(codexLink).isSymbolicLink() && fs.realpathSync(codexLink) === skillPath) installedTargets.push('codex') } catch (_) {}
 
-        skills.push({ name: meta.name, slug: skillEntry.name, source: sourceName, path: skillPath, description: meta.description, installedTargets })
+          skills.push({ name: meta.name, slug: skillEntry.name, source: sourceName, path: skillPath, description: meta.description, installedTargets })
+        }
       }
     }
 
@@ -3383,7 +3744,7 @@ ipcMain.handle('list-downloaded-skills', async () => {
           if (stat.isSymbolicLink() && ccguiPaths.has(fs.realpathSync(entryPath))) continue
         } catch (_) {}
 
-        const meta = readSkillMeta(entryPath, entry.name)
+        const meta = readSkillMetaFromPath(entryPath, entry.name)
         const existing = externalSkills.get(entry.name)
         if (existing) {
           existing.installedTargets.push(target)
@@ -3409,7 +3770,7 @@ ipcMain.handle('list-downloaded-skills', async () => {
       for (const entry of fs.readdirSync(codexSystemDir, { withFileTypes: true })) {
         if (!entry.isDirectory() || entry.name.startsWith('.')) continue
         const skillPath = path.join(codexSystemDir, entry.name)
-        const meta = readSkillMeta(skillPath, entry.name)
+        const meta = readSkillMetaFromPath(skillPath, entry.name)
         skills.push({
           name: meta.name,
           slug: entry.name,
@@ -3421,6 +3782,25 @@ ipcMain.handle('list-downloaded-skills', async () => {
           system: true
         })
       }
+    }
+
+    for (const pluginSkill of providerInspector.collectPlugins({ contents: ['skills'] }).skills) {
+      const existing = skills.find(skill => skill.slug === pluginSkill.slug && skill.path === pluginSkill.path)
+      if (existing) {
+        existing.source = pluginSkill.source || existing.source
+        existing.sourceLabel = pluginSkill.sourceLabel || existing.sourceLabel
+        existing.plugin = pluginSkill.plugin === true || existing.plugin === true
+        existing.pluginEnabled = pluginSkill.pluginEnabled
+        existing.pluginScope = pluginSkill.pluginScope || existing.pluginScope
+        existing.external = pluginSkill.external === true || existing.external === true
+        for (const target of pluginSkill.installedTargets || []) {
+          if (!existing.installedTargets.includes(target)) {
+            existing.installedTargets.push(target)
+          }
+        }
+        continue
+      }
+      skills.push(pluginSkill)
     }
 
     return { success: true, skills }
@@ -3515,6 +3895,29 @@ function extractArchiveTo(archivePath, targetDir) {
 
   try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) { /* ignore */ }
   return { success: true, name: skillName, path: destDir }
+}
+
+function readSkillMetaFromPath(skillPath, fallbackName) {
+  let name = fallbackName
+  let description = ''
+  try {
+    const skillMd = path.join(skillPath, 'SKILL.md')
+    if (fs.existsSync(skillMd)) {
+      const content = fs.readFileSync(skillMd, 'utf-8')
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+      if (fmMatch) {
+        const nameMatch = fmMatch[1].match(/^name:\s*(.+)$/m)
+        if (nameMatch) {
+          name = nameMatch[1].trim().replace(/^["']|["']$/g, '')
+        }
+        const descMatch = fmMatch[1].match(/^(?:description|summary):\s*(.+)$/m)
+        if (descMatch) {
+          description = descMatch[1].trim().replace(/^["']|["']$/g, '')
+        }
+      }
+    }
+  } catch (_) {}
+  return { name, description }
 }
 
 ipcMain.handle('install-skill', async (event, { source }) => {
@@ -4066,10 +4469,6 @@ ipcMain.handle('download-mcp', async (event, { server }) => {
 // 列出已下载的 MCP 服务器
 ipcMain.handle('list-downloaded-mcps', async () => {
   try {
-    const fs = require('fs')
-    const path = require('path')
-    const os = require('os')
-
     const mcpsDir = path.join(os.homedir(), '.ccgui', 'mcps')
     const mcps = []
 
@@ -4158,6 +4557,25 @@ ipcMain.handle('list-downloaded-mcps', async () => {
           existing.installedTargets.push('codex')
         }
       }
+    }
+
+    for (const pluginMcp of providerInspector.collectPlugins({ contents: ['mcp'] }).mcp) {
+      const existing = mcps.find(mcp => mcp.slug === pluginMcp.slug && mcp.sourceLabel === pluginMcp.sourceLabel)
+      if (existing) {
+        existing.source = pluginMcp.source || existing.source
+        existing.sourceLabel = pluginMcp.sourceLabel || existing.sourceLabel
+        existing.plugin = pluginMcp.plugin === true || existing.plugin === true
+        existing.pluginEnabled = pluginMcp.pluginEnabled
+        existing.pluginScope = pluginMcp.pluginScope || existing.pluginScope
+        existing.external = pluginMcp.external === true || existing.external === true
+        for (const target of pluginMcp.installedTargets || []) {
+          if (!existing.installedTargets.includes(target)) {
+            existing.installedTargets.push(target)
+          }
+        }
+        continue
+      }
+      mcps.push(pluginMcp)
     }
 
     return { success: true, mcps }
@@ -4307,6 +4725,17 @@ ipcMain.handle('list-project-skills', async (event, { projectPath }) => {
         }
       }
     }
+    for (const pluginSkill of providerInspector.collectPlugins({ contents: ['skills'] }).skills) {
+      globalSkillsMap.set(pluginSkill.slug, {
+        source: pluginSkill.source,
+        sourceLabel: pluginSkill.sourceLabel,
+        skillPath: pluginSkill.path,
+        plugin: true,
+        external: true,
+        pluginEnabled: pluginSkill.pluginEnabled,
+        pluginScope: pluginSkill.pluginScope || ''
+      })
+    }
 
     // 读取 SKILL.md 元数据的辅助函数
     function readSkillMeta(skillPath, fallbackName) {
@@ -4363,16 +4792,21 @@ ipcMain.handle('list-project-skills', async (event, { projectPath }) => {
         const globalInfo = globalSkillsMap.get(entry.name)
         const source = globalInfo ? globalInfo.source : 'local'
         const skillPath = globalInfo ? globalInfo.skillPath : realPath
-        const meta = readSkillMeta(skillPath, entry.name)
+        const meta = readSkillMetaFromPath(skillPath, entry.name)
 
         skills.push({
           name: meta.name,
           slug: entry.name,
           source,
+          sourceLabel: globalInfo?.sourceLabel || '',
           path: skillPath,
           description: meta.description,
           installedTargets: [target],
-          projectLevel: true
+          projectLevel: true,
+          external: globalInfo?.external === true,
+          plugin: globalInfo?.plugin === true,
+          pluginEnabled: globalInfo?.pluginEnabled,
+          pluginScope: globalInfo?.pluginScope || ''
         })
       }
     }
@@ -4593,7 +5027,7 @@ ipcMain.handle('list-project-mcps', async (event, { projectPath }) => {
     if (!projectPath) return { success: true, mcps: [] }
 
     // 获取全局下载的 MCP（用于关联）
-    const globalMcpsDir = path.join(os.homedir, '.ccgui', 'mcps')
+    const globalMcpsDir = path.join(os.homedir(), '.ccgui', 'mcps')
     const globalMcpsMap = new Map() // slug -> data
     if (fs.existsSync(globalMcpsDir)) {
       for (const file of fs.readdirSync(globalMcpsDir).filter(f => f.endsWith('.json'))) {
@@ -4602,6 +5036,9 @@ ipcMain.handle('list-project-mcps', async (event, { projectPath }) => {
           globalMcpsMap.set(data.slug, data)
         } catch (_) {}
       }
+    }
+    for (const pluginMcp of providerInspector.collectPlugins({ contents: ['mcp'] }).mcp) {
+      globalMcpsMap.set(pluginMcp.slug, pluginMcp)
     }
 
     const mcps = []
@@ -4621,9 +5058,14 @@ ipcMain.handle('list-project-mcps', async (event, { projectPath }) => {
             title: globalData?.title || globalData?.name || key,
             description: globalData?.description || (value.type === 'streamable-http' ? `远程服务: ${value.url || ''}` : value.command ? `${value.command} ${(value.args || []).join(' ')}` : ''),
             version: globalData?.version || '',
-            source: globalData ? 'registry' : 'project-local',
+            source: globalData?.source || (globalData ? 'registry' : 'project-local'),
+            sourceLabel: globalData?.sourceLabel || '',
             installedTargets: ['claude'],
-            projectLevel: true
+            projectLevel: true,
+            external: globalData?.external === true,
+            plugin: globalData?.plugin === true,
+            pluginEnabled: globalData?.pluginEnabled,
+            pluginScope: globalData?.pluginScope || ''
           })
         }
       } catch (_) {}
@@ -4648,9 +5090,14 @@ ipcMain.handle('list-project-mcps', async (event, { projectPath }) => {
             title: globalData?.title || globalData?.name || key,
             description: globalData?.description || (value.type ? `远程服务: ${value.url || ''}` : value.command ? `${value.command} ${Array.isArray(value.args) ? value.args.join(' ') : ''}` : ''),
             version: globalData?.version || '',
-            source: globalData ? 'registry' : 'project-local',
+            source: globalData?.source || (globalData ? 'registry' : 'project-local'),
+            sourceLabel: globalData?.sourceLabel || '',
             installedTargets: ['codex'],
-            projectLevel: true
+            projectLevel: true,
+            external: globalData?.external === true,
+            plugin: globalData?.plugin === true,
+            pluginEnabled: globalData?.pluginEnabled,
+            pluginScope: globalData?.pluginScope || ''
           })
         }
       } catch (_) {}

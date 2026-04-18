@@ -217,6 +217,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   getClaudeSettings: () => ipcRenderer.invoke('get-claude-settings'),
   updateClaudeSettings: (options) => ipcRenderer.invoke('update-claude-settings', options),
+  manageClaudeHook: (options) => ipcRenderer.invoke('manage-claude-hook', options),
+  manageClaudeHookSettings: (options) => ipcRenderer.invoke('manage-claude-hook-settings', options),
+  manageClaudeSubagent: (options) => ipcRenderer.invoke('manage-claude-subagent', options),
   listClaudeModels: (options) => ipcRenderer.invoke('list-claude-models', options),
 
   // ============================================
@@ -225,6 +228,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCodexSettings: () => ipcRenderer.invoke('get-codex-settings'),
   updateCodexSettings: (options) => ipcRenderer.invoke('update-codex-settings', options),
   syncCodexModelProviders: () => ipcRenderer.invoke('sync-codex-model-providers'),
+  inspectProviderSetup: (options) => ipcRenderer.invoke('inspect-provider-setup', options),
+  manageClaudePlugin: (options) => ipcRenderer.invoke('manage-claude-plugin', options),
   loadCodexAuthTokens: () => ipcRenderer.invoke('load-codex-auth-tokens'),
   applyCodexAccount: (options) => ipcRenderer.invoke('apply-codex-account', options),
   getCodexUsageStatus: (options) => ipcRenderer.invoke('get-codex-usage-status', options),

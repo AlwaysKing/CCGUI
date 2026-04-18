@@ -92,7 +92,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openTaskTemplatesDialog', 'selectPrimaryView'])
+const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openClaudeDialog', 'openCodexDialog', 'openPromptDialog', 'openTaskTemplatesDialog', 'selectPrimaryView'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -1146,26 +1146,36 @@ watch([showConfigPanel, fileSectionHeight], () => {
             :style="configMenuDropdownStyle"
             @click.stop
           >
-            <button class="menu-item" @click="emit('openProjectConfig'); closeConfigMenu()">
+            <button class="menu-item" @click="emit('openClaudeDialog'); closeConfigMenu()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="4" y1="21" x2="4" y2="14"/>
-                <line x1="4" y1="10" x2="4" y2="3"/>
-                <line x1="12" y1="21" x2="12" y2="12"/>
-                <line x1="12" y1="8" x2="12" y2="3"/>
-                <line x1="20" y1="21" x2="20" y2="16"/>
-                <line x1="20" y1="12" x2="20" y2="3"/>
-                <line x1="2" y1="14" x2="6" y2="14"/>
-                <line x1="10" y1="8" x2="14" y2="8"/>
-                <line x1="18" y1="16" x2="22" y2="16"/>
+                <path d="M4 6h16"/>
+                <path d="M4 12h16"/>
+                <path d="M4 18h10"/>
               </svg>
-              项目配置
+              Claude 面板
             </button>
-            <button class="menu-item" @click="emit('openAppSettings'); closeConfigMenu()">
+            <button class="menu-item" @click="emit('openCodexDialog'); closeConfigMenu()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                <rect x="3" y="3" width="18" height="18" rx="3"/>
+                <path d="M8 8h8v8H8z"/>
               </svg>
-              应用设置
+              Codex 面板
+            </button>
+            <div class="menu-divider"></div>
+            <button class="menu-item" @click="emit('openPromptDialog'); closeConfigMenu()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              提示词面板
+            </button>
+            <button class="menu-item" @click="emit('openTaskTemplatesDialog'); closeConfigMenu()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2H3V5z"/>
+                <path d="M3 9h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z"/>
+                <path d="M8 13h8"/>
+                <path d="M12 9v8"/>
+              </svg>
+              任务模板
             </button>
             <div class="menu-divider"></div>
             <button class="menu-item" @click="emit('openSkillsDialog'); closeConfigMenu()">
@@ -1182,18 +1192,30 @@ watch([showConfigPanel, fileSectionHeight], () => {
                 <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
                 <line x1="6" y1="6" x2="6.01" y2="6"/>
                 <line x1="6" y1="18" x2="6.01" y2="18"/>
-              </svg>
-              MCP 服务
-            </button>
-            <div class="menu-divider"></div>
-            <button class="menu-item" @click="emit('openTaskTemplatesDialog'); closeConfigMenu()">
+            </svg>
+            MCP 服务
+          </button>
+          <div class="menu-divider"></div>
+            <button class="menu-item" @click="emit('openProjectConfig'); closeConfigMenu()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M3 5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2H3V5z"/>
-                <path d="M3 9h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z"/>
-                <path d="M8 13h8"/>
-                <path d="M12 9v8"/>
+                <line x1="4" y1="21" x2="4" y2="14"/>
+                <line x1="4" y1="10" x2="4" y2="3"/>
+                <line x1="12" y1="21" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12" y2="3"/>
+                <line x1="20" y1="21" x2="20" y2="16"/>
+                <line x1="20" y1="12" x2="20" y2="3"/>
+                <line x1="2" y1="14" x2="6" y2="14"/>
+                <line x1="10" y1="8" x2="14" y2="8"/>
+                <line x1="18" y1="16" x2="22" y2="16"/>
               </svg>
-              任务模板
+              项目设置
+            </button>
+            <button class="menu-item" @click="emit('openAppSettings'); closeConfigMenu()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              应用设置
             </button>
           </div>
         </Teleport>

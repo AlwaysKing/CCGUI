@@ -1,18 +1,14 @@
 import { ref } from 'vue'
 
 export function useSettingsNavigation() {
-  const activeSection = ref('model')
+  const activeSection = ref('chat-theme')
   const contentRef = ref(null)
-  const modelSectionRef = ref(null)
-  const promptSectionRef = ref(null)
   const chatThemeSectionRef = ref(null)
   const shortcutSectionRef = ref(null)
   const terminalSectionRef = ref(null)
   const softwareSectionRef = ref(null)
 
   const navItems = [
-    { id: 'model', label: '模型配置', icon: 'model' },
-    { id: 'prompt', label: '提示词配置', icon: 'prompt' },
     { id: 'chat-theme', label: '消息主题', icon: 'chat-theme' },
     { id: 'shortcut', label: '快捷键', icon: 'shortcut' },
     { id: 'terminal', label: '终端配置', icon: 'terminal' },
@@ -22,8 +18,6 @@ export function useSettingsNavigation() {
   function scrollToSection(sectionId) {
     activeSection.value = sectionId
     const sectionMap = {
-      model: modelSectionRef.value,
-      prompt: promptSectionRef.value,
       'chat-theme': chatThemeSectionRef.value,
       shortcut: shortcutSectionRef.value,
       terminal: terminalSectionRef.value,
@@ -44,8 +38,6 @@ export function useSettingsNavigation() {
     const container = contentRef.value
     const scrollTop = container.scrollTop
     const sections = [
-      { id: 'model', ref: modelSectionRef.value },
-      { id: 'prompt', ref: promptSectionRef.value },
       { id: 'chat-theme', ref: chatThemeSectionRef.value },
       { id: 'shortcut', ref: shortcutSectionRef.value },
       { id: 'terminal', ref: terminalSectionRef.value },
@@ -76,8 +68,6 @@ export function useSettingsNavigation() {
   return {
     activeSection,
     contentRef,
-    modelSectionRef,
-    promptSectionRef,
     chatThemeSectionRef,
     shortcutSectionRef,
     terminalSectionRef,

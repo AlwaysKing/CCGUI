@@ -1,18 +1,9 @@
 <script setup>
 import { computed, onMounted, onUnmounted } from 'vue'
-import ModelSettings from './components/ModelSettings.vue'
-import PromptSettings from './components/PromptSettings.vue'
 import ChatThemeSettings from './components/ChatThemeSettings.vue'
 import ShortcutSettings from './components/ShortcutSettings.vue'
 import TerminalSettings from './components/TerminalSettings.vue'
 import SoftwareSettings from './components/SoftwareSettings.vue'
-import ModelEditDialog from './components/dialogs/ModelEditDialog.vue'
-import CodexAccountEditDialog from './components/dialogs/CodexAccountEditDialog.vue'
-import DefaultConfigDialog from './components/dialogs/DefaultConfigDialog.vue'
-import CodexConfigDialog from './components/dialogs/CodexConfigDialog.vue'
-import PromptEditDialog from './components/dialogs/PromptEditDialog.vue'
-import DocumentEditDialog from './components/dialogs/DocumentEditDialog.vue'
-import ModelMappingDialog from './components/dialogs/ModelMappingDialog.vue'
 import { useSettingsNavigation } from './hooks/useSettingsNavigation'
 import { useSettingsData } from './hooks/useSettingsData'
 import { useDialogStack } from '../../composables/useDialogStack'
@@ -21,8 +12,6 @@ const emit = defineEmits(['close', 'saved'])
 const {
   activeSection,
   contentRef,
-  modelSectionRef,
-  promptSectionRef,
   chatThemeSectionRef,
   shortcutSectionRef,
   terminalSectionRef,
@@ -35,69 +24,8 @@ const {
 
 const {
   settings,
-  defaultConfig,
-  codexConfig,
-  claudeModels,
-  codexModels,
-  selectedClaudeModelId,
-  selectedCodexModelId,
-  prompts,
-  documents,
-  showModelDialog,
-  editingModel,
-  editingModelType,
-  showDefaultConfigDialog,
-  showCodexConfigDialog,
-  showCodexAccountDialog,
-  editingCodexAccount,
-  showPromptDialog,
-  editingPrompt,
-  showDocumentDialog,
-  editingDocument,
-  showMappingDialog,
-  pendingModel,
-  effortOptions,
   loadSettings,
   saveSoftwareSettings,
-  handleAddClaudeModel,
-  handleEditClaudeModel,
-  handleDeleteClaudeModel,
-  handleAddCodexModel,
-  handleEditCodexModel,
-  handleDeleteCodexModel,
-  handleSaveModel,
-  handleSelectClaudeModel,
-  handleSelectCodexModel,
-  handleSetClaudeModelDefaultCredential,
-  handleSetCodexModelDefaultCredential,
-  handleSetClaudeModelDefaultCard,
-  handleSetCodexModelDefaultCard,
-  handleToggleClaudeModelActive,
-  handleToggleCodexModelActive,
-  handleApplyClaudeModel,
-  handleApplyCodexModel,
-  handleMappingConfirm,
-  handleEditDefaultConfig,
-  handleSaveDefaultConfig,
-  handleEditCodexConfig,
-  handleSaveCodexConfig,
-  handleSaveCodexProxy,
-  handleAddCodexAccount,
-  handleEditCodexAccount,
-  handleSaveCodexAccount,
-  handleDeleteCodexAccount,
-  handleApplyCodexAccount,
-  handleRefreshCodexAccountUsage,
-  handleAddPrompt,
-  handleEditPrompt,
-  handleDeletePrompt,
-  handleTogglePromptActive,
-  handleSavePrompt,
-  handleAddDocument,
-  handleEditDocument,
-  handleDeleteDocument,
-  handleToggleDocumentActive,
-  handleSaveDocument,
   testBarkUrl,
   saveBarkUrl
 } = useSettingsData(emit)
@@ -142,14 +70,7 @@ useDialogStack(computed(() => true), handleClose)
             :class="{ active: activeSection === item.id }"
             @click="scrollToSection(item.id)"
           >
-            <svg v-if="item.icon === 'model'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-            <svg v-else-if="item.icon === 'prompt'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            </svg>
-            <svg v-else-if="item.icon === 'software'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-if="item.icon === 'software'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
               <line x1="8" y1="21" x2="16" y2="21"/>
               <line x1="12" y1="17" x2="12" y2="21"/>
@@ -178,57 +99,6 @@ useDialogStack(computed(() => true), handleClose)
 
         <!-- 右侧配置内容 -->
         <div class="settings-content" ref="contentRef">
-          <div ref="modelSectionRef">
-            <ModelSettings
-              :default-config="defaultConfig"
-              :codex-config="codexConfig"
-              :claude-models="claudeModels"
-              :codex-models="codexModels"
-              :selected-claude-model-id="selectedClaudeModelId"
-              :selected-codex-model-id="selectedCodexModelId"
-              :effort-options="effortOptions"
-              @edit-default-config="handleEditDefaultConfig"
-              @edit-codex-config="handleEditCodexConfig"
-              @save-codex-proxy="handleSaveCodexProxy"
-              @add-codex-account="handleAddCodexAccount"
-              @edit-codex-account="handleEditCodexAccount"
-              @delete-codex-account="handleDeleteCodexAccount"
-              @apply-codex-account="handleApplyCodexAccount"
-              @refresh-codex-account-usage="handleRefreshCodexAccountUsage"
-              @select-claude-model="handleSelectClaudeModel"
-              @select-codex-model="handleSelectCodexModel"
-              @edit-claude-model="handleEditClaudeModel"
-              @edit-codex-model="handleEditCodexModel"
-              @delete-claude-model="handleDeleteClaudeModel"
-              @delete-codex-model="handleDeleteCodexModel"
-              @add-claude-model="handleAddClaudeModel"
-              @add-codex-model="handleAddCodexModel"
-              @set-claude-model-default-credential="handleSetClaudeModelDefaultCredential"
-              @set-codex-model-default-credential="handleSetCodexModelDefaultCredential"
-              @set-claude-model-default-card="handleSetClaudeModelDefaultCard"
-              @set-codex-model-default-card="handleSetCodexModelDefaultCard"
-              @toggle-claude-model-active="handleToggleClaudeModelActive"
-              @toggle-codex-model-active="handleToggleCodexModelActive"
-              @apply-claude-model="handleApplyClaudeModel"
-              @apply-codex-model="handleApplyCodexModel"
-            />
-          </div>
-
-          <div ref="promptSectionRef">
-            <PromptSettings
-              :prompts="prompts"
-              :documents="documents"
-              @add-prompt="handleAddPrompt"
-              @edit-prompt="handleEditPrompt"
-              @delete-prompt="handleDeletePrompt"
-              @toggle-prompt-active="handleTogglePromptActive"
-              @add-document="handleAddDocument"
-              @edit-document="handleEditDocument"
-              @delete-document="handleDeleteDocument"
-              @toggle-document-active="handleToggleDocumentActive"
-            />
-          </div>
-
           <div ref="chatThemeSectionRef">
             <ChatThemeSettings
               :settings="settings"
@@ -265,62 +135,6 @@ useDialogStack(computed(() => true), handleClose)
         </div>
       </div>
     </div>
-
-    <!-- 模型编辑对话框 -->
-    <ModelEditDialog
-      v-model:visible="showModelDialog"
-      :model="editingModel"
-      :model-type="editingModelType"
-      @save="handleSaveModel"
-      @close="showModelDialog = false"
-    />
-
-    <!-- 默认配置编辑对话框 -->
-    <DefaultConfigDialog
-      v-model:visible="showDefaultConfigDialog"
-      :config="defaultConfig"
-      @save="handleSaveDefaultConfig"
-      @close="showDefaultConfigDialog = false"
-    />
-
-    <CodexConfigDialog
-      v-model:visible="showCodexConfigDialog"
-      :config="codexConfig"
-      :effort-options="effortOptions"
-      @save="handleSaveCodexConfig"
-      @close="showCodexConfigDialog = false"
-    />
-
-    <CodexAccountEditDialog
-      v-model:visible="showCodexAccountDialog"
-      :account="editingCodexAccount"
-      @save="handleSaveCodexAccount"
-      @close="showCodexAccountDialog = false"
-    />
-
-    <!-- 提示词编辑对话框 -->
-    <PromptEditDialog
-      v-model:visible="showPromptDialog"
-      :prompt="editingPrompt"
-      @save="handleSavePrompt"
-      @close="showPromptDialog = false"
-    />
-
-    <!-- 规范文档编辑对话框 -->
-    <DocumentEditDialog
-      v-model:visible="showDocumentDialog"
-      :document="editingDocument"
-      @save="handleSaveDocument"
-      @close="showDocumentDialog = false"
-    />
-
-    <!-- 模型映射确认对话框 -->
-    <ModelMappingDialog
-      v-model:visible="showMappingDialog"
-      :model="pendingModel?.model || null"
-      @confirm="handleMappingConfirm"
-      @close="showMappingDialog = false"
-    />
   </div>
 </template>
 

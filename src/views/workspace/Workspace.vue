@@ -19,6 +19,8 @@ import SessionConfigDialog from './components/SessionConfigDialog.vue'
 import SettingsDialog from '@/views/settings/SettingsDialog.vue'
 import SkillsDialog from '@/views/tools/SkillsDialog.vue'
 import McpDialog from '@/views/tools/McpDialog.vue'
+import ProviderDialog from '@/views/tools/ProviderDialog.vue'
+import PromptDialog from '@/views/tools/PromptDialog.vue'
 import TaskTemplatesDialog from '@/views/tools/TaskTemplatesDialog.vue'
 import { useWorkspaceLayout } from './hooks/useWorkspaceLayout'
 import { useWorkspaceDialogs } from './hooks/useWorkspaceDialogs'
@@ -43,6 +45,9 @@ const showClaudeSessions = ref(true)
 const showCodexSessions = ref(true)
 const showSkillsDialog = ref(false)
 const showMcpDialog = ref(false)
+const showClaudeDialog = ref(false)
+const showCodexDialog = ref(false)
+const showPromptDialog = ref(false)
 const showTaskTemplatesDialog = ref(false)
 const showTaskLauncherConfigDialog = ref(false)
 const taskTemplatesInitialSection = ref('routine')
@@ -769,6 +774,9 @@ async function handleDeleteInactiveSessions() {
         @openAppSettings="showSettingsDialog = true"
         @openSkillsDialog="showSkillsDialog = true"
         @openMcpDialog="showMcpDialog = true"
+        @openClaudeDialog="showClaudeDialog = true"
+        @openCodexDialog="showCodexDialog = true"
+        @openPromptDialog="showPromptDialog = true"
         @openTaskTemplatesDialog="openTaskTemplatesDialog"
         @openProjectConfig="handleOpenProjectConfig"
         @openSessionConfig="handleOpenSessionConfig"
@@ -996,6 +1004,28 @@ async function handleDeleteInactiveSessions() {
       v-if="showMcpDialog"
       :project-path="store.currentProject?.path || ''"
       @close="showMcpDialog = false"
+    />
+
+    <ProviderDialog
+      v-if="showClaudeDialog"
+      provider="claude"
+      :project-path="store.currentProject?.path || ''"
+      @saved="handleSettingsSaved"
+      @close="showClaudeDialog = false"
+    />
+
+    <ProviderDialog
+      v-if="showCodexDialog"
+      provider="codex"
+      :project-path="store.currentProject?.path || ''"
+      @saved="handleSettingsSaved"
+      @close="showCodexDialog = false"
+    />
+
+    <PromptDialog
+      v-if="showPromptDialog"
+      @saved="handleSettingsSaved"
+      @close="showPromptDialog = false"
     />
 
     <TaskTemplatesDialog

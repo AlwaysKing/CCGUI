@@ -37,6 +37,22 @@ const projectToggleError = ref(null)
 const projectMcpToDelete = ref(null)
 const projectFilter = ref('all')
 
+function getMcpSourceLabel(mcp) {
+  if (mcp.sourceLabel) return mcp.sourceLabel
+  if (mcp.external) return '外部'
+  if (mcp.source === 'registry') return 'Registry'
+  if (mcp.source === 'plugin') return '插件'
+  return mcp.source || '本地'
+}
+
+function isStaticMcp(mcp) {
+  return Boolean(mcp.external || mcp.plugin)
+}
+
+function isPluginDisabled(mcp) {
+  return Boolean(mcp?.plugin && mcp?.pluginEnabled === false)
+}
+
 // Registry 详情弹窗
 const selectedServer = ref(null)
 
@@ -389,12 +405,19 @@ useDialogStack(computed(() => true), handleClose)
                 v-for="mcp in filteredDownloadedMcps"
                 :key="mcp.slug + '-' + mcp.source"
                 class="mcp-card"
+                :class="{ disabled: isPluginDisabled(mcp) }"
               >
                 <div class="mcp-header">
                   <span class="mcp-name">{{ mcp.title || mcp.name }}</span>
                   <div class="mcp-badges">
-                    <span v-if="mcp.external" class="source-badge external">外部</span>
-                    <span v-else-if="mcp.source === 'registry'" class="source-badge registry">Registry</span>
+                    <span
+                      v-if="mcp.external || mcp.source === 'registry' || mcp.plugin || mcp.sourceLabel"
+                      class="source-badge"
+                      :class="{ external: mcp.external, registry: mcp.source === 'registry', plugin: mcp.plugin }"
+                    >
+                      {{ getMcpSourceLabel(mcp) }}
+                    </span>
+                    <span v-if="isPluginDisabled(mcp)" class="source-badge disabled-state-badge">已禁用</span>
                     <span v-if="mcp.version" class="version-badge">v{{ mcp.version }}</span>
                   </div>
                 </div>
@@ -402,19 +425,19 @@ useDialogStack(computed(() => true), handleClose)
                 <div class="mcp-meta">
                   <div class="target-toggles">
                     <button
-                      v-if="!mcp.external || mcp.installedTargets?.includes('claude')"
+                      v-if="!isStaticMcp(mcp) || mcp.installedTargets?.includes('claude')"
                       class="target-toggle"
-                      :class="{ active: mcp.installedTargets?.includes('claude'), static: mcp.external }"
-                      @click.stop="!mcp.external && toggleTarget(mcp, 'claude')"
+                      :class="{ active: mcp.installedTargets?.includes('claude'), static: isStaticMcp(mcp) }"
+                      @click.stop="!isStaticMcp(mcp) && toggleTarget(mcp, 'claude')"
                     >Claude</button>
                     <button
-                      v-if="!mcp.external || mcp.installedTargets?.includes('codex')"
+                      v-if="!isStaticMcp(mcp) || mcp.installedTargets?.includes('codex')"
                       class="target-toggle"
-                      :class="{ active: mcp.installedTargets?.includes('codex'), static: mcp.external }"
-                      @click.stop="!mcp.external && toggleTarget(mcp, 'codex')"
+                      :class="{ active: mcp.installedTargets?.includes('codex'), static: isStaticMcp(mcp) }"
+                      @click.stop="!isStaticMcp(mcp) && toggleTarget(mcp, 'codex')"
                     >Codex</button>
                   </div>
-                  <button v-if="!mcp.external" class="delete-btn" @click.stop="handleDeleteMcp(mcp)" title="删除">
+                  <button v-if="!isStaticMcp(mcp)" class="delete-btn" @click.stop="handleDeleteMcp(mcp)" title="删除">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <polyline points="3 6 5 6 21 6"/>
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -563,12 +586,19 @@ useDialogStack(computed(() => true), handleClose)
                 v-for="mcp in filteredProjectMcps"
                 :key="'project-' + mcp.slug"
                 class="mcp-card"
+                :class="{ disabled: isPluginDisabled(mcp) }"
               >
                 <div class="mcp-header">
                   <span class="mcp-name">{{ mcp.title || mcp.name }}</span>
                   <div class="mcp-badges">
-                    <span v-if="mcp.external" class="source-badge external">外部</span>
-                    <span v-else-if="mcp.source === 'registry'" class="source-badge registry">Registry</span>
+                    <span
+                      v-if="mcp.external || mcp.source === 'registry' || mcp.plugin || mcp.sourceLabel"
+                      class="source-badge"
+                      :class="{ external: mcp.external, registry: mcp.source === 'registry', plugin: mcp.plugin }"
+                    >
+                      {{ getMcpSourceLabel(mcp) }}
+                    </span>
+                    <span v-if="isPluginDisabled(mcp)" class="source-badge disabled-state-badge">已禁用</span>
                     <span v-if="mcp.version" class="version-badge">v{{ mcp.version }}</span>
                   </div>
                 </div>
@@ -576,16 +606,16 @@ useDialogStack(computed(() => true), handleClose)
                 <div class="mcp-meta">
                   <div class="target-toggles">
                     <button
-                      v-if="!mcp.external || mcp.projectTargets?.includes('claude')"
+                      v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('claude')"
                       class="target-toggle"
-                      :class="{ active: mcp.projectTargets?.includes('claude'), static: mcp.external }"
-                      @click.stop="!mcp.external && toggleProjectTarget(mcp, 'claude')"
+                      :class="{ active: mcp.projectTargets?.includes('claude'), static: isStaticMcp(mcp) }"
+                      @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'claude')"
                     >Claude</button>
                     <button
-                      v-if="!mcp.external || mcp.projectTargets?.includes('codex')"
+                      v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('codex')"
                       class="target-toggle"
-                      :class="{ active: mcp.projectTargets?.includes('codex'), static: mcp.external }"
-                      @click.stop="!mcp.external && toggleProjectTarget(mcp, 'codex')"
+                      :class="{ active: mcp.projectTargets?.includes('codex'), static: isStaticMcp(mcp) }"
+                      @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'codex')"
                     >Codex</button>
                   </div>
                   <button v-if="mcp.projectTargets?.length" class="delete-btn" @click.stop="handleDeleteProjectMcp(mcp)" title="从项目移除">
@@ -1049,6 +1079,10 @@ useDialogStack(computed(() => true), handleClose)
   transition: border-color 0.2s, background 0.2s;
 }
 
+.mcp-card.disabled {
+  border-color: rgba(249, 115, 22, 0.3);
+}
+
 .mcp-card:hover {
   border-color: rgba(249, 115, 22, 0.3);
   background: var(--app-soft-surface-hover);
@@ -1080,6 +1114,16 @@ useDialogStack(computed(() => true), handleClose)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.mcp-card.disabled .mcp-name {
+  color: rgba(244, 244, 245, 0.8);
+}
+
+.mcp-card.disabled .mcp-meta,
+.mcp-card.disabled .mcp-desc {
+  opacity: 0.5;
+}
+
 
 .version-badge {
   font-size: 11px;
@@ -1128,6 +1172,18 @@ useDialogStack(computed(() => true), handleClose)
   background: rgba(161, 161, 170, 0.1);
   color: #A1A1AA;
 }
+
+.source-badge.plugin {
+  background: rgba(245, 158, 11, 0.14);
+  color: #FBBF24;
+}
+
+.disabled-state-badge {
+  color: rgba(248, 250, 252, 0.82) !important;
+  background: rgba(249, 115, 22, 0.12) !important;
+  border: 1px solid rgba(249, 115, 22, 0.22);
+}
+
 
 .mcp-desc {
   font-size: 12px;

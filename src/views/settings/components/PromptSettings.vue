@@ -9,6 +9,14 @@ import SubsectionHeader from './common/SubsectionHeader.vue'
 import { IconButton } from '@/components/base'
 
 const props = defineProps({
+  section: {
+    type: String,
+    default: 'all'
+  },
+  hideTitle: {
+    type: Boolean,
+    default: false
+  },
   prompts: {
     type: Array,
     default: () => []
@@ -36,16 +44,17 @@ const hoveredDocumentId = ref(null)
 </script>
 
 <template>
-  <SettingsSection title="提示词配置">
+  <SettingsSection v-if="!hideTitle" title="提示词配置">
     <!-- 自定义提示词 -->
     <SubsectionHeader
+      v-if="section === 'all' || section === 'prompts'"
       title="自定义提示词"
       show-add-button
       add-button-title="添加提示词"
       @add="emit('add-prompt')"
     />
 
-    <div class="prompts-section">
+    <div v-if="section === 'all' || section === 'prompts'" class="prompts-section">
       <div class="prompts-list">
         <div
           v-for="prompt in prompts"
@@ -99,13 +108,14 @@ const hoveredDocumentId = ref(null)
 
     <!-- 规范文档 -->
     <SubsectionHeader
+      v-if="section === 'all' || section === 'documents'"
       title="规范文档"
       show-add-button
       add-button-title="添加规范文档"
       @add="emit('add-document')"
     />
 
-    <div class="documents-section">
+    <div v-if="section === 'all' || section === 'documents'" class="documents-section">
       <div class="documents-list">
         <div
           v-for="document in documents"
@@ -162,9 +172,138 @@ const hoveredDocumentId = ref(null)
       </div>
     </div>
   </SettingsSection>
+
+  <div v-else class="prompt-settings-shell">
+    <SubsectionHeader
+      v-if="section === 'all' || section === 'prompts'"
+      title="自定义提示词"
+      show-add-button
+      add-button-title="添加提示词"
+      @add="emit('add-prompt')"
+    />
+
+    <div v-if="section === 'all' || section === 'prompts'" class="prompts-section">
+      <div class="prompts-list">
+        <div
+          v-for="prompt in prompts"
+          :key="prompt.id"
+          class="prompt-card-item"
+          @mouseenter="hoveredPromptId = prompt.id"
+          @mouseleave="hoveredPromptId = null"
+        >
+          <div class="card-header">
+            <h4 class="card-name">
+              {{ prompt.name || '未命名' }}
+              <button
+                type="button"
+                class="btn-activate"
+                :class="{ active: prompt.isBase }"
+                @click.stop="emit('toggle-prompt-active', prompt.id)"
+              >
+                基础
+              </button>
+            </h4>
+            <div class="card-actions">
+              <IconButton @click.stop="emit('edit-prompt', prompt)" title="编辑提示词">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </IconButton>
+              <IconButton class="danger" @click.stop="emit('delete-prompt', prompt.id)" title="删除提示词">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </IconButton>
+            </div>
+          </div>
+          <div class="card-description" v-if="prompt.description">
+            {{ prompt.description }}
+          </div>
+        </div>
+
+        <div v-if="prompts.length === 0" class="empty-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+          <p class="empty-title">暂无自定义提示词</p>
+          <p class="empty-description">点击右侧的"+"按钮开始配置</p>
+        </div>
+      </div>
+    </div>
+
+    <SubsectionHeader
+      v-if="section === 'all' || section === 'documents'"
+      title="规范文档"
+      show-add-button
+      add-button-title="添加规范文档"
+      @add="emit('add-document')"
+    />
+
+    <div v-if="section === 'all' || section === 'documents'" class="documents-section">
+      <div class="documents-list">
+        <div
+          v-for="document in documents"
+          :key="document.id"
+          class="document-card-item"
+          :class="{ inactive: document.isBase === false }"
+          @mouseenter="hoveredDocumentId = document.id"
+          @mouseleave="hoveredDocumentId = null"
+        >
+          <div class="card-header">
+            <h4 class="card-name">
+              {{ document.name || '未命名' }}
+              <button
+                type="button"
+                class="btn-activate"
+                :class="{ active: document.isBase !== false }"
+                @click.stop="emit('toggle-document-active', document.id)"
+              >
+                基础
+              </button>
+            </h4>
+            <div class="card-actions">
+              <IconButton @click.stop="emit('edit-document', document)" title="编辑规范文档">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </IconButton>
+              <IconButton class="danger" @click.stop="emit('delete-document', document.id)" title="删除规范文档">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </IconButton>
+            </div>
+          </div>
+          <div class="card-summary" v-if="document.summary">
+            {{ document.summary }}
+          </div>
+        </div>
+
+        <div v-if="documents.length === 0" class="empty-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+            <polyline points="10 9 9 9 8 9"/>
+          </svg>
+          <p class="empty-title">暂无规范文档</p>
+          <p class="empty-description">点击右侧的"+"按钮开始配置</p>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
+.prompt-settings-shell {
+  min-width: 0;
+}
+
 .prompts-section,
 .documents-section {
   background: var(--app-soft-panel);

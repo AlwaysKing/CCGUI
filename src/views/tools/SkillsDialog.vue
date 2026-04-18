@@ -34,6 +34,23 @@ const skillTree = ref([])
 const isLoadingExtra = ref(false)
 const installFilter = ref('all') // 'all' | 'claude' | 'codex' | 'none'
 
+function getSkillSourceLabel(skill) {
+  if (skill.system) return '系统内置'
+  if (skill.sourceLabel) return skill.sourceLabel
+  if (skill.external) return '外部'
+  if (skill.source === 'clawhub') return 'ClawHub'
+  if (skill.source === 'plugin') return '插件'
+  return skill.source || '本地'
+}
+
+function isStaticSkill(skill) {
+  return Boolean(skill.system || skill.external || skill.plugin)
+}
+
+function isPluginDisabled(skill) {
+  return Boolean(skill?.plugin && skill?.pluginEnabled === false)
+}
+
 const filteredInstalledSkills = computed(() => {
   if (installFilter.value === 'all') return installedSkills.value
   if (installFilter.value === 'none') {
@@ -541,33 +558,35 @@ useDialogStack(computed(() => true), handleClose)
                 v-for="skill in filteredInstalledSkills"
                 :key="skill.slug + '-' + skill.source"
                 class="skill-card"
+                :class="{ disabled: isPluginDisabled(skill) }"
                 @click="openInstalledDetail(skill)"
               >
                 <div class="skill-header">
                   <span class="skill-name">{{ skill.name }}</span>
-                  <span v-if="skill.system" class="installed-source system">系统内置</span>
-                  <span v-else-if="skill.external" class="installed-source external">外部</span>
-                  <span v-else-if="skill.source !== 'local'" class="installed-source" :class="skill.source">
-                    {{ skill.source === 'clawhub' ? 'ClawHub' : skill.source }}
-                  </span>
+                  <div class="skill-header-badges">
+                    <span v-if="skill.source !== 'local' || skill.system || skill.external || skill.plugin || skill.sourceLabel" class="installed-source" :class="[skill.source, { external: skill.external, system: skill.system, plugin: skill.plugin }]">
+                      {{ getSkillSourceLabel(skill) }}
+                    </span>
+                    <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge">已禁用</span>
+                  </div>
                 </div>
                 <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
                 <div class="skill-meta">
                   <div class="target-toggles">
                     <button
-                      v-if="(!skill.system && !skill.external) || skill.installedTargets?.includes('claude')"
+                      v-if="!isStaticSkill(skill) || skill.installedTargets?.includes('claude')"
                       class="target-toggle"
-                      :class="{ active: skill.installedTargets?.includes('claude'), static: skill.system || skill.external }"
-                      @click.stop="!skill.system && !skill.external && toggleTarget(skill, 'claude')"
+                      :class="{ active: skill.installedTargets?.includes('claude'), static: isStaticSkill(skill) }"
+                      @click.stop="!isStaticSkill(skill) && toggleTarget(skill, 'claude')"
                     >Claude</button>
                     <button
-                      v-if="(!skill.system && !skill.external) || skill.installedTargets?.includes('codex')"
+                      v-if="!isStaticSkill(skill) || skill.installedTargets?.includes('codex')"
                       class="target-toggle"
-                      :class="{ active: skill.installedTargets?.includes('codex'), static: skill.system || skill.external }"
-                      @click.stop="!skill.system && !skill.external && toggleTarget(skill, 'codex')"
+                      :class="{ active: skill.installedTargets?.includes('codex'), static: isStaticSkill(skill) }"
+                      @click.stop="!isStaticSkill(skill) && toggleTarget(skill, 'codex')"
                     >Codex</button>
                   </div>
-                  <button v-if="!skill.external && !skill.system" class="delete-btn" @click.stop="handleDeleteSkill(skill)" title="删除">
+                  <button v-if="!isStaticSkill(skill)" class="delete-btn" @click.stop="handleDeleteSkill(skill)" title="删除">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <polyline points="3 6 5 6 21 6"/>
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -770,30 +789,32 @@ useDialogStack(computed(() => true), handleClose)
                 v-for="skill in filteredProjectSkills"
                 :key="'project-' + skill.slug"
                 class="skill-card"
+                :class="{ disabled: isPluginDisabled(skill) }"
                 @click="openInstalledDetail(skill)"
               >
                 <div class="skill-header">
                   <span class="skill-name">{{ skill.name }}</span>
-                  <span v-if="skill.system" class="installed-source system">系统内置</span>
-                  <span v-else-if="skill.external" class="installed-source external">外部</span>
-                  <span v-else-if="skill.source !== 'local'" class="installed-source" :class="skill.source">
-                    {{ skill.source === 'clawhub' ? 'ClawHub' : skill.source }}
-                  </span>
+                  <div class="skill-header-badges">
+                    <span v-if="skill.source !== 'local' || skill.system || skill.external || skill.plugin || skill.sourceLabel" class="installed-source" :class="[skill.source, { external: skill.external, system: skill.system, plugin: skill.plugin }]">
+                      {{ getSkillSourceLabel(skill) }}
+                    </span>
+                    <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge">已禁用</span>
+                  </div>
                 </div>
                 <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
                 <div class="skill-meta">
                   <div class="target-toggles">
                     <button
-                      v-if="(!skill.system && !skill.external) || skill.projectTargets?.includes('claude')"
+                      v-if="!isStaticSkill(skill) || skill.projectTargets?.includes('claude')"
                       class="target-toggle"
-                      :class="{ active: skill.projectTargets?.includes('claude'), static: skill.system || skill.external }"
-                      @click.stop="!skill.system && !skill.external && toggleProjectTarget(skill, 'claude')"
+                      :class="{ active: skill.projectTargets?.includes('claude'), static: isStaticSkill(skill) }"
+                      @click.stop="!isStaticSkill(skill) && toggleProjectTarget(skill, 'claude')"
                     >Claude</button>
                     <button
-                      v-if="(!skill.system && !skill.external) || skill.projectTargets?.includes('codex')"
+                      v-if="!isStaticSkill(skill) || skill.projectTargets?.includes('codex')"
                       class="target-toggle"
-                      :class="{ active: skill.projectTargets?.includes('codex'), static: skill.system || skill.external }"
-                      @click.stop="!skill.system && !skill.external && toggleProjectTarget(skill, 'codex')"
+                      :class="{ active: skill.projectTargets?.includes('codex'), static: isStaticSkill(skill) }"
+                      @click.stop="!isStaticSkill(skill) && toggleProjectTarget(skill, 'codex')"
                     >Codex</button>
                   </div>
                   <button v-if="skill.projectTargets?.length" class="delete-btn" @click.stop="handleDeleteProjectSkill(skill)" title="从项目移除">
@@ -1295,6 +1316,10 @@ useDialogStack(computed(() => true), handleClose)
   cursor: pointer;
 }
 
+.skill-card.disabled {
+  border-color: rgba(249, 115, 22, 0.3);
+}
+
 .skill-card:hover {
   border-color: rgba(249, 115, 22, 0.3);
   background: var(--app-soft-surface-hover);
@@ -1347,6 +1372,16 @@ useDialogStack(computed(() => true), handleClose)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.skill-card.disabled .skill-name {
+  color: rgba(244, 244, 245, 0.8);
+}
+
+.skill-card.disabled .skill-meta,
+.skill-card.disabled .skill-desc {
+  opacity: 0.5;
+}
+
 
 .skill-version {
   font-size: 11px;
@@ -1888,6 +1923,18 @@ useDialogStack(computed(() => true), handleClose)
   background: rgba(249, 115, 22, 0.12);
   color: #F97316;
 }
+
+.installed-source.plugin {
+  background: rgba(245, 158, 11, 0.14);
+  color: #FBBF24;
+}
+
+.disabled-state-badge {
+  color: rgba(248, 250, 252, 0.82) !important;
+  background: rgba(249, 115, 22, 0.12) !important;
+  border: 1px solid rgba(249, 115, 22, 0.22);
+}
+
 
 .delete-btn {
   background: transparent;

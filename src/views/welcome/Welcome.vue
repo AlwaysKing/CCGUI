@@ -11,6 +11,8 @@ import { useDialogStack } from '../../composables/useDialogStack'
 const SettingsDialog = defineAsyncComponent(() => import('@/views/settings/SettingsDialog.vue'))
 const SkillsDialog = defineAsyncComponent(() => import('@/views/tools/SkillsDialog.vue'))
 const McpDialog = defineAsyncComponent(() => import('@/views/tools/McpDialog.vue'))
+const ProviderDialog = defineAsyncComponent(() => import('@/views/tools/ProviderDialog.vue'))
+const PromptDialog = defineAsyncComponent(() => import('@/views/tools/PromptDialog.vue'))
 const TaskTemplatesDialog = defineAsyncComponent(() => import('@/views/tools/TaskTemplatesDialog.vue'))
 
 const store = useAppStore()
@@ -37,6 +39,9 @@ const {
 const showConfigMenu = ref(false)
 const showSkillsDialog = ref(false)
 const showMcpDialog = ref(false)
+const showClaudeDialog = ref(false)
+const showCodexDialog = ref(false)
+const showPromptDialog = ref(false)
 const showTaskTemplatesDialog = ref(false)
 const configMenuRef = ref(null)
 const configMenuBtnRef = ref(null)
@@ -183,12 +188,36 @@ function handleShortcutEvent(event) {
           :style="configMenuDropdownStyle"
           @click.stop
         >
-          <button class="menu-item" @click="showSettingsDialog = true; closeConfigMenu()">
+          <button class="menu-item" @click="showClaudeDialog = true; closeConfigMenu()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              <path d="M4 6h16"/>
+              <path d="M4 12h16"/>
+              <path d="M4 18h10"/>
             </svg>
-            设置
+            Claude 面板
+          </button>
+          <button class="menu-item" @click="showCodexDialog = true; closeConfigMenu()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="3"/>
+              <path d="M8 8h8v8H8z"/>
+            </svg>
+            Codex 面板
+          </button>
+          <div class="menu-divider"></div>
+          <button class="menu-item" @click="showPromptDialog = true; closeConfigMenu()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            提示词面板
+          </button>
+          <button class="menu-item" @click="showTaskTemplatesDialog = true; closeConfigMenu()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2H3V5z"/>
+              <path d="M3 9h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z"/>
+              <path d="M8 13h8"/>
+              <path d="M12 9v8"/>
+            </svg>
+            任务模板
           </button>
           <div class="menu-divider"></div>
           <button class="menu-item" @click="showSkillsDialog = true; closeConfigMenu()">
@@ -209,14 +238,12 @@ function handleShortcutEvent(event) {
             MCP 服务
           </button>
           <div class="menu-divider"></div>
-          <button class="menu-item" @click="showTaskTemplatesDialog = true; closeConfigMenu()">
+          <button class="menu-item" @click="showSettingsDialog = true; closeConfigMenu()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M3 5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2H3V5z"/>
-              <path d="M3 9h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z"/>
-              <path d="M8 13h8"/>
-              <path d="M12 9v8"/>
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>
-            任务模板
+            设置
           </button>
         </div>
       </Teleport>
@@ -485,6 +512,23 @@ function handleShortcutEvent(event) {
     <McpDialog
       v-if="showMcpDialog"
       @close="showMcpDialog = false"
+    />
+
+    <ProviderDialog
+      v-if="showClaudeDialog"
+      provider="claude"
+      @close="showClaudeDialog = false"
+    />
+
+    <ProviderDialog
+      v-if="showCodexDialog"
+      provider="codex"
+      @close="showCodexDialog = false"
+    />
+
+    <PromptDialog
+      v-if="showPromptDialog"
+      @close="showPromptDialog = false"
     />
 
     <TaskTemplatesDialog

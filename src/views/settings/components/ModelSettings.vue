@@ -11,6 +11,14 @@ import SettingItem from './common/SettingItem.vue'
 import { IconButton } from '@/components/base'
 
 const props = defineProps({
+  initialProviderTab: {
+    type: String,
+    default: 'claude'
+  },
+  visibleProviders: {
+    type: Array,
+    default: () => ['claude', 'codex']
+  },
   defaultConfig: {
     type: Object,
     required: true
@@ -94,6 +102,31 @@ const codexAuthDebugDialog = ref({
   title: '',
   content: ''
 })
+
+const normalizedVisibleProviders = computed(() => {
+  const providers = Array.isArray(props.visibleProviders) ? props.visibleProviders : ['claude', 'codex']
+  const filtered = providers.filter(provider => provider === 'claude' || provider === 'codex')
+  return filtered.length > 0 ? filtered : ['claude', 'codex']
+})
+
+const showProviderTabs = computed(() => normalizedVisibleProviders.value.length > 1)
+
+function ensureActiveProviderTab(nextProvider = props.initialProviderTab) {
+  const allowed = normalizedVisibleProviders.value
+  if (allowed.includes(nextProvider)) {
+    activeProviderTab.value = nextProvider
+    return
+  }
+  activeProviderTab.value = allowed[0] || 'claude'
+}
+
+watch(
+  () => [props.initialProviderTab, normalizedVisibleProviders.value.join(',')],
+  ([nextProvider]) => {
+    ensureActiveProviderTab(nextProvider)
+  },
+  { immediate: true }
+)
 
 // 检查是否有任何模型映射（不包括通用模型）
 const hasAnyModelMapping = computed(() => {
@@ -465,7 +498,7 @@ function toggleSectionCollapse(section) {
 
 <template>
   <SettingsSection title="模型配置">
-    <div class="provider-tabs" role="tablist" aria-label="模型提供商">
+    <div v-if="showProviderTabs" class="provider-tabs" role="tablist" aria-label="模型提供商">
       <button
         type="button"
         class="provider-tab"
@@ -484,7 +517,7 @@ function toggleSectionCollapse(section) {
       </button>
     </div>
 
-    <div v-show="activeProviderTab === 'claude'" class="provider-panel">
+    <div v-if="normalizedVisibleProviders.includes('claude')" v-show="activeProviderTab === 'claude'" class="provider-panel">
       <h4 class="subsection-title">Claude</h4>
       <div class="default-config-card">
       <IconButton class="edit-btn-absolute" @click="emit('edit-default-config')" title="编辑">
@@ -784,7 +817,7 @@ function toggleSectionCollapse(section) {
       </div>
     </div>
 
-    <div v-show="activeProviderTab === 'codex'" class="provider-panel">
+    <div v-if="normalizedVisibleProviders.includes('codex')" v-show="activeProviderTab === 'codex'" class="provider-panel">
       <h4 class="subsection-title">Codex 代理</h4>
       <div class="proxy-setting-panel">
         <SettingItem

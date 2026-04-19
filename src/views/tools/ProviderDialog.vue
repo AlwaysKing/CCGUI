@@ -44,6 +44,7 @@ const installingMarketplacePlugin = ref(null)
 const codexMarketplaceInstallFilter = ref(['installed', 'uninstalled'])
 const codexMarketplaceSearch = ref('')
 const pluginActionScope = ref('all')
+const selectedCodexPluginStates = ref(['enabled', 'disabled'])
 const showPluginDetail = ref(false)
 const selectedPlugin = ref(null)
 const pluginDetailTab = ref('skills')
@@ -140,7 +141,6 @@ const hookDisableScopeOptions = computed(() => {
 })
 const pluginScopeOptions = computed(() => normalizedProvider.value === 'codex'
   ? [
-      { value: 'all', label: '全部' },
       { value: 'enabled', label: '已启用' },
       { value: 'disabled', label: '已禁用' }
     ]
@@ -178,15 +178,26 @@ const filteredPlugins = computed(() => {
   const sourcePlugins = normalizedProvider.value === 'codex'
     ? plugins.value.filter(plugin => ['user', 'project'].includes(plugin.scope || ''))
     : plugins.value
+  if (normalizedProvider.value === 'codex') {
+    const states = Array.isArray(selectedCodexPluginStates.value) ? selectedCodexPluginStates.value : []
+    const allowEnabled = states.length === 0 || states.includes('enabled')
+    const allowDisabled = states.length === 0 || states.includes('disabled')
+    return sourcePlugins.filter((plugin) => {
+      return plugin.enabled === false ? allowDisabled : allowEnabled
+    })
+  }
   const scope = pluginActionScope.value
   if (!scope || scope === 'all') return sourcePlugins
-  if (normalizedProvider.value === 'codex') {
-    if (scope === 'enabled') return sourcePlugins.filter(plugin => plugin.enabled !== false)
-    if (scope === 'disabled') return sourcePlugins.filter(plugin => plugin.enabled === false)
-    return sourcePlugins
-  }
   return sourcePlugins.filter(plugin => (plugin.scope || '') === scope)
 })
+
+function toggleCodexPluginStateFilter(value = '') {
+  if (!value) return
+  const current = Array.isArray(selectedCodexPluginStates.value) ? selectedCodexPluginStates.value : []
+  selectedCodexPluginStates.value = current.includes(value)
+    ? current.filter(item => item !== value)
+    : [...current, value]
+}
 const subagents = computed(() => {
   const scoped = Array.isArray(inspectorData.value?.subagents) ? inspectorData.value.subagents : []
   const pluginItems = []
@@ -1375,7 +1386,8 @@ async function confirmDeleteSubagent() {
 }
 
 onMounted(() => {
-  pluginActionScope.value = normalizedProvider.value === 'codex' ? 'user' : 'all'
+  pluginActionScope.value = 'all'
+  selectedCodexPluginStates.value = ['enabled', 'disabled']
   refreshAll()
 })
 
@@ -1383,7 +1395,8 @@ watch(() => props.projectPath, () => {
   selectedHookLocations.value = hookLocationOptions.value.map(option => option.value)
   selectedHookModes.value = hookModeOptions.value.map(option => option.value)
   selectedSubagentSources.value = subagentSourceOptions.value.map(option => option.value)
-  pluginActionScope.value = normalizedProvider.value === 'codex' ? 'user' : 'all'
+  pluginActionScope.value = 'all'
+  selectedCodexPluginStates.value = ['enabled', 'disabled']
   selectedMarketplace.value = null
   refreshInspector()
 })
@@ -1391,7 +1404,8 @@ watch(() => props.projectPath, () => {
 watch(() => normalizedProvider.value, () => {
   selectedHookLocations.value = hookLocationOptions.value.map(option => option.value)
   selectedHookModes.value = hookModeOptions.value.map(option => option.value)
-  pluginActionScope.value = normalizedProvider.value === 'codex' ? 'user' : 'all'
+  pluginActionScope.value = 'all'
+  selectedCodexPluginStates.value = ['enabled', 'disabled']
 })
 
 watch(() => activeSection.value, (section) => {
@@ -1910,15 +1924,17 @@ watch(() => activeSection.value, (section) => {
           <div v-if="activeSection === 'plugins'" class="tab-panel plugins-panel">
             <div class="panel-header">
               <div class="hook-filter-bar">
-                <span class="hook-filter-label">{{ normalizedProvider === 'codex' ? '启用状态' : '作用域' }}</span>
+                <span v-if="normalizedProvider !== 'codex'" class="hook-filter-label">作用域</span>
                 <div class="hook-filter-options">
                   <button
                     v-for="option in pluginScopeOptions"
                     :key="`plugin-scope-${option.value}`"
                     type="button"
                     class="hook-filter-btn"
-                    :class="{ active: pluginActionScope === option.value }"
-                    @click="pluginActionScope = option.value"
+                    :class="{ active: normalizedProvider === 'codex' ? selectedCodexPluginStates.includes(option.value) : pluginActionScope === option.value }"
+                    @click="normalizedProvider === 'codex'
+                      ? toggleCodexPluginStateFilter(option.value)
+                      : (pluginActionScope = option.value)"
                   >
                     {{ option.label }}
                   </button>
@@ -2823,7 +2839,7 @@ watch(() => activeSection.value, (section) => {
             width="760px"
             @close="closePluginDetail"
           >
-            <template v-if="normalizedProvider === 'codex' && selectedPlugin" #header>
+            <template v-if="selectedPlugin" #header>
               <div class="plugin-detail-dialog-title">
                 <img
                   v-if="selectedPlugin.logoPath"
@@ -2843,13 +2859,12 @@ watch(() => activeSection.value, (section) => {
                 <span class="plugin-detail-dialog-title-text">
                   {{ selectedPlugin.displayName || selectedPlugin.name || '插件详情' }}
                 </span>
+                <span v-if="selectedPlugin.version" class="meta-chip plugin-detail-title-chip">v{{ selectedPlugin.version }}</span>
               </div>
             </template>
             <div v-if="selectedPlugin" class="plugin-detail">
               <div class="plugin-detail-meta">
                 <span v-if="isPluginDisabled(selectedPlugin)" class="meta-chip disabled-state-badge">已禁用</span>
-                <span v-if="selectedPlugin.version" class="meta-chip">版本: v{{ selectedPlugin.version }}</span>
-                <span class="meta-chip">{{ pluginSummary(selectedPlugin) }}</span>
               </div>
 
               <p
@@ -2860,37 +2875,94 @@ watch(() => activeSection.value, (section) => {
               </p>
 
               <template v-if="normalizedProvider === 'codex'">
+                <div class="plugin-detail-body">
                 <div class="plugin-detail-section">
-                  <div class="plugin-detail-section-title">包含</div>
-                  <div v-if="codexPluginIncludedSections(selectedPlugin).length > 0" class="plugin-detail-included">
-                    <div
-                      v-for="section in codexPluginIncludedSections(selectedPlugin)"
-                      :key="`codex-detail-${section.key}`"
-                      class="plugin-detail-included-group"
+                  <div class="plugin-detail-section-title">内容</div>
+                  <div class="detail-tabs">
+                    <button
+                      v-for="tab in pluginDetailTabs(selectedPlugin)"
+                      :key="`plugin-detail-${tab.key}`"
+                      type="button"
+                      class="detail-tab"
+                      :class="{ active: pluginDetailTab === tab.key }"
+                      @click="pluginDetailTab = tab.key"
                     >
-                      <div class="plugin-detail-included-title">{{ section.label }}</div>
-                      <div class="plugin-detail-list">
-                        <div
-                          v-for="item in section.items"
-                          :key="item.id"
-                          class="plugin-detail-item"
-                          @click="section.key === 'skills' ? openPluginSkillDetail(item) : undefined"
-                        >
-                          <div class="plugin-detail-item-title-row">
-                            <div class="plugin-detail-item-title">
-                              {{ item.title || item.name }}
-                            </div>
-                            <span v-if="section.key === 'mcp' && item.transport" class="meta-chip plugin-detail-inline-chip">
-                              {{ item.transport }}
-                            </span>
+                      {{ tab.label }}
+                      <span class="count-badge small">{{ tab.count }}</span>
+                    </button>
+                  </div>
+
+                  <div v-if="pluginDetailTab === 'skills'" class="plugin-detail-list">
+                    <div v-if="pluginDetailItems(selectedPlugin, 'skills').length > 0">
+                      <div
+                        v-for="skill in pluginDetailItems(selectedPlugin, 'skills')"
+                        :key="skill.id"
+                        class="plugin-detail-item"
+                        @click="openPluginSkillDetail(skill)"
+                      >
+                        <div class="plugin-detail-item-title">{{ skill.name }}</div>
+                        <p class="plugin-detail-item-desc">{{ skill.description || '暂无描述' }}</p>
+                      </div>
+                    </div>
+                    <div v-else class="empty-state compact">
+                      <p>暂无技能内容</p>
+                    </div>
+                  </div>
+
+                  <div v-else-if="pluginDetailTab === 'apps'" class="plugin-detail-list">
+                    <div v-if="pluginDetailItems(selectedPlugin, 'apps').length > 0">
+                      <div
+                        v-for="app in pluginDetailItems(selectedPlugin, 'apps')"
+                        :key="app.id"
+                        class="plugin-detail-item"
+                      >
+                        <div class="plugin-detail-item-title-row plugin-agent-title-row">
+                          <div class="plugin-list-header-main">
+                            <div class="plugin-detail-item-title">{{ app.name }}</div>
+                            <span v-if="app.needsAuth" class="meta-chip">需要授权</span>
                           </div>
-                          <p class="plugin-detail-item-desc">{{ item.description || '暂无描述' }}</p>
+                        </div>
+                        <div class="subagent-item-body plugin-agent-item-body">
+                          <p class="plugin-detail-item-desc">
+                            <span class="subagent-field-label">description:</span>
+                            {{ app.description || '暂无描述' }}
+                          </p>
+                          <p v-if="app.installUrl" class="plugin-detail-item-desc">
+                            <span class="subagent-field-label">installUrl:</span>
+                            {{ app.installUrl }}
+                          </p>
                         </div>
                       </div>
                     </div>
+                    <div v-else class="empty-state compact">
+                      <p>暂无应用内容</p>
+                    </div>
                   </div>
-                  <div v-else class="empty-state compact">
-                    <p>暂无可展示内容</p>
+
+                  <div v-else-if="pluginDetailTab === 'mcp'" class="plugin-detail-list">
+                    <div v-if="pluginDetailItems(selectedPlugin, 'mcp').length > 0">
+                      <div
+                        v-for="mcp in pluginDetailItems(selectedPlugin, 'mcp')"
+                        :key="mcp.id"
+                        class="plugin-detail-mcp-card"
+                        :class="{ disabled: mcp.pluginEnabled === false }"
+                      >
+                        <div class="plugin-detail-mcp-header">
+                          <div class="plugin-list-header-main">
+                            <span class="plugin-detail-mcp-name">{{ mcp.title || mcp.name }}</span>
+                            <span v-if="mcp.transport" class="meta-chip plugin-detail-inline-chip">{{ mcp.transport }}</span>
+                          </div>
+                          <div class="plugin-detail-mcp-badges">
+                            <span v-if="mcp.pluginEnabled === false" class="plugin-detail-source-badge disabled-state-badge">已禁用</span>
+                            <span v-if="mcp.version" class="version-badge">v{{ mcp.version }}</span>
+                          </div>
+                        </div>
+                        <p class="plugin-detail-mcp-desc">{{ mcp.description || '暂无描述' }}</p>
+                      </div>
+                    </div>
+                    <div v-else class="empty-state compact">
+                      <p>暂无 MCP 内容</p>
+                    </div>
                   </div>
                 </div>
 
@@ -2907,9 +2979,13 @@ watch(() => activeSection.value, (section) => {
                     </div>
                   </div>
                 </div>
+                </div>
               </template>
 
               <template v-else>
+                <div class="plugin-detail-body">
+                <div class="plugin-detail-section">
+                  <div class="plugin-detail-section-title">内容</div>
                 <div class="detail-tabs">
                   <button
                     v-for="tab in pluginDetailTabs(selectedPlugin)"
@@ -3073,6 +3149,8 @@ watch(() => activeSection.value, (section) => {
                   <div v-else class="empty-state compact">
                     <p>暂无 Agent 内容</p>
                   </div>
+                </div>
+                </div>
                 </div>
               </template>
             </div>
@@ -4155,6 +4233,11 @@ watch(() => activeSection.value, (section) => {
   min-width: 0;
 }
 
+.plugin-detail-title-chip {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 .plugin-detail-meta {
   display: flex;
   align-items: center;
@@ -4164,6 +4247,14 @@ watch(() => activeSection.value, (section) => {
 
 .plugin-detail-desc {
   margin: 0;
+}
+
+.plugin-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  flex: 1;
+  min-height: 0;
 }
 
 .plugin-detail-section {
@@ -4267,6 +4358,7 @@ watch(() => activeSection.value, (section) => {
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
+  padding-bottom: 12px;
 }
 
 .plugin-detail-item {

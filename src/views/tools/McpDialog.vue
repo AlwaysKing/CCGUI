@@ -1063,7 +1063,7 @@ useDialogStack(computed(() => true), handleClose)
 
 .mcp-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: 1fr;
   gap: 12px;
   padding: 0 24px 24px;
 }

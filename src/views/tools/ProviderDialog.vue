@@ -3619,9 +3619,9 @@ watch(() => activeSection.value, (section) => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
   line-height: 1;
 }
 

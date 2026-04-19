@@ -3973,9 +3973,10 @@ ipcMain.handle('install-openai-market-skill', async (event, { skillId, repoPath 
   }
 })
 
-ipcMain.handle('list-downloaded-skills', async () => {
+ipcMain.handle('list-downloaded-skills', async (event, options = {}) => {
   try {
     const skillsRoot = path.join(os.homedir(), '.ccgui', 'skills')
+    const includeExternal = options?.includeExternal === true
 
     const skills = []
 
@@ -3997,89 +3998,93 @@ ipcMain.handle('list-downloaded-skills', async () => {
           try { if (fs.lstatSync(claudeLink).isSymbolicLink() && fs.realpathSync(claudeLink) === skillPath) installedTargets.push('claude') } catch (_) {}
           try { if (fs.lstatSync(codexLink).isSymbolicLink() && fs.realpathSync(codexLink) === skillPath) installedTargets.push('codex') } catch (_) {}
 
-          skills.push({ name: meta.name, slug: skillEntry.name, source: sourceName, path: skillPath, description: meta.description, installedTargets })
+          skills.push({ name: meta.name, slug: skillEntry.name, source: sourceName, path: skillPath, description: meta.description, avatar: meta.avatar, installedTargets })
         }
       }
     }
 
-    // 扫描外部技能（Claude/Codex 目录中非 CCGUI 管理的技能）
-    const ccguiPaths = new Set(skills.map(s => s.path))
-    const externalDirs = [
-      { target: 'claude', dir: path.join(os.homedir(), '.claude', 'skills') },
-      { target: 'codex', dir: path.join(os.homedir(), '.codex', 'skills') }
-    ]
-    const externalSkills = new Map()
+    if (includeExternal) {
+      // 扫描外部技能（Claude/Codex 目录中非 CCGUI 管理的技能）
+      const ccguiPaths = new Set(skills.map(s => s.path))
+      const externalDirs = [
+        { target: 'claude', dir: path.join(os.homedir(), '.claude', 'skills') },
+        { target: 'codex', dir: path.join(os.homedir(), '.codex', 'skills') }
+      ]
+      const externalSkills = new Map()
 
-    for (const { target, dir } of externalDirs) {
-      if (!fs.existsSync(dir)) continue
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name.startsWith('.')) continue
-        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
-        const entryPath = path.join(dir, entry.name)
+      for (const { target, dir } of externalDirs) {
+        if (!fs.existsSync(dir)) continue
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (entry.name.startsWith('.')) continue
+          if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+          const entryPath = path.join(dir, entry.name)
 
-        // 跳过指向 CCGUI 管理技能的 symlink
-        try {
-          const stat = fs.lstatSync(entryPath)
-          if (stat.isSymbolicLink() && ccguiPaths.has(fs.realpathSync(entryPath))) continue
-        } catch (_) {}
+          // 跳过指向 CCGUI 管理技能的 symlink
+          try {
+            const stat = fs.lstatSync(entryPath)
+            if (stat.isSymbolicLink() && ccguiPaths.has(fs.realpathSync(entryPath))) continue
+          } catch (_) {}
 
-        const meta = readSkillMetaFromPath(entryPath, entry.name)
-        const existing = externalSkills.get(entry.name)
-        if (existing) {
-          existing.installedTargets.push(target)
-        } else {
-          externalSkills.set(entry.name, {
+          const meta = readSkillMetaFromPath(entryPath, entry.name)
+          const existing = externalSkills.get(entry.name)
+          if (existing) {
+            existing.installedTargets.push(target)
+          } else {
+            externalSkills.set(entry.name, {
+              name: meta.name,
+              slug: entry.name,
+              source: 'external',
+              path: entryPath,
+              description: meta.description,
+              avatar: meta.avatar,
+              installedTargets: [target],
+              external: true
+            })
+          }
+        }
+      }
+
+      skills.push(...externalSkills.values())
+
+      // 扫描 Codex 系统内置技能（~/.codex/skills/.system/）
+      const codexSystemDir = path.join(os.homedir(), '.codex', 'skills', '.system')
+      if (fs.existsSync(codexSystemDir)) {
+        for (const entry of fs.readdirSync(codexSystemDir, { withFileTypes: true })) {
+          if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+          const skillPath = path.join(codexSystemDir, entry.name)
+          const meta = readSkillMetaFromPath(skillPath, entry.name)
+          skills.push({
             name: meta.name,
             slug: entry.name,
-            source: 'external',
-            path: entryPath,
+            source: 'codex-system',
+            path: skillPath,
             description: meta.description,
-            installedTargets: [target],
-            external: true
+            avatar: meta.avatar,
+            installedTargets: ['codex'],
+            external: true,
+            system: true
           })
         }
       }
-    }
 
-    skills.push(...externalSkills.values())
-
-    // 扫描 Codex 系统内置技能（~/.codex/skills/.system/）
-    const codexSystemDir = path.join(os.homedir(), '.codex', 'skills', '.system')
-    if (fs.existsSync(codexSystemDir)) {
-      for (const entry of fs.readdirSync(codexSystemDir, { withFileTypes: true })) {
-        if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-        const skillPath = path.join(codexSystemDir, entry.name)
-        const meta = readSkillMetaFromPath(skillPath, entry.name)
-        skills.push({
-          name: meta.name,
-          slug: entry.name,
-          source: 'codex-system',
-          path: skillPath,
-          description: meta.description,
-          installedTargets: ['codex'],
-          external: true,
-          system: true
-        })
-      }
-    }
-
-    for (const pluginSkill of await collectInstalledPluginSkills()) {
-      const existing = skills.find(skill => skill.slug === pluginSkill.slug && skill.path === pluginSkill.path)
-      if (existing) {
-        existing.source = pluginSkill.source || existing.source
-        existing.sourceLabel = pluginSkill.sourceLabel || existing.sourceLabel
-        existing.plugin = pluginSkill.plugin === true || existing.plugin === true
-        existing.pluginEnabled = pluginSkill.pluginEnabled
-        existing.pluginScope = pluginSkill.pluginScope || existing.pluginScope
-        existing.external = pluginSkill.external === true || existing.external === true
-        for (const target of pluginSkill.installedTargets || []) {
-          if (!existing.installedTargets.includes(target)) {
-            existing.installedTargets.push(target)
+      for (const pluginSkill of await collectInstalledPluginSkills()) {
+        const existing = skills.find(skill => skill.slug === pluginSkill.slug && skill.path === pluginSkill.path)
+        if (existing) {
+          existing.source = pluginSkill.source || existing.source
+          existing.sourceLabel = pluginSkill.sourceLabel || existing.sourceLabel
+          existing.plugin = pluginSkill.plugin === true || existing.plugin === true
+          existing.pluginEnabled = pluginSkill.pluginEnabled
+          existing.pluginScope = pluginSkill.pluginScope || existing.pluginScope
+          existing.external = pluginSkill.external === true || existing.external === true
+          for (const target of pluginSkill.installedTargets || []) {
+            if (!existing.installedTargets.includes(target)) {
+              existing.installedTargets.push(target)
+            }
           }
+          continue
         }
-        continue
+        skills.push(pluginSkill)
       }
-      skills.push(pluginSkill)
     }
 
     return { success: true, skills }
@@ -4179,6 +4184,7 @@ function extractArchiveTo(archivePath, targetDir) {
 function readSkillMetaFromPath(skillPath, fallbackName) {
   let name = fallbackName
   let description = ''
+  let avatar = ''
   try {
     const skillMd = path.join(skillPath, 'SKILL.md')
     if (fs.existsSync(skillMd)) {
@@ -4193,10 +4199,63 @@ function readSkillMetaFromPath(skillPath, fallbackName) {
         if (descMatch) {
           description = descMatch[1].trim().replace(/^["']|["']$/g, '')
         }
+
+        const iconMatch = fmMatch[1].match(/^(?:iconLarge|icon_large|icon-large|iconSmall|icon_small|icon-small):\s*(.+)$/m)
+        if (iconMatch) {
+          const iconValue = iconMatch[1].trim().replace(/^["']|["']$/g, '')
+          const directPath = path.isAbsolute(iconValue) ? iconValue : path.resolve(skillPath, iconValue)
+          const assetPath = path.resolve(skillPath, 'assets', iconValue)
+          if (fs.existsSync(directPath)) {
+            avatar = directPath
+          } else if (fs.existsSync(assetPath)) {
+            avatar = assetPath
+          }
+        }
+      }
+    }
+
+    if (!avatar) {
+      const agentConfigPath = path.join(skillPath, 'agents', 'openai.yaml')
+      if (fs.existsSync(agentConfigPath)) {
+        const agentContent = fs.readFileSync(agentConfigPath, 'utf8')
+        const iconMatch = agentContent.match(/^\s*(?:icon_large|iconLarge|icon-large|icon_small|iconSmall|icon-small):\s*(.+)$/m)
+        if (iconMatch) {
+          const iconValue = iconMatch[1].trim().replace(/^["']|["']$/g, '')
+          const directPath = path.isAbsolute(iconValue) ? iconValue : path.resolve(skillPath, iconValue)
+          const assetPath = path.resolve(skillPath, 'assets', iconValue)
+          if (fs.existsSync(directPath)) {
+            avatar = directPath
+          } else if (fs.existsSync(assetPath)) {
+            avatar = assetPath
+          }
+        }
+      }
+    }
+
+    if (!avatar) {
+      const assetsRoot = path.join(skillPath, 'assets')
+      const skillId = path.basename(skillPath)
+      const iconCandidates = [
+        `${skillId}.png`,
+        `${skillId}.svg`,
+        `${skillId}-small.png`,
+        `${skillId}-small.svg`,
+        'icon.png',
+        'icon.svg',
+        'small.png',
+        'small.svg',
+        'icon-small.png',
+        'icon-small.svg'
+      ]
+
+      if (fs.existsSync(assetsRoot)) {
+        avatar = iconCandidates
+          .map((filename) => path.join(assetsRoot, filename))
+          .find((candidate) => fs.existsSync(candidate)) || ''
       }
     }
   } catch (_) {}
-  return { name, description }
+  return { name, description, avatar }
 }
 
 async function collectInstalledPluginSkills(projectPath = '') {
@@ -4207,7 +4266,11 @@ async function collectInstalledPluginSkills(projectPath = '') {
     projectPath,
     contents: ['skills']
   }).skills) {
-    collected.push(pluginSkill)
+    const scannedMeta = pluginSkill.path ? readSkillMetaFromPath(pluginSkill.path, pluginSkill.slug || pluginSkill.name || 'skill') : { avatar: '' }
+    collected.push({
+      ...pluginSkill,
+      avatar: scannedMeta.avatar || pluginSkill.avatar || ''
+    })
   }
 
   try {
@@ -4226,12 +4289,14 @@ async function collectInstalledPluginSkills(projectPath = '') {
 
       const skills = Array.isArray(plugin.details?.skills) ? plugin.details.skills : []
       for (const skill of skills) {
+        const scannedMeta = skill.path ? readSkillMetaFromPath(skill.path, skill.slug || skill.name || 'skill') : { avatar: '' }
         collected.push({
           id: skill.id || `${pluginId || plugin.name || 'codex-plugin'}:${skill.slug || skill.name || 'skill'}`,
           name: skill.name || skill.slug || 'skill',
           slug: skill.slug || skill.name || '',
           description: skill.description || '',
           path: skill.path || '',
+          avatar: scannedMeta.avatar || '',
           source: 'plugin',
           sourceLabel: `Codex 插件 · ${plugin.displayName || plugin.name || plugin.pluginId || '未知插件'}`,
           plugin: true,

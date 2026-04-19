@@ -27,6 +27,7 @@ const markets = computed(() => {
 
 const downloadedMcps = ref([])
 const installFilter = ref('all') // 'all' | 'claude' | 'codex' | 'none'
+const showExternalMcps = ref(false)
 const toggleError = ref(null)
 const downloadError = ref(null)
 const mcpToDelete = ref(null)
@@ -45,6 +46,12 @@ function getMcpSourceLabel(mcp) {
   return mcp.source || '本地'
 }
 
+function getDownloadSourceLabel(mcp) {
+  if (mcp?.source === 'registry') return 'Registry'
+  if (mcp?.source === 'local') return '本地'
+  return ''
+}
+
 function isStaticMcp(mcp) {
   return Boolean(mcp.external || mcp.plugin)
 }
@@ -61,11 +68,15 @@ const envDialogMcp = ref(null) // { mcp, target }
 const envValues = ref({})
 
 const filteredDownloadedMcps = computed(() => {
-  if (installFilter.value === 'all') return downloadedMcps.value
-  if (installFilter.value === 'none') {
-    return downloadedMcps.value.filter(m => !m.installedTargets?.length)
+  let list = downloadedMcps.value
+  if (!showExternalMcps.value) {
+    list = list.filter(m => !isStaticMcp(m))
   }
-  return downloadedMcps.value.filter(m => m.installedTargets?.includes(installFilter.value))
+  if (installFilter.value === 'all') return list
+  if (installFilter.value === 'none') {
+    return list.filter(m => !m.installedTargets?.length)
+  }
+  return list.filter(m => m.installedTargets?.includes(installFilter.value))
 })
 
 const filteredProjectMcps = computed(() => {
@@ -386,11 +397,17 @@ useDialogStack(computed(() => true), handleClose)
         </div>
 
         <!-- 右侧内容 -->
-        <div class="mcp-content" @scroll="handleScroll">
-          <!-- 已下载 -->
+        <div class="mcp-content">
+        <!-- 已下载 -->
           <div v-if="activeMarket === 'installed'" class="tab-panel">
             <div class="panel-header">
-              <h3>已下载的 MCP 服务</h3>
+              <div class="skills-header-toggle">
+                <span class="skills-header-toggle-label">外部技能</span>
+                <label class="toggle-switch compact">
+                  <input v-model="showExternalMcps" type="checkbox">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
               <div class="filter-group">
                 <button class="filter-btn" :class="{ active: installFilter === 'all' }" @click="installFilter = 'all'">全部</button>
                 <button class="filter-btn" :class="{ active: installFilter === 'claude' }" @click="installFilter = 'claude'">Claude</button>
@@ -398,71 +415,81 @@ useDialogStack(computed(() => true), handleClose)
                 <button class="filter-btn" :class="{ active: installFilter === 'none' }" @click="installFilter = 'none'">未安装</button>
               </div>
             </div>
-            <p v-if="toggleError" class="error-msg">{{ toggleError }}</p>
+            <div class="panel-scroll-body">
+              <p v-if="toggleError" class="error-msg">{{ toggleError }}</p>
 
-            <div v-if="filteredDownloadedMcps.length > 0" class="mcp-grid">
-              <div
-                v-for="mcp in filteredDownloadedMcps"
-                :key="mcp.slug + '-' + mcp.source"
-                class="mcp-card"
-                :class="{ disabled: isPluginDisabled(mcp) }"
-              >
-                <div class="mcp-header">
-                  <span class="mcp-name">{{ mcp.title || mcp.name }}</span>
-                  <div class="mcp-badges">
-                    <span
-                      v-if="mcp.external || mcp.source === 'registry' || mcp.plugin || mcp.sourceLabel"
-                      class="source-badge"
-                      :class="{ external: mcp.external, registry: mcp.source === 'registry', plugin: mcp.plugin }"
-                    >
-                      {{ getMcpSourceLabel(mcp) }}
-                    </span>
-                    <span v-if="isPluginDisabled(mcp)" class="source-badge disabled-state-badge">已禁用</span>
-                    <span v-if="mcp.version" class="version-badge">v{{ mcp.version }}</span>
+              <div v-if="filteredDownloadedMcps.length > 0" class="mcp-grid">
+                <div
+                  v-for="mcp in filteredDownloadedMcps"
+                  :key="mcp.slug + '-' + mcp.source"
+                  class="mcp-card"
+                  :class="{ disabled: isPluginDisabled(mcp) }"
+                >
+                  <div class="mcp-header">
+                    <div class="mcp-header-main">
+                      <span class="mcp-name">{{ mcp.title || mcp.name }}</span>
+                      <span v-if="isPluginDisabled(mcp)" class="source-badge disabled-state-badge title-inline-badge">已禁用</span>
+                      <span
+                        v-if="!isStaticMcp(mcp) && getDownloadSourceLabel(mcp)"
+                        class="source-badge title-inline-badge"
+                        :class="[mcp.source]"
+                      >
+                        {{ getDownloadSourceLabel(mcp) }}
+                      </span>
+                      <span v-if="mcp.version" class="version-badge title-inline-badge">v{{ mcp.version }}</span>
+                    </div>
+                    <div class="mcp-badges">
+                      <span
+                        v-if="isStaticMcp(mcp)"
+                        class="source-badge"
+                        :class="{ external: mcp.external, registry: mcp.source === 'registry', plugin: mcp.plugin }"
+                      >
+                        {{ getMcpSourceLabel(mcp) }}
+                      </span>
+                      <div v-if="!isStaticMcp(mcp)" class="target-toggles mcp-header-targets">
+                        <button
+                          class="target-toggle"
+                          :class="{ active: mcp.installedTargets?.includes('claude') }"
+                          @click.stop="toggleTarget(mcp, 'claude')"
+                        >Claude</button>
+                        <button
+                          class="target-toggle"
+                          :class="{ active: mcp.installedTargets?.includes('codex') }"
+                          @click.stop="toggleTarget(mcp, 'codex')"
+                        >Codex</button>
+                      </div>
+                      <button v-if="!isStaticMcp(mcp)" class="delete-btn mcp-header-delete-btn" @click.stop="handleDeleteMcp(mcp)" title="删除">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <p class="mcp-desc">{{ mcp.description || '暂无描述' }}</p>
-                <div class="mcp-meta">
-                  <div class="target-toggles">
-                    <button
-                      v-if="!isStaticMcp(mcp) || mcp.installedTargets?.includes('claude')"
-                      class="target-toggle"
-                      :class="{ active: mcp.installedTargets?.includes('claude'), static: isStaticMcp(mcp) }"
-                      @click.stop="!isStaticMcp(mcp) && toggleTarget(mcp, 'claude')"
-                    >Claude</button>
-                    <button
-                      v-if="!isStaticMcp(mcp) || mcp.installedTargets?.includes('codex')"
-                      class="target-toggle"
-                      :class="{ active: mcp.installedTargets?.includes('codex'), static: isStaticMcp(mcp) }"
-                      @click.stop="!isStaticMcp(mcp) && toggleTarget(mcp, 'codex')"
-                    >Codex</button>
+                  <p class="mcp-desc">{{ mcp.description || '暂无描述' }}</p>
+                  <div class="mcp-meta">
+                    <div class="mcp-meta-spacer"></div>
                   </div>
-                  <button v-if="!isStaticMcp(mcp)" class="delete-btn" @click.stop="handleDeleteMcp(mcp)" title="删除">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polyline points="3 6 5 6 21 6"/>
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                    </svg>
-                  </button>
                 </div>
               </div>
-            </div>
 
-            <!-- 空状态 -->
-            <div v-else-if="downloadedMcps.length === 0" class="empty-state">
-              <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-                <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-                <line x1="6" y1="6" x2="6.01" y2="6"/>
-                <line x1="6" y1="18" x2="6.01" y2="18"/>
-              </svg>
-              <p>暂无已下载的 MCP 服务</p>
-              <p class="hint">从 MCP Registry 浏览并下载</p>
-              <button class="action-btn" @click="handleMarketChange('registry')">
-                浏览 MCP Registry
-              </button>
-            </div>
-            <div v-else class="empty-state">
-              <p>当前过滤条件下没有 MCP 服务</p>
+              <!-- 空状态 -->
+              <div v-else-if="downloadedMcps.length === 0" class="empty-state">
+                <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                  <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+                  <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+                  <line x1="6" y1="6" x2="6.01" y2="6"/>
+                  <line x1="6" y1="18" x2="6.01" y2="18"/>
+                </svg>
+                <p>暂无已下载的 MCP 服务</p>
+                <p class="hint">从 MCP Registry 浏览并下载</p>
+                <button class="action-btn" @click="handleMarketChange('registry')">
+                  浏览 MCP Registry
+                </button>
+              </div>
+              <div v-else class="empty-state">
+                <p>当前过滤条件下没有 MCP 服务</p>
+              </div>
             </div>
           </div>
 
@@ -490,41 +517,41 @@ useDialogStack(computed(() => true), handleClose)
                 </button>
               </div>
             </div>
-
-            <!-- 加载中 -->
-            <div v-if="isLoading && servers.length === 0" class="loading-state">
-              <div class="spinner"></div>
-              <p>加载 MCP 服务列表...</p>
-            </div>
-
-            <!-- 错误 -->
-            <div v-else-if="registryError" class="error-state">
-              <svg class="error-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="12" y1="8" x2="12" y2="12"/>
-                <line x1="12" y1="16" x2="12.01" y2="16"/>
-              </svg>
-              <p>加载失败: {{ registryError }}</p>
-              <button class="action-btn small" @click="refresh">重试</button>
-            </div>
-
-            <!-- 搜索无结果 -->
-            <div v-else-if="isSearching && servers.length === 0 && !isLoading" class="empty-state">
-              <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-                <circle cx="11" cy="11" r="8"/>
-                <path d="m21 21-4.35-4.35"/>
-              </svg>
-              <p>未找到匹配的 MCP 服务</p>
-              <p class="hint">试试其他关键词</p>
-            </div>
-
-            <!-- 服务器列表 -->
-            <div v-else class="servers-grid-wrapper">
-              <div v-if="isLoading" class="search-overlay">
-                <div class="spinner small"></div>
-                <span>搜索中...</span>
+            <div class="panel-scroll-body" @scroll="handleScroll">
+              <!-- 加载中 -->
+              <div v-if="isLoading && servers.length === 0" class="loading-state">
+                <div class="spinner"></div>
+                <p>加载 MCP 服务列表...</p>
               </div>
-              <div class="mcp-grid">
+
+              <!-- 错误 -->
+              <div v-else-if="registryError" class="error-state">
+                <svg class="error-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <p>加载失败: {{ registryError }}</p>
+                <button class="action-btn small" @click="refresh">重试</button>
+              </div>
+
+              <!-- 搜索无结果 -->
+              <div v-else-if="isSearching && servers.length === 0 && !isLoading" class="empty-state">
+                <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="m21 21-4.35-4.35"/>
+                </svg>
+                <p>未找到匹配的 MCP 服务</p>
+                <p class="hint">试试其他关键词</p>
+              </div>
+
+              <!-- 服务器列表 -->
+              <div v-else class="servers-grid-wrapper">
+                <div v-if="isLoading" class="search-overlay">
+                  <div class="spinner small"></div>
+                  <span>搜索中...</span>
+                </div>
+                <div class="mcp-grid">
                 <div
                   v-for="server in servers"
                   :key="server.fullName"
@@ -532,38 +559,66 @@ useDialogStack(computed(() => true), handleClose)
                   @click="openServerDetail(server)"
                 >
                   <div class="mcp-header">
-                    <span class="mcp-name">{{ server.title }}</span>
+                    <div class="mcp-header-main">
+                      <span class="mcp-name">{{ server.title }}</span>
+                      <span v-if="server.version" class="version-badge">v{{ server.version }}</span>
+                      <span
+                        v-for="t in server.transportTypes"
+                        :key="`${server.fullName}-${t}`"
+                        class="transport-badge title-inline-badge"
+                      >
+                        {{ getTransportLabel(t) }}
+                      </span>
+                    </div>
                     <div class="mcp-badges">
-                      <span v-if="getDownloadStatus(server.slug) === 'downloading'" class="downloaded-badge downloading" title="下载中"></span>
-                      <span v-else-if="getDownloadStatus(server.slug) === 'downloaded'" class="downloaded-badge" title="已下载">
+                      <span v-if="getDownloadStatus(server.slug) === 'downloaded'" class="downloaded-badge" title="已下载">
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
                           <polyline points="20 6 9 17 4 12"/>
                         </svg>
                       </span>
-                      <span v-if="server.version" class="version-badge">v{{ server.version }}</span>
+                      <button
+                        v-else-if="getDownloadStatus(server.slug) === 'downloading'"
+                        class="mcp-icon-btn"
+                        disabled
+                        title="下载中"
+                        @click.stop
+                      >
+                        <div class="spinner small"></div>
+                      </button>
+                      <button
+                        v-else
+                        class="mcp-icon-btn"
+                        title="下载"
+                        @click.stop="handleDownloadMcp(server)"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                          <polyline points="7 10 12 15 17 10"/>
+                          <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                      </button>
                     </div>
                   </div>
                   <p class="mcp-desc">{{ server.description || '暂无描述' }}</p>
                   <div class="mcp-meta">
-                    <div class="transport-badges">
-                      <span v-for="t in server.transportTypes" :key="t" class="transport-badge">{{ getTransportLabel(t) }}</span>
-                    </div>
+                    <div class="mcp-meta-spacer"></div>
                   </div>
                 </div>
+                </div>
               </div>
-            </div>
 
-            <p v-if="downloadError" class="error-msg">{{ downloadError }}</p>
+              <p v-if="downloadError" class="error-msg">{{ downloadError }}</p>
 
-            <!-- 加载更多 -->
-            <div v-if="isLoading && servers.length > 0 && !isSearching" class="loading-more">
-              <div class="spinner small"></div>
-              <span>加载更多...</span>
-            </div>
+              <!-- 加载更多 -->
+              <div v-if="isLoading && servers.length > 0 && !isSearching" class="loading-more">
+                <div class="spinner small"></div>
+                <span>加载更多...</span>
+              </div>
 
-            <!-- 没有更多 -->
-            <div v-if="!hasMore && servers.length > 0 && !isLoading" class="no-more">
-              已显示全部 MCP 服务
+              <!-- 没有更多 -->
+              <div v-if="!hasMore && servers.length > 0 && !isLoading" class="no-more">
+                已显示全部 MCP 服务
+              </div>
             </div>
           </div>
 
@@ -578,69 +633,71 @@ useDialogStack(computed(() => true), handleClose)
                 <button class="filter-btn" :class="{ active: projectFilter === 'none' }" @click="projectFilter = 'none'">未安装</button>
               </div>
             </div>
-            <p class="project-path-hint">{{ projectPath }}</p>
-            <p v-if="projectToggleError" class="error-msg">{{ projectToggleError }}</p>
+            <div class="panel-scroll-body">
+              <p class="project-path-hint">{{ projectPath }}</p>
+              <p v-if="projectToggleError" class="error-msg">{{ projectToggleError }}</p>
 
-            <div v-if="filteredProjectMcps.length > 0" class="mcp-grid">
-              <div
-                v-for="mcp in filteredProjectMcps"
-                :key="'project-' + mcp.slug"
-                class="mcp-card"
-                :class="{ disabled: isPluginDisabled(mcp) }"
-              >
-                <div class="mcp-header">
-                  <span class="mcp-name">{{ mcp.title || mcp.name }}</span>
-                  <div class="mcp-badges">
-                    <span
-                      v-if="mcp.external || mcp.source === 'registry' || mcp.plugin || mcp.sourceLabel"
-                      class="source-badge"
-                      :class="{ external: mcp.external, registry: mcp.source === 'registry', plugin: mcp.plugin }"
-                    >
-                      {{ getMcpSourceLabel(mcp) }}
-                    </span>
-                    <span v-if="isPluginDisabled(mcp)" class="source-badge disabled-state-badge">已禁用</span>
-                    <span v-if="mcp.version" class="version-badge">v{{ mcp.version }}</span>
+              <div v-if="filteredProjectMcps.length > 0" class="mcp-grid">
+                <div
+                  v-for="mcp in filteredProjectMcps"
+                  :key="'project-' + mcp.slug"
+                  class="mcp-card"
+                  :class="{ disabled: isPluginDisabled(mcp) }"
+                >
+                  <div class="mcp-header">
+                    <span class="mcp-name">{{ mcp.title || mcp.name }}</span>
+                    <div class="mcp-badges">
+                      <span
+                        v-if="mcp.external || mcp.source === 'registry' || mcp.plugin || mcp.sourceLabel"
+                        class="source-badge"
+                        :class="{ external: mcp.external, registry: mcp.source === 'registry', plugin: mcp.plugin }"
+                      >
+                        {{ getMcpSourceLabel(mcp) }}
+                      </span>
+                      <span v-if="isPluginDisabled(mcp)" class="source-badge disabled-state-badge">已禁用</span>
+                      <span v-if="mcp.version" class="version-badge">v{{ mcp.version }}</span>
+                    </div>
                   </div>
-                </div>
-                <p class="mcp-desc">{{ mcp.description || '暂无描述' }}</p>
-                <div class="mcp-meta">
-                  <div class="target-toggles">
-                    <button
-                      v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('claude')"
-                      class="target-toggle"
-                      :class="{ active: mcp.projectTargets?.includes('claude'), static: isStaticMcp(mcp) }"
-                      @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'claude')"
-                    >Claude</button>
-                    <button
-                      v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('codex')"
-                      class="target-toggle"
-                      :class="{ active: mcp.projectTargets?.includes('codex'), static: isStaticMcp(mcp) }"
-                      @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'codex')"
-                    >Codex</button>
+                  <p class="mcp-desc">{{ mcp.description || '暂无描述' }}</p>
+                  <div class="mcp-meta">
+                    <div class="target-toggles">
+                      <button
+                        v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('claude')"
+                        class="target-toggle"
+                        :class="{ active: mcp.projectTargets?.includes('claude'), static: isStaticMcp(mcp) }"
+                        @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'claude')"
+                      >Claude</button>
+                      <button
+                        v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('codex')"
+                        class="target-toggle"
+                        :class="{ active: mcp.projectTargets?.includes('codex'), static: isStaticMcp(mcp) }"
+                        @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'codex')"
+                      >Codex</button>
+                    </div>
+                    <button v-if="mcp.projectTargets?.length" class="delete-btn" @click.stop="handleDeleteProjectMcp(mcp)" title="从项目移除">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                      </svg>
+                    </button>
                   </div>
-                  <button v-if="mcp.projectTargets?.length" class="delete-btn" @click.stop="handleDeleteProjectMcp(mcp)" title="从项目移除">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polyline points="3 6 5 6 21 6"/>
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                    </svg>
-                  </button>
                 </div>
               </div>
-            </div>
 
-            <!-- 空状态 -->
-            <div v-else class="empty-state">
-              <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-                <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-                <line x1="6" y1="6" x2="6.01" y2="6"/>
-                <line x1="6" y1="18" x2="6.01" y2="18"/>
-              </svg>
-              <p>暂无项目级 MCP 服务</p>
-              <p class="hint">从已下载的 MCP 中安装到项目</p>
-              <button class="action-btn" @click="handleMarketChange('installed')">
-                查看已下载 MCP
-              </button>
+              <!-- 空状态 -->
+              <div v-else class="empty-state">
+                <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                  <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+                  <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+                  <line x1="6" y1="6" x2="6.01" y2="6"/>
+                  <line x1="6" y1="18" x2="6.01" y2="18"/>
+                </svg>
+                <p>暂无项目级 MCP 服务</p>
+                <p class="hint">从已下载的 MCP 中安装到项目</p>
+                <button class="action-btn" @click="handleMarketChange('installed')">
+                  查看已下载 MCP
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -656,7 +713,17 @@ useDialogStack(computed(() => true), handleClose)
     <div v-if="selectedServer" class="detail-overlay" @click.self="closeServerDetail">
       <div class="detail-dialog" @click.stop>
         <div class="detail-header">
-          <h3>{{ selectedServer.title }}</h3>
+          <div class="mcp-header-main">
+            <h3>{{ selectedServer.title }}</h3>
+            <span v-if="selectedServer.version" class="detail-badge">v{{ selectedServer.version }}</span>
+            <span
+              v-for="t in selectedServer.transportTypes"
+              :key="`detail-${selectedServer.fullName}-${t}`"
+              class="detail-badge transport"
+            >
+              {{ getTransportLabel(t) }}
+            </span>
+          </div>
           <button class="close-btn" @click="closeServerDetail" title="关闭">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/>
@@ -666,8 +733,6 @@ useDialogStack(computed(() => true), handleClose)
         </div>
         <div class="detail-body">
           <div class="detail-meta-row">
-            <span v-if="selectedServer.version" class="detail-badge">v{{ selectedServer.version }}</span>
-            <span v-for="t in selectedServer.transportTypes" :key="t" class="detail-badge transport">{{ getTransportLabel(t) }}</span>
           </div>
 
           <div class="detail-slug-row">
@@ -925,7 +990,8 @@ useDialogStack(computed(() => true), handleClose)
 /* 右侧内容 */
 .mcp-content {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
   background: linear-gradient(180deg, rgba(26, 28, 33, 0.94), rgba(23, 25, 29, 0.98));
 }
 
@@ -933,6 +999,14 @@ useDialogStack(computed(() => true), handleClose)
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.panel-scroll-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .panel-header {
@@ -941,10 +1015,7 @@ useDialogStack(computed(() => true), handleClose)
   justify-content: space-between;
   padding: 20px 24px 16px;
   flex-shrink: 0;
-  position: sticky;
-  top: 0;
-  background: linear-gradient(180deg, rgba(26, 28, 33, 1) 80%, rgba(26, 28, 33, 0));
-  z-index: 2;
+  background: linear-gradient(180deg, rgba(26, 28, 33, 1), rgba(26, 28, 33, 0.96));
 }
 
 .panel-header h3 {
@@ -1099,11 +1170,52 @@ useDialogStack(computed(() => true), handleClose)
   gap: 8px;
 }
 
+.mcp-header-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .mcp-badges {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.mcp-header-targets {
+  flex-shrink: 0;
+}
+
+.mcp-header-delete-btn {
+  margin-left: 6px;
+}
+
+.mcp-icon-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  color: #D4D4D8;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.mcp-icon-btn:hover:not(:disabled) {
+  background: rgba(249, 115, 22, 0.16);
+  color: #F97316;
+}
+
+.mcp-icon-btn:disabled {
+  cursor: default;
+  opacity: 0.8;
 }
 
 .mcp-name {
@@ -1178,10 +1290,19 @@ useDialogStack(computed(() => true), handleClose)
   color: #FBBF24;
 }
 
+.source-badge.local {
+  background: rgba(168, 85, 247, 0.12);
+  color: #C084FC;
+}
+
 .disabled-state-badge {
   color: rgba(248, 250, 252, 0.82) !important;
   background: rgba(249, 115, 22, 0.12) !important;
   border: 1px solid rgba(249, 115, 22, 0.22);
+}
+
+.title-inline-badge {
+  margin-left: 0;
 }
 
 
@@ -1202,6 +1323,7 @@ useDialogStack(computed(() => true), handleClose)
   justify-content: space-between;
   gap: 8px;
   margin-top: auto;
+  min-width: 0;
 }
 
 /* 传输类型 */
@@ -1303,17 +1425,87 @@ useDialogStack(computed(() => true), handleClose)
   align-items: center;
   border-radius: 3px;
   flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
-}
-
-.mcp-card:hover .delete-btn {
   opacity: 1;
+  transition: color 0.15s, background 0.15s;
 }
 
 .delete-btn:hover {
   color: #EF4444;
   background: rgba(239, 68, 68, 0.08);
+}
+
+.mcp-meta-spacer {
+  flex: 1;
+}
+
+.skills-header-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skills-header-toggle-label {
+  font-size: 12px;
+  color: #A1A1AA;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle-switch.compact {
+  width: 32px;
+  height: 18px;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 2px;
+  top: 2px;
+  border-radius: 50%;
+  background: #F4F4F5;
+  transition: transform 0.2s ease;
+}
+
+.toggle-switch.compact .toggle-slider::before {
+  width: 12px;
+  height: 12px;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: rgba(249, 115, 22, 0.18);
+  border-color: rgba(249, 115, 22, 0.32);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+}
+
+.toggle-switch.compact input:checked + .toggle-slider::before {
+  transform: translateX(14px);
 }
 
 /* 加载状态 */

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useDialogStack } from '../../composables/useDialogStack'
 import { MarkdownRenderer } from '@/components/base'
 import { toAttachmentUrl } from '@/utils/chatAttachments'
@@ -16,6 +16,7 @@ const emit = defineEmits(['close'])
 
 const selectedSkill = ref(null)
 const downloadError = ref(null)
+let downloadErrorTimer = null
 
 // 手动安装状态
 const installSource = ref('')
@@ -23,6 +24,7 @@ const isInstalling = ref(false)
 const installError = ref(null)
 const isDragOver = ref(false)
 const installedSkills = ref([])
+const isLoadingInstalledSkills = ref(true)
 
 // 已安装技能详情
 const viewingInstalledSkill = ref(null)
@@ -41,13 +43,40 @@ const isLoadingOpenAiSkills = ref(false)
 const openAiSearchQuery = ref('')
 const openAiInstallTasks = ref({})
 
+function clearDownloadErrorTimer() {
+  if (downloadErrorTimer) {
+    clearTimeout(downloadErrorTimer)
+    downloadErrorTimer = null
+  }
+}
+
+function setDownloadError(message = '') {
+  downloadError.value = message || null
+  clearDownloadErrorTimer()
+  if (!downloadError.value) return
+
+  downloadErrorTimer = setTimeout(() => {
+    downloadError.value = null
+    downloadErrorTimer = null
+  }, 10000)
+}
+
 function getSkillSourceLabel(skill) {
   if (skill.system) return '系统内置'
   if (skill.sourceLabel) return skill.sourceLabel
   if (skill.external) return '外部'
+  if (skill.source === 'openai') return 'OpenAI'
   if (skill.source === 'clawhub') return 'ClawHub'
   if (skill.source === 'plugin') return '插件'
+  if (skill.source === 'local') return '本地'
   return skill.source || '本地'
+}
+
+function getDownloadSourceLabel(skill) {
+  if (skill?.source === 'openai') return 'OpenAI'
+  if (skill?.source === 'clawhub') return 'ClawHub'
+  if (skill?.source === 'local') return '本地'
+  return ''
 }
 
 function isStaticSkill(skill) {
@@ -173,17 +202,28 @@ function getOpenAiSkillIcon(skill) {
   return iconPath ? toAttachmentUrl(iconPath) : ''
 }
 
+function getInstalledSkillAvatar(skill) {
+  const avatarPath = skill?.avatar || ''
+  return avatarPath ? toAttachmentUrl(avatarPath) : ''
+}
+
 const installedSkillSlugSet = computed(() => {
   return new Set((installedSkills.value || []).map(skill => skill.slug).filter(Boolean))
 })
 
 async function loadInstalledSkills() {
+  isLoadingInstalledSkills.value = true
   try {
-    const result = await window.electronAPI.listDownloadedSkills()
+    const result = await window.electronAPI.listDownloadedSkills({
+      includeExternal: showExternalSkills.value === true
+    })
     if (result.success) {
       installedSkills.value = result.skills
     }
   } catch (e) { /* ignore */ }
+  finally {
+    isLoadingInstalledSkills.value = false
+  }
 }
 
 async function loadProjectSkills() {
@@ -221,6 +261,14 @@ onMounted(() => {
   loadInstalledSkills()
 })
 
+onBeforeUnmount(() => {
+  clearDownloadErrorTimer()
+})
+
+watch(showExternalSkills, () => {
+  loadInstalledSkills()
+})
+
 function handleMarketChange(marketId) {
   activeMarket.value = marketId
   if (marketId === 'clawhub' && !marketLoaded) {
@@ -249,7 +297,7 @@ function handleScroll(event) {
 
 function openSkillDetail(skill) {
   selectedSkill.value = skill
-  downloadError.value = null
+  setDownloadError('')
 }
 
 function closeSkillDetail() {
@@ -257,12 +305,12 @@ function closeSkillDetail() {
 }
 
 async function handleDownload(slug) {
-  downloadError.value = null
+  setDownloadError('')
   try {
     await downloadSkill(slug)
     await loadInstalledSkills()
   } catch (e) {
-    downloadError.value = e.message
+    setDownloadError(e.message)
   }
 }
 
@@ -669,8 +717,13 @@ useDialogStack(computed(() => true), handleClose)
               <p v-if="installError" class="install-error">{{ installError }}</p>
               <p v-if="toggleError" class="install-error">{{ toggleError }}</p>
 
+              <div v-if="isLoadingInstalledSkills" class="loading-state">
+                <div class="spinner"></div>
+                <p>加载已下载技能...</p>
+              </div>
+
               <!-- 已安装列表 -->
-              <div v-if="filteredInstalledSkills.length > 0" class="skills-grid">
+              <div v-else-if="filteredInstalledSkills.length > 0" class="skills-grid">
                 <div
                   v-for="skill in filteredInstalledSkills"
                   :key="skill.slug + '-' + skill.source"
@@ -680,8 +733,16 @@ useDialogStack(computed(() => true), handleClose)
                 >
                   <div class="skill-header">
                     <div class="skill-header-main">
+                      <img v-if="getInstalledSkillAvatar(skill)" :src="getInstalledSkillAvatar(skill)" class="installed-skill-avatar" alt="" />
                       <span class="skill-name">{{ skill.name }}</span>
-                      <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge">已禁用</span>
+                      <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge title-inline-badge">已禁用</span>
+                      <span
+                        v-if="!isStaticSkill(skill) && getDownloadSourceLabel(skill)"
+                        class="installed-source download-source-badge title-inline-badge"
+                        :class="[skill.source]"
+                      >
+                        {{ getDownloadSourceLabel(skill) }}
+                      </span>
                     </div>
                     <div class="skill-header-badges">
                       <span
@@ -691,7 +752,7 @@ useDialogStack(computed(() => true), handleClose)
                       >
                         {{ getStaticSkillBadgeLabel(skill, skill.installedTargets) }}
                       </span>
-                      <div v-else class="target-toggles skill-header-targets">
+                      <div v-if="!isStaticSkill(skill)" class="target-toggles skill-header-targets">
                         <button
                           class="target-toggle"
                           :class="{ active: skill.installedTargets?.includes('claude') }"
@@ -703,17 +764,17 @@ useDialogStack(computed(() => true), handleClose)
                           @click.stop="toggleTarget(skill, 'codex')"
                         >Codex</button>
                       </div>
+                      <button v-if="!isStaticSkill(skill)" class="delete-btn skill-header-delete-btn" @click.stop="handleDeleteSkill(skill)" title="删除">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                      </button>
                     </div>
                   </div>
                   <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
                   <div class="skill-meta">
                     <div class="skill-meta-spacer"></div>
-                    <button v-if="!isStaticSkill(skill)" class="delete-btn" @click.stop="handleDeleteSkill(skill)" title="删除">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="3 6 5 6 21 6"/>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                      </svg>
-                    </button>
                   </div>
                 </div>
               </div>
@@ -804,15 +865,37 @@ useDialogStack(computed(() => true), handleClose)
                   @click="openSkillDetail(skill)"
                 >
                   <div class="skill-header">
-                    <span class="skill-name">{{ skill.displayName || skill.slug }}</span>
+                    <div class="skill-header-main">
+                      <span class="skill-name">{{ skill.displayName || skill.slug }}</span>
+                      <span v-if="skill.version" class="skill-version">v{{ skill.version }}</span>
+                    </div>
                     <div class="skill-header-badges">
-                      <span v-if="getDownloadStatus(skill.slug) === 'downloading'" class="skill-status downloading" title="下载中"></span>
-                      <span v-else-if="getDownloadStatus(skill.slug) === 'downloaded'" class="skill-status downloaded" title="已下载">
+                      <span v-if="getDownloadStatus(skill.slug) === 'downloaded'" class="skill-status downloaded" title="已下载">
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
                           <polyline points="20 6 9 17 4 12"/>
                         </svg>
                       </span>
-                      <span v-if="skill.version" class="skill-version">v{{ skill.version }}</span>
+                      <button
+                        v-else-if="getDownloadStatus(skill.slug) === 'downloading'"
+                        class="skill-icon-btn"
+                        disabled
+                        title="下载中"
+                        @click.stop
+                      >
+                        <div class="btn-spinner compact"></div>
+                      </button>
+                      <button
+                        v-else
+                        class="skill-icon-btn"
+                        title="下载"
+                        @click.stop="handleDownload(skill.slug)"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                          <polyline points="7 10 12 15 17 10"/>
+                          <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                      </button>
                     </div>
                   </div>
                   <p class="skill-desc">{{ skill.summary || '暂无描述' }}</p>
@@ -907,27 +990,37 @@ useDialogStack(computed(() => true), handleClose)
                       <span class="skill-name">{{ skill.displayName || skill.slug }}</span>
                     </div>
                     <div class="skill-header-badges">
-                      <span class="installed-source external">{{ skill.sourceLabel }}</span>
-                      <span v-if="getOpenAiInstallStatus(skill) === 'downloading'" class="skill-status downloading" title="下载中"></span>
-                      <span v-else-if="getOpenAiInstallStatus(skill) === 'downloaded'" class="skill-status downloaded" title="已下载">
+                      <span v-if="getOpenAiInstallStatus(skill) === 'downloaded'" class="skill-status downloaded" title="已下载">
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
                           <polyline points="20 6 9 17 4 12"/>
                         </svg>
                       </span>
+                      <button
+                        v-else-if="getOpenAiInstallStatus(skill) === 'downloading'"
+                        class="skill-icon-btn"
+                        disabled
+                        title="下载中"
+                        @click.stop
+                      >
+                        <div class="btn-spinner compact"></div>
+                      </button>
+                      <button
+                        v-else
+                        class="skill-icon-btn"
+                        title="下载"
+                        @click.stop="handleInstallOpenAiSkill(skill)"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                          <polyline points="7 10 12 15 17 10"/>
+                          <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                      </button>
                     </div>
                   </div>
                   <p class="skill-desc">{{ skill.summary || skill.description || '暂无描述' }}</p>
                   <div class="skill-meta">
-                    <span class="market-skill-path">{{ skill.path }}</span>
-                    <button
-                      class="action-btn small install-btn"
-                      :disabled="getOpenAiInstallStatus(skill) === 'downloading' || getOpenAiInstallStatus(skill) === 'downloaded'"
-                      @click.stop="handleInstallOpenAiSkill(skill)"
-                    >
-                      <template v-if="getOpenAiInstallStatus(skill) === 'downloading'">下载中</template>
-                      <template v-else-if="getOpenAiInstallStatus(skill) === 'downloaded'">已下载</template>
-                      <template v-else>下载</template>
-                    </button>
+                    <div class="skill-meta-spacer"></div>
                   </div>
                 </div>
               </div>
@@ -1063,13 +1156,24 @@ useDialogStack(computed(() => true), handleClose)
         <div class="btn-spinner"></div>
         <span>正在下载 {{ activeDownloads.length }} 个技能: {{ activeDownloads.join(', ') }}</span>
       </div>
+      <div v-else-if="downloadError && !selectedSkill" class="download-bar download-bar-error">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span>{{ downloadError }}</span>
+      </div>
     </div>
 
     <!-- 技能详情弹窗 -->
     <div v-if="selectedSkill" class="detail-overlay" @click.self="closeSkillDetail">
       <div class="detail-dialog" @click.stop>
         <div class="detail-header">
-          <h3>{{ selectedSkill.displayName }}</h3>
+          <div class="detail-header-main">
+            <h3>{{ selectedSkill.displayName }}</h3>
+            <span v-if="selectedSkill.version" class="detail-badge">v{{ selectedSkill.version }}</span>
+          </div>
           <button class="close-btn" @click="closeSkillDetail" title="关闭">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/>
@@ -1079,7 +1183,6 @@ useDialogStack(computed(() => true), handleClose)
         </div>
         <div class="detail-body">
           <div class="detail-meta-row">
-            <span v-if="selectedSkill.version" class="detail-badge">v{{ selectedSkill.version }}</span>
             <span v-if="selectedSkill.highlighted" class="detail-badge accent">Staff Pick</span>
           </div>
 
@@ -1602,6 +1705,10 @@ useDialogStack(computed(() => true), handleClose)
   flex-shrink: 0;
 }
 
+.skill-header-delete-btn {
+  margin-left: 6px;
+}
+
 .skill-status {
   display: inline-flex;
   align-items: center;
@@ -1703,6 +1810,16 @@ useDialogStack(computed(() => true), handleClose)
   border-radius: 50%;
   flex-shrink: 0;
   object-fit: cover;
+}
+
+.installed-skill-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .skill-stats {
@@ -1899,9 +2016,17 @@ useDialogStack(computed(() => true), handleClose)
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 16px 20px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   flex-shrink: 0;
+}
+
+.detail-header-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .detail-header h3 {
@@ -2054,6 +2179,12 @@ useDialogStack(computed(() => true), handleClose)
   flex-shrink: 0;
 }
 
+.btn-spinner.compact {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
 .download-error {
   margin: 0;
   font-size: 12px;
@@ -2074,6 +2205,11 @@ useDialogStack(computed(() => true), handleClose)
   color: #9CA3AF;
   font-size: 12px;
   flex-shrink: 0;
+}
+
+.download-bar-error {
+  background: rgba(239, 68, 68, 0.08);
+  color: #FCA5A5;
 }
 
 /* 手动安装（标题右侧内联） */
@@ -2148,6 +2284,32 @@ useDialogStack(computed(() => true), handleClose)
   min-width: 32px;
   padding: 5px 8px;
   justify-content: center;
+}
+
+.skill-icon-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  color: #D4D4D8;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.skill-icon-btn:hover:not(:disabled) {
+  background: rgba(249, 115, 22, 0.16);
+  color: #F97316;
+}
+
+.skill-icon-btn:disabled {
+  cursor: default;
+  opacity: 0.8;
 }
 
 .skills-header-toggle {
@@ -2262,6 +2424,16 @@ useDialogStack(computed(() => true), handleClose)
   color: #60A5FA;
 }
 
+.installed-source.openai {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34D399;
+}
+
+.installed-source.local {
+  background: rgba(168, 85, 247, 0.12);
+  color: #C084FC;
+}
+
 .installed-source.external {
   background: rgba(245, 158, 11, 0.14);
   color: #FBBF24;
@@ -2283,6 +2455,10 @@ useDialogStack(computed(() => true), handleClose)
   border: 1px solid rgba(249, 115, 22, 0.22);
 }
 
+.title-inline-badge {
+  margin-left: 0;
+}
+
 .skill-meta-spacer {
   flex: 1;
 }
@@ -2298,12 +2474,8 @@ useDialogStack(computed(() => true), handleClose)
   align-items: center;
   border-radius: 3px;
   flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
-}
-
-.skill-card:hover .delete-btn {
   opacity: 1;
+  transition: color 0.15s, background 0.15s;
 }
 
 .delete-btn:hover {

@@ -2,6 +2,7 @@
 import { computed, ref, onMounted } from 'vue'
 import { useDialogStack } from '../../composables/useDialogStack'
 import { MarkdownRenderer } from '@/components/base'
+import { toAttachmentUrl } from '@/utils/chatAttachments'
 import { useClawHub } from './composables/useClawHub'
 
 const props = defineProps({
@@ -33,6 +34,12 @@ const skillLicense = ref(null)
 const skillTree = ref([])
 const isLoadingExtra = ref(false)
 const installFilter = ref('all') // 'all' | 'claude' | 'codex' | 'none'
+const showExternalSkills = ref(false)
+const openAiSkills = ref([])
+const openAiSkillsError = ref(null)
+const isLoadingOpenAiSkills = ref(false)
+const openAiSearchQuery = ref('')
+const openAiInstallTasks = ref({})
 
 function getSkillSourceLabel(skill) {
   if (skill.system) return '系统内置'
@@ -51,12 +58,36 @@ function isPluginDisabled(skill) {
   return Boolean(skill?.plugin && skill?.pluginEnabled === false)
 }
 
+function isCcguiManagedSkill(skill) {
+  return !isStaticSkill(skill)
+}
+
+function getSkillProviderLabel(targets = []) {
+  const list = Array.isArray(targets) ? targets : []
+  const labels = []
+  if (list.includes('claude')) labels.push('Claude')
+  if (list.includes('codex')) labels.push('Codex')
+  return labels.join(' / ')
+}
+
+function getStaticSkillBadgeLabel(skill, targets = []) {
+  if (skill?.plugin && skill?.sourceLabel) return skill.sourceLabel
+  const providerLabel = getSkillProviderLabel(targets)
+  if (skill?.system) return providerLabel ? `${providerLabel} 内置` : '系统内置'
+  if (skill?.external) return providerLabel ? `${providerLabel} 外部` : '外部'
+  return getSkillSourceLabel(skill)
+}
+
 const filteredInstalledSkills = computed(() => {
-  if (installFilter.value === 'all') return installedSkills.value
-  if (installFilter.value === 'none') {
-    return installedSkills.value.filter(s => !s.installedTargets?.length)
+  let list = installedSkills.value
+  if (!showExternalSkills.value) {
+    list = list.filter(isCcguiManagedSkill)
   }
-  return installedSkills.value.filter(s => s.installedTargets?.includes(installFilter.value))
+  if (installFilter.value === 'all') return list
+  if (installFilter.value === 'none') {
+    return list.filter(s => !s.installedTargets?.length)
+  }
+  return list.filter(s => s.installedTargets?.includes(installFilter.value))
 })
 
 const activeMarket = ref('installed')
@@ -64,7 +95,8 @@ const activeMarket = ref('installed')
 const markets = computed(() => {
   const items = [
     { id: 'installed', label: '已下载' },
-    { id: 'clawhub', label: 'ClawHub' }
+    { id: 'clawhub', label: 'ClawHub' },
+    { id: 'openai', label: 'OpenAI' }
   ]
   if (props.projectPath) {
     items.splice(1, 0, { id: 'project', label: '项目配置' })
@@ -93,6 +125,7 @@ const {
 } = useClawHub()
 
 let marketLoaded = false
+let openAiMarketLoaded = false
 
 // 项目级配置状态
 const projectInstalledMap = ref(new Map()) // slug -> Set(['claude', 'codex'])
@@ -124,6 +157,26 @@ const filteredProjectSkills = computed(() => {
   return list.filter(s => s.projectTargets.includes(projectFilter.value))
 })
 
+const filteredOpenAiSkills = computed(() => {
+  const query = openAiSearchQuery.value.trim().toLowerCase()
+  if (!query) return openAiSkills.value
+
+  return openAiSkills.value.filter((skill) =>
+    (skill.displayName || skill.name || skill.slug || '').toLowerCase().includes(query) ||
+    (skill.summary || skill.description || '').toLowerCase().includes(query) ||
+    (skill.sourceLabel || '').toLowerCase().includes(query)
+  )
+})
+
+function getOpenAiSkillIcon(skill) {
+  const iconPath = skill?.iconLarge || skill?.iconSmall || ''
+  return iconPath ? toAttachmentUrl(iconPath) : ''
+}
+
+const installedSkillSlugSet = computed(() => {
+  return new Set((installedSkills.value || []).map(skill => skill.slug).filter(Boolean))
+})
+
 async function loadInstalledSkills() {
   try {
     const result = await window.electronAPI.listDownloadedSkills()
@@ -147,6 +200,23 @@ async function loadProjectSkills() {
   } catch (e) { /* ignore */ }
 }
 
+async function loadOpenAiSkills() {
+  isLoadingOpenAiSkills.value = true
+  openAiSkillsError.value = null
+  try {
+    const result = await window.electronAPI.listOpenAiMarketSkills()
+    if (result.success) {
+      openAiSkills.value = result.skills || []
+    } else {
+      openAiSkillsError.value = result.error || '加载失败'
+    }
+  } catch (e) {
+    openAiSkillsError.value = e.message || '加载失败'
+  } finally {
+    isLoadingOpenAiSkills.value = false
+  }
+}
+
 onMounted(() => {
   loadInstalledSkills()
 })
@@ -157,6 +227,10 @@ function handleMarketChange(marketId) {
     marketLoaded = true
     fetchSkills()
     checkDownloadedSkills()
+  }
+  if (marketId === 'openai' && !openAiMarketLoaded) {
+    openAiMarketLoaded = true
+    loadOpenAiSkills()
   }
   if (marketId === 'installed') {
     loadInstalledSkills()
@@ -190,6 +264,42 @@ async function handleDownload(slug) {
   } catch (e) {
     downloadError.value = e.message
   }
+}
+
+function getOpenAiInstallStatus(skill) {
+  if (!skill?.slug) return null
+  if (openAiInstallTasks.value[skill.slug] === 'installing') return 'downloading'
+  if (installedSkillSlugSet.value.has(skill.slug)) return 'downloaded'
+  return null
+}
+
+async function handleInstallOpenAiSkill(skill) {
+  if (!skill?.slug) return
+  if (openAiInstallTasks.value[skill.slug] === 'installing') return
+  openAiInstallTasks.value[skill.slug] = 'installing'
+  openAiSkillsError.value = null
+  try {
+    const result = await window.electronAPI.installOpenAiMarketSkill({
+      skillId: skill.skillId || skill.slug,
+      repoPath: skill.repoPath
+    })
+    if (!result.success) {
+      throw new Error(result.error || '安装失败')
+    }
+    if (result.path) {
+      skill.path = result.path
+    }
+    await loadInstalledSkills()
+  } catch (e) {
+    openAiSkillsError.value = e.message || '安装失败'
+  } finally {
+    openAiInstallTasks.value[skill.slug] = 'done'
+  }
+}
+
+function openOpenAiSkillDetail(skill) {
+  if (!skill?.path) return
+  openInstalledDetail(skill)
 }
 
 async function handleInstall() {
@@ -503,7 +613,7 @@ useDialogStack(computed(() => true), handleClose)
         </div>
 
         <!-- 右侧内容 -->
-        <div class="skills-content" @scroll="handleScroll">
+        <div class="skills-content">
           <!-- 已安装 -->
           <div
             v-if="activeMarket === 'installed'"
@@ -514,7 +624,13 @@ useDialogStack(computed(() => true), handleClose)
             :class="{ 'drag-over-panel': isDragOver }"
           >
             <div class="panel-header">
-              <h3>已下载的技能</h3>
+              <div class="skills-header-toggle">
+                <span class="skills-header-toggle-label">外部技能</span>
+                <label class="toggle-switch compact">
+                  <input v-model="showExternalSkills" type="checkbox">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
               <div class="header-actions">
                 <div class="filter-group">
                   <button class="filter-btn" :class="{ active: installFilter === 'all' }" @click="installFilter = 'all'">全部</button>
@@ -549,68 +665,75 @@ useDialogStack(computed(() => true), handleClose)
               </div>
               </div>
             </div>
-            <p v-if="installError" class="install-error">{{ installError }}</p>
-            <p v-if="toggleError" class="install-error">{{ toggleError }}</p>
+            <div class="panel-scroll-body">
+              <p v-if="installError" class="install-error">{{ installError }}</p>
+              <p v-if="toggleError" class="install-error">{{ toggleError }}</p>
 
-            <!-- 已安装列表 -->
-            <div v-if="filteredInstalledSkills.length > 0" class="skills-grid">
-              <div
-                v-for="skill in filteredInstalledSkills"
-                :key="skill.slug + '-' + skill.source"
-                class="skill-card"
-                :class="{ disabled: isPluginDisabled(skill) }"
-                @click="openInstalledDetail(skill)"
-              >
-                <div class="skill-header">
-                  <span class="skill-name">{{ skill.name }}</span>
-                  <div class="skill-header-badges">
-                    <span v-if="skill.source !== 'local' || skill.system || skill.external || skill.plugin || skill.sourceLabel" class="installed-source" :class="[skill.source, { external: skill.external, system: skill.system, plugin: skill.plugin }]">
-                      {{ getSkillSourceLabel(skill) }}
-                    </span>
-                    <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge">已禁用</span>
+              <!-- 已安装列表 -->
+              <div v-if="filteredInstalledSkills.length > 0" class="skills-grid">
+                <div
+                  v-for="skill in filteredInstalledSkills"
+                  :key="skill.slug + '-' + skill.source"
+                  class="skill-card"
+                  :class="{ disabled: isPluginDisabled(skill) }"
+                  @click="openInstalledDetail(skill)"
+                >
+                  <div class="skill-header">
+                    <div class="skill-header-main">
+                      <span class="skill-name">{{ skill.name }}</span>
+                      <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge">已禁用</span>
+                    </div>
+                    <div class="skill-header-badges">
+                      <span
+                        v-if="isStaticSkill(skill)"
+                        class="installed-source"
+                        :class="[skill.source, { external: skill.external, system: skill.system, plugin: skill.plugin }]"
+                      >
+                        {{ getStaticSkillBadgeLabel(skill, skill.installedTargets) }}
+                      </span>
+                      <div v-else class="target-toggles skill-header-targets">
+                        <button
+                          class="target-toggle"
+                          :class="{ active: skill.installedTargets?.includes('claude') }"
+                          @click.stop="toggleTarget(skill, 'claude')"
+                        >Claude</button>
+                        <button
+                          class="target-toggle"
+                          :class="{ active: skill.installedTargets?.includes('codex') }"
+                          @click.stop="toggleTarget(skill, 'codex')"
+                        >Codex</button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
-                <div class="skill-meta">
-                  <div class="target-toggles">
-                    <button
-                      v-if="!isStaticSkill(skill) || skill.installedTargets?.includes('claude')"
-                      class="target-toggle"
-                      :class="{ active: skill.installedTargets?.includes('claude'), static: isStaticSkill(skill) }"
-                      @click.stop="!isStaticSkill(skill) && toggleTarget(skill, 'claude')"
-                    >Claude</button>
-                    <button
-                      v-if="!isStaticSkill(skill) || skill.installedTargets?.includes('codex')"
-                      class="target-toggle"
-                      :class="{ active: skill.installedTargets?.includes('codex'), static: isStaticSkill(skill) }"
-                      @click.stop="!isStaticSkill(skill) && toggleTarget(skill, 'codex')"
-                    >Codex</button>
+                  <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
+                  <div class="skill-meta">
+                    <div class="skill-meta-spacer"></div>
+                    <button v-if="!isStaticSkill(skill)" class="delete-btn" @click.stop="handleDeleteSkill(skill)" title="删除">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                      </svg>
+                    </button>
                   </div>
-                  <button v-if="!isStaticSkill(skill)" class="delete-btn" @click.stop="handleDeleteSkill(skill)" title="删除">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polyline points="3 6 5 6 21 6"/>
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                    </svg>
-                  </button>
                 </div>
               </div>
-            </div>
 
-            <!-- 空状态 -->
-            <div v-else-if="installedSkills.length === 0" class="empty-state">
-              <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-                <line x1="12" y1="22.08" x2="12" y2="12"/>
-              </svg>
-              <p>暂无已下载的技能</p>
-              <p class="hint">从技能市场浏览并下载，或手动安装</p>
-              <button class="action-btn" @click="handleMarketChange('clawhub')">
-                浏览技能市场
-              </button>
-            </div>
-            <div v-else class="empty-state">
-              <p>当前过滤条件下没有技能</p>
+              <!-- 空状态 -->
+              <div v-else-if="installedSkills.length === 0" class="empty-state">
+                <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                  <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                  <line x1="12" y1="22.08" x2="12" y2="12"/>
+                </svg>
+                <p>暂无已下载的技能</p>
+                <p class="hint">从技能市场浏览并下载，或手动安装</p>
+                <button class="action-btn" @click="handleMarketChange('clawhub')">
+                  浏览技能市场
+                </button>
+              </div>
+              <div v-else class="empty-state">
+                <p>当前过滤条件下没有技能</p>
+              </div>
             </div>
           </div>
 
@@ -639,98 +762,184 @@ useDialogStack(computed(() => true), handleClose)
               </div>
             </div>
 
-            <!-- 加载中 -->
-            <div v-if="isLoading && skills.length === 0" class="loading-state">
-              <div class="spinner"></div>
-              <p>加载技能列表...</p>
-            </div>
-
-            <!-- 错误 -->
-            <div v-else-if="skillsError" class="error-state">
-              <svg class="error-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="12" y1="8" x2="12" y2="12"/>
-                <line x1="12" y1="16" x2="12.01" y2="16"/>
-              </svg>
-              <p>加载失败: {{ skillsError }}</p>
-              <button class="action-btn small" @click="refresh">重试</button>
-            </div>
-
-            <!-- 搜索无结果 -->
-            <div v-else-if="isSearching && skills.length === 0 && !isLoading" class="empty-state">
-              <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-                <circle cx="11" cy="11" r="8"/>
-                <path d="m21 21-4.35-4.35"/>
-              </svg>
-              <p>未找到匹配的技能</p>
-              <p class="hint">试试其他关键词</p>
-            </div>
-
-            <!-- 技能列表 -->
-            <div v-else class="skills-grid-wrapper">
-              <div v-if="isLoading" class="search-overlay">
-                <div class="spinner small"></div>
-                <span>搜索中...</span>
+            <div class="panel-scroll-body" @scroll="handleScroll">
+              <!-- 加载中 -->
+              <div v-if="isLoading && skills.length === 0" class="loading-state">
+                <div class="spinner"></div>
+                <p>加载技能列表...</p>
               </div>
-              <div class="skills-grid">
-              <div
-                v-for="skill in skills"
-                :key="skill.slug"
-                class="skill-card"
-                @click="openSkillDetail(skill)"
-              >
-                <div class="skill-header">
-                  <span class="skill-name">{{ skill.displayName || skill.slug }}</span>
-                  <div class="skill-header-badges">
-                    <span v-if="getDownloadStatus(skill.slug) === 'downloading'" class="skill-status downloading" title="下载中"></span>
-                    <span v-else-if="getDownloadStatus(skill.slug) === 'downloaded'" class="skill-status downloaded" title="已下载">
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                        <polyline points="20 6 9 17 4 12"/>
+
+              <!-- 错误 -->
+              <div v-else-if="skillsError" class="error-state">
+                <svg class="error-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <p>加载失败: {{ skillsError }}</p>
+                <button class="action-btn small" @click="refresh">重试</button>
+              </div>
+
+              <!-- 搜索无结果 -->
+              <div v-else-if="isSearching && skills.length === 0 && !isLoading" class="empty-state">
+                <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="m21 21-4.35-4.35"/>
+                </svg>
+                <p>未找到匹配的技能</p>
+                <p class="hint">试试其他关键词</p>
+              </div>
+
+              <!-- 技能列表 -->
+              <div v-else class="skills-grid-wrapper">
+                <div v-if="isLoading" class="search-overlay">
+                  <div class="spinner small"></div>
+                  <span>搜索中...</span>
+                </div>
+                <div class="skills-grid">
+                <div
+                  v-for="skill in skills"
+                  :key="skill.slug"
+                  class="skill-card"
+                  @click="openSkillDetail(skill)"
+                >
+                  <div class="skill-header">
+                    <span class="skill-name">{{ skill.displayName || skill.slug }}</span>
+                    <div class="skill-header-badges">
+                      <span v-if="getDownloadStatus(skill.slug) === 'downloading'" class="skill-status downloading" title="下载中"></span>
+                      <span v-else-if="getDownloadStatus(skill.slug) === 'downloaded'" class="skill-status downloaded" title="已下载">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                          <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                      </span>
+                      <span v-if="skill.version" class="skill-version">v{{ skill.version }}</span>
+                    </div>
+                  </div>
+                  <p class="skill-desc">{{ skill.summary || '暂无描述' }}</p>
+                  <div class="skill-meta">
+                    <span v-if="skill.owner" class="skill-author">
+                      <img v-if="skill.owner.image" :src="skill.owner.image" class="author-avatar" alt="" />
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                        <circle cx="12" cy="7" r="4"/>
                       </svg>
+                      {{ skill.owner.handle || skill.owner.displayName }}
                     </span>
-                    <span v-if="skill.version" class="skill-version">v{{ skill.version }}</span>
+                    <span v-if="skill.stats" class="skill-stats">
+                      <span v-if="skill.stats.stars" class="stat-item" title="星级">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                        </svg>
+                        {{ formatCount(skill.stats.stars) }}
+                      </span>
+                      <span v-if="skill.stats.downloads" class="stat-item" title="下载量">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                          <polyline points="7 10 12 15 17 10"/>
+                          <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        {{ formatCount(skill.stats.downloads) }}
+                      </span>
+                    </span>
                   </div>
                 </div>
-                <p class="skill-desc">{{ skill.summary || '暂无描述' }}</p>
-                <div class="skill-meta">
-                  <span v-if="skill.owner" class="skill-author">
-                    <img v-if="skill.owner.image" :src="skill.owner.image" class="author-avatar" alt="" />
-                    <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                      <circle cx="12" cy="7" r="4"/>
-                    </svg>
-                    {{ skill.owner.handle || skill.owner.displayName }}
-                  </span>
-                  <span v-if="skill.stats" class="skill-stats">
-                    <span v-if="skill.stats.stars" class="stat-item" title="星级">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-                      </svg>
-                      {{ formatCount(skill.stats.stars) }}
-                    </span>
-                    <span v-if="skill.stats.downloads" class="stat-item" title="下载量">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/>
-                        <line x1="12" y1="15" x2="12" y2="3"/>
-                      </svg>
-                      {{ formatCount(skill.stats.downloads) }}
-                    </span>
-                  </span>
                 </div>
               </div>
+
+              <!-- 加载更多 -->
+              <div v-if="isLoading && skills.length > 0 && !isSearching" class="loading-more">
+                <div class="spinner small"></div>
+                <span>加载更多...</span>
+              </div>
+
+              <!-- 没有更多 -->
+              <div v-if="!hasMore && skills.length > 0 && !isLoading" class="no-more">
+                已显示全部技能
               </div>
             </div>
+          </div>
 
-            <!-- 加载更多 -->
-            <div v-if="isLoading && skills.length > 0 && !isSearching" class="loading-more">
-              <div class="spinner small"></div>
-              <span>加载更多...</span>
+          <div v-if="activeMarket === 'openai'" class="tab-panel">
+            <div class="panel-header">
+              <h3>OpenAI 推荐技能</h3>
+              <div class="search-bar">
+                <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="m21 21-4.35-4.35"/>
+                </svg>
+                <input
+                  v-model="openAiSearchQuery"
+                  type="text"
+                  placeholder="搜索技能..."
+                  class="search-input"
+                />
+              </div>
             </div>
-
-            <!-- 没有更多 -->
-            <div v-if="!hasMore && skills.length > 0 && !isLoading" class="no-more">
-              已显示全部技能
+            <div class="panel-scroll-body">
+              <p v-if="openAiSearchQuery.trim()" class="project-path-hint">
+                当前搜索会在已加载的推荐技能集合中筛选
+              </p>
+              <div v-if="isLoadingOpenAiSkills" class="loading-state">
+                <div class="spinner"></div>
+                <p>加载推荐技能...</p>
+              </div>
+              <div v-else-if="openAiSkillsError" class="error-state">
+                <svg class="error-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <p>加载失败: {{ openAiSkillsError }}</p>
+                <button class="action-btn small" @click="loadOpenAiSkills">重试</button>
+              </div>
+              <div v-else-if="filteredOpenAiSkills.length > 0" class="skills-grid">
+                <div
+                  v-for="skill in filteredOpenAiSkills"
+                  :key="skill.id"
+                  class="skill-card"
+                  @click="openOpenAiSkillDetail(skill)"
+                >
+                  <div class="skill-header">
+                    <div class="skill-header-main">
+                      <div v-if="getOpenAiSkillIcon(skill)" class="skill-icon-wrap openai-skill-icon">
+                        <img :src="getOpenAiSkillIcon(skill)" :alt="skill.displayName || skill.slug" class="skill-icon-image">
+                      </div>
+                      <span class="skill-name">{{ skill.displayName || skill.slug }}</span>
+                    </div>
+                    <div class="skill-header-badges">
+                      <span class="installed-source external">{{ skill.sourceLabel }}</span>
+                      <span v-if="getOpenAiInstallStatus(skill) === 'downloading'" class="skill-status downloading" title="下载中"></span>
+                      <span v-else-if="getOpenAiInstallStatus(skill) === 'downloaded'" class="skill-status downloaded" title="已下载">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                          <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                      </span>
+                    </div>
+                  </div>
+                  <p class="skill-desc">{{ skill.summary || skill.description || '暂无描述' }}</p>
+                  <div class="skill-meta">
+                    <span class="market-skill-path">{{ skill.path }}</span>
+                    <button
+                      class="action-btn small install-btn"
+                      :disabled="getOpenAiInstallStatus(skill) === 'downloading' || getOpenAiInstallStatus(skill) === 'downloaded'"
+                      @click.stop="handleInstallOpenAiSkill(skill)"
+                    >
+                      <template v-if="getOpenAiInstallStatus(skill) === 'downloading'">下载中</template>
+                      <template v-else-if="getOpenAiInstallStatus(skill) === 'downloaded'">已下载</template>
+                      <template v-else>下载</template>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="empty-state">
+                <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                  <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                  <line x1="12" y1="22.08" x2="12" y2="12"/>
+                </svg>
+                <p>没有匹配的技能</p>
+                <p class="hint">试试其他关键词</p>
+              </div>
             </div>
           </div>
 
@@ -779,64 +988,71 @@ useDialogStack(computed(() => true), handleClose)
                 </div>
               </div>
             </div>
-            <p class="project-path-hint">{{ projectPath }}/.claude/skills</p>
-            <p v-if="projectInstallError" class="install-error">{{ projectInstallError }}</p>
-            <p v-if="projectToggleError" class="install-error">{{ projectToggleError }}</p>
+            <div class="panel-scroll-body">
+              <p class="project-path-hint">{{ projectPath }}/.claude/skills</p>
+              <p v-if="projectInstallError" class="install-error">{{ projectInstallError }}</p>
+              <p v-if="projectToggleError" class="install-error">{{ projectToggleError }}</p>
 
-            <!-- 项目级技能列表 -->
-            <div v-if="filteredProjectSkills.length > 0" class="skills-grid">
-              <div
-                v-for="skill in filteredProjectSkills"
-                :key="'project-' + skill.slug"
-                class="skill-card"
-                :class="{ disabled: isPluginDisabled(skill) }"
-                @click="openInstalledDetail(skill)"
-              >
-                <div class="skill-header">
-                  <span class="skill-name">{{ skill.name }}</span>
-                  <div class="skill-header-badges">
-                    <span v-if="skill.source !== 'local' || skill.system || skill.external || skill.plugin || skill.sourceLabel" class="installed-source" :class="[skill.source, { external: skill.external, system: skill.system, plugin: skill.plugin }]">
-                      {{ getSkillSourceLabel(skill) }}
-                    </span>
-                    <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge">已禁用</span>
+              <!-- 项目级技能列表 -->
+              <div v-if="filteredProjectSkills.length > 0" class="skills-grid">
+                <div
+                  v-for="skill in filteredProjectSkills"
+                  :key="'project-' + skill.slug"
+                  class="skill-card"
+                  :class="{ disabled: isPluginDisabled(skill) }"
+                  @click="openInstalledDetail(skill)"
+                >
+                  <div class="skill-header">
+                    <div class="skill-header-main">
+                      <span class="skill-name">{{ skill.name }}</span>
+                      <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge">已禁用</span>
+                    </div>
+                    <div class="skill-header-badges">
+                      <span
+                        v-if="isStaticSkill(skill)"
+                        class="installed-source"
+                        :class="[skill.source, { external: skill.external, system: skill.system, plugin: skill.plugin }]"
+                      >
+                        {{ getStaticSkillBadgeLabel(skill, skill.projectTargets) }}
+                      </span>
+                      <div v-else class="target-toggles skill-header-targets">
+                        <button
+                          class="target-toggle"
+                          :class="{ active: skill.projectTargets?.includes('claude') }"
+                          @click.stop="toggleProjectTarget(skill, 'claude')"
+                        >Claude</button>
+                        <button
+                          class="target-toggle"
+                          :class="{ active: skill.projectTargets?.includes('codex') }"
+                          @click.stop="toggleProjectTarget(skill, 'codex')"
+                        >Codex</button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
-                <div class="skill-meta">
-                  <div class="target-toggles">
-                    <button
-                      v-if="!isStaticSkill(skill) || skill.projectTargets?.includes('claude')"
-                      class="target-toggle"
-                      :class="{ active: skill.projectTargets?.includes('claude'), static: isStaticSkill(skill) }"
-                      @click.stop="!isStaticSkill(skill) && toggleProjectTarget(skill, 'claude')"
-                    >Claude</button>
-                    <button
-                      v-if="!isStaticSkill(skill) || skill.projectTargets?.includes('codex')"
-                      class="target-toggle"
-                      :class="{ active: skill.projectTargets?.includes('codex'), static: isStaticSkill(skill) }"
-                      @click.stop="!isStaticSkill(skill) && toggleProjectTarget(skill, 'codex')"
-                    >Codex</button>
+                  <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
+                  <div class="skill-meta">
+                    <div class="skill-meta-spacer"></div>
+                    <button v-if="skill.projectTargets?.length" class="delete-btn" @click.stop="handleDeleteProjectSkill(skill)" title="从项目移除">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                      </svg>
+                    </button>
                   </div>
-                  <button v-if="skill.projectTargets?.length" class="delete-btn" @click.stop="handleDeleteProjectSkill(skill)" title="从项目移除">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polyline points="3 6 5 6 21 6"/>
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                    </svg>
-                  </button>
                 </div>
               </div>
-            </div>
 
-            <!-- 空状态 -->
-            <div v-else class="empty-state">
-              <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-              </svg>
-              <p>暂无项目级技能</p>
-              <p class="hint">从已下载的技能中安装到项目，或手动安装</p>
-              <button class="action-btn" @click="handleMarketChange('installed')">
-                查看已下载技能
-              </button>
+              <!-- 空状态 -->
+              <div v-else class="empty-state">
+                <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <p>暂无项目级技能</p>
+                <p class="hint">从已下载的技能中安装到项目，或手动安装</p>
+                <button class="action-btn" @click="handleMarketChange('installed')">
+                  查看已下载技能
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1193,7 +1409,8 @@ useDialogStack(computed(() => true), handleClose)
 /* 右侧内容 */
 .skills-content {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
   background: linear-gradient(180deg, rgba(26, 28, 33, 0.94), rgba(23, 25, 29, 0.98));
 }
 
@@ -1201,6 +1418,14 @@ useDialogStack(computed(() => true), handleClose)
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.panel-scroll-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .panel-header {
@@ -1209,10 +1434,7 @@ useDialogStack(computed(() => true), handleClose)
   justify-content: space-between;
   padding: 20px 24px 16px;
   flex-shrink: 0;
-  position: sticky;
-  top: 0;
-  background: linear-gradient(180deg, rgba(26, 28, 33, 1) 80%, rgba(26, 28, 33, 0));
-  z-index: 2;
+  background: linear-gradient(180deg, rgba(26, 28, 33, 1), rgba(26, 28, 33, 0.96));
 }
 
 .panel-header h3 {
@@ -1299,7 +1521,7 @@ useDialogStack(computed(() => true), handleClose)
 
 .skills-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: 1fr;
   gap: 12px;
   padding: 0 24px 24px;
 }
@@ -1312,6 +1534,9 @@ useDialogStack(computed(() => true), handleClose)
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
   transition: border-color 0.2s, background 0.2s;
   cursor: pointer;
 }
@@ -1332,10 +1557,48 @@ useDialogStack(computed(() => true), handleClose)
   gap: 8px;
 }
 
+.skill-header-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.skill-icon-wrap {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.openai-skill-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.skill-icon-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .skill-header-badges {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
+}
+
+.skill-header-targets {
   flex-shrink: 0;
 }
 
@@ -1409,6 +1672,7 @@ useDialogStack(computed(() => true), handleClose)
   justify-content: space-between;
   gap: 8px;
   margin-top: auto;
+  min-width: 0;
 }
 
 .skill-author {
@@ -1420,6 +1684,17 @@ useDialogStack(computed(() => true), handleClose)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.market-skill-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: #71717A;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .author-avatar {
@@ -1875,6 +2150,76 @@ useDialogStack(computed(() => true), handleClose)
   justify-content: center;
 }
 
+.skills-header-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skills-header-toggle-label {
+  font-size: 12px;
+  color: #A1A1AA;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle-switch.compact {
+  width: 32px;
+  height: 18px;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 2px;
+  top: 2px;
+  border-radius: 50%;
+  background: #F4F4F5;
+  transition: transform 0.2s ease;
+}
+
+.toggle-switch.compact .toggle-slider::before {
+  width: 12px;
+  height: 12px;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: rgba(249, 115, 22, 0.18);
+  border-color: rgba(249, 115, 22, 0.32);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+}
+
+.toggle-switch.compact input:checked + .toggle-slider::before {
+  transform: translateX(14px);
+}
+
 .drag-over-panel {
   position: relative;
 }
@@ -1901,6 +2246,9 @@ useDialogStack(computed(() => true), handleClose)
 
 /* 已安装卡片（复用 skills-grid） */
 .installed-source {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 3px;
@@ -1915,13 +2263,13 @@ useDialogStack(computed(() => true), handleClose)
 }
 
 .installed-source.external {
-  background: rgba(161, 161, 170, 0.1);
-  color: #A1A1AA;
+  background: rgba(245, 158, 11, 0.14);
+  color: #FBBF24;
 }
 
 .installed-source.system {
-  background: rgba(249, 115, 22, 0.12);
-  color: #F97316;
+  background: rgba(245, 158, 11, 0.14);
+  color: #FBBF24;
 }
 
 .installed-source.plugin {
@@ -1933,6 +2281,10 @@ useDialogStack(computed(() => true), handleClose)
   color: rgba(248, 250, 252, 0.82) !important;
   background: rgba(249, 115, 22, 0.12) !important;
   border: 1px solid rgba(249, 115, 22, 0.22);
+}
+
+.skill-meta-spacer {
+  flex: 1;
 }
 
 

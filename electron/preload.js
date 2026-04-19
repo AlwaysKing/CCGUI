@@ -279,6 +279,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   downloadSkill: (options) => ipcRenderer.invoke('download-skill', options),
   checkSkillDownloaded: (options) => ipcRenderer.invoke('check-skill-downloaded', options),
+  listOpenAiMarketSkills: (options) => ipcRenderer.invoke('list-openai-market-skills', options),
+  installOpenAiMarketSkill: (options) => ipcRenderer.invoke('install-openai-market-skill', options),
   listDownloadedSkills: () => ipcRenderer.invoke('list-downloaded-skills'),
   installSkill: (options) => ipcRenderer.invoke('install-skill', options),
   deleteSkill: (options) => ipcRenderer.invoke('delete-skill', options),

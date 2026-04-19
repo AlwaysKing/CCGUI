@@ -3949,6 +3949,30 @@ ipcMain.handle('check-skill-downloaded', async (event, { slug }) => {
   }
 })
 
+ipcMain.handle('list-openai-market-skills', async (event, options = {}) => {
+  try {
+    const result = await codexAppServer.listRecommendedSkills({
+      refresh: options?.refresh === true
+    })
+    return {
+      success: true,
+      repoRoot: result.repoRoot || '',
+      skills: Array.isArray(result.skills) ? result.skills : []
+    }
+  } catch (error) {
+    return { success: false, skills: [], error: error.message }
+  }
+})
+
+ipcMain.handle('install-openai-market-skill', async (event, { skillId, repoPath }) => {
+  try {
+    const result = await codexAppServer.installRecommendedSkill(skillId, repoPath)
+    return { success: true, path: result.path }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
 ipcMain.handle('list-downloaded-skills', async () => {
   try {
     const skillsRoot = path.join(os.homedir(), '.ccgui', 'skills')
@@ -4039,7 +4063,7 @@ ipcMain.handle('list-downloaded-skills', async () => {
       }
     }
 
-    for (const pluginSkill of providerInspector.collectPlugins({ contents: ['skills'] }).skills) {
+    for (const pluginSkill of await collectInstalledPluginSkills()) {
       const existing = skills.find(skill => skill.slug === pluginSkill.slug && skill.path === pluginSkill.path)
       if (existing) {
         existing.source = pluginSkill.source || existing.source
@@ -4173,6 +4197,61 @@ function readSkillMetaFromPath(skillPath, fallbackName) {
     }
   } catch (_) {}
   return { name, description }
+}
+
+async function collectInstalledPluginSkills(projectPath = '') {
+  const collected = []
+
+  for (const pluginSkill of providerInspector.collectPlugins({
+    provider: 'claude',
+    projectPath,
+    contents: ['skills']
+  }).skills) {
+    collected.push(pluginSkill)
+  }
+
+  try {
+    const codexData = await providerInspector.inspectProviderSetup({
+      provider: 'codex',
+      projectPath
+    })
+    const codexPlugins = Array.isArray(codexData?.plugins) ? codexData.plugins : []
+    const seenPluginIds = new Set()
+
+    for (const plugin of codexPlugins) {
+      if (!plugin || plugin.scope === 'catalog' || plugin.configured !== true) continue
+      const pluginId = plugin.pluginId || plugin.id || ''
+      if (pluginId && seenPluginIds.has(pluginId)) continue
+      if (pluginId) seenPluginIds.add(pluginId)
+
+      const skills = Array.isArray(plugin.details?.skills) ? plugin.details.skills : []
+      for (const skill of skills) {
+        collected.push({
+          id: skill.id || `${pluginId || plugin.name || 'codex-plugin'}:${skill.slug || skill.name || 'skill'}`,
+          name: skill.name || skill.slug || 'skill',
+          slug: skill.slug || skill.name || '',
+          description: skill.description || '',
+          path: skill.path || '',
+          source: 'plugin',
+          sourceLabel: `Codex 插件 · ${plugin.displayName || plugin.name || plugin.pluginId || '未知插件'}`,
+          plugin: true,
+          external: true,
+          pluginEnabled: plugin.enabled !== false,
+          pluginScope: plugin.scope || 'user',
+          installedTargets: ['codex'],
+          provider: 'codex',
+          pluginId: plugin.pluginId || ''
+        })
+      }
+    }
+  } catch (error) {
+    logger.warn('[Skills] Failed to collect installed Codex plugin skills', {
+      projectPath,
+      error: error.message
+    })
+  }
+
+  return collected
 }
 
 ipcMain.handle('install-skill', async (event, { source }) => {
@@ -4989,7 +5068,7 @@ ipcMain.handle('list-project-skills', async (event, { projectPath }) => {
         }
       }
     }
-    for (const pluginSkill of providerInspector.collectPlugins({ contents: ['skills'] }).skills) {
+    for (const pluginSkill of await collectInstalledPluginSkills(projectPath)) {
       globalSkillsMap.set(pluginSkill.slug, {
         source: pluginSkill.source,
         sourceLabel: pluginSkill.sourceLabel,

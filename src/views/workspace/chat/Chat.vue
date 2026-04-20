@@ -1270,6 +1270,18 @@ async function handleRefreshCodexUsage() {
   await refreshCodexUsageForSession(sessionStore.currentSession)
 }
 
+async function handleRefreshClaudeUsage() {
+  if (envInfo.value?.provider !== 'claude') {
+    return
+  }
+
+  try {
+    await sessionStore.sendControlRequest({ subtype: 'get_context_usage' })
+  } catch (error) {
+    logger.warn('[Chat] Failed to refresh Claude context usage', error?.message || String(error))
+  }
+}
+
 // Rewind 确认对话框状态
 const showRewindDialog = ref(false)
 const rewindPreviewData = ref(null)
@@ -2324,6 +2336,7 @@ function handleToggleAgentRail() {
       @toggle-collapse="emit('toggleCollapse')"
       @pid-click="handlePidClick"
       @refresh-codex-usage="handleRefreshCodexUsage"
+      @refresh-claude-usage="handleRefreshClaudeUsage"
       @toggle-agent-rail="handleToggleAgentRail"
       @toggle-view-mode="handleToggleAgentViewMode"
     />

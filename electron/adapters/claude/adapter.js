@@ -1097,8 +1097,6 @@ class ClaudeAdapter extends ClaudeClient {
           user_message_id: completedUserMessageId
         })
       }
-      // turn 完成后请求上下文用量
-      this.requestContextUsage()
       this.currentTurnUserMessageId = null
       this.emit('result', message)
       return
@@ -1321,8 +1319,6 @@ class ClaudeAdapter extends ClaudeClient {
       if (message.fast_mode_state) {
         this.emit('fast-mode-change', message.fast_mode_state)
       }
-      // session 初始化后请求上下文用量
-      this.requestContextUsage()
       return
     }
 

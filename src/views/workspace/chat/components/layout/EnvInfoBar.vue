@@ -56,7 +56,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode', 'refreshCodexUsage'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode', 'refreshCodexUsage', 'refreshClaudeUsage'])
 
 // 使用 useMessage composable
 const { formatMcpServers, formatSkills, copiedMessageIndex, copyToClipboard } = useMessage()
@@ -109,6 +109,13 @@ const permissionModeConfig = computed(() => {
 // 处理 PID 点击
 function handlePidClick() {
   emit('pidClick')
+}
+
+function handleUsageClick() {
+  if (props.envInfo?.provider === 'claude') {
+    emit('refreshClaudeUsage')
+  }
+  showContextDetailDialog.value = true
 }
 
 const providerLabel = computed(() => {
@@ -534,7 +541,7 @@ async function copySilentMessage(message, reverseIndex) {
           <span
             v-if="sessionUsageSummary"
             class="env-item env-item-usage env-item-usage-clickable"
-            @click="showContextDetailDialog = true"
+            @click="handleUsageClick"
             @mouseenter="showUsageTooltip('session')"
             @mouseleave="hideUsageTooltip('session')"
           >

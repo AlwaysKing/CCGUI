@@ -102,6 +102,24 @@ class SessionManager {
     return session.sendMessage(content)
   }
 
+  async queryCommands(sessionId, params = {}) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return session.queryCommands(params)
+  }
+
+  async runCommands(sessionId, payload = {}) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return session.runCommands(payload)
+  }
+
   /**
    * 发送控制响应
    */

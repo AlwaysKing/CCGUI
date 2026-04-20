@@ -1846,6 +1846,42 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function queryCommands(category = 'slash_command') {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    const result = await window.electronAPI.queryCommands({
+      sessionId: session.id,
+      category
+    })
+
+    if (!result?.success) {
+      throw new Error(result?.error || '查询命令失败')
+    }
+
+    return result.data || { provider: session.provider || null, category, groups: [] }
+  }
+
+  async function runCommands(commands = []) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    const result = await window.electronAPI.runCommands({
+      sessionId: session.id,
+      commands
+    })
+
+    if (!result?.success) {
+      throw new Error(result?.error || '执行命令失败')
+    }
+
+    return result.data || { success: true, executed: 0 }
+  }
+
   /**
    * 发送控制响应（权限批准/拒绝）
    */
@@ -3898,6 +3934,8 @@ export const useSessionStore = defineStore('session', () => {
     replaceSplitPaneAgent,
     closeSession,
     sendMessage,
+    queryCommands,
+    runCommands,
     sendControlResponse,
     sendRuntimeToolResult,
     sendInterrupt,

@@ -148,6 +148,14 @@ const props = defineProps({
   inputTargetReadOnly: {
     type: Boolean,
     default: false
+  },
+  querySlashCommands: {
+    type: Function,
+    default: null
+  },
+  runSlashCommands: {
+    type: Function,
+    default: null
   }
 })
 
@@ -162,6 +170,7 @@ const permissionMenuWrapper = ref(null)
 const effortMenuWrapper = ref(null)
 const notificationMenuWrapper = ref(null)
 const inputTargetMenuWrapper = ref(null)
+const slashMenuWrapper = ref(null)
 
 // 输入框是否聚焦
 const isInputFocused = ref(false)
@@ -177,6 +186,11 @@ const showModelMenu = ref(false)
 const showSubModelMenu = ref(false)
 const showNotificationMenu = ref(false)
 const showInputTargetMenu = ref(false)
+const showSlashMenu = ref(false)
+const slashMenuLoading = ref(false)
+const slashMenuError = ref('')
+const slashCommandGroups = ref([])
+const activeSlashGroupId = ref('')
 
 // Enter 键模式锁定 (true = Enter 发送, false = Enter 换行)
 const enterModeLocked = ref(true)
@@ -188,6 +202,61 @@ function toggleEnterMode() {
 
 function toggleQueueVisibility() {
   emit('toggleQueueVisibility')
+}
+
+async function toggleSlashMenu() {
+  if (props.toolbarLocked || typeof props.querySlashCommands !== 'function') {
+    return
+  }
+
+  const nextState = !showSlashMenu.value
+  showSlashMenu.value = nextState
+  if (!nextState) {
+    return
+  }
+
+  showModelMenu.value = false
+  showSubModelMenu.value = false
+  showNotificationMenu.value = false
+  showInputTargetMenu.value = false
+  showPermissionMenu.value = false
+  showEffortMenu.value = false
+
+  slashMenuLoading.value = true
+  slashMenuError.value = ''
+  try {
+    const result = await props.querySlashCommands()
+    const groups = Array.isArray(result?.groups) ? result.groups : []
+    slashCommandGroups.value = groups
+    activeSlashGroupId.value = groups[0]?.id || ''
+  } catch (error) {
+    slashCommandGroups.value = []
+    activeSlashGroupId.value = ''
+    slashMenuError.value = error?.message || '加载命令失败'
+  } finally {
+    slashMenuLoading.value = false
+  }
+}
+
+function selectSlashGroup(groupId) {
+  activeSlashGroupId.value = groupId
+}
+
+async function executeSlashCommand(command) {
+  if (!command || typeof props.runSlashCommands !== 'function') {
+    return
+  }
+
+  slashMenuLoading.value = true
+  slashMenuError.value = ''
+  try {
+    await props.runSlashCommands([command])
+    showSlashMenu.value = false
+  } catch (error) {
+    slashMenuError.value = error?.message || '执行命令失败'
+  } finally {
+    slashMenuLoading.value = false
+  }
 }
 
 const enterModeIcon = computed(() => {
@@ -217,6 +286,14 @@ const localAttachments = computed({
   get: () => props.attachments,
   set: (val) => emit('update:attachments', val)
 })
+
+const slashMenuGroups = computed(() => Array.isArray(slashCommandGroups.value) ? slashCommandGroups.value : [])
+const activeSlashGroup = computed(() => {
+  const groups = slashMenuGroups.value
+  if (!groups.length) return null
+  return groups.find(group => group.id === activeSlashGroupId.value) || groups[0]
+})
+const slashLeafCommands = computed(() => Array.isArray(activeSlashGroup.value?.children) ? activeSlashGroup.value.children : [])
 
 // 当前权限模式的标签
 const currentModeLabel = computed(() => {
@@ -691,6 +768,48 @@ defineExpose({
 
         <!-- 右侧按钮组 -->
         <div class="toolbar-right">
+          <div ref="slashMenuWrapper" class="slash-menu-wrapper">
+            <button
+              @click="toggleSlashMenu"
+              class="slash-menu-btn"
+              title="命令菜单"
+              :disabled="props.toolbarLocked"
+            >
+              /
+            </button>
+
+            <div v-if="showSlashMenu" class="slash-menu-popover">
+              <div v-if="slashMenuLoading" class="slash-menu-state">加载中...</div>
+              <div v-else-if="slashMenuError" class="slash-menu-state slash-menu-error">{{ slashMenuError }}</div>
+              <div v-else-if="!slashMenuGroups.length" class="slash-menu-state">暂无可用命令</div>
+              <template v-else>
+                <div class="slash-menu-groups">
+                  <button
+                    v-for="group in slashMenuGroups"
+                    :key="group.id"
+                    class="slash-menu-group"
+                    :class="{ active: activeSlashGroup?.id === group.id }"
+                    @click="selectSlashGroup(group.id)"
+                  >
+                    <span class="slash-menu-group-label">{{ group.label }}</span>
+                    <span class="slash-menu-group-arrow">›</span>
+                  </button>
+                </div>
+                <div class="slash-menu-items">
+                  <button
+                    v-for="item in slashLeafCommands"
+                    :key="item.id"
+                    class="slash-menu-item"
+                    @click="executeSlashCommand(item)"
+                  >
+                    <span class="slash-menu-item-label">{{ item.label }}</span>
+                    <span v-if="item.description" class="slash-menu-item-desc">{{ item.description }}</span>
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <button
             @click="openAttachmentPicker"
             class="attach-button"
@@ -912,6 +1031,126 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.slash-menu-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.slash-menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.slash-menu-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.slash-menu-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.slash-menu-popover {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 6px;
+  width: 420px;
+  min-height: 220px;
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 8px;
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+  z-index: 1200;
+}
+
+.slash-menu-state {
+  grid-column: 1 / -1;
+  padding: 16px;
+  color: #A1A1AA;
+  font-size: 12px;
+}
+
+.slash-menu-error {
+  color: #FCA5A5;
+}
+
+.slash-menu-groups {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #3F3F46;
+  padding: 6px;
+  gap: 4px;
+}
+
+.slash-menu-group,
+.slash-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #D4D4D8;
+  cursor: pointer;
+  text-align: left;
+}
+
+.slash-menu-group {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.slash-menu-group:hover,
+.slash-menu-item:hover,
+.slash-menu-group.active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.slash-menu-group-label,
+.slash-menu-item-label {
+  font-size: 12px;
+  color: #E4E4E7;
+}
+
+.slash-menu-group-arrow {
+  color: #71717A;
+}
+
+.slash-menu-items {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.slash-menu-item-desc {
+  font-size: 11px;
+  color: #A1A1AA;
 }
 
 .model-mode-wrapper {

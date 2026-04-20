@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Send message (will start Claude instance if not running)
   sendMessage: (options) => ipcRenderer.invoke('send-message', options),
+  queryCommands: (options) => ipcRenderer.invoke('query-commands', options),
+  runCommands: (options) => ipcRenderer.invoke('run-commands', options),
   saveTempAttachment: (options) => ipcRenderer.invoke('save-temp-attachment', options),
   deleteTempAttachment: (options) => ipcRenderer.invoke('delete-temp-attachment', options),
 

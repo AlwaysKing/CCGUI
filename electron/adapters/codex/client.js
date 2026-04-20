@@ -1465,6 +1465,25 @@ class CodexClient {
   getThreadId() {
     return this.currentThreadId
   }
+
+  getCommandInventory() {
+    return {
+      commands: [
+        {
+          id: 'codex:compact',
+          label: '/compact',
+          description: '压缩当前线程上下文',
+          category: 'slash_command',
+          submitMode: 'runCommand',
+          kind: 'builtin-command',
+          value: '/compact',
+          groupId: 'builtin',
+          groupLabel: '内置命令'
+        }
+      ],
+      mcpServers: []
+    }
+  }
 }
 
 module.exports = {

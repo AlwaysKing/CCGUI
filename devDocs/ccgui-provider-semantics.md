@@ -2,6 +2,10 @@
 
 这份文档描述的是 `ClaudeAdapter` / `CodexAdapter` 在翻译原始协议时必须收敛到的 `CCGUI` 统一语义。
 
+专项补充文档：
+
+- [Codex Provider 控制命令与 Skills 语义设计](/Users/alwaysking/AKProject/CCGUI/devDocs/codex-provider-controls-and-skills-design.md)
+
 ## 目标
 
 - `session-instance.js` 之后不再理解 provider 原始协议。

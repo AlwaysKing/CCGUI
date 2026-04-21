@@ -1484,6 +1484,33 @@ class CodexClient {
       mcpServers: []
     }
   }
+
+  async queryCommands(params = {}) {
+    const category = typeof params?.category === 'string' ? params.category : 'slash_command'
+    if (category !== 'slash_command') {
+      return { provider: 'codex', category, groups: [] }
+    }
+
+    const inventory = this.getCommandInventory() || {}
+    const commands = Array.isArray(inventory.commands) ? inventory.commands : []
+    const groupsMap = new Map()
+
+    for (const command of commands) {
+      if (!command || command.category !== 'slash_command') continue
+      const groupId = command.groupId || 'builtin'
+      const groupLabel = command.groupLabel || '内置命令'
+      if (!groupsMap.has(groupId)) {
+        groupsMap.set(groupId, { id: groupId, label: groupLabel, children: [] })
+      }
+      groupsMap.get(groupId).children.push(command)
+    }
+
+    return {
+      provider: 'codex',
+      category,
+      groups: Array.from(groupsMap.values())
+    }
+  }
 }
 
 module.exports = {

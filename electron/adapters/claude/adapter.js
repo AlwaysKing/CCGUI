@@ -1302,6 +1302,10 @@ class ClaudeAdapter extends ClaudeClient {
     }
 
     if (message.subtype === 'init') {
+      if (typeof this.updateCommandInventoryFromInit === 'function') {
+        this.updateCommandInventoryFromInit(message)
+      }
+
       const filteredMessage = {}
       for (const [key, value] of Object.entries(message)) {
         if (value !== null) {

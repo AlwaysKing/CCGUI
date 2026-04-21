@@ -60,6 +60,9 @@ class ClaudeClient {
     this.watchedSidechainAgents = new Map()
     this.sidechainAgentFiles = new Map()
     this.shouldLinkSanitizedSessionArtifacts = false
+    this.commandInventory = { commands: [], mcpServers: [] }
+    this.commandInventoryReadyPromise = null
+    this.commandInventoryReadyResolve = null
   }
 
   /**
@@ -71,6 +74,134 @@ class ClaudeClient {
 
   setDebugEnabled(enabled) {
     this.debugEnabled = enabled === true
+  }
+
+  normalizeSlashCommandEntry(entry = null) {
+    if (!entry) return null
+
+    const rawValue = typeof entry === 'string' ? entry : (typeof entry.name === 'string' ? entry.name : '')
+    const normalizedValue = rawValue.trim()
+    if (!normalizedValue) return null
+
+    const commandValue = normalizedValue.startsWith('/') ? normalizedValue : `/${normalizedValue}`
+    const bareValue = commandValue.slice(1)
+    const isMcpPrompt = bareValue.startsWith('mcp__')
+    const mcpParts = bareValue.split('__').filter(Boolean)
+    const namespaceIndex = bareValue.indexOf(':')
+    const namespace = namespaceIndex > 0 ? bareValue.slice(0, namespaceIndex) : ''
+    let groupId = 'builtin'
+    let groupLabel = '内置命令'
+    let kind = 'builtin-command'
+
+    if (isMcpPrompt && mcpParts.length >= 2) {
+      groupId = `mcp:${mcpParts[1]}`
+      groupLabel = mcpParts[1]
+      kind = 'mcp-prompt'
+    } else if (namespace) {
+      groupId = `namespace:${namespace}`
+      groupLabel = namespace
+      kind = namespace === 'mcp' ? 'mcp-prompt' : 'namespaced-command'
+    }
+
+    const description = typeof entry?.description === 'string' ? entry.description.trim() : ''
+    const argumentHint = typeof entry?.argumentHint === 'string'
+      ? entry.argumentHint
+      : (typeof entry?.argument_hint === 'string' ? entry.argument_hint : '')
+
+    return {
+      id: `claude:${bareValue}`,
+      label: commandValue,
+      description,
+      argumentHint,
+      category: 'slash_command',
+      submitMode: 'runCommand',
+      kind,
+      value: commandValue,
+      groupId,
+      groupLabel,
+      providerMeta: {
+        rawType: typeof entry,
+        rawName: typeof entry?.name === 'string' ? entry.name : null
+      }
+    }
+  }
+
+  updateCommandInventoryFromInit(message = {}) {
+    const mcpServers = Array.isArray(message.mcp_servers) ? message.mcp_servers : []
+
+    if (mcpServers.length > 0) {
+      this.commandInventory.mcpServers = mcpServers
+    }
+
+    logger.info('[ClaudeClient] Received system/init metadata', {
+      slashCommandsCount: Array.isArray(message.slash_commands) ? message.slash_commands.length : 0,
+      mcpServers,
+      commandInventoryCount: Array.isArray(this.commandInventory?.commands) ? this.commandInventory.commands.length : 0
+    })
+  }
+
+  getCommandInventory() {
+    return {
+      commands: Array.isArray(this.commandInventory?.commands) ? [...this.commandInventory.commands] : [],
+      mcpServers: Array.isArray(this.commandInventory?.mcpServers) ? [...this.commandInventory.mcpServers] : []
+    }
+  }
+
+  async waitForCommandInventory(timeoutMs = 3000) {
+    const current = this.getCommandInventory()
+    if (Array.isArray(current.commands) && current.commands.length > 0) {
+      return current
+    }
+
+    if (!this.commandInventoryReadyPromise) {
+      this.commandInventoryReadyPromise = new Promise(resolve => {
+        this.commandInventoryReadyResolve = resolve
+      })
+    }
+
+    await Promise.race([
+      this.commandInventoryReadyPromise.catch(() => null),
+      new Promise(resolve => setTimeout(resolve, timeoutMs))
+    ])
+
+    return this.getCommandInventory()
+  }
+
+  async queryCommands(params = {}) {
+    const category = typeof params?.category === 'string' ? params.category : 'slash_command'
+    if (category !== 'slash_command') {
+      return { provider: 'claude', category, groups: [] }
+    }
+
+    let inventory = this.getCommandInventory() || {}
+
+    if (typeof this.refreshCommandInventoryFromInitialize === 'function') {
+      inventory = await this.refreshCommandInventoryFromInitialize()
+    } else if ((!Array.isArray(inventory.commands) || inventory.commands.length === 0) && typeof this.waitForCommandInventory === 'function') {
+      inventory = await this.waitForCommandInventory(3000)
+    } else if (!Array.isArray(inventory.commands) || inventory.commands.length === 0) {
+      await new Promise(resolve => setTimeout(resolve, 250))
+      inventory = this.getCommandInventory() || {}
+    }
+
+    const commands = Array.isArray(inventory.commands) ? inventory.commands : []
+    const groupsMap = new Map()
+
+    for (const command of commands) {
+      if (!command || command.category !== 'slash_command') continue
+      const groupId = command.groupId || 'builtin'
+      const groupLabel = command.groupLabel || '内置命令'
+      if (!groupsMap.has(groupId)) {
+        groupsMap.set(groupId, { id: groupId, label: groupLabel, children: [] })
+      }
+      groupsMap.get(groupId).children.push(command)
+    }
+
+    return {
+      provider: 'claude',
+      category,
+      groups: Array.from(groupsMap.values())
+    }
   }
 
   /**
@@ -314,6 +445,10 @@ class ClaudeClient {
       return
     }
 
+    this.commandInventory = { commands: [], mcpServers: [] }
+    this.commandInventoryReadyPromise = null
+    this.commandInventoryReadyResolve = null
+
     // 启动时清理上一轮残留的 subagents 文件
     this.cleanupSubagentsOnStart()
 
@@ -446,6 +581,20 @@ class ClaudeClient {
   /**
    * Send initialize control request to enable features like file history
    */
+  async refreshCommandInventoryFromInitialize() {
+    if (!this.process || !this.process.stdin?.writable) {
+      return this.getCommandInventory()
+    }
+
+    try {
+      await this.sendInitializeRequest()
+    } catch (error) {
+      logger.warn(`[ClaudeClient] Failed to refresh command inventory from initialize: ${error.message}`)
+    }
+
+    return this.getCommandInventory()
+  }
+
   async sendInitializeRequest() {
     return new Promise((resolve, reject) => {
       const requestId = `init_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -475,6 +624,19 @@ class ClaudeClient {
           // Check if initialization was successful
           if (message.response?.subtype === 'success') {
             this.initializeResponse = message.response?.response || null
+            const initCommands = Array.isArray(this.initializeResponse?.commands)
+              ? this.initializeResponse.commands
+              : []
+            if (initCommands.length > 0) {
+              this.commandInventory.commands = initCommands
+                .map(entry => this.normalizeSlashCommandEntry(entry))
+                .filter(Boolean)
+              if (typeof this.commandInventoryReadyResolve === 'function') {
+                this.commandInventoryReadyResolve(this.getCommandInventory())
+                this.commandInventoryReadyResolve = null
+                this.commandInventoryReadyPromise = null
+              }
+            }
             logger.info('[ClaudeClient] Claude initialized successfully, file history should be enabled')
             resolve(message)
           } else {
@@ -696,6 +858,10 @@ class ClaudeClient {
       return
     }
 
+    if (message.type === 'system' && message.subtype === 'init') {
+      this.updateCommandInventoryFromInit(message)
+    }
+
     // Handle regular messages (assistant, user, etc.)
     const handlers = this.messageHandlers.get(message.type) || []
     if (handlers.length > 0) {
@@ -906,6 +1072,9 @@ class ClaudeClient {
       this.process.kill('SIGTERM')
       this.process = null
     }
+    this.commandInventory = { commands: [], mcpServers: [] }
+    this.commandInventoryReadyPromise = null
+    this.commandInventoryReadyResolve = null
   }
 
   /**

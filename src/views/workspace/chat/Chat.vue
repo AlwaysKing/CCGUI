@@ -458,7 +458,7 @@ async function flushQueuedMessages() {
   const sessionId = activeQueueSessionId.value
 
   try {
-    await sessionStore.sendMessage(nextItem.content, { clearDraft: false })
+    await sessionStore.sendMessage(nextItem.content)
     const queue = queuedMessagesBySession.value[sessionId] || []
     queue.shift()
     queuedMessagesBySession.value = {
@@ -1279,6 +1279,57 @@ async function handleRefreshClaudeUsage() {
     await sessionStore.sendControlRequest({ subtype: 'get_context_usage' })
   } catch (error) {
     logger.warn('[Chat] Failed to refresh Claude context usage', error?.message || String(error))
+  }
+}
+
+async function querySlashCommands() {
+  return sessionStore.queryCommands('slash_command')
+}
+
+function handleInsertSlashCommand(commandValue = '') {
+  const text = String(commandValue || '').trim()
+  if (!text) return
+  const normalized = text.endsWith(' ') ? text : `${text} `
+  chatInputRef.value?.appendText(normalized)
+}
+
+async function handleRunSlashCommandWithoutClearingDraft(command = null) {
+  const value = typeof command?.value === 'string' ? command.value.trim() : ''
+  if (!value) return
+
+  if (sessionAvailability.value.available === false) {
+    messages.value.push({
+      role: 'system',
+      content: sessionUnavailableMessage.value || '当前会话不可用',
+      timestamp: new Date()
+    })
+    return
+  }
+
+  try {
+    if (!runtimeActive.value || isProcessing.value || pendingPermission.value || pendingControlRequest.value || isFlushingQueuedMessage.value) {
+      enqueueMessage(value)
+      autoScrollActive = true
+      scrollToBottom(true)
+      if (!runtimeActive.value) {
+        emit('startSession', { id: sessionStore.currentSession?.id })
+      }
+      return
+    }
+
+    autoScrollActive = true
+    scrollToBottom(true)
+    await sessionStore.sendMessage(value)
+  } catch (error) {
+    logger.warn('[Chat] Failed to run slash command without clearing draft', error?.message || String(error))
+    const errorText = error?.message || String(error)
+    notifyTurnError(`发送消息失败: ${errorText}`, {
+      asDialog: true,
+      title: '发送消息失败',
+      message: '消息未发送成功',
+      detail: errorText
+    })
+    throw error
   }
 }
 
@@ -2533,6 +2584,7 @@ function handleToggleAgentRail() {
         :effort-options="availableEffortOptions"
         :effort-loading="providerEffortLoading"
         :can-switch-effort="canQuickSwitchEffort"
+        :query-slash-commands="querySlashCommands"
         :input-history="inputHistory"
         @send="handleSendMessage"
         @interrupt="handleInterrupt"
@@ -2543,6 +2595,8 @@ function handleToggleAgentRail() {
         @permission-mode-change="selectPermissionMode"
         @effort-change="handleQuickEffortChange"
         @input-target-change="handleInputTargetChange"
+        @insert-slash-command="handleInsertSlashCommand"
+        @run-slash-command-without-clearing-draft="handleRunSlashCommandWithoutClearingDraft"
       />
       <div v-if="sessionUnavailableMessage" class="session-unavailable-banner">
         {{ sessionUnavailableMessage }}

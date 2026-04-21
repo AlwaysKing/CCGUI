@@ -1754,7 +1754,6 @@ export const useSessionStore = defineStore('session', () => {
       throw new Error('No active session')
     }
 
-    const shouldClearDraft = options.clearDraft !== false
     const sessionId = session.id
     let outgoingContent = normalizeOutgoingContent(content)
     const inputTargetAgentId = pickFirstDefined(
@@ -1815,11 +1814,6 @@ export const useSessionStore = defineStore('session', () => {
     }
     session.historyIndex = -1
 
-    // 手动发送时清空草稿；队列自动发送不应影响用户当前输入。
-    if (shouldClearDraft) {
-      session.inputMessage = ''
-      session.inputAttachments = []
-    }
     session.isProcessing = true
     session.currentTurnUsageSources = {}
 
@@ -1830,7 +1824,7 @@ export const useSessionStore = defineStore('session', () => {
     try {
       const result = await window.electronAPI.sendMessage({
         sessionId,
-        content: outgoingContent
+        content: outgoingContent,
       })
 
       if (!result?.success) {
@@ -1838,10 +1832,6 @@ export const useSessionStore = defineStore('session', () => {
       }
     } catch (error) {
       session.isProcessing = false
-      if (shouldClearDraft) {
-        session.inputMessage = typeof outgoingContent === 'string' ? outgoingContent : (outgoingContent?.text || '')
-        session.inputAttachments = Array.isArray(outgoingContent?.attachments) ? outgoingContent.attachments : []
-      }
       throw error
     }
   }

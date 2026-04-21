@@ -3,7 +3,7 @@
  * ChatInput - 聊天输入区域组件
  * 从 ChatWindow.vue 提取的输入组件
  */
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import AttachmentComposer from './AttachmentComposer.vue'
 import { ATTACHMENT_TOKEN_REGEX, stripAttachmentTokens } from '../../../../../utils/chatAttachments'
 
@@ -153,13 +153,9 @@ const props = defineProps({
     type: Function,
     default: null
   },
-  runSlashCommands: {
-    type: Function,
-    default: null
-  }
 })
 
-const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange'])
+const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'insertSlashCommand', 'runSlashCommandWithoutClearingDraft'])
 
 // 输入区域 ref
 const inputArea = ref(null)
@@ -188,6 +184,7 @@ const showNotificationMenu = ref(false)
 const showInputTargetMenu = ref(false)
 const showSlashMenu = ref(false)
 const slashMenuLoading = ref(false)
+const slashSearchQuery = ref('')
 const slashMenuError = ref('')
 const slashCommandGroups = ref([])
 const activeSlashGroupId = ref('')
@@ -229,9 +226,11 @@ async function toggleSlashMenu() {
     const groups = Array.isArray(result?.groups) ? result.groups : []
     slashCommandGroups.value = groups
     activeSlashGroupId.value = groups[0]?.id || ''
+    slashSearchQuery.value = ''
   } catch (error) {
     slashCommandGroups.value = []
     activeSlashGroupId.value = ''
+    slashSearchQuery.value = ''
     slashMenuError.value = error?.message || '加载命令失败'
   } finally {
     slashMenuLoading.value = false
@@ -242,15 +241,31 @@ function selectSlashGroup(groupId) {
   activeSlashGroupId.value = groupId
 }
 
-async function executeSlashCommand(command) {
-  if (!command || typeof props.runSlashCommands !== 'function') {
+async function executeSlashCommand(command, event = null) {
+  if (!command) {
     return
+  }
+
+  const commandValue = typeof command.value === 'string' ? command.value.trim() : ''
+  if (!commandValue) {
+    return
+  }
+
+  if (!event?.metaKey) {
+    emit('insertSlashCommand', commandValue)
+    showSlashMenu.value = false
+    slashMenuError.value = ''
+    return
+  }
+
+  const plainCommand = {
+    value: commandValue
   }
 
   slashMenuLoading.value = true
   slashMenuError.value = ''
   try {
-    await props.runSlashCommands([command])
+    emit('runSlashCommandWithoutClearingDraft', plainCommand)
     showSlashMenu.value = false
   } catch (error) {
     slashMenuError.value = error?.message || '执行命令失败'
@@ -288,12 +303,42 @@ const localAttachments = computed({
 })
 
 const slashMenuGroups = computed(() => Array.isArray(slashCommandGroups.value) ? slashCommandGroups.value : [])
-const activeSlashGroup = computed(() => {
+const slashSearchKeyword = computed(() => String(slashSearchQuery.value || '').trim().toLowerCase())
+const filteredSlashGroups = computed(() => {
+  const keyword = slashSearchKeyword.value
   const groups = slashMenuGroups.value
+  if (!keyword) return groups
+
+  return groups
+    .map(group => ({
+      ...group,
+      children: Array.isArray(group.children)
+        ? group.children.filter(item => {
+            const haystacks = [item?.label, item?.argumentHint, item?.description, item?.value]
+              .map(value => String(value || '').toLowerCase())
+            return haystacks.some(text => text.includes(keyword))
+          })
+        : []
+    }))
+    .filter(group => Array.isArray(group.children) && group.children.length > 0)
+})
+const activeSlashGroup = computed(() => {
+  const groups = filteredSlashGroups.value
   if (!groups.length) return null
   return groups.find(group => group.id === activeSlashGroupId.value) || groups[0]
 })
 const slashLeafCommands = computed(() => Array.isArray(activeSlashGroup.value?.children) ? activeSlashGroup.value.children : [])
+
+watch(filteredSlashGroups, (groups) => {
+  if (!groups.length) {
+    activeSlashGroupId.value = ''
+    return
+  }
+
+  if (!groups.some(group => group.id === activeSlashGroupId.value)) {
+    activeSlashGroupId.value = groups[0]?.id || ''
+  }
+})
 
 // 当前权限模式的标签
 const currentModeLabel = computed(() => {
@@ -567,6 +612,7 @@ function closeAllMenus() {
   showEffortMenu.value = false
   showNotificationMenu.value = false
   showInputTargetMenu.value = false
+  showSlashMenu.value = false
 }
 
 function toggleModelMenu() {
@@ -601,7 +647,8 @@ function handleGlobalClick(event) {
     permissionMenuWrapper.value?.contains(target) ||
     effortMenuWrapper.value?.contains(target) ||
     notificationMenuWrapper.value?.contains(target) ||
-    inputTargetMenuWrapper.value?.contains(target)
+    inputTargetMenuWrapper.value?.contains(target) ||
+    slashMenuWrapper.value?.contains(target)
   ) {
     return
   }
@@ -781,11 +828,19 @@ defineExpose({
             <div v-if="showSlashMenu" class="slash-menu-popover">
               <div v-if="slashMenuLoading" class="slash-menu-state">加载中...</div>
               <div v-else-if="slashMenuError" class="slash-menu-state slash-menu-error">{{ slashMenuError }}</div>
-              <div v-else-if="!slashMenuGroups.length" class="slash-menu-state">暂无可用命令</div>
+              <div v-else-if="!filteredSlashGroups.length" class="slash-menu-state">暂无匹配命令</div>
               <template v-else>
+                <div class="slash-menu-search slash-menu-search--top">
+                  <input
+                    v-model="slashSearchQuery"
+                    class="slash-menu-search-input"
+                    type="text"
+                    placeholder="搜索命令 / 描述 / 参数"
+                  />
+                </div>
                 <div class="slash-menu-groups">
                   <button
-                    v-for="group in slashMenuGroups"
+                    v-for="group in filteredSlashGroups"
                     :key="group.id"
                     class="slash-menu-group"
                     :class="{ active: activeSlashGroup?.id === group.id }"
@@ -800,9 +855,12 @@ defineExpose({
                     v-for="item in slashLeafCommands"
                     :key="item.id"
                     class="slash-menu-item"
-                    @click="executeSlashCommand(item)"
+                    @click="executeSlashCommand(item, $event)"
                   >
-                    <span class="slash-menu-item-label">{{ item.label }}</span>
+                    <span class="slash-menu-item-main">
+                      <span class="slash-menu-item-label">{{ item.label }}</span>
+                      <span v-if="item.argumentHint" class="slash-menu-item-arg-wrap"><span class="slash-menu-item-arg">{{ item.argumentHint }}</span></span>
+                    </span>
                     <span v-if="item.description" class="slash-menu-item-desc">{{ item.description }}</span>
                   </button>
                 </div>
@@ -1071,7 +1129,7 @@ defineExpose({
   bottom: 100%;
   margin-bottom: 6px;
   width: 420px;
-  min-height: 220px;
+  height: 320px;
   display: grid;
   grid-template-columns: 160px 1fr;
   background: #27272A;
@@ -1099,6 +1157,8 @@ defineExpose({
   border-right: 1px solid #3F3F46;
   padding: 6px;
   gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .slash-menu-group,
@@ -1129,10 +1189,56 @@ defineExpose({
   background: rgba(255, 255, 255, 0.08);
 }
 
-.slash-menu-group-label,
-.slash-menu-item-label {
+.slash-menu-group-label {
   font-size: 12px;
   color: #E4E4E7;
+}
+
+.slash-menu-item-main {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.slash-menu-item-label {
+  font-size: 15px;
+  line-height: 1.25;
+  color: #F4F4F5;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.slash-menu-item-arg-wrap {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+}
+
+.slash-menu-item-arg {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #71717A;
+  vertical-align: middle;
+  opacity: 0.95;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateX(0);
+  will-change: transform;
+}
+
+.slash-menu-item:hover .slash-menu-item-arg {
+  overflow: visible;
+  text-overflow: clip;
+  animation: slash-menu-arg-marquee 5.2s ease-in-out infinite alternate;
 }
 
 .slash-menu-group-arrow {
@@ -1144,13 +1250,57 @@ defineExpose({
   flex-direction: column;
   padding: 6px;
   gap: 4px;
-  max-height: 320px;
+  min-height: 0;
   overflow-y: auto;
 }
 
+.slash-menu-search {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #27272A;
+}
+
+.slash-menu-search--top {
+  grid-column: 1 / -1;
+  padding: 6px;
+  border-bottom: 1px solid #3F3F46;
+}
+
+.slash-menu-search-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: #18181B;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  color: #E4E4E7;
+  font-size: 12px;
+  outline: none;
+}
+
+.slash-menu-search-input::placeholder {
+  color: #71717A;
+}
+
+.slash-menu-search-input:focus {
+  border-color: #52525B;
+  box-shadow: 0 0 0 1px rgba(82, 82, 91, 0.35);
+}
+
 .slash-menu-item-desc {
-  font-size: 11px;
-  color: #A1A1AA;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #71717A;
+  opacity: 0.78;
+}
+
+@keyframes slash-menu-arg-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-45%);
+  }
 }
 
 .model-mode-wrapper {

@@ -2460,9 +2460,7 @@ class SessionInstance {
 
     // 更新状态
     this.isProcessing = true
-    this.inputMessage = ''
-    this.inputAttachments = []
-    this.emit('state-update', { isProcessing: true, inputMessage: '', inputAttachments: [] })
+    this.emit('state-update', { isProcessing: true })
 
     // 发送到运行时 provider
     try {
@@ -2863,6 +2861,35 @@ class SessionInstance {
     })
 
     return message
+  }
+
+  async queryCommands(params = {}) {
+    if (!this.runtimeManager || !this.runtimeManager.isReady()) {
+      this.loadResolvedRuntimeConfig()
+      await this.startRuntime()
+    }
+
+    if (typeof this.runtimeManager?.queryCommands === 'function') {
+      return this.runtimeManager.queryCommands(params)
+    }
+
+    const category = typeof params?.category === 'string' ? params.category : 'slash_command'
+    return { provider: this.provider, category, groups: [] }
+  }
+
+  async runCommands(payload = {}) {
+    const commands = Array.isArray(payload?.commands) ? payload.commands : []
+    if (!commands.length) {
+      return { success: true, executed: 0 }
+    }
+
+    for (const command of commands) {
+      const value = typeof command?.value === 'string' ? command.value.trim() : ''
+      if (!value) continue
+      await this.sendMessage(value)
+    }
+
+    return { success: true, executed: commands.length }
   }
 
   /**

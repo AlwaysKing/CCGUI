@@ -325,12 +325,33 @@ function handleSave() {
 .form-input,
 .form-select {
   width: 100%;
+  box-sizing: border-box;
+}
+
+.form-input {
+  appearance: none;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid #52525B;
+  border-radius: 6px;
+  background: #27272A;
+  color: #F4F4F5;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.form-input::placeholder {
+  color: #71717A;
 }
 
 .form-input:focus,
 .form-select:focus {
   outline: none;
   border-color: #F97316;
+}
+
+.form-input:hover {
+  border-color: #71717A;
 }
 
 .input-with-action {

@@ -10,6 +10,7 @@ import AppMultiSelect from '@/components/base/AppMultiSelect.vue'
 import ModelSettings from '@/views/settings/components/ModelSettings.vue'
 import DefaultConfigDialog from '@/views/settings/components/dialogs/DefaultConfigDialog.vue'
 import CodexConfigDialog from '@/views/settings/components/dialogs/CodexConfigDialog.vue'
+import ModelMappingDialog from '@/views/settings/components/dialogs/ModelMappingDialog.vue'
 import ModelEditDialog from '@/views/settings/components/dialogs/ModelEditDialog.vue'
 import CodexAccountEditDialog from '@/views/settings/components/dialogs/CodexAccountEditDialog.vue'
 
@@ -272,7 +273,9 @@ const {
   showDefaultConfigDialog,
   showCodexConfigDialog,
   showCodexAccountDialog,
+  showMappingDialog,
   editingCodexAccount,
+  pendingModel,
   effortOptions,
   loadSettings,
   handleAddClaudeModel,
@@ -292,6 +295,7 @@ const {
   handleToggleCodexModelActive,
   handleApplyClaudeModel,
   handleApplyCodexModel,
+  handleMappingConfirm,
   handleEditDefaultConfig,
   handleSaveDefaultConfig,
   handleEditCodexConfig,
@@ -3259,6 +3263,14 @@ watch(() => activeSection.value, (section) => {
       :config="codexConfig"
       @close="showCodexConfigDialog = false"
       @save="handleSaveProviderConfig"
+    />
+
+    <ModelMappingDialog
+      v-if="showMappingDialog"
+      :visible="showMappingDialog"
+      :model="pendingModel?.model || null"
+      @close="showMappingDialog = false"
+      @confirm="handleMappingConfirm"
     />
 
     <ModelEditDialog

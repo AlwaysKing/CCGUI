@@ -509,6 +509,7 @@ class ClaudeClient {
     // 构建完整的环境变量
     const fullEnv = {
       ...process.env,
+      CLAUDE_CODE_ENTRYPOINT: 'claude-vscode',
       CLAUDE_CODE_ENABLE_TELEMETRY: '0',
       DISABLE_TELEMETRY: '1',
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',

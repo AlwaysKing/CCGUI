@@ -155,7 +155,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'insertSlashCommand', 'runSlashCommandWithoutClearingDraft'])
+const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'runSlashCommand'])
 
 // 输入区域 ref
 const inputArea = ref(null)
@@ -251,21 +251,13 @@ async function executeSlashCommand(command, event = null) {
     return
   }
 
-  if (!event?.metaKey) {
-    emit('insertSlashCommand', commandValue)
-    showSlashMenu.value = false
-    slashMenuError.value = ''
-    return
-  }
-
-  const plainCommand = {
-    value: commandValue
-  }
-
   slashMenuLoading.value = true
   slashMenuError.value = ''
   try {
-    emit('runSlashCommandWithoutClearingDraft', plainCommand)
+    emit('runSlashCommand', {
+      ...command,
+      value: commandValue
+    })
     showSlashMenu.value = false
   } catch (error) {
     slashMenuError.value = error?.message || '执行命令失败'
@@ -1132,6 +1124,7 @@ defineExpose({
   height: 320px;
   display: grid;
   grid-template-columns: 160px 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
   background: #27272A;
   border: 1px solid #3F3F46;
   border-radius: 8px;
@@ -1152,6 +1145,8 @@ defineExpose({
 }
 
 .slash-menu-groups {
+  grid-row: 2;
+  grid-column: 1;
   display: flex;
   flex-direction: column;
   border-right: 1px solid #3F3F46;
@@ -1246,6 +1241,8 @@ defineExpose({
 }
 
 .slash-menu-items {
+  grid-row: 2;
+  grid-column: 2;
   display: flex;
   flex-direction: column;
   padding: 6px;

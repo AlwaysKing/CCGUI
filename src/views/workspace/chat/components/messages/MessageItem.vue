@@ -50,6 +50,10 @@ const TOOL_AVATAR_ICONS = {
   Skill: '🛠'
 }
 
+function isTurnMessageRole(role = '') {
+  return role === 'user' || role === 'command'
+}
+
 const props = defineProps({
   message: {
     type: Object,
@@ -195,14 +199,14 @@ const shouldHide = computed(() => {
       ? getResponseCollapseState(props.allMessages, props.messageIndex).collapsed
       : false
   }
-  if (props.message.role === 'user') return false
+  if (isTurnMessageRole(props.message.role)) return false
   const { collapsed } = getResponseCollapseState(props.allMessages, props.messageIndex)
   return collapsed
 })
 
 // 是否是一轮新问答的开始（用户消息且不是第一条）
 const isNewTurn = computed(() => {
-  return props.message.role === 'user' && props.messageIndex > 0
+  return isTurnMessageRole(props.message.role) && props.messageIndex > 0
 })
 
 const responsiveMessageWidthStyle = computed(() => {
@@ -271,6 +275,7 @@ const avatarChar = computed(() => {
   }
   switch (props.message.role) {
     case 'user': return 'U'
+    case 'command': return '/'
     case 'assistant': return 'C'
     case 'question': return '?'
     case 'task_complete': {
@@ -325,7 +330,7 @@ const isStreaming = computed(() => {
   if (msg.role === 'assistant') return !!msg.isStreaming
   if (msg.role === 'tool_use' || msg.role === 'diff') return !!msg.isExecuting
   // 用户消息：最后一条且没有 duration 时显示实时耗时
-  if (msg.role === 'user') return isLastUserMsg.value && !msg.duration && !!msg.startTime
+  if (isTurnMessageRole(msg.role)) return isLastUserMsg.value && !msg.duration && !!msg.startTime
   return false
 })
 
@@ -368,11 +373,11 @@ const showTailStats = computed(() => false)
 const showBottomStats = computed(() => false)
 const showFloatingStats = computed(() => showMessageStats.value && isFloatingStatus.value)
 const showUserRightColumn = computed(() => {
-  return props.message.role === 'user' && showAvatar.value
+  return isTurnMessageRole(props.message.role) && showAvatar.value
 })
 
 const responseToolbarTarget = computed(() => {
-  if (props.message.role !== 'user') return null
+  if (!isTurnMessageRole(props.message.role)) return null
   const response = findAssistantResponse(props.allMessages, props.messageIndex)
   return { message: props.message, index: props.messageIndex, response }
 })
@@ -495,7 +500,7 @@ function onToggleQuestionCollapse(messageIndex) {
 
 function setAllResponseCollapsed(nextCollapsed, { excludeIndex = null } = {}) {
   props.allMessages.forEach((message, index) => {
-    if (message?.role !== 'user') return
+    if (!isTurnMessageRole(message?.role)) return
     if (!findAssistantResponse(props.allMessages, index)) return
     if (excludeIndex !== null && index === excludeIndex) return
     message.responseCollapsed = nextCollapsed
@@ -504,7 +509,7 @@ function setAllResponseCollapsed(nextCollapsed, { excludeIndex = null } = {}) {
 
 async function onToggleResponseCollapse(messageIndex, event = null) {
   const message = props.allMessages[messageIndex]
-  if (!message || message.role !== 'user') {
+  if (!message || !isTurnMessageRole(message.role)) {
     return
   }
 
@@ -659,7 +664,7 @@ watch(() => props.message, () => {
     @click="handleMessageClick"
   >
     <!-- 非用户消息：头像在左边 -->
-    <div v-if="showAvatar && message.role !== 'user'" class="message-avatar">
+    <div v-if="showAvatar && !isTurnMessageRole(message.role)" class="message-avatar">
       {{ avatarChar }}
     </div>
 
@@ -670,7 +675,7 @@ watch(() => props.message, () => {
         <MessageStats
           :timestamp="message.timestamp"
           :duration="message.duration"
-          :start-time="(message.role === 'user' && isLastUserMsg && !message.duration) ? message.startTime : message.startTime"
+          :start-time="(isTurnMessageRole(message.role) && isLastUserMsg && !message.duration) ? message.startTime : message.startTime"
           :current-time="currentTime"
           :is-streaming="isStreaming"
           :num-turns="message.numTurns"
@@ -795,16 +800,17 @@ watch(() => props.message, () => {
       </template>
 
       <!-- User 消息 -->
-      <template v-else-if="message.role === 'user'">
+      <template v-else-if="message.role === 'user' || message.role === 'command'">
         <div class="user-message-shell">
           <UserMessage
             :message="message"
             :message-index="messageIndex"
             :copied-message-index="copiedMessageIndex"
             :chat-theme="chatTheme"
+            :variant="message.role === 'command' ? 'command' : 'user'"
             @copyContent="copyMessageContent"
           />
-          <div v-if="showResponseToolbarRewindBtn" class="user-action-overlay">
+          <div v-if="message.role === 'user' && showResponseToolbarRewindBtn" class="user-action-overlay">
             <div class="action-menu-wrapper" @click.stop>
               <button
                 :ref="setToolbarMenuTrigger"
@@ -821,7 +827,7 @@ watch(() => props.message, () => {
             </div>
           </div>
         </div>
-        <Teleport to="body">
+        <Teleport v-if="message.role === 'user'" to="body">
           <div
             v-if="openActionMenuIndex === responseToolbarTarget.index"
             class="action-dropdown-menu action-dropdown-menu--toolbar"
@@ -976,7 +982,7 @@ watch(() => props.message, () => {
         <MessageStats
           :timestamp="message.timestamp"
           :duration="message.duration"
-          :start-time="(message.role === 'user' && isLastUserMsg && !message.duration) ? message.startTime : message.startTime"
+          :start-time="(isTurnMessageRole(message.role) && isLastUserMsg && !message.duration) ? message.startTime : message.startTime"
           :current-time="currentTime"
           :is-streaming="isStreaming"
           :num-turns="message.numTurns"
@@ -988,12 +994,12 @@ watch(() => props.message, () => {
       <div
         v-if="showFloatingStats"
         class="message-stats-floating top"
-        :class="{ 'user-floating': message.role === 'user' }"
+        :class="{ 'user-floating': isTurnMessageRole(message.role) }"
       >
         <MessageStats
           :timestamp="message.timestamp"
           :duration="message.duration"
-          :start-time="(message.role === 'user' && isLastUserMsg && !message.duration) ? message.startTime : message.startTime"
+          :start-time="(isTurnMessageRole(message.role) && isLastUserMsg && !message.duration) ? message.startTime : message.startTime"
           :current-time="currentTime"
           :is-streaming="isStreaming"
           :num-turns="message.numTurns"
@@ -1029,12 +1035,14 @@ watch(() => props.message, () => {
   margin-bottom: 24px;
 }
 
-.message.user {
+.message.user,
+.message.command {
   justify-content: flex-end;
   padding-left: 48px;  /* 留出左侧空间，与回答消息的头像区域对齐 */
 }
 
-.message.user.no-avatar {
+.message.user.no-avatar,
+.message.command.no-avatar {
   padding-left: 0;
 }
 
@@ -1051,22 +1059,26 @@ watch(() => props.message, () => {
   margin-top: 42px;
 }
 
-.message.user .message-body {
+.message.user .message-body,
+.message.command .message-body {
   align-items: flex-end;
   flex: 1;
   max-width: var(--ccgui-message-fill-width, calc(100% - 48px));  /* 减去右侧列宽度(36px) + 间距(12px) */
   overflow: visible;
 }
 
-.message.user.with-response-toolbar .message-body {
+.message.user.with-response-toolbar .message-body,
+.message.command.with-response-toolbar .message-body {
   max-width: calc(100% - 48px);
 }
 
-.message.user.no-avatar .message-body {
+.message.user.no-avatar .message-body,
+.message.command.no-avatar .message-body {
   max-width: var(--ccgui-message-fill-width, calc(100% - 28px));
 }
 
-.message.user.with-response-toolbar.no-avatar .message-body {
+.message.user.with-response-toolbar.no-avatar .message-body,
+.message.command.with-response-toolbar.no-avatar .message-body {
   max-width: calc(100% - 28px);
 }
 
@@ -1139,6 +1151,7 @@ watch(() => props.message, () => {
 }
 
 .message.user:hover .user-action-overlay,
+.message.command:hover .user-action-overlay,
 .user-action-overlay:has(.user-action-btn.active) {
   opacity: 1;
   pointer-events: auto;
@@ -1386,7 +1399,8 @@ watch(() => props.message, () => {
   margin-top: 2px;
 }
 
-.message.user .message-avatar {
+.message.user .message-avatar,
+.message.command .message-avatar {
   background: #3F3F46;
 }
 

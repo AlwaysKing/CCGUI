@@ -26,6 +26,10 @@ const props = defineProps({
   chatTheme: {
     type: Object,
     default: () => ({})
+  },
+  variant: {
+    type: String,
+    default: 'user'
   }
 })
 
@@ -43,6 +47,8 @@ const userMessageStyle = computed(() => {
   }
   return style
 })
+
+const isCommandVariant = computed(() => props.variant === 'command')
 
 // 是否已复制
 const isCopied = computed(() => props.copiedMessageIndex === props.messageIndex)
@@ -80,13 +86,14 @@ function closeImagePreview() {
 </script>
 
 <template>
-  <div class="message-user-container" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]">
+  <div class="message-user-container" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`, { 'message-command-container': isCommandVariant }]">
     <div class="message-content user-content">
-      <div class="message-text" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]" :style="userMessageStyle">
+      <div class="message-text" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`, { command: isCommandVariant }]" :style="userMessageStyle">
         <CopyButton
           :is-copied="isCopied"
           @copy="copyContent"
         />
+        <div v-if="isCommandVariant" class="message-command-label">命令</div>
         <div v-if="attachments.length" class="user-attachments">
           <div
             v-for="attachment in attachments"
@@ -159,6 +166,24 @@ function closeImagePreview() {
   color: #E4E4E7;
   border: 1px solid rgba(228, 228, 231, 0.2);
   border-radius: 8px;
+}
+
+.message-text.command {
+  background: linear-gradient(135deg, #1f2937 0%, #0f172a 100%);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.message-text.command.surface-ghost {
+  border-color: rgba(148, 163, 184, 0.32);
+}
+
+.message-command-label {
+  margin: 0 28px 8px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(226, 232, 240, 0.7);
 }
 
 .user-attachments {

@@ -8,6 +8,7 @@ import { addAppErrorDialogListener, openAppErrorDialog } from '../../../utils/ap
 import { useSessionModelControls } from './composables/useSessionModelControls'
 import { useDialogStack } from '../../../composables/useDialogStack'
 import { resolveSessionChatMessageTheme } from '../../../utils/chatMessageTheme'
+import BaseDialog from '../../../components/base/BaseDialog.vue'
 
 // 引入对话框组件
 import PermissionDialog from './components/dialogs/PermissionDialog.vue'
@@ -379,6 +380,10 @@ const queuedMessageCount = computed(() => {
 
 const shouldShowQueuePanel = computed(() => queuedMessageCount.value > 0 && queuePanelVisible.value)
 
+function isTurnMessage(message = null) {
+  return message?.role === 'user' || message?.role === 'command'
+}
+
 function normalizeQueuedContent(content) {
   if (typeof content === 'string') {
     return content
@@ -386,6 +391,13 @@ function normalizeQueuedContent(content) {
 
   if (!content || typeof content !== 'object') {
     return ''
+  }
+
+  if (content.kind === 'command' && content.command && typeof content.command === 'object') {
+    return {
+      kind: 'command',
+      command: { ...content.command }
+    }
   }
 
   return {
@@ -401,6 +413,16 @@ function buildQueuedMessageLabel(content) {
     return {
       text: text || '空消息',
       attachmentBadges: []
+    }
+  }
+
+  if (normalized?.kind === 'command' && normalized.command) {
+    const value = String(normalized.command.value || '').trim()
+    const args = String(normalized.command.arguments || '').trim()
+    return {
+      text: args ? `${value} ${args}` : value || '命令',
+      attachmentBadges: [],
+      fallbackText: '命令'
     }
   }
 
@@ -458,7 +480,11 @@ async function flushQueuedMessages() {
   const sessionId = activeQueueSessionId.value
 
   try {
-    await sessionStore.sendMessage(nextItem.content)
+    if (nextItem.content?.kind === 'command') {
+      await sessionStore.runCommands([nextItem.content.command])
+    } else {
+      await sessionStore.sendMessage(nextItem.content)
+    }
     const queue = queuedMessagesBySession.value[sessionId] || []
     queue.shift()
     queuedMessagesBySession.value = {
@@ -496,7 +522,7 @@ const centerResizeTimerLabel = computed(() => {
   }
 
   const activeUserMessage = [...messages.value].reverse().find(message =>
-    message?.role === 'user' && message?.startTime && !message?.duration
+    isTurnMessage(message) && message?.startTime && !message?.duration
   )
 
   if (!activeUserMessage?.startTime) {
@@ -537,7 +563,7 @@ const collapsibleStats = computed(() => {
     const message = messages.value[index]
     if (!message) continue
 
-    if (message.role === 'user') {
+    if (isTurnMessage(message)) {
       if (findAssistantResponse(messages.value, index)) {
         total += 1
         if (message.responseCollapsed) collapsed += 1
@@ -564,7 +590,7 @@ function toggleAllMessageCollapse() {
     const message = messages.value[index]
     if (!message) continue
 
-    if (message.role === 'user') {
+    if (isTurnMessage(message)) {
       if (findAssistantResponse(messages.value, index)) {
         message.responseCollapsed = shouldCollapse
       }
@@ -1270,32 +1296,37 @@ async function handleRefreshCodexUsage() {
   await refreshCodexUsageForSession(sessionStore.currentSession)
 }
 
-async function handleRefreshClaudeUsage() {
-  if (envInfo.value?.provider !== 'claude') {
-    return
-  }
-
-  try {
-    await sessionStore.sendControlRequest({ subtype: 'get_context_usage' })
-  } catch (error) {
-    logger.warn('[Chat] Failed to refresh Claude context usage', error?.message || String(error))
-  }
-}
-
 async function querySlashCommands() {
   return sessionStore.queryCommands('slash_command')
 }
 
-function handleInsertSlashCommand(commandValue = '') {
-  const text = String(commandValue || '').trim()
-  if (!text) return
-  const normalized = text.endsWith(' ') ? text : `${text} `
-  chatInputRef.value?.appendText(normalized)
+const showCommandDialog = ref(false)
+const pendingSlashCommand = ref(null)
+const pendingSlashCommandArgs = ref('')
+
+function openSlashCommandDialog(command = null) {
+  pendingSlashCommand.value = command
+  pendingSlashCommandArgs.value = ''
+  showCommandDialog.value = true
 }
 
-async function handleRunSlashCommandWithoutClearingDraft(command = null) {
+function closeSlashCommandDialog() {
+  showCommandDialog.value = false
+  pendingSlashCommand.value = null
+  pendingSlashCommandArgs.value = ''
+}
+
+async function executeSlashCommand(command = null, commandArguments = '') {
   const value = typeof command?.value === 'string' ? command.value.trim() : ''
   if (!value) return
+
+  const argumentHint = typeof command?.argumentHint === 'string' ? command.argumentHint.trim() : ''
+  const normalizedArguments = String(commandArguments || '').trim()
+
+  if (argumentHint && !normalizedArguments) {
+    openSlashCommandDialog(command)
+    return
+  }
 
   if (sessionAvailability.value.available === false) {
     messages.value.push({
@@ -1307,8 +1338,17 @@ async function handleRunSlashCommandWithoutClearingDraft(command = null) {
   }
 
   try {
+    const commandPayload = {
+      ...command,
+      value,
+      arguments: normalizedArguments
+    }
+
     if (!runtimeActive.value || isProcessing.value || pendingPermission.value || pendingControlRequest.value || isFlushingQueuedMessage.value) {
-      enqueueMessage(value)
+      enqueueMessage({
+        kind: 'command',
+        command: commandPayload
+      })
       autoScrollActive = true
       scrollToBottom(true)
       if (!runtimeActive.value) {
@@ -1319,18 +1359,29 @@ async function handleRunSlashCommandWithoutClearingDraft(command = null) {
 
     autoScrollActive = true
     scrollToBottom(true)
-    await sessionStore.sendMessage(value)
+    await sessionStore.runCommands([commandPayload])
   } catch (error) {
-    logger.warn('[Chat] Failed to run slash command without clearing draft', error?.message || String(error))
+    logger.warn('[Chat] Failed to run slash command', error?.message || String(error))
     const errorText = error?.message || String(error)
-    notifyTurnError(`发送消息失败: ${errorText}`, {
+    notifyTurnError(`执行命令失败: ${errorText}`, {
       asDialog: true,
-      title: '发送消息失败',
-      message: '消息未发送成功',
+      title: '执行命令失败',
+      message: '命令未执行成功',
       detail: errorText
     })
     throw error
   }
+}
+
+async function handleRunSlashCommand(command = null) {
+  await executeSlashCommand(command, '')
+}
+
+async function confirmSlashCommandDialog() {
+  const command = pendingSlashCommand.value
+  const args = pendingSlashCommandArgs.value
+  closeSlashCommandDialog()
+  await executeSlashCommand(command, args)
 }
 
 // Rewind 确认对话框状态
@@ -1480,6 +1531,7 @@ async function handleSendMessage(userText) {
   if (!runtimeActive.value) {
     enqueueMessage(userText)
     inputMessage.value = ''
+    inputAttachments.value = []
     autoScrollActive = true
     scrollToBottom(true)
     emit('startSession', { id: sessionStore.currentSession?.id })
@@ -1489,6 +1541,7 @@ async function handleSendMessage(userText) {
   if (isProcessing.value || pendingPermission.value || pendingControlRequest.value || isFlushingQueuedMessage.value) {
     enqueueMessage(userText)
     inputMessage.value = ''
+    inputAttachments.value = []
     autoScrollActive = true
     scrollToBottom(true)
     return
@@ -1497,13 +1550,14 @@ async function handleSendMessage(userText) {
   // 折叠之前所有用户消息的回答
   if (appConfig.value?.settings?.collapseOnSend !== false) {
     messages.value.forEach(msg => {
-      if (msg.role === 'user') {
+      if (isTurnMessage(msg)) {
         msg.responseCollapsed = true
       }
     })
   }
 
   inputMessage.value = ''
+  inputAttachments.value = []
   autoScrollActive = true
   scrollToBottom(true) // 用户发送消息时强制滚动
 
@@ -1697,7 +1751,7 @@ function updateStickyMessage() {
       if (!msgId) return
 
       const msg = messages.value.find(m => m.id === msgId)
-      if (msg && msg.role === 'user') {
+      if (msg && isTurnMessage(msg)) {
         lastScrolledPastUserId = msgId
       }
     }
@@ -1715,7 +1769,7 @@ function updateStickyMessage() {
       if (!msgId) return
 
       const msg = messages.value.find(m => m.id === msgId)
-      if (msg && msg.role === 'user') {
+      if (msg && isTurnMessage(msg)) {
         hasVisibleUserMessage = true
       }
     }
@@ -1742,7 +1796,7 @@ const isStickyMessageProcessing = computed(() => {
   if (!stickyMessage.value) return false
   if (stickyMessage.value.role === 'assistant') return !!stickyMessage.value.isStreaming
   if (stickyMessage.value.role === 'tool_use' || stickyMessage.value.role === 'diff') return !!stickyMessage.value.isExecuting
-  if (stickyMessage.value.role === 'user') return !!isProcessing.value && !stickyMessage.value.duration
+  if (isTurnMessage(stickyMessage.value)) return !!isProcessing.value && !stickyMessage.value.duration
   return false
 })
 
@@ -2387,7 +2441,6 @@ function handleToggleAgentRail() {
       @toggle-collapse="emit('toggleCollapse')"
       @pid-click="handlePidClick"
       @refresh-codex-usage="handleRefreshCodexUsage"
-      @refresh-claude-usage="handleRefreshClaudeUsage"
       @toggle-agent-rail="handleToggleAgentRail"
       @toggle-view-mode="handleToggleAgentViewMode"
     />
@@ -2595,13 +2648,40 @@ function handleToggleAgentRail() {
         @permission-mode-change="selectPermissionMode"
         @effort-change="handleQuickEffortChange"
         @input-target-change="handleInputTargetChange"
-        @insert-slash-command="handleInsertSlashCommand"
-        @run-slash-command-without-clearing-draft="handleRunSlashCommandWithoutClearingDraft"
+        @run-slash-command="handleRunSlashCommand"
       />
       <div v-if="sessionUnavailableMessage" class="session-unavailable-banner">
         {{ sessionUnavailableMessage }}
       </div>
     </div>
+
+    <BaseDialog
+      :model-value="showCommandDialog"
+      title="填写命令参数"
+      width="480px"
+      @close="closeSlashCommandDialog"
+      @update:model-value="value => { if (!value) closeSlashCommandDialog() }"
+    >
+      <div class="command-dialog">
+        <div class="command-dialog-name">{{ pendingSlashCommand?.label || pendingSlashCommand?.value || '' }}</div>
+        <p v-if="pendingSlashCommand?.description" class="command-dialog-description">{{ pendingSlashCommand.description }}</p>
+        <div class="command-dialog-field">
+          <label class="command-dialog-label">参数</label>
+          <input
+            v-model="pendingSlashCommandArgs"
+            class="command-dialog-input"
+            type="text"
+            :placeholder="pendingSlashCommand?.argumentHint || '输入命令参数'"
+            @keydown.enter.prevent="confirmSlashCommandDialog"
+          />
+          <p v-if="pendingSlashCommand?.argumentHint" class="command-dialog-hint">提示：{{ pendingSlashCommand.argumentHint }}</p>
+        </div>
+        <div class="command-dialog-actions">
+          <button class="command-dialog-btn secondary" @click="closeSlashCommandDialog">取消</button>
+          <button class="command-dialog-btn primary" @click="confirmSlashCommandDialog">执行命令</button>
+        </div>
+      </div>
+    </BaseDialog>
 
     <!-- Ask User Question Dialog - 在聊天窗口内部 -->
     <AskUserQuestionDialog
@@ -4292,6 +4372,78 @@ function handleToggleAgentRail() {
 .chat-context-menu-item:hover {
   background: rgba(249, 115, 22, 0.12);
   color: #FED7AA;
+}
+
+.command-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.command-dialog-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.command-dialog-description,
+.command-dialog-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
+.command-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.command-dialog-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.command-dialog-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(15, 23, 42, 0.82);
+  color: #f8fafc;
+}
+
+.command-dialog-input:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.7);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
+}
+
+.command-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.command-dialog-btn {
+  min-width: 92px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.command-dialog-btn.secondary {
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+}
+
+.command-dialog-btn.primary {
+  background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+  color: #fff;
 }
 
 </style>

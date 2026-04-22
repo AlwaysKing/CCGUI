@@ -19,6 +19,48 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function isTurnInitiatorMessage(message = null) {
+  return message?.role === 'user' || message?.role === 'command'
+}
+
+function toPlainJsonObject(value) {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value))
+  } catch (error) {
+    return null
+  }
+}
+
+function normalizeCommandForIpc(command = {}) {
+  if (!command || typeof command !== 'object') {
+    return null
+  }
+
+  const value = typeof command.value === 'string' ? command.value.trim() : ''
+  if (!value) {
+    return null
+  }
+
+  return {
+    id: typeof command.id === 'string' ? command.id : '',
+    label: typeof command.label === 'string' ? command.label : value,
+    description: typeof command.description === 'string' ? command.description : '',
+    argumentHint: typeof command.argumentHint === 'string' ? command.argumentHint : '',
+    category: typeof command.category === 'string' ? command.category : 'slash_command',
+    submitMode: typeof command.submitMode === 'string' ? command.submitMode : 'runCommand',
+    kind: typeof command.kind === 'string' ? command.kind : '',
+    value,
+    arguments: typeof command.arguments === 'string' ? command.arguments.trim() : '',
+    groupId: typeof command.groupId === 'string' ? command.groupId : '',
+    groupLabel: typeof command.groupLabel === 'string' ? command.groupLabel : '',
+    providerMeta: toPlainJsonObject(command.providerMeta)
+  }
+}
+
 /**
  * SessionData
  * 每个会话的完整状态（包含 UI 状态和消息）
@@ -536,10 +578,11 @@ function buildSubagentHistoryAnchor(turn = {}, agentId, registry = null) {
   const timestamp = toIsoTimestamp(turn.createdAt) || new Date().toISOString()
   const content = typeof turn.inputText === 'string' ? turn.inputText : ''
   const syntheticId = `subagent-anchor:${agentId}:${turn.turnId}`
+  const role = turn.messageRole === 'command' ? 'command' : 'user'
 
   return {
     id: syntheticId,
-    role: 'user',
+    role,
     content,
     serializedContent: content,
     attachments: [],
@@ -1048,7 +1091,7 @@ export const useSessionStore = defineStore('session', () => {
             if (!payload || typeof payload !== 'object') {
               continue
             }
-            if (payload.role === 'user' && payload.ccgui?.history?.subagentTurnId === turn.turnId) {
+            if (isTurnInitiatorMessage(payload) && payload.ccgui?.history?.subagentTurnId === turn.turnId) {
               continue
             }
             bucket.messages.push(payload)
@@ -1860,12 +1903,30 @@ export const useSessionStore = defineStore('session', () => {
       throw new Error('No active session')
     }
 
-    const result = await window.electronAPI.runCommands({
-      sessionId: session.id,
-      commands
-    })
+    const normalizedCommands = Array.isArray(commands)
+      ? commands.map(command => normalizeCommandForIpc(command)).filter(Boolean)
+      : []
+    if (!normalizedCommands.length) {
+      return { success: true, executed: 0 }
+    }
+
+    session.isProcessing = true
+    session.currentTurnUsageSources = {}
+    session.activeTasks.clear()
+
+    let result
+    try {
+      result = await window.electronAPI.runCommands({
+        sessionId: session.id,
+        commands: normalizedCommands
+      })
+    } catch (error) {
+      session.isProcessing = false
+      throw error
+    }
 
     if (!result?.success) {
+      session.isProcessing = false
       throw new Error(result?.error || '执行命令失败')
     }
 
@@ -2181,7 +2242,7 @@ export const useSessionStore = defineStore('session', () => {
         insertedMessages = turnEvents
           .map(event => event?.data)
           .filter(message => message && typeof message === 'object')
-          .filter(message => !(message.role === 'user' && message.ccgui?.history?.subagentTurnId === turnId))
+          .filter(message => !(isTurnInitiatorMessage(message) && message.ccgui?.history?.subagentTurnId === turnId))
           .map(message => reactive(message))
       } else {
         const replaySession = createHistoryReplaySession(session)
@@ -2191,11 +2252,11 @@ export const useSessionStore = defineStore('session', () => {
 
         const replayedMessages = Array.isArray(replaySession.messages) ? replaySession.messages : []
         const replayedUserIndex = replayedMessages.findIndex(message =>
-          message?.role === 'user' && message?.id === anchorMessage.id
+          isTurnInitiatorMessage(message) && message?.id === anchorMessage.id
         )
         replayedUserMessage = replayedUserIndex >= 0 ? replayedMessages[replayedUserIndex] : null
         insertedMessages = replayedMessages
-          .filter((message, index) => !(index === replayedUserIndex && message?.role === 'user'))
+          .filter((message, index) => !(index === replayedUserIndex && isTurnInitiatorMessage(message)))
           .map(message => reactive(message))
       }
 
@@ -2555,7 +2616,7 @@ export const useSessionStore = defineStore('session', () => {
     })
 
     // 提取统一 result 语义
-    const latestUserMessage = [...session.messages].reverse().find(msg => msg.role === 'user') || null
+    const latestUserMessage = [...session.messages].reverse().find(msg => isTurnInitiatorMessage(msg)) || null
     const latestAssistantMessage = [...session.messages].reverse().find(msg =>
       msg.role === 'assistant' && ((msg.content && msg.content.trim()) || (msg.thinking && msg.thinking.trim()))
     ) || [...session.messages].reverse().find(msg => msg.role === 'assistant') || null
@@ -2584,7 +2645,7 @@ export const useSessionStore = defineStore('session', () => {
 
     // 更新最后一个用户消息的统计信息
     for (let i = session.messages.length - 1; i >= 0; i--) {
-      if (session.messages[i].role === 'user') {
+      if (isTurnInitiatorMessage(session.messages[i])) {
         const userMsg = session.messages[i]
         log('[SessionStore] Found user message at index', i, 'startTime:', userMsg.startTime)
 
@@ -2642,7 +2703,7 @@ export const useSessionStore = defineStore('session', () => {
 
   function getLatestUserMessage(session) {
     for (let i = session.messages.length - 1; i >= 0; i--) {
-      if (session.messages[i].role === 'user') {
+      if (isTurnInitiatorMessage(session.messages[i])) {
         return session.messages[i]
       }
     }
@@ -3346,7 +3407,8 @@ export const useSessionStore = defineStore('session', () => {
         data.type === 'session-config-applied' ||
         data.type === 'session-effort-changed' ||
         data.type === 'mcp-server-ready' ||
-        data.type === 'mcp-server-error'
+        data.type === 'mcp-server-error' ||
+        data.type === 'hook-event'
       )
     ) {
       const pendingMessage = [...session.messages].reverse().find(message =>
@@ -3354,7 +3416,8 @@ export const useSessionStore = defineStore('session', () => {
         (
           message.notificationType === 'session-runtime-starting' ||
           message.notificationType === 'session-runtime-restarting' ||
-          message.notificationType === 'mcp-server-starting'
+          message.notificationType === 'mcp-server-starting' ||
+          message.notificationType === 'hook-event'
         ) &&
         message.data?.operationId === operationId
       )

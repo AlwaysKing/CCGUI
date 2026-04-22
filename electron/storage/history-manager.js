@@ -326,6 +326,7 @@ function createTurnIndexEntry(message = {}) {
     turnId,
     schemaVersion: 1,
     userMessageId: turnId,
+    messageRole: message.role === 'command' ? 'command' : 'user',
     userText: normalizedContent,
     serializedContent: typeof message.serializedContent === 'string'
       ? message.serializedContent
@@ -355,7 +356,7 @@ function createIndexMessageEntry(message = {}) {
 }
 
 function extractSubagentInputTextFromPayload(payload = {}, history = {}) {
-  if (payload?.role === 'user') {
+  if (payload?.role === 'user' || payload?.role === 'command') {
     return typeof payload.content === 'string'
       ? payload.content
       : (typeof payload.serializedContent === 'string' ? payload.serializedContent : '')
@@ -654,7 +655,7 @@ function appendMessage(projectId, sessionId, message) {
     return false
   }
 
-  if (message.role === 'user') {
+  if (message.role === 'user' || message.role === 'command') {
     return Boolean(appendTurn(projectId, sessionId, message))
   }
 

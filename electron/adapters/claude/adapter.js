@@ -63,6 +63,129 @@ class ClaudeAdapter extends ClaudeClient {
     this.pendingRewindExecuteRequestId = null
     // dry_run 请求分流：rewind 预获取 / FileChangeSummary 都走 rewind_files + dry_run
     this.pendingDryRunRequests = new Map()
+    this.lastMcpServersByName = new Map()
+  }
+
+  normalizeMcpServerEntry(entry = null) {
+    if (!entry || typeof entry !== 'object') {
+      return null
+    }
+
+    const name = typeof entry.name === 'string'
+      ? entry.name.trim()
+      : (typeof entry.server === 'string' ? entry.server.trim() : '')
+    if (!name) {
+      return null
+    }
+
+    const status = typeof entry.status === 'string'
+      ? entry.status.trim()
+      : (typeof entry.state === 'string' ? entry.state.trim() : '')
+    const error = entry.error ?? entry.lastError ?? null
+
+    return {
+      ...entry,
+      name,
+      status: status || 'unknown',
+      error
+    }
+  }
+
+  extractMcpServersFromMessage(message = {}) {
+    const candidates = [
+      message?.mcp_servers,
+      message?.mcpServers,
+      message?.session_state?.mcp_servers,
+      message?.session_state?.mcpServers,
+      message?.state?.mcp_servers,
+      message?.state?.mcpServers
+    ]
+
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate)) {
+        continue
+      }
+
+      const normalized = candidate
+        .map(entry => this.normalizeMcpServerEntry(entry))
+        .filter(Boolean)
+      if (normalized.length > 0) {
+        return normalized
+      }
+    }
+
+    return []
+  }
+
+  syncMcpServers(servers = [], options = {}) {
+    if (!Array.isArray(servers) || servers.length === 0) {
+      return
+    }
+
+    const normalizedServers = servers
+      .map(entry => this.normalizeMcpServerEntry(entry))
+      .filter(Boolean)
+    if (normalizedServers.length === 0) {
+      return
+    }
+
+    const previousByName = new Map(this.lastMcpServersByName)
+    const nextByName = new Map(normalizedServers.map(entry => [entry.name, entry]))
+    this.lastMcpServersByName = nextByName
+
+    this.envInfo = {
+      ...this.envInfo,
+      mcp_servers: normalizedServers,
+      provider: 'claude',
+      providerPid: this.getPid() || null
+    }
+    this.emit('env-info', this.envInfo)
+
+    if (options.emitNotifications !== true) {
+      return
+    }
+
+    for (const server of normalizedServers) {
+      const previous = previousByName.get(server.name) || null
+      const previousStatus = typeof previous?.status === 'string' ? previous.status : ''
+      if (previous && previousStatus === server.status && !server.error) {
+        continue
+      }
+
+      this.emit('system-notification', {
+        type: 'mcp-server-status',
+        provider: 'claude',
+        name: server.name,
+        status: server.status,
+        previousStatus: previousStatus || null,
+        error: server.error ?? previous?.error ?? null,
+        source: options.source || 'session_state_changed',
+        metadata: options.metadata || null
+      })
+    }
+  }
+
+  handleHookSystemMessage(message = {}, event = 'started') {
+    const hookId = message.hook_id || message.hookId || message.id || null
+    const hookName = message.hook_name || message.hookName || message.name || null
+    const operationId = hookId || hookName
+      ? `hook:${hookId || hookName}`
+      : ''
+    const payload = {
+      type: 'hook-event',
+      provider: 'claude',
+      event,
+      hookId,
+      hookName,
+      operationId,
+      status: message.status || null,
+      progressMessage: message.progress_message || message.progressMessage || message.message || null,
+      response: message.response ?? message.result ?? null,
+      errorMessage: message.error?.message || message.error || null,
+      metadata: message
+    }
+
+    this.emit('system-notification', payload)
   }
 
   getCollaborativeReadOnlyFields() {
@@ -908,6 +1031,26 @@ class ClaudeAdapter extends ClaudeClient {
     super.sendMessage(message)
   }
 
+  async runCommand(command = {}) {
+    const value = typeof command?.value === 'string' ? command.value.trim() : ''
+    const rawArguments = typeof command?.arguments === 'string' ? command.arguments.trim() : ''
+    if (!value) {
+      throw new Error('Missing command value')
+    }
+
+    const text = rawArguments ? `${value} ${rawArguments}` : value
+    const messageUuid = command?.messageId || `command-${Date.now()}`
+
+    await this.sendMessage({
+      type: 'user',
+      uuid: messageUuid,
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text }]
+      }
+    })
+  }
+
   collapseThinkingIfNeeded(messageId, snapshot, hasNewText = false) {
     if (!messageId || !snapshot?.thinking) return
     if (!hasNewText) return
@@ -1097,6 +1240,8 @@ class ClaudeAdapter extends ClaudeClient {
           user_message_id: completedUserMessageId
         })
       }
+      // turn 完成后请求上下文用量
+      this.requestContextUsage()
       this.currentTurnUserMessageId = null
       this.emit('result', message)
       return
@@ -1320,9 +1465,16 @@ class ClaudeAdapter extends ClaudeClient {
         providerPid: this.getPid() || null
       }
       this.emit('env-info', this.envInfo)
+      this.syncMcpServers(this.extractMcpServersFromMessage(message), {
+        emitNotifications: false,
+        source: 'init',
+        metadata: message
+      })
       if (message.fast_mode_state) {
         this.emit('fast-mode-change', message.fast_mode_state)
       }
+      // session 初始化后请求上下文用量
+      this.requestContextUsage()
       return
     }
 
@@ -1357,6 +1509,30 @@ class ClaudeAdapter extends ClaudeClient {
       return
     }
 
+    if (message.subtype === 'session_state_changed') {
+      const nextEnvPatch = {}
+      if (typeof message.status === 'string' && message.status.trim()) {
+        nextEnvPatch.status = message.status.trim()
+      }
+
+      if (Object.keys(nextEnvPatch).length > 0) {
+        this.envInfo = {
+          ...this.envInfo,
+          ...nextEnvPatch,
+          provider: 'claude',
+          providerPid: this.getPid() || null
+        }
+        this.emit('env-info', this.envInfo)
+      }
+
+      this.syncMcpServers(this.extractMcpServersFromMessage(message), {
+        emitNotifications: true,
+        source: 'session_state_changed',
+        metadata: message
+      })
+      return
+    }
+
     if (message.subtype === 'compact_boundary') {
       this.envInfo = {
         ...this.envInfo,
@@ -1373,6 +1549,22 @@ class ClaudeAdapter extends ClaudeClient {
         compactMetadata: message.compact_metadata || message.compactMetadata,
         compactSummary: message.compactSummary || message.compact_summary
       })
+      return
+    }
+
+    if (message.subtype === 'hook_started') {
+      this.handleHookSystemMessage(message, 'started')
+      return
+    }
+
+    if (message.subtype === 'hook_progress') {
+      this.handleHookSystemMessage(message, 'progress')
+      return
+    }
+
+    if (message.subtype === 'hook_response') {
+      const event = message.error ? 'failed' : 'completed'
+      this.handleHookSystemMessage(message, event)
       return
     }
 

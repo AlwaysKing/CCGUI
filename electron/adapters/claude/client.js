@@ -366,7 +366,7 @@ class ClaudeClient {
     }
 
     try {
-      const prompt = buildDeveloperInstructions(this.projectSettings)
+      const prompt = buildDeveloperInstructions(this.projectSettings, { provider: 'claude' })
       logger.info(`[ClaudeClient] buildSystemPrompt result: ${prompt ? 1 : 0} parts, total ${prompt?.length || 0} chars`)
       return prompt
     } catch (error) {

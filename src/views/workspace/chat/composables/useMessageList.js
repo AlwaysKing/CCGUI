@@ -8,6 +8,10 @@ const rewindCollapseStates = ref({})
 const questionActiveTabs = ref({})
 const openActionMenuIndex = ref(-1)
 
+function isTurnMessage(message = null) {
+  return message?.role === 'user' || message?.role === 'command'
+}
+
 export function useMessageList() {
   /**
    * 判断用户消息是否有回答
@@ -18,7 +22,7 @@ export function useMessageList() {
   function findAssistantResponse(messages, userMessageIndex) {
     if (!Array.isArray(messages) || userMessageIndex < 0) return null
     const userMessage = messages[userMessageIndex]
-    if (!userMessage || userMessage.role !== 'user') return null
+    if (!isTurnMessage(userMessage)) return null
 
     for (let i = userMessageIndex + 1; i < messages.length; i += 1) {
       const message = messages[i]
@@ -34,7 +38,7 @@ export function useMessageList() {
       }
 
       // 又遇到 user 消息 → 没有回答（但如果当前 turn 未加载，可能中间有未加载的 assistant 回复）
-      if (message.role === 'user') {
+      if (isTurnMessage(message)) {
         if (userMessage?.historyTurn?.hasResponse) {
           break // 跳出循环，走 historyTurn fallback
         }
@@ -111,7 +115,7 @@ export function useMessageList() {
       if (!message) {
         continue
       }
-      if (message.role === 'user') {
+      if (isTurnMessage(message)) {
         if (message.responseCollapsed) {
           return { collapsed: true, byUserIndex: i }
         }
@@ -123,14 +127,14 @@ export function useMessageList() {
 
   function toggleResponseCollapse(messages, messageIndex) {
     const message = messages[messageIndex]
-    if (message && message.role === 'user') {
+    if (isTurnMessage(message)) {
       message.responseCollapsed = !message.responseCollapsed
     }
   }
 
   function isLastUserMessage(messages, index) {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
+      if (isTurnMessage(messages[i])) {
         return i === index
       }
     }

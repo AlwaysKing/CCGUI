@@ -56,7 +56,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode', 'refreshCodexUsage', 'refreshClaudeUsage'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode', 'refreshCodexUsage'])
 
 // 使用 useMessage composable
 const { formatMcpServers, formatSkills, copiedMessageIndex, copyToClipboard } = useMessage()
@@ -112,9 +112,6 @@ function handlePidClick() {
 }
 
 function handleUsageClick() {
-  if (props.envInfo?.provider === 'claude') {
-    emit('refreshClaudeUsage')
-  }
   showContextDetailDialog.value = true
 }
 

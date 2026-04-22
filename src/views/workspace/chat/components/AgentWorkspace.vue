@@ -518,10 +518,14 @@ function isAssistantAnswerBlock(block) {
   return message?.role === 'assistant' && message?.subtype !== 'thinking'
 }
 
+function isTurnMessage(message = null) {
+  return message?.role === 'user' || message?.role === 'command'
+}
+
 function isFoldableActivityBlock(block) {
   const message = getBlockMessage(block)
   if (!message) return false
-  if (message.role === 'user' || message.role === 'assistant') return false
+  if (isTurnMessage(message) || message.role === 'assistant') return false
   if (message.role === 'system' || message.role === 'task_complete') return false
   if (message.role === 'system_notification') return false
   return true
@@ -569,7 +573,7 @@ function isMessageHiddenByResponseCollapse(messages, messageIndex) {
     const message = messages[i]
     if (!message) continue
 
-    if (message.role === 'user') {
+    if (isTurnMessage(message)) {
       return Boolean(message.responseCollapsed)
     }
   }

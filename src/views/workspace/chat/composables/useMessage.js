@@ -118,7 +118,7 @@ export function useMessage() {
     if (!message) return
 
     let content = ''
-    if (message.role === 'user' || message.role === 'assistant') {
+    if (message.role === 'user' || message.role === 'command' || message.role === 'assistant') {
       content = typeof message.content === 'string' ? message.content : message.content
     } else {
       content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content)

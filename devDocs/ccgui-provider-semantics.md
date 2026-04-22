@@ -2,13 +2,6 @@
 
 这份文档描述的是 `ClaudeAdapter` / `CodexAdapter` 在翻译原始协议时必须收敛到的 `CCGUI` 统一语义。
 
-补充说明（2026-04-20）：
-
-- `Claude` 的 `get_context_usage` 不应在 session 初始化后自动调用。
-- 已验证该自动查询会在部分接入路径下触发大量 `count_tokens` 请求，显著拖慢启动。
-- 当前策略调整为：`Claude` 上下文用量只在用户点击 `EnvInfoBar` 的详细用量入口时手动触发查询。
-- `Codex` 的用量展示保持现有逻辑，不受这次调整影响。
-
 专项补充文档：
 
 - [Codex Provider 控制命令与 Skills 语义设计](/Users/alwaysking/AKProject/CCGUI/devDocs/codex-provider-controls-and-skills-design.md)

@@ -43,8 +43,9 @@ const notificationTypeClass = computed(() => {
     notificationType === 'runtime-exit' ||
     notificationType === 'turn-error' ||
     notificationType === 'mcp-server-error' ||
+    (notificationType === 'mcp-server-status' && ['error', 'failed', 'disconnected'].includes(String(props.message.data?.status || '').toLowerCase())) ||
     (notificationType === 'account-login-completed' && props.message.data?.success === false) ||
-    (notificationType === 'hook-event' && props.message.data?.errorMessage)
+    (notificationType === 'hook-event' && (props.message.data?.errorMessage || props.message.data?.event === 'failed'))
   ) {
     return 'notification-error'
   }
@@ -53,13 +54,15 @@ const notificationTypeClass = computed(() => {
     notificationType === 'session-runtime-ready' ||
     notificationType === 'session-config-applied' ||
     notificationType === 'session-effort-changed' ||
+    (notificationType === 'mcp-server-status' && ['connected', 'ready'].includes(String(props.message.data?.status || '').toLowerCase())) ||
     (notificationType === 'account-login-completed' && props.message.data?.success === true)
   ) {
     return 'notification-success'
   }
   if (
     notificationType === 'mcp-server-starting' ||
-    notificationType === 'mcp-server-ready'
+    notificationType === 'mcp-server-ready' ||
+    notificationType === 'mcp-server-status'
   ) {
     return 'notification-mcp'
   }
@@ -247,18 +250,26 @@ const notificationContent = computed(() => {
       }
     }
 
-    if (data.errorMessage) {
+    if (data.event === 'progress') {
+      return {
+        icon: '🪝',
+        title: `${hookName} 执行中`,
+        description: data.progressMessage || data.status || '后台钩子正在执行'
+      }
+    }
+
+    if (data.errorMessage || data.event === 'failed') {
       return {
         icon: '🪝',
         title: `${hookName} 执行失败`,
-        description: data.errorMessage
+        description: data.errorMessage || data.progressMessage || 'Hook 执行失败'
       }
     }
 
     return {
       icon: '🪝',
       title: `${hookName} 已完成`,
-      description: data.status || '后台钩子已完成'
+      description: data.progressMessage || data.status || '后台钩子已完成'
     }
   }
 
@@ -356,6 +367,31 @@ const notificationContent = computed(() => {
       icon: '🧩',
       title: `${serverName} 启动失败`,
       description: String(errorText)
+    }
+  }
+
+  if (notificationType === 'mcp-server-status') {
+    const serverName = data.name || 'MCP Server'
+    const status = String(data.status || 'unknown').trim().toLowerCase()
+    const previousStatus = String(data.previousStatus || '').trim().toLowerCase()
+    const statusLabelMap = {
+      connected: '已连接',
+      ready: '已就绪',
+      connecting: '连接中',
+      starting: '启动中',
+      disconnected: '已断开',
+      failed: '失败',
+      error: '错误',
+      unknown: '状态未知'
+    }
+    const statusText = statusLabelMap[status] || data.status || '状态未知'
+    const previousText = previousStatus ? (statusLabelMap[previousStatus] || data.previousStatus || previousStatus) : ''
+    const detailPrefix = previousText ? `${previousText} -> ${statusText}` : statusText
+    const errorText = data.error?.message || data.error || ''
+    return {
+      icon: '🧩',
+      title: `${serverName} 状态更新`,
+      description: errorText ? `${detailPrefix}\n${String(errorText)}` : detailPrefix
     }
   }
 

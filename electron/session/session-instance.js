@@ -313,15 +313,20 @@ function isUuidLike(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim())
 }
 
+function isTurnEntryRole(role = '') {
+  return role === 'user' || role === 'command'
+}
+
 function buildHistoryUserMessageFromTurn(turn = {}) {
   const timestamp = turn.createdAt || new Date().toISOString()
   const normalizedContent = typeof turn.userText === 'string'
     ? turn.userText
     : (typeof turn.serializedContent === 'string' ? turn.serializedContent : '')
+  const role = turn.messageRole === 'command' ? 'command' : 'user'
 
   return {
     id: turn.userMessageId || turn.turnId,
-    role: 'user',
+    role,
     content: normalizedContent,
     serializedContent: typeof turn.serializedContent === 'string'
       ? turn.serializedContent
@@ -379,6 +384,7 @@ const SESSION_NOTIFICATION_TYPES = new Set([
   'mcp-server-starting',
   'mcp-server-ready',
   'mcp-server-error',
+  'mcp-server-status',
   'session-config-applied',
   'session-effort-changed',
   'permission-mode-change',
@@ -939,9 +945,10 @@ class SessionInstance {
       })
     }
 
-    if (eventType === 'message' && payload.role === 'user') {
+    if (eventType === 'message' && isTurnEntryRole(payload.role)) {
       const sourceUserTurnId = payload.id || null
       const targetAgentId = this.getPayloadAgentId(payload)
+      const inputKind = payload.role === 'command' ? 'direct_command' : 'direct_user'
 
       if (sourceUserTurnId) {
         this.setAgentSourceTurnId(this.getMainAgentId(), sourceUserTurnId)
@@ -951,13 +958,13 @@ class SessionInstance {
         this.setAgentSourceTurnId(targetAgentId, sourceUserTurnId)
         const subagentTurnId = this.ensureSubagentTurn(targetAgentId, sourceUserTurnId, {
           forceNew: true,
-          inputKind: 'direct_user'
+          inputKind
         })
         const targetRegistry = this.getAgentRegistrySnapshot(targetAgentId)
         payload = this.attachHistoryContext(payload, {
           sourceUserTurnId,
           subagentTurnId,
-          inputKind: 'direct_user',
+          inputKind,
           targetAgentId
         })
         if (targetRegistry && !payload?.ccgui?.registry) {
@@ -968,6 +975,7 @@ class SessionInstance {
       } else if (sourceUserTurnId) {
         payload = this.attachHistoryContext(payload, {
           sourceUserTurnId,
+          inputKind,
           targetAgentId: targetAgentId || this.getMainAgentId()
         })
       }
@@ -1513,6 +1521,7 @@ class SessionInstance {
       type === 'mcp-server-starting' ||
       type === 'mcp-server-ready' ||
       type === 'mcp-server-error' ||
+      type === 'mcp-server-status' ||
       type === 'session-config-applied' ||
       type === 'session-effort-changed'
     ) {
@@ -1588,7 +1597,8 @@ class SessionInstance {
         notificationType === 'session-config-applied' ||
         notificationType === 'session-effort-changed' ||
         notificationType === 'mcp-server-ready' ||
-        notificationType === 'mcp-server-error'
+        notificationType === 'mcp-server-error' ||
+        notificationType === 'hook-event'
       )
     ) {
       const pendingMessage = [...this.messages].reverse().find(message =>
@@ -1596,7 +1606,8 @@ class SessionInstance {
         (
           message.notificationType === 'session-runtime-starting' ||
           message.notificationType === 'session-runtime-restarting' ||
-          message.notificationType === 'mcp-server-starting'
+          message.notificationType === 'mcp-server-starting' ||
+          message.notificationType === 'hook-event'
         ) &&
         message.data?.operationId === operationId
       )
@@ -1710,7 +1721,7 @@ class SessionInstance {
       }
 
       if (Object.keys(updates).length > 0 && item.id) {
-        if (item.role === 'user') {
+        if (isTurnEntryRole(item.role)) {
           historyManager.updateTurn(this.projectId, this.id, item.id, updates)
         } else {
           this.emit('message-update', {
@@ -2503,7 +2514,7 @@ class SessionInstance {
 
   getLatestUserMessage() {
     for (let i = this.messages.length - 1; i >= 0; i--) {
-      if (this.messages[i].role === 'user') {
+      if (isTurnEntryRole(this.messages[i].role)) {
         return this.messages[i]
       }
     }
@@ -2516,14 +2527,14 @@ class SessionInstance {
   }
 
   resolveCodexRollbackTurnCount(userMessageId) {
-    const targetIndex = this.messages.findIndex(item => item.role === 'user' && item.id === userMessageId)
+    const targetIndex = this.messages.findIndex(item => isTurnEntryRole(item.role) && item.id === userMessageId)
     if (targetIndex === -1) {
       throw new Error('Target user message not found')
     }
 
     let numTurns = 0
     for (let index = targetIndex; index < this.messages.length; index += 1) {
-      if (this.messages[index]?.role === 'user') {
+      if (isTurnEntryRole(this.messages[index]?.role)) {
         numTurns += 1
       }
     }
@@ -2610,9 +2621,9 @@ class SessionInstance {
   }
 
   applyRewindLocally(userMessageId, rewindData = {}, options = {}) {
-    const targetIndex = this.messages.findIndex(item => item.role === 'user' && item.id === userMessageId)
+    const targetIndex = this.messages.findIndex(item => isTurnEntryRole(item.role) && item.id === userMessageId)
     if (targetIndex === -1) {
-      throw new Error('Target user message not found')
+      throw new Error('Target turn message not found')
     }
 
     const targetMessage = this.messages[targetIndex] || null
@@ -2885,8 +2896,66 @@ class SessionInstance {
 
     for (const command of commands) {
       const value = typeof command?.value === 'string' ? command.value.trim() : ''
+      const commandArguments = typeof command?.arguments === 'string' ? command.arguments.trim() : ''
       if (!value) continue
-      await this.sendMessage(value)
+
+      if (!this.runtimeManager || !this.runtimeManager.isReady()) {
+        this.loadResolvedRuntimeConfig()
+        await this.startRuntime()
+      }
+
+      const commandId = crypto.randomUUID()
+      const commandText = commandArguments ? `${value} ${commandArguments}` : value
+      const displayMessage = {
+        id: commandId,
+        role: 'command',
+        content: commandText,
+        serializedContent: commandText,
+        commandName: value,
+        commandArguments,
+        argumentHint: typeof command?.argumentHint === 'string' ? command.argumentHint : '',
+        command: {
+          id: typeof command?.id === 'string' ? command.id : '',
+          messageId: commandId,
+          label: typeof command?.label === 'string' ? command.label : value,
+          description: typeof command?.description === 'string' ? command.description : '',
+          value,
+          arguments: commandArguments,
+          argumentHint: typeof command?.argumentHint === 'string' ? command.argumentHint : '',
+          kind: typeof command?.kind === 'string' ? command.kind : '',
+          category: typeof command?.category === 'string' ? command.category : 'slash_command',
+          providerMeta: isPlainObject(command?.providerMeta) ? JSON.parse(JSON.stringify(command.providerMeta)) : null
+        },
+        timestamp: new Date(),
+        startTime: Date.now()
+      }
+
+      this.messages.push(displayMessage)
+      this.activeResponseUserMessageId = displayMessage.id
+      this.saveMessageToHistory(displayMessage)
+      this.emit('message', displayMessage)
+
+      this.isProcessing = true
+      this.emit('state-update', { isProcessing: true })
+
+      try {
+        if (typeof this.runtimeManager?.runCommand === 'function') {
+          await this.runtimeManager.runCommand(displayMessage.command)
+        } else {
+          await this.runtimeManager.sendMessage({
+            type: 'user',
+            uuid: commandId,
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: commandText }]
+            }
+          })
+        }
+      } catch (error) {
+        this.isProcessing = false
+        this.emit('state-update', { isProcessing: false })
+        throw error
+      }
     }
 
     return { success: true, executed: commands.length }
@@ -3428,7 +3497,7 @@ class SessionInstance {
       ? history.targetAgentId
       : null
 
-    if (event?.eventType === 'message' && payload?.role === 'user') {
+    if (event?.eventType === 'message' && isTurnEntryRole(payload?.role)) {
       const turnEntry = historyManager.appendTurn(this.projectId, this.id, payload)
       this.currentHistoryTurnId = turnEntry?.turnId || payload?.id || null
       if (this.currentHistoryTurnId) {

@@ -94,6 +94,15 @@ provider 需要提供两种提交方式：
 
 这类候选选择后，不进入“附件引用”通道，而由 provider 直接执行。
 
+补充约束：
+
+- UI 选择 `命令型 /` 后，不再往普通输入框插入文本
+- `CCGUI` 层将其作为独立 command 语义发送给 `session-instance`
+- `session-instance` 先产出独立 `command` 消息，再调用 provider 执行
+- provider 再按自身协议决定最终落点：
+  - `Claude` 可编译成普通 user message 发给 CLI
+  - `Codex` 可映射到专门 request
+
 #### 2.2 `referenceAttachments`
 
 用于承载：
@@ -266,6 +275,12 @@ provider 需要提供两种提交方式：
 - 不作为“引用附件”挂到输入消息上
 - 使用 `runCommands`
 
+如果命令需要参数：
+
+- 不再把命令文本插入 input 让用户手写
+- 而是弹参数对话框
+- 参数补全完成后仍通过 `runCommands` 提交
+
 ### 2. `引用型 /`
 
 特征：
@@ -322,9 +337,24 @@ queryCommands({ category: 'slash_command' })
 
 当用户选择叶子命令后：
 
-- 调用 `runCommands`
+- 无参数时直接调用 `runCommands`
+- 有参数时弹参数对话框，再调用 `runCommands`
 - 不进入 `referenceAttachments`
 - 不在这一阶段混入 `@` / `$` / `引用型 /`
+
+### 6. `argumentHint` 的定位
+
+第一阶段将 `argumentHint` 视为：
+
+- 参数输入提示
+- 占位说明
+- 使用示例
+
+当前最小实现允许：
+
+- 命令项携带 `argumentHint`
+- UI 在参数对话框中展示命令说明与 `argumentHint`
+- 用户填入一段参数字符串后提交给 provider
 
 ---
 
@@ -384,6 +414,7 @@ queryCommands({ category: 'slash_command' })
 - provider 层统一
 - UI 按四类展示
 - 发送只保留两种提交方式
-- 第一阶段先把 `命令型 /` 和 `[/]` 菜单做好
+- `命令型 /` 不再复用普通 user message 展示
+- 第一阶段先把 `命令型 /` 的独立 command 链路做好
 
 这样既能覆盖 `Claude` 与 `Codex` 的差异，又不会把系统提前推进到过度抽象。

@@ -479,6 +479,27 @@ input: [
 - `compact` 和 `memories` 应作为独立 provider control request
 - `@` 与 `$` 必须分开建模，因为当前桌面端入口和编码语义不同
 
+## 4.1 实施语义补充
+
+为了避免在 `CCGUI` 内部把 command 与 user message 混淆，Codex 侧的实现应进一步满足：
+
+- `命令型 /` 不进入普通 input 文本
+- UI 点击命令后走独立 `runCommands`
+- `session-instance` 先产生 `role = "command"` 的独立消息事件，供前端渲染命令气泡
+- 然后再调用 provider 执行
+- `Codex` provider 不应把 `/compact`、`/memories` 退化成普通 user text
+- 而应映射到专门 request，例如：
+  - `/compact` -> `thread/compact/start`
+  - `/memories <mode>` -> `thread/memoryMode/set`
+
+这样 `CCGUI` 层保持统一：
+
+- user message 是 user message
+- command 是 command
+- reference 是 reference
+
+provider 再负责把 command 编译到各自真正的后端语义。
+
 ---
 
 ## 5. 尚未继续深挖的边界

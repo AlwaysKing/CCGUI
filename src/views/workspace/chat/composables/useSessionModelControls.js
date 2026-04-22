@@ -123,6 +123,53 @@ export function useSessionModelControls({
     return appStore.currentSession?.id || ''
   }
 
+  function hasActiveSessionBinding(sessionId = getCurrentSessionId()) {
+    return Boolean(sessionId) && sessionStore.currentSession?.id === sessionId
+  }
+
+  async function getAvailableTargetsForSession({ projectId, sessionId }) {
+    if (hasActiveSessionBinding(sessionId)) {
+      return sessionStore.getAvailableTargets({ projectId })
+    }
+
+    return window.electronAPI.getAvailableTargets({
+      projectId,
+      sessionId
+    })
+  }
+
+  async function listSubModelsForSession({ projectId, sessionId, workingDirectory }) {
+    if (hasActiveSessionBinding(sessionId)) {
+      return sessionStore.listSessionSubmodels({
+        projectId,
+        workingDirectory
+      })
+    }
+
+    return window.electronAPI.listSessionSubmodels({
+      projectId,
+      sessionId,
+      workingDirectory
+    })
+  }
+
+  async function listEffortOptionsForSession({ projectId, sessionId, workingDirectory, model }) {
+    if (hasActiveSessionBinding(sessionId)) {
+      return sessionStore.listSessionEffortOptions({
+        projectId,
+        workingDirectory,
+        model
+      })
+    }
+
+    return window.electronAPI.listSessionEffortOptions({
+      projectId,
+      sessionId,
+      workingDirectory,
+      model
+    })
+  }
+
   function persistSessionDerivedState(sessionId = getCurrentSessionId()) {
     if (!sessionId) {
       return
@@ -284,15 +331,17 @@ export function useSessionModelControls({
   })
 
   async function loadModelConfigContext() {
-    if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
+    const projectId = appStore.currentProject?.id
+    const sessionId = appStore.currentSession?.id
+    if (!projectId || !sessionId) return
 
     try {
       const [appResult, projectResult, sessionResult] = await Promise.all([
         window.electronAPI.getAppConfig(),
-        window.electronAPI.getProjectConfig({ projectId: appStore.currentProject.id }),
+        window.electronAPI.getProjectConfig({ projectId }),
         window.electronAPI.getSessionConfig({
-          projectId: appStore.currentProject.id,
-          sessionId: appStore.currentSession.id
+          projectId,
+          sessionId
         })
       ])
 
@@ -301,8 +350,9 @@ export function useSessionModelControls({
       }
       projectConfig.value = projectResult?.config || null
       sessionConfig.value = sessionResult?.config || null
-      const targetResult = await sessionStore.getAvailableTargets({
-        projectId: appStore.currentProject.id
+      const targetResult = await getAvailableTargetsForSession({
+        projectId,
+        sessionId
       })
       if (targetResult?.success) {
         sessionTargetOptions.value = Array.isArray(targetResult.options) ? targetResult.options : []
@@ -341,8 +391,9 @@ export function useSessionModelControls({
     providerSubModelLoading.value = true
 
     try {
-      const result = await sessionStore.listSessionSubmodels({
-        projectId: appStore.currentProject?.id,
+      const result = await listSubModelsForSession({
+        projectId,
+        sessionId,
         workingDirectory: appStore.currentProject?.path || workingDirectory.value || ''
       })
       if (!result?.success) {
@@ -395,8 +446,9 @@ export function useSessionModelControls({
     providerEffortLoading.value = true
 
     try {
-      const result = await sessionStore.listSessionEffortOptions({
-        projectId: appStore.currentProject?.id,
+      const result = await listEffortOptionsForSession({
+        projectId,
+        sessionId,
         workingDirectory: appStore.currentProject?.path || workingDirectory.value || '',
         model
       })

@@ -3,24 +3,61 @@ const os = require('os')
 const path = require('path')
 const appConfigManager = require('../../storage/app-config-manager')
 
-function buildDeveloperInstructions(projectSettings = null) {
+function getProviderDisplayName(provider = '') {
+  switch (String(provider || '').trim().toLowerCase()) {
+    case 'claude':
+      return 'Claude'
+    case 'codex':
+      return 'Codex'
+    default:
+      return '当前会话'
+  }
+}
+
+function demoteMarkdownHeadings(content = '') {
+  return String(content || '').replace(/^(#{1,6})(\s+)/gm, (_, hashes, spacing) => {
+    const nextLevel = hashes.length >= 6 ? '######' : `${hashes}#`
+    return `${nextLevel}${spacing}`
+  })
+}
+
+function buildOverviewSection(provider = '') {
+  const providerName = getProviderDisplayName(provider)
+  return [
+    '# 概述',
+    '',
+    `你当前运行在 CCGUI 中，通过 ${providerName} 与模型交互。`,
+    '',
+    '核心指令逻辑：',
+    '1. 优先级：当指令冲突时，遵循“局部优于全局、具体优于抽象”的原则。',
+    '2. 附加要求：这是你执行任务时的实时行动指南，必须优先满足。',
+    '3. 规范文档：这里会给出相关的 .md 或配置路径。在执行任何文件修改、方案设计或架构调整前，必须先检索并参考这些路径下的文档内容。',
+    '4. 透明化：在执行复杂任务前，请先用简短文字说明你匹配到了哪些“附加要求”或“规范文档”。'
+  ].join('\n')
+}
+
+function buildDeveloperInstructions(projectSettings = null, options = {}) {
   if (!projectSettings || typeof projectSettings !== 'object') {
     return null
   }
 
-  const parts = []
   const appConfig = appConfigManager.loadConfig()
+  const provider = typeof options?.provider === 'string' ? options.provider : ''
 
   const promptIds = Array.isArray(projectSettings.promptIds)
     ? projectSettings.promptIds
     : []
+  const promptSections = []
 
   if (promptIds.length > 0) {
     const prompts = appConfig.settings?.prompts || []
     for (const promptId of promptIds) {
       const prompt = prompts.find(item => item.id === promptId)
       if (prompt?.content) {
-        parts.push(prompt.content)
+        const name = typeof prompt.name === 'string' && prompt.name.trim()
+          ? prompt.name.trim()
+          : promptId
+        promptSections.push(`## ${name}\n\n${demoteMarkdownHeadings(prompt.content)}`)
       }
     }
   }
@@ -28,10 +65,10 @@ function buildDeveloperInstructions(projectSettings = null) {
   const documentIds = Array.isArray(projectSettings.documentIds)
     ? projectSettings.documentIds
     : []
+  const docPaths = []
 
   if (documentIds.length > 0) {
     const docsDir = path.join(os.homedir(), '.ccgui', 'docs')
-    const docPaths = []
 
     for (const docId of documentIds) {
       const filePath = path.join(docsDir, `${docId}.md`)
@@ -39,17 +76,19 @@ function buildDeveloperInstructions(projectSettings = null) {
         docPaths.push(filePath)
       }
     }
-
-    if (docPaths.length > 0) {
-      parts.push(`请始终遵循如下文档的规范要求: ${docPaths.join(', ')}`)
-    }
   }
 
-  if (parts.length === 0) {
-    return null
+  const sections = [buildOverviewSection(provider)]
+
+  if (promptSections.length > 0) {
+    sections.push(['# 附加要求', ...promptSections].join('\n\n'))
   }
 
-  return parts.join('\n\n')
+  if (docPaths.length > 0) {
+    sections.push(['# 规范文档', '', ...docPaths.map(filePath => `- ${filePath}`)].join('\n'))
+  }
+
+  return sections.join('\n\n')
 }
 
 module.exports = {

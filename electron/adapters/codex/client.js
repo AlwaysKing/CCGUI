@@ -817,7 +817,7 @@ class CodexClient {
 
   async buildDeveloperInstructions() {
     try {
-      return buildDeveloperInstructions(this.projectSettings)
+      return buildDeveloperInstructions(this.projectSettings, { provider: 'codex' })
     } catch (error) {
       logger.warn('[CodexClient] Failed to build developer instructions', {
         error: error.message
@@ -1186,6 +1186,65 @@ class CodexClient {
     return result
   }
 
+  async runCommand(command = {}) {
+    await this.ensureInitialized()
+
+    if (!this.currentThreadId) {
+      throw new Error('Codex thread not initialized')
+    }
+
+    const value = typeof command?.value === 'string' ? command.value.trim() : ''
+    const rawArguments = typeof command?.arguments === 'string' ? command.arguments.trim() : ''
+    if (!value) {
+      throw new Error('Missing command value')
+    }
+
+    if (value === '/compact') {
+      return this.request('thread/compact/start', {
+        threadId: this.currentThreadId
+      })
+    }
+
+    if (value === '/memories') {
+      const normalizedMode = rawArguments.toLowerCase()
+      if (normalizedMode !== 'enabled' && normalizedMode !== 'disabled') {
+        throw new Error('`/memories` 需要参数 enabled 或 disabled')
+      }
+
+      return this.request('thread/memoryMode/set', {
+        threadId: this.currentThreadId,
+        mode: normalizedMode
+      })
+    }
+
+    if (value === '/review') {
+      if (rawArguments) {
+        throw new Error('`/review` 暂不支持参数，当前默认审查未提交改动')
+      }
+
+      return this.request('review/start', {
+        threadId: this.currentThreadId,
+        target: {
+          type: 'uncommittedChanges'
+        },
+        delivery: 'inline'
+      })
+    }
+
+    const text = rawArguments ? `${value} ${rawArguments}` : value
+    return this.request('turn/start', {
+      threadId: this.currentThreadId,
+      input: [
+        {
+          type: 'text',
+          text,
+          text_elements: []
+        }
+      ],
+      approvalPolicy: this.mapPermissionModeToApprovalPolicy()
+    })
+  }
+
   async sendControlResponse(requestId, approved, options = {}) {
     throw new Error(`Codex adapter must implement sendControlResponse: ${requestId}`)
   }
@@ -1477,6 +1536,29 @@ class CodexClient {
           submitMode: 'runCommand',
           kind: 'builtin-command',
           value: '/compact',
+          groupId: 'builtin',
+          groupLabel: '内置命令'
+        },
+        {
+          id: 'codex:review',
+          label: '/review',
+          description: '审查当前未提交改动',
+          category: 'slash_command',
+          submitMode: 'runCommand',
+          kind: 'builtin-command',
+          value: '/review',
+          groupId: 'builtin',
+          groupLabel: '内置命令'
+        },
+        {
+          id: 'codex:memories',
+          label: '/memories',
+          description: '设置当前线程的 memories 模式',
+          argumentHint: 'enabled | disabled',
+          category: 'slash_command',
+          submitMode: 'runCommand',
+          kind: 'builtin-command',
+          value: '/memories',
           groupId: 'builtin',
           groupLabel: '内置命令'
         }

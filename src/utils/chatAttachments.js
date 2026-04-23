@@ -9,6 +9,15 @@ export function isImageAttachment(attachment) {
   return attachment?.kind === 'image'
 }
 
+export function isReferenceAttachment(attachment) {
+  return attachment?.kind?.startsWith('reference-')
+}
+
+export function getReferenceKind(attachment) {
+  if (!isReferenceAttachment(attachment)) return null
+  return attachment.kind.replace('reference-', '')
+}
+
 export function getAttachmentDisplayLabel(attachment) {
   if (!attachment) return '附件'
 
@@ -85,6 +94,9 @@ export function createAttachmentChipText(attachment) {
   if (attachment?.kind === 'file-range') {
     return `片段 ${label}`
   }
+  if (isReferenceAttachment(attachment)) {
+    return `@${label}`
+  }
   return label
 }
 
@@ -101,6 +113,9 @@ export function getAttachmentIcon(attachment) {
   if (!attachment) return '📎'
   if (attachment.kind === 'image') return '🖼️'
   if (attachment.kind === 'file-range') return '✂️'
+  if (attachment.kind === 'reference-agent') return '🤖'
+  if (attachment.kind === 'reference-plugin') return '🔌'
+  if (attachment.kind === 'reference-skill') return '⚡'
 
   const name = String(attachment.name || attachment.path || '').toLowerCase()
   const extension = name.includes('.') ? `.${name.split('.').pop()}` : ''

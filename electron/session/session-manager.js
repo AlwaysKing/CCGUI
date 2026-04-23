@@ -111,6 +111,14 @@ class SessionManager {
     return session.queryCommands(params)
   }
 
+  queryAtReferences(sessionId) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+    return session.queryAtReferences()
+  }
+
   async runCommands(sessionId, payload = {}) {
     const session = this.sessions.get(sessionId)
     if (!session) {

@@ -63,6 +63,8 @@ class ClaudeClient {
     this.commandInventory = { commands: [], mcpServers: [] }
     this.commandInventoryReadyPromise = null
     this.commandInventoryReadyResolve = null
+    // @ reference 缓存：agents / skills / mcpTools
+    this.referenceInventory = { agents: [], skills: [], mcpTools: [] }
   }
 
   /**
@@ -201,6 +203,63 @@ class ClaudeClient {
       provider: 'claude',
       category,
       groups: Array.from(groupsMap.values())
+    }
+  }
+
+  /**
+   * 获取 @ reference 的所有分组数据（agents / skills / mcpTools）
+   * 数据来源：
+   *   - agents: initialize 控制响应
+   *   - skills: get_context_usage 响应的 skills.skillFrontmatter
+   *   - mcpTools: get_context_usage 响应的 mcpTools
+   */
+  queryAtReferences() {
+    const agents = Array.isArray(this.referenceInventory?.agents)
+      ? this.referenceInventory.agents
+      : []
+    const skills = Array.isArray(this.referenceInventory?.skills)
+      ? this.referenceInventory.skills
+      : []
+    const mcpTools = Array.isArray(this.referenceInventory?.mcpTools)
+      ? this.referenceInventory.mcpTools
+      : []
+
+    return {
+      groups: [
+        {
+          id: 'agent',
+          label: 'Agent',
+          children: agents.map(a => ({
+            name: a.name || '',
+            value: a.name || '',
+            kind: 'agent',
+            description: a.description || '',
+            providerMeta: { model: a.model || null }
+          }))
+        },
+        {
+          id: 'plugin',
+          label: 'Plugin (MCP)',
+          children: mcpTools.map(t => ({
+            name: t.name || '',
+            value: t.fullName || t.name || '',
+            kind: 'plugin',
+            description: t.serverName || '',
+            providerMeta: { serverName: t.serverName || '', fullName: t.fullName || '' }
+          }))
+        },
+        {
+          id: 'skill',
+          label: 'Skill',
+          children: skills.map(s => ({
+            name: s.name || '',
+            value: s.name || '',
+            kind: 'skill',
+            description: s.source || '',
+            providerMeta: { source: s.source || '' }
+          }))
+        }
+      ]
     }
   }
 
@@ -448,6 +507,7 @@ class ClaudeClient {
     this.commandInventory = { commands: [], mcpServers: [] }
     this.commandInventoryReadyPromise = null
     this.commandInventoryReadyResolve = null
+    this.referenceInventory = { agents: [], skills: [], mcpTools: [] }
 
     // 启动时清理上一轮残留的 subagents 文件
     this.cleanupSubagentsOnStart()
@@ -637,6 +697,18 @@ class ClaudeClient {
                 this.commandInventoryReadyResolve = null
                 this.commandInventoryReadyPromise = null
               }
+            }
+            // 解析 initialize 响应中的 agents 字段
+            const initAgents = Array.isArray(this.initializeResponse?.agents)
+              ? this.initializeResponse.agents
+              : []
+            if (initAgents.length > 0) {
+              this.referenceInventory.agents = initAgents.map(agent => ({
+                name: agent.name || '',
+                description: agent.description || '',
+                model: agent.model || null,
+                kind: 'agent'
+              }))
             }
             logger.info('[ClaudeClient] Claude initialized successfully, file history should be enabled')
             resolve(message)
@@ -1076,6 +1148,7 @@ class ClaudeClient {
     this.commandInventory = { commands: [], mcpServers: [] }
     this.commandInventoryReadyPromise = null
     this.commandInventoryReadyResolve = null
+    this.referenceInventory = { agents: [], skills: [], mcpTools: [] }
   }
 
   /**

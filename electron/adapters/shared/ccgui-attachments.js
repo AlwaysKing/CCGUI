@@ -39,6 +39,12 @@ function replaceAttachmentTokens(text, attachments = [], formatter = null) {
 function buildClaudeAttachmentReference(attachment) {
   if (!attachment) return '[附件]'
 
+  if (attachment.kind?.startsWith('reference-')) {
+    // 引用型附件由 provider.translateReferenceAttachment 单独处理，
+    // token 位置替换为空字符串，避免在文本中出现重复引用
+    return ''
+  }
+
   if (attachment.kind === 'image') {
     return `[图片: ${attachment.name}]`
   }
@@ -54,6 +60,10 @@ function buildClaudeAttachmentReference(attachment) {
 
 function buildCodexAttachmentReference(attachment) {
   if (!attachment) return '[附件]'
+
+  if (attachment.kind?.startsWith('reference-')) {
+    return ''
+  }
 
   if (attachment.kind === 'image') {
     return `[图片 ${attachment.name}]`

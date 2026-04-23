@@ -1316,6 +1316,48 @@ function closeSlashCommandDialog() {
   pendingSlashCommandArgs.value = ''
 }
 
+// ====== @ 引用 ======
+
+/**
+ * 查询当前可用的引用项（Agent / Plugin / Skill）
+ * TODO: 当前为 stub 实现，后续需要从 sessionStore 聚合真实数据
+ */
+async function queryAtReferences() {
+  try {
+    return await sessionStore.queryAtReferences()
+  } catch (e) {
+    logger.warn('[Chat] queryAtReferences failed:', e?.message)
+    return { groups: [] }
+  }
+}
+
+/**
+ * 处理引用项选择：构造附件对象并插入编辑器
+ */
+function handleAddReference(refData) {
+  const kindMap = {
+    agent: 'reference-agent',
+    plugin: 'reference-plugin',
+    skill: 'reference-skill'
+  }
+
+  const attachment = {
+    id: crypto.randomUUID(),
+    kind: kindMap[refData.kind] || refData.kind,
+    name: refData.name,
+    value: refData.value,
+    providerMeta: refData.providerMeta || {}
+  }
+
+  const nextAttachments = [...inputAttachments.value, attachment]
+  inputAttachments.value = nextAttachments
+
+  // 插入 token 到编辑器（复用现有附件机制）
+  nextTick(() => {
+    chatInputRef.value?.appendText(`[[att:${attachment.id}]] `)
+  })
+}
+
 async function executeSlashCommand(command = null, commandArguments = '') {
   const value = typeof command?.value === 'string' ? command.value.trim() : ''
   if (!value) return
@@ -2638,6 +2680,7 @@ function handleToggleAgentRail() {
         :effort-loading="providerEffortLoading"
         :can-switch-effort="canQuickSwitchEffort"
         :query-slash-commands="querySlashCommands"
+        :query-at-references="queryAtReferences"
         :input-history="inputHistory"
         @send="handleSendMessage"
         @interrupt="handleInterrupt"
@@ -2649,6 +2692,7 @@ function handleToggleAgentRail() {
         @effort-change="handleQuickEffortChange"
         @input-target-change="handleInputTargetChange"
         @run-slash-command="handleRunSlashCommand"
+        @add-reference="handleAddReference"
       />
       <div v-if="sessionUnavailableMessage" class="session-unavailable-banner">
         {{ sessionUnavailableMessage }}

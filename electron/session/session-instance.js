@@ -2888,6 +2888,16 @@ class SessionInstance {
     return { provider: this.provider, category, groups: [] }
   }
 
+  /**
+   * 查询 @ reference 分组数据（agents / skills / mcpTools）
+   */
+  queryAtReferences() {
+    if (typeof this.runtimeManager?.queryAtReferences === 'function') {
+      return this.runtimeManager.queryAtReferences()
+    }
+    return { provider: this.provider, groups: [] }
+  }
+
   async runCommands(payload = {}) {
     const commands = Array.isArray(payload?.commands) ? payload.commands : []
     if (!commands.length) {

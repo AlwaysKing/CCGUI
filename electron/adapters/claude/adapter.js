@@ -918,6 +918,44 @@ class ClaudeAdapter extends ClaudeClient {
       normalized === 'apply_patch'
   }
 
+  /**
+   * 将引用附件翻译为 Claude 可理解的文本格式
+   *
+   * 各 kind 的翻译策略：
+   *   - agent: 提示使用 Agent 工具，指定 agent type
+   *   - plugin (MCP Tool): 使用完整的 mcp__server__tool 名称作为提示
+   *   - skill: 提示使用 Skill 工具，指定 skill name
+   */
+  translateReferenceAttachment(attachment) {
+    const kind = attachment?.kind?.replace('reference-', '') || ''
+    const name = attachment?.name || ''
+    const providerMeta = attachment?.providerMeta || {}
+
+    switch (kind) {
+      case 'agent': {
+        // Agent 工具接受 agent_type 参数
+        const desc = providerMeta.description || ''
+        const hint = desc ? ` (${desc})` : ''
+        return `[引用 Agent: ${name}${hint} — 请使用 Agent 工具，agent_type 为 "${name}"]`
+      }
+      case 'plugin': {
+        // MCP Tool 使用完整名 mcp__server__tool
+        const fullName = providerMeta.fullName || name
+        const serverName = providerMeta.serverName || ''
+        const hint = serverName ? ` (来自 ${serverName})` : ''
+        return `[引用 MCP Tool: ${name}${hint} — 工具全名为 "${fullName}"]`
+      }
+      case 'skill': {
+        // Skill 工具接受 skill 参数
+        const source = providerMeta.source || ''
+        const hint = source ? ` (来自 ${source})` : ''
+        return `[引用 Skill: ${name}${hint} — 请使用 Skill 工具，skill 为 "${name}"]`
+      }
+      default:
+        return name ? `[引用: ${name}]` : ''
+    }
+  }
+
   async buildUserContentWithAttachments(message) {
     const attachments = Array.isArray(message?.attachments) ? message.attachments : []
     const rawText = Array.isArray(message?.message?.content)
@@ -928,6 +966,17 @@ class ClaudeAdapter extends ClaudeClient {
     const tokenSafeText = replaceAttachmentTokens(rawText, attachments, buildClaudeAttachmentReference)
 
     for (const attachment of attachments) {
+      // 引用型附件（agent / plugin / skill）
+      if (attachment?.kind?.startsWith('reference-')) {
+        // TODO: 翻译引用附件为 Claude 可理解的格式
+        // 需要进一步调查各 kind 的具体翻译规则
+        const refText = this.translateReferenceAttachment(attachment)
+        if (refText) {
+          content.push({ type: 'text', text: refText })
+        }
+        continue
+      }
+
       if (!attachment?.path) {
         continue
       }
@@ -1387,18 +1436,22 @@ class ClaudeAdapter extends ClaudeClient {
     const categories = Array.isArray(payload.categories) ? payload.categories : []
     const inputTokens = categories.reduce((sum, c) => sum + (c.tokens || 0), 0)
 
+    const rawMcpTools = Array.isArray(payload.mcpTools) ? payload.mcpTools : []
+    const rawAgents = Array.isArray(payload.agents) ? payload.agents : []
+    const rawSkills = payload.skills || { totalSkills: 0, includedSkills: 0, tokens: 0 }
+
     const detail = {
       model: payload.model || null,
       percentage: payload.percentage || 0,
       categories,
       memoryFiles: Array.isArray(payload.memoryFiles) ? payload.memoryFiles : [],
-      mcpTools: Array.isArray(payload.mcpTools) ? payload.mcpTools : [],
+      mcpTools: rawMcpTools,
       deferredBuiltinTools: Array.isArray(payload.deferredBuiltinTools) ? payload.deferredBuiltinTools : [],
       systemTools: Array.isArray(payload.systemTools) ? payload.systemTools : [],
       systemPromptSections: Array.isArray(payload.systemPromptSections) ? payload.systemPromptSections : [],
-      agents: Array.isArray(payload.agents) ? payload.agents : [],
+      agents: rawAgents,
       slashCommands: payload.slashCommands || { totalCommands: 0, includedCommands: 0, tokens: 0 },
-      skills: payload.skills || { totalSkills: 0, includedSkills: 0, tokens: 0 }
+      skills: rawSkills
     }
 
     this.envInfo = {
@@ -1415,6 +1468,27 @@ class ClaudeAdapter extends ClaudeClient {
         provider_detail: detail
       }
     }
+
+    // 更新 @ reference 缓存
+    // mcpTools: { name, serverName, tokens, isLoaded }
+    if (rawMcpTools.length > 0) {
+      this.referenceInventory.mcpTools = rawMcpTools.map(t => ({
+        name: t.name || '',
+        fullName: `mcp__${(t.serverName || '').replace(/-/g, '_')}__${t.name || ''}`,
+        serverName: t.serverName || '',
+        isLoaded: t.isLoaded !== false,
+        kind: 'plugin'
+      }))
+    }
+    // skills: { totalSkills, includedSkills, tokens, skillFrontmatter: [{name, source, tokens}] }
+    if (Array.isArray(rawSkills.skillFrontmatter) && rawSkills.skillFrontmatter.length > 0) {
+      this.referenceInventory.skills = rawSkills.skillFrontmatter.map(s => ({
+        name: s.name || '',
+        source: s.source || '',
+        kind: 'skill'
+      }))
+    }
+
     this.emit('env-info', this.envInfo)
   }
 

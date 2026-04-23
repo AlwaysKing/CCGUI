@@ -1897,6 +1897,23 @@ export const useSessionStore = defineStore('session', () => {
     return result.data || { provider: session.provider || null, category, groups: [] }
   }
 
+  async function queryAtReferences() {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    const result = await window.electronAPI.queryAtReferences({
+      sessionId: session.id
+    })
+
+    if (!result?.success) {
+      throw new Error(result?.error || '查询引用失败')
+    }
+
+    return result.data || { provider: session.provider || null, groups: [] }
+  }
+
   async function runCommands(commands = []) {
     const session = currentSession.value
     if (!session) {
@@ -3988,6 +4005,7 @@ export const useSessionStore = defineStore('session', () => {
     closeSession,
     sendMessage,
     queryCommands,
+    queryAtReferences,
     runCommands,
     sendControlResponse,
     sendRuntimeToolResult,

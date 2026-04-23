@@ -153,9 +153,13 @@ const props = defineProps({
     type: Function,
     default: null
   },
+  queryAtReferences: {
+    type: Function,
+    default: null
+  },
 })
 
-const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'runSlashCommand'])
+const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'runSlashCommand', 'addReference'])
 
 // 输入区域 ref
 const inputArea = ref(null)
@@ -167,6 +171,7 @@ const effortMenuWrapper = ref(null)
 const notificationMenuWrapper = ref(null)
 const inputTargetMenuWrapper = ref(null)
 const slashMenuWrapper = ref(null)
+const atMenuWrapper = ref(null)
 
 // 输入框是否聚焦
 const isInputFocused = ref(false)
@@ -183,11 +188,17 @@ const showSubModelMenu = ref(false)
 const showNotificationMenu = ref(false)
 const showInputTargetMenu = ref(false)
 const showSlashMenu = ref(false)
+const showAtMenu = ref(false)
 const slashMenuLoading = ref(false)
+const atMenuLoading = ref(false)
 const slashSearchQuery = ref('')
+const atSearchQuery = ref('')
 const slashMenuError = ref('')
+const atMenuError = ref('')
 const slashCommandGroups = ref([])
+const atReferenceGroups = ref([])
 const activeSlashGroupId = ref('')
+const activeAtGroupId = ref('')
 
 // Enter 键模式锁定 (true = Enter 发送, false = Enter 换行)
 const enterModeLocked = ref(true)
@@ -212,12 +223,7 @@ async function toggleSlashMenu() {
     return
   }
 
-  showModelMenu.value = false
-  showSubModelMenu.value = false
-  showNotificationMenu.value = false
-  showInputTargetMenu.value = false
-  showPermissionMenu.value = false
-  showEffortMenu.value = false
+  closeAllMenusExcept('slash')
 
   slashMenuLoading.value = true
   slashMenuError.value = ''
@@ -265,6 +271,93 @@ async function executeSlashCommand(command, event = null) {
     slashMenuLoading.value = false
   }
 }
+
+// ====== @ 引用菜单 ======
+
+async function toggleAtMenu() {
+  if (props.toolbarLocked || typeof props.queryAtReferences !== 'function') {
+    return
+  }
+
+  const nextState = !showAtMenu.value
+  showAtMenu.value = nextState
+  if (!nextState) {
+    return
+  }
+
+  closeAllMenusExcept('at')
+  atMenuLoading.value = true
+  atMenuError.value = ''
+  try {
+    const result = await props.queryAtReferences()
+    const groups = Array.isArray(result?.groups) ? result.groups : []
+    atReferenceGroups.value = groups
+    activeAtGroupId.value = groups[0]?.id || ''
+    atSearchQuery.value = ''
+  } catch (error) {
+    atReferenceGroups.value = []
+    activeAtGroupId.value = ''
+    atSearchQuery.value = ''
+    atMenuError.value = error?.message || '加载引用失败'
+  } finally {
+    atMenuLoading.value = false
+  }
+}
+
+function selectAtGroup(groupId) {
+  activeAtGroupId.value = groupId
+}
+
+function addReferenceItem(item) {
+  if (!item) return
+
+  emit('addReference', {
+    kind: item.kind,
+    name: item.label,
+    value: item.value,
+    providerMeta: item.providerMeta || {}
+  })
+  showAtMenu.value = false
+}
+
+// ====== @ 引用菜单计算属性 ======
+
+const atMenuGroups = computed(() => Array.isArray(atReferenceGroups.value) ? atReferenceGroups.value : [])
+const atSearchKeyword = computed(() => String(atSearchQuery.value || '').trim().toLowerCase())
+const filteredAtGroups = computed(() => {
+  const keyword = atSearchKeyword.value
+  const groups = atMenuGroups.value
+  if (!keyword) return groups
+
+  return groups
+    .map(group => ({
+      ...group,
+      children: Array.isArray(group.children)
+        ? group.children.filter(item => {
+            const haystacks = [item?.label, item?.description, item?.value]
+              .map(value => String(value || '').toLowerCase())
+            return haystacks.some(text => text.includes(keyword))
+          })
+        : []
+    }))
+    .filter(group => Array.isArray(group.children) && group.children.length > 0)
+})
+const activeAtGroup = computed(() => {
+  const groups = filteredAtGroups.value
+  if (!groups.length) return null
+  return groups.find(group => group.id === activeAtGroupId.value) || groups[0]
+})
+const atLeafItems = computed(() => Array.isArray(activeAtGroup.value?.children) ? activeAtGroup.value.children : [])
+
+watch(filteredAtGroups, (groups) => {
+  if (!groups.length) {
+    activeAtGroupId.value = ''
+    return
+  }
+  if (!groups.some(group => group.id === activeAtGroupId.value)) {
+    activeAtGroupId.value = groups[0]?.id || ''
+  }
+})
 
 const enterModeIcon = computed(() => {
   return enterModeLocked.value ? '⏎' : '⏎'
@@ -597,14 +690,19 @@ function selectInputTarget(agentId) {
   emit('inputTargetChange', agentId)
 }
 
+function closeAllMenusExcept(exclude) {
+  if (exclude !== 'model') showModelMenu.value = false
+  if (exclude !== 'submodel') showSubModelMenu.value = false
+  if (exclude !== 'permission') showPermissionMenu.value = false
+  if (exclude !== 'effort') showEffortMenu.value = false
+  if (exclude !== 'notification') showNotificationMenu.value = false
+  if (exclude !== 'inputTarget') showInputTargetMenu.value = false
+  if (exclude !== 'slash') showSlashMenu.value = false
+  if (exclude !== 'at') showAtMenu.value = false
+}
+
 function closeAllMenus() {
-  showModelMenu.value = false
-  showSubModelMenu.value = false
-  showPermissionMenu.value = false
-  showEffortMenu.value = false
-  showNotificationMenu.value = false
-  showInputTargetMenu.value = false
-  showSlashMenu.value = false
+  closeAllMenusExcept(null)
 }
 
 function toggleModelMenu() {
@@ -640,7 +738,8 @@ function handleGlobalClick(event) {
     effortMenuWrapper.value?.contains(target) ||
     notificationMenuWrapper.value?.contains(target) ||
     inputTargetMenuWrapper.value?.contains(target) ||
-    slashMenuWrapper.value?.contains(target)
+    slashMenuWrapper.value?.contains(target) ||
+    atMenuWrapper.value?.contains(target)
   ) {
     return
   }
@@ -807,6 +906,58 @@ defineExpose({
 
         <!-- 右侧按钮组 -->
         <div class="toolbar-right">
+          <div ref="atMenuWrapper" class="at-menu-wrapper">
+            <button
+              @click="toggleAtMenu"
+              class="at-menu-btn"
+              title="引用 Agent / Plugin / Skill"
+              :disabled="props.toolbarLocked"
+            >
+              @
+            </button>
+
+            <div v-if="showAtMenu" class="at-menu-popover">
+              <div v-if="atMenuLoading" class="slash-menu-state">加载中...</div>
+              <div v-else-if="atMenuError" class="slash-menu-state slash-menu-error">{{ atMenuError }}</div>
+              <div v-else-if="!filteredAtGroups.length" class="slash-menu-state">暂无可用引用</div>
+              <template v-else>
+                <div class="slash-menu-search slash-menu-search--top">
+                  <input
+                    v-model="atSearchQuery"
+                    class="slash-menu-search-input"
+                    type="text"
+                    placeholder="搜索引用..."
+                  />
+                </div>
+                <div class="slash-menu-groups">
+                  <button
+                    v-for="group in filteredAtGroups"
+                    :key="group.id"
+                    class="slash-menu-group"
+                    :class="{ active: activeAtGroup?.id === group.id }"
+                    @click="selectAtGroup(group.id)"
+                  >
+                    <span class="slash-menu-group-label">{{ group.label }}</span>
+                    <span class="slash-menu-group-arrow">›</span>
+                  </button>
+                </div>
+                <div class="slash-menu-items">
+                  <button
+                    v-for="item in atLeafItems"
+                    :key="item.id"
+                    class="slash-menu-item"
+                    @click="addReferenceItem(item)"
+                  >
+                    <span class="slash-menu-item-main">
+                      <span class="slash-menu-item-label">{{ item.label }}</span>
+                    </span>
+                    <span v-if="item.description" class="slash-menu-item-desc">{{ item.description }}</span>
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <div ref="slashMenuWrapper" class="slash-menu-wrapper">
             <button
               @click="toggleSlashMenu"
@@ -1081,6 +1232,58 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.at-menu-wrapper,
+.slash-menu-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.at-menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.at-menu-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E4E4E7;
+}
+
+.at-menu-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.at-menu-popover {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 6px;
+  width: 380px;
+  height: 300px;
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: #27272A;
+  border: 1px solid #3F3F46;
+  border-radius: 8px;
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+  z-index: 1200;
 }
 
 .slash-menu-wrapper {

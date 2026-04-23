@@ -1347,6 +1347,20 @@ ipcMain.handle('query-commands', async (event, { sessionId, category } = {}) => 
   }
 })
 
+ipcMain.handle('query-at-references', async (event, { sessionId } = {}) => {
+  try {
+    const data = sessionManager.queryAtReferences(sessionId)
+    return { success: true, data }
+  } catch (error) {
+    logger.error('[IPC] query-at-references error:', {
+      message: error.message,
+      stack: error.stack,
+      sessionId
+    })
+    return { success: false, error: error.message }
+  }
+})
+
 ipcMain.handle('run-commands', async (event, { sessionId, commands } = {}) => {
   try {
     const data = await sessionManager.runCommands(sessionId, { commands })

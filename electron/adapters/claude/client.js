@@ -224,18 +224,6 @@ class ClaudeClient {
       ? this.referenceInventory.mcpTools
       : []
 
-    // 获取已有的 / 命令名称（bare name，不带 /），用于从 skills 中排除重复项
-    const commandBareNames = new Set(
-      (Array.isArray(this.commandInventory?.commands) ? this.commandInventory.commands : [])
-        .map(cmd => {
-          // normalizeSlashCommandEntry 返回 id 为 "claude:{bareValue}"
-          const id = typeof cmd?.id === 'string' ? cmd.id : ''
-          return id.startsWith('claude:') ? id.slice(7) : ''
-        })
-        .filter(Boolean)
-    )
-    const uniqueSkills = skills.filter(s => !commandBareNames.has(s.name))
-
     return {
       groups: [
         {
@@ -267,7 +255,7 @@ class ClaudeClient {
         {
           id: 'skill',
           label: 'Skill',
-          children: uniqueSkills.map(s => ({
+          children: skills.map(s => ({
             id: `skill:${s.name}`,
             label: s.name || '',
             name: s.name || '',

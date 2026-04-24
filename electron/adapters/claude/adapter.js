@@ -1472,6 +1472,7 @@ class ClaudeAdapter extends ClaudeClient {
     if (currentTools.length === 0) return
 
     this.referenceInventory.mcpTools = currentTools.map(t => {
+      // t.name 是短名，t.fullName 是全限定名；server.tools[].name 是短名
       const key = `${t.serverName}::${t.name}`
       const serverTool = serverToolMap.get(key)
       if (!serverTool) return t
@@ -1525,15 +1526,22 @@ class ClaudeAdapter extends ClaudeClient {
     }
 
     // 更新 @ reference 缓存
-    // mcpTools: { name, serverName, tokens, isLoaded }
+    // mcpTools: { name(fullQualifiedName), serverName, tokens, isLoaded }
+    // name 格式: "mcp__serverName__toolName"
     if (rawMcpTools.length > 0) {
-      this.referenceInventory.mcpTools = rawMcpTools.map(t => ({
-        name: t.name || '',
-        fullName: `mcp__${(t.serverName || '').replace(/-/g, '_')}__${t.name || ''}`,
-        serverName: t.serverName || '',
-        isLoaded: t.isLoaded !== false,
-        kind: 'plugin'
-      }))
+      this.referenceInventory.mcpTools = rawMcpTools.map(t => {
+        const rawName = t.name || ''
+        // 从全限定名提取短名：取最后一个 __ 之后的部分
+        const lastSep = rawName.lastIndexOf('__')
+        const shortName = lastSep > 0 ? rawName.slice(lastSep + 2) : rawName
+        return {
+          name: shortName,
+          fullName: rawName,
+          serverName: t.serverName || '',
+          isLoaded: t.isLoaded !== false,
+          kind: 'plugin'
+        }
+      })
     }
     // skills: { totalSkills, includedSkills, tokens, skillFrontmatter: [{name, source, tokens}] }
     if (Array.isArray(rawSkills.skillFrontmatter) && rawSkills.skillFrontmatter.length > 0) {

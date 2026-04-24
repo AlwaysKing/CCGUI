@@ -226,7 +226,7 @@ class ClaudeClient {
 
     // 从 skills 中过滤掉内置命令
     // 用 source 字段判断：'plugin' / 'bundled' 是真正的 skill，其余过滤
-    const filteredSkills = skills.filter(s => s.source === 'plugin' || s.source === 'bundled')
+    const filteredSkills = skills.filter(s => s.source === 'plugin')
 
     return {
       groups: [

@@ -1507,7 +1507,7 @@ defineExpose({
   bottom: 100%;
   margin-bottom: 6px;
   width: 560px;
-  max-height: min(480px, calc(100vh - 120px));
+  height: 460px;
   display: grid;
   grid-template-columns: 180px 1fr;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1557,7 +1557,7 @@ defineExpose({
   bottom: 100%;
   margin-bottom: 6px;
   width: 560px;
-  max-height: min(480px, calc(100vh - 120px));
+  height: 460px;
   display: grid;
   grid-template-columns: 180px 1fr;
   grid-template-rows: auto minmax(0, 1fr);

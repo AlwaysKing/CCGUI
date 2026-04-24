@@ -224,17 +224,9 @@ class ClaudeClient {
       ? this.referenceInventory.mcpTools
       : []
 
-    // 从 skills 中过滤掉内置命令（kind === 'builtin-command'）
-    const builtinCommandNames = new Set(
-      (Array.isArray(this.commandInventory?.commands) ? this.commandInventory.commands : [])
-        .filter(cmd => cmd?.kind === 'builtin-command')
-        .map(cmd => {
-          const id = typeof cmd?.id === 'string' ? cmd.id : ''
-          return id.startsWith('claude:') ? id.slice(7) : ''
-        })
-        .filter(Boolean)
-    )
-    const filteredSkills = skills.filter(s => !builtinCommandNames.has(s.name))
+    // 从 skills 中过滤掉内置命令
+    // 用 source 字段判断：'plugin' / 'bundled' 是真正的 skill，其余过滤
+    const filteredSkills = skills.filter(s => s.source === 'plugin' || s.source === 'bundled')
 
     return {
       groups: [

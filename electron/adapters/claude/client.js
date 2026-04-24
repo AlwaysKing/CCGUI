@@ -224,17 +224,6 @@ class ClaudeClient {
       ? this.referenceInventory.mcpTools
       : []
 
-    // skillFrontmatter 已由 Claude CLI 的 getSkillToolCommands 预过滤
-    // （排除 source==='builtin'），无需二次过滤
-    // 但 skillFrontmatter 没有 description，从 commandInventory 交叉匹配补充
-    const cmdDescMap = new Map()
-    for (const cmd of (Array.isArray(this.commandInventory?.commands) ? this.commandInventory.commands : [])) {
-      if (cmd?.label && cmd.description) {
-        const bareName = cmd.label.startsWith('/') ? cmd.label.slice(1) : cmd.label
-        cmdDescMap.set(bareName, cmd.description)
-      }
-    }
-
     // 按 serverName / source 子分组
     const groupBy = (items, keyFn) => {
       const map = new Map()
@@ -262,12 +251,18 @@ class ClaudeClient {
     }))
     const pluginSubGroups = groupBy(pluginChildren, t => t.serverName || 'other')
 
-    // skills 按 name 中的命名空间（冒号前）分组
-    const skillChildren = skills.map(s => ({
-      id: `skill:${s.name}`, label: s.name || '', name: s.name || '',
-      value: s.name || '', kind: 'skill',
-      description: cmdDescMap.get(s.name) || '',
-      providerMeta: { source: s.source || '' }
+    // skills：从 commandInventory 获取（已有正确的 description 和 groupId）
+    // 排除 builtin-command 和 mcp-prompt，只保留 namespaced-command（插件 skill）
+    const allCommands = Array.isArray(this.commandInventory?.commands) ? this.commandInventory.commands : []
+    const skillCommands = allCommands.filter(cmd => cmd?.kind === 'namespaced-command')
+    const skillChildren = skillCommands.map(cmd => ({
+      id: `skill:${cmd.id}`,
+      label: cmd.label || '',
+      name: (cmd.label || '').replace(/^\//, ''),
+      value: (cmd.label || '').replace(/^\//, ''),
+      kind: 'skill',
+      description: cmd.description || '',
+      providerMeta: { groupId: cmd.groupId || '', groupLabel: cmd.groupLabel || '' }
     }))
     const skillSubGroups = groupBy(skillChildren, s => {
       const sep = (s.name || '').indexOf(':')

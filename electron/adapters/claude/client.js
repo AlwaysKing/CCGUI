@@ -224,10 +224,8 @@ class ClaudeClient {
       ? this.referenceInventory.mcpTools
       : []
 
-    // 从 skills 中过滤掉内置命令
-    // 用 source 字段判断：'plugin' / 'bundled' 是真正的 skill，其余过滤
-    const filteredSkills = skills.filter(s => s.source === 'plugin')
-
+    // skillFrontmatter 已由 Claude CLI 的 getSkillToolCommands 预过滤
+    // （排除 source==='builtin'），无需二次过滤
     return {
       groups: [
         {
@@ -259,7 +257,7 @@ class ClaudeClient {
         {
           id: 'skill',
           label: 'Skill',
-          children: filteredSkills.map(s => ({
+          children: skills.map(s => ({
             id: `skill:${s.name}`,
             label: s.name || '',
             name: s.name || '',

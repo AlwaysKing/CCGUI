@@ -1227,6 +1227,13 @@ class ClaudeAdapter extends ClaudeClient {
         return
       }
 
+      // MCP 状态响应：补充 mcpTools 的 description
+      if (requestContext?.kind === 'mcp-status') {
+        this.pendingDryRunRequests.delete(requestId)
+        this.handleMcpStatusResponse(payload)
+        return
+      }
+
       this.emit('control-response', message)
       return
     }
@@ -1428,6 +1435,54 @@ class ClaudeAdapter extends ClaudeClient {
   }
 
   /**
+   * 请求 MCP 服务器状态（含每个 server 的 tools 列表及 description）
+   * 在 handleContextUsageResponse 更新 mcpTools 基础列表后调用，
+   * 补充每个 tool 的 description 信息
+   */
+  requestMcpStatus() {
+    const requestId = `mcp_status_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+    this.pendingDryRunRequests.set(requestId, { kind: 'mcp-status' })
+    super.sendControlRequest({
+      subtype: 'mcp_status',
+      __ccguiRequestId: requestId
+    })
+  }
+
+  /**
+   * 将 mcp_status 响应中的 tools description 合并到 referenceInventory
+   */
+  handleMcpStatusResponse(payload) {
+    const servers = Array.isArray(payload?.mcpServers) ? payload.mcpServers : []
+    if (servers.length === 0) return
+
+    // 构建 serverName → tools map（含 description）
+    const serverToolMap = new Map()
+    for (const server of servers) {
+      if (!Array.isArray(server.tools)) continue
+      for (const tool of server.tools) {
+        const key = `${server.name}::${tool.name}`
+        serverToolMap.set(key, tool)
+      }
+    }
+
+    // 合并 description 到已有的 referenceInventory.mcpTools
+    const currentTools = Array.isArray(this.referenceInventory.mcpTools)
+      ? this.referenceInventory.mcpTools
+      : []
+    if (currentTools.length === 0) return
+
+    this.referenceInventory.mcpTools = currentTools.map(t => {
+      const key = `${t.serverName}::${t.name}`
+      const serverTool = serverToolMap.get(key)
+      if (!serverTool) return t
+      return {
+        ...t,
+        description: serverTool.description || ''
+      }
+    })
+  }
+
+  /**
    * 将 get_context_usage 响应映射到统一的 session_usage 结构
    */
   handleContextUsageResponse(payload) {
@@ -1490,6 +1545,11 @@ class ClaudeAdapter extends ClaudeClient {
     }
 
     this.emit('env-info', this.envInfo)
+
+    // 在 mcpTools 更新后，请求 mcp_status 补充 description
+    if (rawMcpTools.length > 0) {
+      this.requestMcpStatus()
+    }
   }
 
   getSessionIdentifier() {

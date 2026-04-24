@@ -253,14 +253,14 @@ class ClaudeClient {
         },
         {
           id: 'plugin',
-          label: 'Plugin (MCP)',
+          label: 'MCP Tools',
           children: mcpTools.map(t => ({
             id: `plugin:${t.fullName || t.name}`,
             label: t.name || '',
             name: t.name || '',
             value: t.fullName || t.name || '',
             kind: 'plugin',
-            description: t.serverName || '',
+            description: t.description || t.serverName || '',
             providerMeta: { serverName: t.serverName || '', fullName: t.fullName || '' }
           }))
         },

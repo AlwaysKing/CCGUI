@@ -230,6 +230,8 @@ class ClaudeClient {
           id: 'agent',
           label: 'Agent',
           children: agents.map(a => ({
+            id: `agent:${a.name}`,
+            label: a.name || '',
             name: a.name || '',
             value: a.name || '',
             kind: 'agent',
@@ -241,6 +243,8 @@ class ClaudeClient {
           id: 'plugin',
           label: 'Plugin (MCP)',
           children: mcpTools.map(t => ({
+            id: `plugin:${t.fullName || t.name}`,
+            label: t.name || '',
             name: t.name || '',
             value: t.fullName || t.name || '',
             kind: 'plugin',
@@ -252,6 +256,8 @@ class ClaudeClient {
           id: 'skill',
           label: 'Skill',
           children: skills.map(s => ({
+            id: `skill:${s.name}`,
+            label: s.name || '',
             name: s.name || '',
             value: s.name || '',
             kind: 'skill',

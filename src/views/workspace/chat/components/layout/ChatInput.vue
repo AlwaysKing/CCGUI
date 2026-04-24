@@ -1405,8 +1405,6 @@ defineExpose({
   flex-direction: column;
   gap: 1px;
   width: 100%;
-  max-height: 58px;
-  overflow: hidden;
   padding: 6px 10px;
   background: transparent;
   border: none;

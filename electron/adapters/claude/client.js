@@ -224,6 +224,18 @@ class ClaudeClient {
       ? this.referenceInventory.mcpTools
       : []
 
+    // 从 skills 中过滤掉内置命令（kind === 'builtin-command'）
+    const builtinCommandNames = new Set(
+      (Array.isArray(this.commandInventory?.commands) ? this.commandInventory.commands : [])
+        .filter(cmd => cmd?.kind === 'builtin-command')
+        .map(cmd => {
+          const id = typeof cmd?.id === 'string' ? cmd.id : ''
+          return id.startsWith('claude:') ? id.slice(7) : ''
+        })
+        .filter(Boolean)
+    )
+    const filteredSkills = skills.filter(s => !builtinCommandNames.has(s.name))
+
     return {
       groups: [
         {
@@ -255,7 +267,7 @@ class ClaudeClient {
         {
           id: 'skill',
           label: 'Skill',
-          children: skills.map(s => ({
+          children: filteredSkills.map(s => ({
             id: `skill:${s.name}`,
             label: s.name || '',
             name: s.name || '',

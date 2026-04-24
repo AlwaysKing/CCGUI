@@ -235,47 +235,51 @@ class ClaudeClient {
       }
     }
 
+    // 按 serverName / source 子分组
+    const groupBy = (items, keyFn) => {
+      const map = new Map()
+      for (const item of items) {
+        const key = keyFn(item) || 'other'
+        if (!map.has(key)) map.set(key, [])
+        map.get(key).push(item)
+      }
+      return Array.from(map.entries()).map(([key, children]) => ({ id: key, label: key, children }))
+    }
+
+    // agents 按有无 model 分组（内置 vs 自定义）
+    const agentChildren = agents.map(a => ({
+      id: `agent:${a.name}`, label: a.name || '', name: a.name || '',
+      value: a.name || '', kind: 'agent', description: a.description || '',
+      providerMeta: { model: a.model || null }
+    }))
+    const agentSubGroups = groupBy(agentChildren, a => a.providerMeta?.model ? 'Custom' : 'Built-in')
+
+    // mcpTools 按 serverName 分组
+    const pluginChildren = mcpTools.map(t => ({
+      id: `plugin:${t.fullName || t.name}`, label: t.name || '', name: t.name || '',
+      value: t.fullName || t.name || '', kind: 'plugin',
+      description: t.description || '', serverName: t.serverName || '',
+      providerMeta: { serverName: t.serverName || '', fullName: t.fullName || '' }
+    }))
+    const pluginSubGroups = groupBy(pluginChildren, t => t.serverName || 'other')
+
+    // skills 按 name 中的命名空间（冒号前）分组
+    const skillChildren = skills.map(s => ({
+      id: `skill:${s.name}`, label: s.name || '', name: s.name || '',
+      value: s.name || '', kind: 'skill',
+      description: cmdDescMap.get(s.name) || '',
+      providerMeta: { source: s.source || '' }
+    }))
+    const skillSubGroups = groupBy(skillChildren, s => {
+      const sep = (s.name || '').indexOf(':')
+      return sep > 0 ? s.name.slice(0, sep) : 'other'
+    })
+
     return {
       groups: [
-        {
-          id: 'agent',
-          label: 'Agent',
-          children: agents.map(a => ({
-            id: `agent:${a.name}`,
-            label: a.name || '',
-            name: a.name || '',
-            value: a.name || '',
-            kind: 'agent',
-            description: a.description || '',
-            providerMeta: { model: a.model || null }
-          }))
-        },
-        {
-          id: 'plugin',
-          label: 'MCP Tools',
-          children: mcpTools.map(t => ({
-            id: `plugin:${t.fullName || t.name}`,
-            label: t.name || '',
-            name: t.name || '',
-            value: t.fullName || t.name || '',
-            kind: 'plugin',
-            description: t.description || t.serverName || '',
-            providerMeta: { serverName: t.serverName || '', fullName: t.fullName || '' }
-          }))
-        },
-        {
-          id: 'skill',
-          label: 'Skill',
-          children: skills.map(s => ({
-            id: `skill:${s.name}`,
-            label: s.name || '',
-            name: s.name || '',
-            value: s.name || '',
-            kind: 'skill',
-            description: cmdDescMap.get(s.name) || '',
-            providerMeta: { source: s.source || '' }
-          }))
-        }
+        { id: 'agent', label: 'Agent', children: agentChildren, subGroups: agentSubGroups },
+        { id: 'plugin', label: 'MCP Tools', children: pluginChildren, subGroups: pluginSubGroups },
+        { id: 'skill', label: 'Skill', children: skillChildren, subGroups: skillSubGroups }
       ]
     }
   }

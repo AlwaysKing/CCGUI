@@ -330,16 +330,31 @@ const filteredAtGroups = computed(() => {
   if (!keyword) return groups
 
   return groups
-    .map(group => ({
-      ...group,
-      children: Array.isArray(group.children)
+    .map(group => {
+      const filteredChildren = Array.isArray(group.children)
         ? group.children.filter(item => {
             const haystacks = [item?.label, item?.description, item?.value]
               .map(value => String(value || '').toLowerCase())
             return haystacks.some(text => text.includes(keyword))
           })
         : []
-    }))
+      // 同时过滤 subGroups
+      const filteredSubGroups = Array.isArray(group.subGroups)
+        ? group.subGroups
+          .map(sg => ({
+            ...sg,
+            children: Array.isArray(sg.children)
+              ? sg.children.filter(item => {
+                  const haystacks = [item?.label, item?.description, item?.value]
+                    .map(value => String(value || '').toLowerCase())
+                  return haystacks.some(text => text.includes(keyword))
+                })
+              : []
+          }))
+          .filter(sg => Array.isArray(sg.children) && sg.children.length > 0)
+        : []
+      return { ...group, children: filteredChildren, subGroups: filteredSubGroups }
+    })
     .filter(group => Array.isArray(group.children) && group.children.length > 0)
 })
 const activeAtGroup = computed(() => {
@@ -348,6 +363,40 @@ const activeAtGroup = computed(() => {
   return groups.find(group => group.id === activeAtGroupId.value) || groups[0]
 })
 const atLeafItems = computed(() => Array.isArray(activeAtGroup.value?.children) ? activeAtGroup.value.children : [])
+
+// 右侧面板的分组项列表（带分隔线标题）
+const atRightPanelSections = computed(() => {
+  const group = activeAtGroup.value
+  if (!group) return []
+  const subGroups = Array.isArray(group.subGroups) ? group.subGroups : []
+  if (subGroups.length <= 1) {
+    // 只有 0 或 1 个子分组时，直接显示 items，不加分隔线
+    return [{ type: 'items', children: atLeafItems.value }]
+  }
+  // 多个子分组时，每个加分隔线标题
+  const sections = []
+  for (const sg of subGroups) {
+    if (!Array.isArray(sg.children) || sg.children.length === 0) continue
+    sections.push({ type: 'separator', label: sg.label })
+    sections.push({ type: 'items', children: sg.children })
+  }
+  return sections
+})
+
+// 左侧面板的扁平化菜单项（一级 + 二级）
+const atLeftMenuItems = computed(() => {
+  const groups = filteredAtGroups.value
+  const items = []
+  for (const group of groups) {
+    const subGroups = Array.isArray(group.subGroups) ? group.subGroups : []
+    items.push({ type: 'primary', id: group.id, label: group.label })
+    for (const sg of subGroups) {
+      if (!Array.isArray(sg.children) || sg.children.length === 0) continue
+      items.push({ type: 'secondary', id: group.id, label: sg.label, count: sg.children.length })
+    }
+  }
+  return items
+})
 
 watch(filteredAtGroups, (groups) => {
   if (!groups.length) {
@@ -929,30 +978,45 @@ defineExpose({
                     placeholder="搜索引用..."
                   />
                 </div>
-                <div class="slash-menu-groups">
-                  <button
-                    v-for="group in filteredAtGroups"
-                    :key="group.id"
-                    class="slash-menu-group"
-                    :class="{ active: activeAtGroup?.id === group.id }"
-                    @click="selectAtGroup(group.id)"
-                  >
-                    <span class="slash-menu-group-label">{{ group.label }}</span>
-                    <span class="slash-menu-group-arrow">›</span>
-                  </button>
+                <div class="slash-menu-groups ref-menu-groups">
+                  <template v-for="item in atLeftMenuItems" :key="`${item.type}-${item.id}-${item.label}`">
+                    <button
+                      v-if="item.type === 'primary'"
+                      class="ref-menu-primary"
+                      :class="{ active: activeAtGroup?.id === item.id }"
+                      @click="selectAtGroup(item.id)"
+                    >
+                      <span class="ref-menu-primary-label">{{ item.label }}</span>
+                    </button>
+                    <button
+                      v-else
+                      class="ref-menu-secondary"
+                      :class="{ active: activeAtGroup?.id === item.id }"
+                      @click="selectAtGroup(item.id)"
+                    >
+                      <span class="ref-menu-secondary-label">{{ item.label }}</span>
+                      <span class="ref-menu-secondary-count">{{ item.count }}</span>
+                    </button>
+                  </template>
                 </div>
-                <div class="slash-menu-items">
-                  <button
-                    v-for="item in atLeafItems"
-                    :key="item.id"
-                    class="slash-menu-item"
-                    @click="addReferenceItem(item)"
-                  >
-                    <span class="slash-menu-item-main">
-                      <span class="slash-menu-item-label">{{ item.label }}</span>
-                    </span>
-                    <span v-if="item.description" class="slash-menu-item-desc">{{ item.description }}</span>
-                  </button>
+                <div class="slash-menu-items ref-menu-items">
+                  <template v-for="(section, idx) in atRightPanelSections" :key="idx">
+                    <div v-if="section.type === 'separator'" class="ref-menu-separator">
+                      <span class="ref-menu-separator-label">{{ section.label }}</span>
+                    </div>
+                    <template v-else>
+                      <button
+                        v-for="leaf in section.children"
+                        :key="leaf.id"
+                        class="ref-menu-leaf"
+                        :title="leaf.description || leaf.label"
+                        @click="addReferenceItem(leaf)"
+                      >
+                        <span class="ref-menu-leaf-name">{{ leaf.label }}</span>
+                        <span v-if="leaf.description" class="ref-menu-leaf-desc">{{ leaf.description }}</span>
+                      </button>
+                    </template>
+                  </template>
                 </div>
               </template>
             </div>
@@ -1232,6 +1296,152 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* ====== @ 引用菜单二级结构样式 ====== */
+
+/* 左侧面板 - 二级菜单 */
+.ref-menu-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 4px 0;
+}
+
+.ref-menu-primary,
+.ref-menu-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+  background: transparent;
+}
+
+.ref-menu-primary {
+  padding: 7px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid #3F3F46;
+}
+
+.ref-menu-primary:first-child {
+  border-top: none;
+}
+
+.ref-menu-primary-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #E4E4E7;
+  letter-spacing: 0.03em;
+}
+
+.ref-menu-primary.active .ref-menu-primary-label {
+  color: #93C5FD;
+}
+
+.ref-menu-secondary {
+  padding: 5px 12px 5px 16px;
+}
+
+.ref-menu-secondary-label {
+  font-size: 11px;
+  color: #A1A1AA;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ref-menu-secondary-count {
+  font-size: 10px;
+  color: #52525B;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.ref-menu-secondary:hover,
+.ref-menu-secondary.active {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ref-menu-secondary.active .ref-menu-secondary-label {
+  color: #93C5FD;
+}
+
+/* 右侧面板 - 带分隔线的列表 */
+.ref-menu-items {
+  padding: 4px 0;
+}
+
+.ref-menu-separator {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px 3px;
+  gap: 8px;
+}
+
+.ref-menu-separator::before,
+.ref-menu-separator::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #3F3F46;
+}
+
+.ref-menu-separator-label {
+  font-size: 10px;
+  color: #52525B;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ref-menu-leaf {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  max-height: 52px;
+  overflow: hidden;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ref-menu-leaf:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ref-menu-leaf-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #F4F4F5;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ref-menu-leaf-desc {
+  font-size: 11px;
+  color: #71717A;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ref-menu-leaf:hover .ref-menu-leaf-name {
+  color: #93C5FD;
 }
 
 .at-menu-wrapper,

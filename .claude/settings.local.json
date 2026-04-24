@@ -155,7 +155,17 @@
       "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/node --check /Users/alwaysking/AKProject/CCGUI/electron/main.cjs)",
       "Bash(/Users/alwaysking/.nvm/versions/node/v25.2.1/bin/node --check /Users/alwaysking/AKProject/CCGUI/electron/preload.js)",
       "Bash(tar czf:*)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(git status *)",
+      "Bash(git apply *)",
+      "Bash(claude --version)",
+      "Read(//usr/local/lib/node_modules/@anthropic-ai/**)",
+      "Read(//usr/local/**)",
+      "Read(//opt/**)",
+      "Read(//Users/alwaysking/.npm/**)",
+      "Bash(patch -p1 --dry-run)",
+      "Read(//Users/alwaysking/Desktop/**)",
+      "Read(//Users/alwaysking/Downloads/**)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

@@ -1405,7 +1405,7 @@ defineExpose({
   flex-direction: column;
   gap: 1px;
   width: 100%;
-  max-height: 52px;
+  max-height: 58px;
   overflow: hidden;
   padding: 6px 10px;
   background: transparent;
@@ -1483,10 +1483,10 @@ defineExpose({
   right: 0;
   bottom: 100%;
   margin-bottom: 6px;
-  width: 520px;
-  height: 380px;
+  width: 560px;
+  max-height: min(480px, calc(100vh - 120px));
   display: grid;
-  grid-template-columns: 170px 1fr;
+  grid-template-columns: 180px 1fr;
   grid-template-rows: auto minmax(0, 1fr);
   background: #27272A;
   border: 1px solid #3F3F46;
@@ -1533,10 +1533,10 @@ defineExpose({
   right: 0;
   bottom: 100%;
   margin-bottom: 6px;
-  width: 520px;
-  height: 380px;
+  width: 560px;
+  max-height: min(480px, calc(100vh - 120px));
   display: grid;
-  grid-template-columns: 170px 1fr;
+  grid-template-columns: 180px 1fr;
   grid-template-rows: auto minmax(0, 1fr);
   background: #27272A;
   border: 1px solid #3F3F46;

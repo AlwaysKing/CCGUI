@@ -246,13 +246,12 @@ class ClaudeClient {
       return Array.from(map.entries()).map(([key, children]) => ({ id: key, label: key, children }))
     }
 
-    // agents 按有无 model 分组（内置 vs 自定义）
+    // agents 不分子组，平铺显示
     const agentChildren = agents.map(a => ({
       id: `agent:${a.name}`, label: a.name || '', name: a.name || '',
       value: a.name || '', kind: 'agent', description: a.description || '',
       providerMeta: { model: a.model || null }
     }))
-    const agentSubGroups = groupBy(agentChildren, a => a.providerMeta?.model ? 'Custom' : 'Built-in')
 
     // mcpTools 按 serverName 分组
     const pluginChildren = mcpTools.map(t => ({
@@ -277,7 +276,7 @@ class ClaudeClient {
 
     return {
       groups: [
-        { id: 'agent', label: 'Agent', children: agentChildren, subGroups: agentSubGroups },
+        { id: 'agent', label: 'Agent', children: agentChildren, subGroups: [] },
         { id: 'plugin', label: 'MCP Tools', children: pluginChildren, subGroups: pluginSubGroups },
         { id: 'skill', label: 'Skill', children: skillChildren, subGroups: skillSubGroups }
       ]

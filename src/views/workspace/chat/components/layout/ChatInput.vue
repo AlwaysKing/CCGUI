@@ -1273,10 +1273,10 @@ defineExpose({
   right: 0;
   bottom: 100%;
   margin-bottom: 6px;
-  width: 380px;
-  height: 300px;
+  width: 520px;
+  height: 380px;
   display: grid;
-  grid-template-columns: 140px 1fr;
+  grid-template-columns: 170px 1fr;
   grid-template-rows: auto minmax(0, 1fr);
   background: #27272A;
   border: 1px solid #3F3F46;
@@ -1323,10 +1323,10 @@ defineExpose({
   right: 0;
   bottom: 100%;
   margin-bottom: 6px;
-  width: 420px;
-  height: 320px;
+  width: 520px;
+  height: 380px;
   display: grid;
-  grid-template-columns: 160px 1fr;
+  grid-template-columns: 170px 1fr;
   grid-template-rows: auto minmax(0, 1fr);
   background: #27272A;
   border: 1px solid #3F3F46;
@@ -1488,8 +1488,8 @@ defineExpose({
 }
 
 .slash-menu-item-desc {
-  font-size: 10px;
-  line-height: 1.35;
+  font-size: 11px;
+  line-height: 1.4;
   color: #71717A;
   opacity: 0.78;
 }

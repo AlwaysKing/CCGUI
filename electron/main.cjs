@@ -1349,7 +1349,7 @@ ipcMain.handle('query-commands', async (event, { sessionId, category } = {}) => 
 
 ipcMain.handle('query-at-references', async (event, { sessionId } = {}) => {
   try {
-    const data = sessionManager.queryAtReferences(sessionId)
+    const data = await sessionManager.queryAtReferences(sessionId)
     return { success: true, data }
   } catch (error) {
     logger.error('[IPC] query-at-references error:', {

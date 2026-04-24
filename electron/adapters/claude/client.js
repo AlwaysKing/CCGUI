@@ -130,13 +130,22 @@ class ClaudeClient {
 
   updateCommandInventoryFromInit(message = {}) {
     const mcpServers = Array.isArray(message.mcp_servers) ? message.mcp_servers : []
+    const initSkills = Array.isArray(message.skills) ? message.skills : []
+    const normalizedSkills = initSkills
+      .map(entry => this.normalizeSkillReferenceEntry(entry))
+      .filter(Boolean)
 
     if (mcpServers.length > 0) {
       this.commandInventory.mcpServers = mcpServers
     }
 
+    if (normalizedSkills.length > 0) {
+      this.referenceInventory.skills = normalizedSkills
+    }
+
     logger.info('[ClaudeClient] Received system/init metadata', {
       slashCommandsCount: Array.isArray(message.slash_commands) ? message.slash_commands.length : 0,
+      skillsCount: normalizedSkills.length,
       mcpServers,
       commandInventoryCount: Array.isArray(this.commandInventory?.commands) ? this.commandInventory.commands.length : 0
     })
@@ -146,6 +155,31 @@ class ClaudeClient {
     return {
       commands: Array.isArray(this.commandInventory?.commands) ? [...this.commandInventory.commands] : [],
       mcpServers: Array.isArray(this.commandInventory?.mcpServers) ? [...this.commandInventory.mcpServers] : []
+    }
+  }
+
+  normalizeSkillReferenceEntry(entry = null) {
+    const rawName = typeof entry === 'string'
+      ? entry
+      : (typeof entry?.name === 'string' ? entry.name : '')
+    const rawSource = typeof entry?.source === 'string'
+      ? entry.source.trim()
+      : (typeof entry?.loadedFrom === 'string' ? entry.loadedFrom.trim() : '')
+    const normalizedName = String(rawName || '').trim()
+    if (!normalizedName) {
+      return null
+    }
+
+    const skillName = normalizedName
+    const source = rawSource || ''
+    const namespaceIndex = skillName.indexOf(':')
+    const groupLabel = namespaceIndex > 0 ? skillName.slice(0, namespaceIndex) : 'other'
+
+    return {
+      name: skillName,
+      description: typeof entry?.description === 'string' ? entry.description.trim() : '',
+      source,
+      groupLabel
     }
   }
 
@@ -210,10 +244,24 @@ class ClaudeClient {
    * 获取 @ reference 的所有分组数据（agents / skills / mcpTools）
    * 数据来源：
    *   - agents: initialize 控制响应
-   *   - skills: get_context_usage 响应的 skills.skillFrontmatter
+   *   - skills: Claude system/init 或 initialize 返回的 skills
    *   - mcpTools: get_context_usage 响应的 mcpTools
    */
-  queryAtReferences() {
+  async queryAtReferences() {
+    const hasCommandDescriptions = Array.isArray(this.commandInventory?.commands) &&
+      this.commandInventory.commands.length > 0
+    const hasAgentInventory = Array.isArray(this.referenceInventory?.agents) &&
+      this.referenceInventory.agents.length > 0
+
+    if ((!hasCommandDescriptions || !hasAgentInventory) &&
+        typeof this.refreshCommandInventoryFromInitialize === 'function') {
+      try {
+        await this.refreshCommandInventoryFromInitialize()
+      } catch (error) {
+        logger.warn(`[ClaudeClient] Failed to refresh @ reference inventory from initialize: ${error.message}`)
+      }
+    }
+
     const agents = Array.isArray(this.referenceInventory?.agents)
       ? this.referenceInventory.agents
       : []
@@ -242,31 +290,98 @@ class ClaudeClient {
       providerMeta: { model: a.model || null }
     }))
 
+    const formatMcpToolDescription = (tool = {}) => {
+      const explicitDescription = typeof tool.description === 'string' ? tool.description.trim() : ''
+      const annotations = tool.annotations && typeof tool.annotations === 'object' ? tool.annotations : {}
+      const isReadOnly = annotations.readOnly === true ||
+        annotations.read_only === true ||
+        annotations.readOnlyHint === true ||
+        annotations.read_only_hint === true
+      const isDestructive = annotations.destructive === true ||
+        annotations.isDestructive === true ||
+        annotations.destructiveHint === true ||
+        annotations.destructive_hint === true
+      const isOpenWorld = annotations.openWorld === true ||
+        annotations.open_world === true ||
+        annotations.openWorldHint === true ||
+        annotations.open_world_hint === true
+      const annotationLabels = [
+        isReadOnly ? 'read-only' : '',
+        isDestructive ? 'destructive' : '',
+        isOpenWorld ? 'open-world' : ''
+      ].filter(Boolean)
+      const inputSchema = tool.inputSchema && typeof tool.inputSchema === 'object' ? tool.inputSchema : null
+      const parameterNames = inputSchema && inputSchema.properties && typeof inputSchema.properties === 'object'
+        ? Object.keys(inputSchema.properties).filter(Boolean)
+        : []
+      const parameterLabel = parameterNames.length > 0 ? `参数: ${parameterNames.join(', ')}` : ''
+
+      return [explicitDescription, annotationLabels.join(', '), parameterLabel]
+        .filter(Boolean)
+        .join(' · ')
+    }
+
     // mcpTools 按 serverName 分组
     const pluginChildren = mcpTools.map(t => ({
       id: `plugin:${t.fullName || t.name}`, label: t.name || '', name: t.name || '',
       value: t.fullName || t.name || '', kind: 'plugin',
-      description: t.description || '', serverName: t.serverName || '',
-      providerMeta: { serverName: t.serverName || '', fullName: t.fullName || '' }
+      description: formatMcpToolDescription(t), serverName: t.serverName || '',
+      providerMeta: {
+        serverName: t.serverName || '',
+        fullName: t.fullName || '',
+        annotations: t.annotations || null,
+        inputSchema: t.inputSchema || null
+      }
     }))
     const pluginSubGroups = groupBy(pluginChildren, t => t.serverName || 'other')
 
-    // skills：从 commandInventory 获取（已有正确的 description 和 groupId）
-    // 排除 builtin-command 和 mcp-prompt，只保留 namespaced-command（插件 skill）
     const allCommands = Array.isArray(this.commandInventory?.commands) ? this.commandInventory.commands : []
-    const skillCommands = allCommands.filter(cmd => cmd?.kind === 'namespaced-command')
-    const skillChildren = skillCommands.map(cmd => ({
-      id: `skill:${cmd.id}`,
-      label: cmd.label || '',
-      name: (cmd.label || '').replace(/^\//, ''),
-      value: (cmd.label || '').replace(/^\//, ''),
-      kind: 'skill',
-      description: cmd.description || '',
-      providerMeta: { groupId: cmd.groupId || '', groupLabel: cmd.groupLabel || '' }
-    }))
+    const commandByName = new Map(
+      allCommands
+        .filter(cmd => cmd && cmd.kind !== 'mcp-prompt')
+        .map(cmd => [String(cmd.label || '').replace(/^\//, '').trim(), cmd])
+        .filter(([name]) => Boolean(name))
+    )
+    const commandByShortName = new Map(
+      allCommands
+        .filter(cmd => cmd && cmd.kind !== 'mcp-prompt')
+        .map(cmd => {
+          const fullName = String(cmd.label || '').replace(/^\//, '').trim()
+          const shortName = fullName.includes(':') ? fullName.slice(fullName.lastIndexOf(':') + 1) : fullName
+          return [shortName, cmd]
+        })
+        .filter(([name]) => Boolean(name))
+    )
+
+    // skills：只使用 Claude /skills 同源数据，再按同名命令补描述，不用 skillFrontmatter 决定展示集合。
+    const skillChildren = skills
+      // 当前产品把 / 命令和 @ 技能拆开展示：
+      // 无前缀的内置/ bundled skills 仍留在 / 中，@ 这里只展示带命名空间的技能（主要是插件技能）。
+      .filter(skill => skill?.name && String(skill.name).includes(':'))
+      .map(skill => {
+        const skillName = String(skill.name || '').trim()
+        const shortSkillName = skillName.includes(':') ? skillName.slice(skillName.lastIndexOf(':') + 1) : skillName
+        const matchedCommand = commandByName.get(skillName) || commandByShortName.get(shortSkillName) || null
+
+        return {
+          id: `skill:${skillName}`,
+          label: skillName,
+          name: skillName,
+          value: skillName,
+          kind: 'skill',
+          description: skill.description || matchedCommand?.description || '',
+          providerMeta: {
+            source: skill.source || '',
+            groupId: matchedCommand?.groupId || '',
+            groupLabel: skill.groupLabel || 'other'
+          }
+        }
+      })
+
+    // 分组：沿用当前 UI 结构，但数据源改为 Claude /skills 的结果。
     const skillSubGroups = groupBy(skillChildren, s => {
-      const sep = (s.name || '').indexOf(':')
-      return sep > 0 ? s.name.slice(0, sep) : 'other'
+      const meta = s.providerMeta || {}
+      return meta.groupLabel || 'other'
     })
 
     return {
@@ -724,6 +839,14 @@ class ClaudeClient {
                 model: agent.model || null,
                 kind: 'agent'
               }))
+            }
+            const initSkills = Array.isArray(this.initializeResponse?.skills)
+              ? this.initializeResponse.skills
+              : []
+            if (initSkills.length > 0) {
+              this.referenceInventory.skills = initSkills
+                .map(entry => this.normalizeSkillReferenceEntry(entry))
+                .filter(Boolean)
             }
             logger.info('[ClaudeClient] Claude initialized successfully, file history should be enabled')
             resolve(message)

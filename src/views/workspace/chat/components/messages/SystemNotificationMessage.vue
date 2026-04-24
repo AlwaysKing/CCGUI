@@ -215,6 +215,15 @@ const notificationContent = computed(() => {
     }
   }
 
+  if (notificationType === 'provider-runtime-warning') {
+    const threadSuffix = data.threadId ? `\n线程 ID: ${data.threadId}` : ''
+    return {
+      icon: '⚠️',
+      title: `${providerLabel} 运行时提醒`,
+      description: `${data.message || '收到 provider 运行时提醒'}${threadSuffix}`
+    }
+  }
+
   if (notificationType === 'provider-deprecation') {
     return {
       icon: '🕰️',

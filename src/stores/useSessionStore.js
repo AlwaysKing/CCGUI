@@ -3287,7 +3287,38 @@ export const useSessionStore = defineStore('session', () => {
     session.messages.push(unknownMsg)
   }
 
+  function normalizeProviderUnknownMessage(data = {}) {
+    const rawMessage = data?.rawMessage
+    if (!rawMessage || typeof rawMessage !== 'object') {
+      return null
+    }
+
+    if (rawMessage.method === 'warning') {
+      const params = rawMessage.params && typeof rawMessage.params === 'object'
+        ? rawMessage.params
+        : {}
+      const warningMessage = typeof params.message === 'string' ? params.message.trim() : ''
+
+      return {
+        type: 'provider-runtime-warning',
+        provider: data.provider || 'unknown',
+        threadId: params.threadId || null,
+        message: warningMessage || '收到 provider 警告消息',
+        rawMessage,
+        timestamp: data.timestamp || new Date().toISOString()
+      }
+    }
+
+    return null
+  }
+
   function handleResidualManagerEvent(session, data) {
+    const normalizedProviderMessage = normalizeProviderUnknownMessage(data)
+    if (normalizedProviderMessage) {
+      handleSystemNotification(session, normalizedProviderMessage)
+      return
+    }
+
     const payload = data?.rawMessage && typeof data.rawMessage === 'object'
       ? data.rawMessage
       : data

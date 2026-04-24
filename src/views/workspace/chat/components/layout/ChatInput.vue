@@ -362,7 +362,11 @@ const filteredAtGroups = computed(() => {
         : []
       return { ...group, children: filteredChildren, subGroups: filteredSubGroups }
     })
-    .filter(group => Array.isArray(group.children) && group.children.length > 0)
+    .filter(group => {
+      const hasChildren = Array.isArray(group.children) && group.children.length > 0
+      const hasSubGroups = Array.isArray(group.subGroups) && group.subGroups.length > 0
+      return hasChildren || hasSubGroups
+    })
 })
 const activeAtGroup = computed(() => {
   const groups = filteredAtGroups.value

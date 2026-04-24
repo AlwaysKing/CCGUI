@@ -947,8 +947,8 @@ class ClaudeAdapter extends ClaudeClient {
       }
       case 'skill': {
         // Skill 工具接受 skill 参数
-        const source = providerMeta.source || ''
-        const hint = source ? ` (来自 ${source})` : ''
+        const groupLabel = providerMeta.groupLabel || ''
+        const hint = groupLabel ? ` (来自 ${groupLabel})` : ''
         return `[引用 Skill: ${name}${hint} — 请使用 Skill 工具，skill 为 "${name}"]`
       }
       default:
@@ -1455,12 +1455,39 @@ class ClaudeAdapter extends ClaudeClient {
     const servers = Array.isArray(payload?.mcpServers) ? payload.mcpServers : []
     if (servers.length === 0) return
 
+    const normalizeInputSchema = (tool = {}) => {
+      const schemaCandidates = [
+        tool.inputSchema,
+        tool.input_schema,
+        tool.inputJSONSchema,
+        tool.parameters
+      ]
+
+      for (const candidate of schemaCandidates) {
+        if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+          return candidate
+        }
+      }
+
+      return null
+    }
+
+    const normalizeServerName = (value) => {
+      const raw = String(value || '').trim()
+      if (!raw) return ''
+      if (raw.startsWith('plugin:')) {
+        return raw.replace(/^plugin:/, 'plugin_').replace(/:/g, '_')
+      }
+      return raw
+    }
+
     // 构建 serverName → tools map（含 description）
     const serverToolMap = new Map()
     for (const server of servers) {
       if (!Array.isArray(server.tools)) continue
+      const normalizedServerName = normalizeServerName(server.name)
       for (const tool of server.tools) {
-        const key = `${server.name}::${tool.name}`
+        const key = `${normalizedServerName}::${tool.name}`
         serverToolMap.set(key, tool)
       }
     }
@@ -1473,12 +1500,18 @@ class ClaudeAdapter extends ClaudeClient {
 
     this.referenceInventory.mcpTools = currentTools.map(t => {
       // t.name 是短名，t.fullName 是全限定名；server.tools[].name 是短名
-      const key = `${t.serverName}::${t.name}`
+      const key = `${normalizeServerName(t.serverName)}::${t.name}`
       const serverTool = serverToolMap.get(key)
       if (!serverTool) return t
       return {
         ...t,
-        description: serverTool.description || ''
+        description: typeof serverTool.description === 'string'
+          ? serverTool.description
+          : (t.description || ''),
+        annotations: serverTool.annotations && typeof serverTool.annotations === 'object'
+          ? serverTool.annotations
+          : (t.annotations || null),
+        inputSchema: normalizeInputSchema(serverTool) || t.inputSchema || null
       }
     })
   }
@@ -1538,19 +1571,16 @@ class ClaudeAdapter extends ClaudeClient {
           name: shortName,
           fullName: rawName,
           serverName: t.serverName || '',
+          description: typeof t.description === 'string' ? t.description : '',
+          annotations: t.annotations && typeof t.annotations === 'object' ? t.annotations : null,
+          inputSchema: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : null,
           isLoaded: t.isLoaded !== false,
           kind: 'plugin'
         }
       })
     }
-    // skills: { totalSkills, includedSkills, tokens, skillFrontmatter: [{name, source, tokens}] }
-    if (Array.isArray(rawSkills.skillFrontmatter) && rawSkills.skillFrontmatter.length > 0) {
-      this.referenceInventory.skills = rawSkills.skillFrontmatter.map(s => ({
-        name: s.name || '',
-        source: s.source || '',
-        kind: 'skill'
-      }))
-    }
+    // get_context_usage.skillFrontmatter 不是 Claude /skills 的真值源。
+    // 这里不再用它填充 @ Skill，避免把 command/frontmatter 混入技能列表。
 
     this.emit('env-info', this.envInfo)
 

@@ -199,6 +199,7 @@ const slashCommandGroups = ref([])
 const atReferenceGroups = ref([])
 const activeSlashGroupId = ref('')
 const activeAtGroupId = ref('')
+const activeAtSubGroupId = ref('')  // 选中的二级分组 id，空=显示全部
 
 // Enter 键模式锁定 (true = Enter 发送, false = Enter 换行)
 const enterModeLocked = ref(true)
@@ -306,6 +307,12 @@ async function toggleAtMenu() {
 
 function selectAtGroup(groupId) {
   activeAtGroupId.value = groupId
+  activeAtSubGroupId.value = ''  // 选一级时清空二级
+}
+
+function selectAtSubGroup(groupId, subGroupId) {
+  activeAtGroupId.value = groupId
+  activeAtSubGroupId.value = subGroupId  // 选二级
 }
 
 function addReferenceItem(item) {
@@ -369,11 +376,20 @@ const atRightPanelSections = computed(() => {
   const group = activeAtGroup.value
   if (!group) return []
   const subGroups = Array.isArray(group.subGroups) ? group.subGroups : []
+
+  // 如果选了二级分组，只显示该分组
+  const selectedSub = activeAtSubGroupId.value
+  if (selectedSub) {
+    const target = subGroups.find(sg => sg.id === selectedSub)
+    if (target && Array.isArray(target.children) && target.children.length > 0) {
+      return [{ type: 'items', children: target.children }]
+    }
+  }
+
+  // 没选二级：显示所有子分组（带分隔线）
   if (subGroups.length <= 1) {
-    // 只有 0 或 1 个子分组时，直接显示 items，不加分隔线
     return [{ type: 'items', children: atLeafItems.value }]
   }
-  // 多个子分组时，每个加分隔线标题
   const sections = []
   for (const sg of subGroups) {
     if (!Array.isArray(sg.children) || sg.children.length === 0) continue
@@ -983,7 +999,7 @@ defineExpose({
                     <button
                       v-if="item.type === 'primary'"
                       class="ref-menu-primary"
-                      :class="{ active: activeAtGroup?.id === item.id }"
+                      :class="{ active: activeAtGroup?.id === item.id && !activeAtSubGroupId, 'has-active-child': activeAtGroup?.id === item.id && !!activeAtSubGroupId }"
                       @click="selectAtGroup(item.id)"
                     >
                       <span class="ref-menu-primary-label">{{ item.label }}</span>
@@ -991,8 +1007,8 @@ defineExpose({
                     <button
                       v-else
                       class="ref-menu-secondary"
-                      :class="{ active: activeAtGroup?.id === item.id }"
-                      @click="selectAtGroup(item.id)"
+                      :class="{ active: activeAtSubGroupId === item.label }"
+                      @click="selectAtSubGroup(item.id, item.label)"
                     >
                       <span class="ref-menu-secondary-label">{{ item.label }}</span>
                       <span class="ref-menu-secondary-count">{{ item.count }}</span>
@@ -1340,6 +1356,15 @@ defineExpose({
 
 .ref-menu-primary.active .ref-menu-primary-label {
   color: #93C5FD;
+}
+
+.ref-menu-primary.has-active-child {
+  background: rgba(147, 197, 253, 0.04);
+}
+
+.ref-menu-primary.has-active-child .ref-menu-primary-label {
+  color: #93C5FD;
+  opacity: 0.6;
 }
 
 .ref-menu-secondary {

@@ -2411,21 +2411,54 @@ function handleToggleAgentViewMode(mode) {
 
 const isAgentRailVisible = ref(true)
 
-const contextMenuState = ref({ show: false, x: 0, y: 0 })
+const contextMenuState = ref({ show: false, x: 0, y: 0, hasSelection: false })
 let contextMenuText = ''
+const contextThemeMenuGroups = [
+  {
+    key: 'avatarMode',
+    label: '切换头像',
+    options: [
+      { value: 'large', label: '大头像' },
+      { value: 'small', label: '小头像' },
+      { value: 'none', label: '无头像' }
+    ]
+  },
+  {
+    key: 'statusStyle',
+    label: '切换状态样式',
+    options: [
+      { value: 'full', label: '完整' },
+      { value: 'compact', label: '简约' },
+      { value: 'floating', label: '悬浮' },
+      { value: 'hidden', label: '隐藏' }
+    ]
+  },
+  {
+    key: 'messageSurface',
+    label: '切换消息样式',
+    options: [
+      { value: 'bubble', label: '气泡样式' },
+      { value: 'ghost', label: '简约样式' }
+    ]
+  }
+]
 
 function handleContextMenu(event) {
   const selection = window.getSelection()
   const text = selection?.toString()?.trim()
-  if (!text) return
 
   event.preventDefault()
-  contextMenuText = text
-  contextMenuState.value = { show: true, x: event.clientX, y: event.clientY }
+  contextMenuText = text || ''
+  contextMenuState.value = {
+    show: true,
+    x: event.clientX,
+    y: event.clientY,
+    hasSelection: Boolean(text)
+  }
 }
 
 function closeContextMenu() {
-  contextMenuState.value = { ...contextMenuState.value, show: false }
+  contextMenuState.value = { ...contextMenuState.value, show: false, hasSelection: false }
   contextMenuText = ''
 }
 
@@ -2438,6 +2471,51 @@ async function copySelectedText() {
     } catch (e) {
       console.error('Failed to copy:', e)
     }
+  }
+}
+
+async function handleChatThemeFieldUpdate(field, value) {
+  if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
+
+  try {
+    const existingSettings = toPlainObject(sessionConfig.value?.settings)
+    const nextTheme = {
+      ...(existingSettings.chatMessageTheme || {}),
+      [field]: value
+    }
+    const presetKey = existingSettings.chatMessageThemePreset ||
+      projectConfig.value?.settings?.chatMessageThemePreset ||
+      appConfig.value?.settings?.chatMessageThemePreset ||
+      'classic'
+
+    const result = await window.electronAPI.updateSessionConfig({
+      projectId: appStore.currentProject.id,
+      sessionId: appStore.currentSession.id,
+      updates: {
+        name: currentSessionMeta.value?.name || appStore.currentSession.name || sessionStore.currentSession?.id?.slice(0, 8) || '新会话',
+        settings: {
+          ...existingSettings,
+          chatMessageThemeMode: 'custom',
+          chatMessageThemePreset: presetKey,
+          chatMessageTheme: nextTheme
+        }
+      }
+    })
+
+    if (result?.success) {
+      sessionConfig.value = result.config
+      closeContextMenu()
+      return
+    }
+
+    throw new Error(result?.error || '保存消息主题失败')
+  } catch (error) {
+    logger.error('[Chat] Failed to update chat message theme', {
+      field,
+      value,
+      error: error.message
+    })
+    alert('更新消息主题失败: ' + error.message)
   }
 }
 
@@ -2873,7 +2951,32 @@ function handleToggleAgentRail() {
       :style="{ left: `${contextMenuState.x}px`, top: `${contextMenuState.y}px` }"
       @click.stop
     >
-      <button class="chat-context-menu-item" @click="copySelectedText">复制选中内容</button>
+      <button v-if="contextMenuState.hasSelection" class="chat-context-menu-item" @click="copySelectedText">复制选中内容</button>
+      <div
+        v-for="group in contextThemeMenuGroups"
+        :key="group.key"
+        class="chat-context-menu-group"
+      >
+        <button class="chat-context-menu-item chat-context-menu-item--submenu" type="button">
+          <span>{{ group.label }}</span>
+          <span class="chat-context-menu-arrow">›</span>
+        </button>
+        <div class="chat-context-submenu">
+          <button
+            v-for="option in group.options"
+            :key="option.value"
+            class="chat-context-menu-item chat-context-menu-item--option"
+            :class="{ active: resolvedChatMessageTheme[group.key] === option.value }"
+            type="button"
+            @click="handleChatThemeFieldUpdate(group.key, option.value)"
+          >
+            <span class="chat-context-menu-check-slot">
+              <span v-if="resolvedChatMessageTheme[group.key] === option.value" class="chat-context-menu-check">✓</span>
+            </span>
+            <span>{{ option.label }}</span>
+          </button>
+        </div>
+      </div>
     </div>
   </Teleport>
 
@@ -4400,10 +4503,14 @@ function handleToggleAgentRail() {
   z-index: 1200;
 }
 
+.chat-context-menu-group {
+  position: relative;
+}
+
 .chat-context-menu-item {
   display: block;
   width: 100%;
-  padding: 6px 14px;
+  padding: 6px 18px 6px 14px;
   border: none;
   background: transparent;
   color: #E4E4E7;
@@ -4414,8 +4521,86 @@ function handleToggleAgentRail() {
 }
 
 .chat-context-menu-item:hover {
-  background: rgba(249, 115, 22, 0.12);
-  color: #FED7AA;
+  background: #F97316;
+  color: #FFFFFF;
+}
+
+.chat-context-menu-item--submenu,
+.chat-context-menu-item--option {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+.chat-context-menu-item--option {
+  gap: 8px;
+}
+
+.chat-context-menu-arrow,
+.chat-context-menu-check {
+  color: #A1A1AA;
+  flex-shrink: 0;
+}
+
+.chat-context-menu-check-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  min-width: 12px;
+  flex-shrink: 0;
+}
+
+.chat-context-menu-item--option .chat-context-menu-check-slot {
+  width: 8px;
+  min-width: 8px;
+}
+
+.chat-context-menu-item--submenu .chat-context-menu-arrow {
+  margin-left: auto;
+}
+
+.chat-context-menu-item--option .chat-context-menu-check {
+  color: #FFFFFF;
+}
+
+.chat-context-submenu {
+  position: absolute;
+  top: -4px;
+  left: 100%;
+  width: max-content;
+  min-width: 0;
+  margin-left: 0;
+  padding: 4px 0;
+  background: #1E1E1E;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.5);
+  display: none;
+}
+
+.chat-context-submenu::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -8px;
+  width: 8px;
+  height: 100%;
+}
+
+.chat-context-menu-group:hover .chat-context-submenu {
+  display: block;
+}
+
+.chat-context-menu-item.active {
+  background: transparent;
+  color: #E4E4E7;
+}
+
+.chat-context-menu-item.active:hover {
+  background: #F97316;
+  color: #FFFFFF;
 }
 
 .command-dialog {

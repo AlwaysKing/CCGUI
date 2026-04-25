@@ -3586,7 +3586,7 @@ class SessionInstance {
       resultReceived: false,
       answersConsistent: true,
       receivedAnswers: null,
-      collapsed: false,
+      collapsed: true,
       timestamp: new Date(),
       rawMessages: [controlRequest]
     }

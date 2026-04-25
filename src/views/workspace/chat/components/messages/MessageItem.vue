@@ -1458,7 +1458,16 @@ watch(() => props.message, () => {
 }
 
 .message.avatar-small.question .message-avatar {
-  margin-top: 5px;
+  width: 10px;
+  height: 16px;
+  min-width: 10px;
+  min-height: 16px;
+  background: transparent;
+  color: #059669;
+  font-size: 14px;
+  line-height: 1;
+  margin-top: 0;
+  align-self: flex-start;
 }
 
 .message.permission_result.denied .message-avatar {

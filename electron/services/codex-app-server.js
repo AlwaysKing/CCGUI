@@ -728,6 +728,31 @@ async function listPluginsWithDetails(projectPath = '') {
   })
 }
 
+async function listSkills(projectPath = '', options = {}) {
+  return withCodexAppServer(async ({ request }) => {
+    const params = {
+      ...(projectPath ? { cwds: [projectPath] } : {}),
+      ...(options?.forceReload === true ? { forceReload: true } : {})
+    }
+
+    return request('skills/list', params)
+  }, {
+    clientName: 'ccgui-codex-skills',
+    cwd: projectPath || process.cwd(),
+    timeoutMs: 30000
+  })
+}
+
+async function listApps(projectPath = '') {
+  return withCodexAppServer(async ({ request }) => {
+    return request('app/list', projectPath ? { cwds: [projectPath] } : {})
+  }, {
+    clientName: 'ccgui-codex-apps',
+    cwd: projectPath || process.cwd(),
+    timeoutMs: 30000
+  })
+}
+
 async function readPluginDetail(projectPath = '', marketplacePath = '', pluginName = '') {
   return withCodexAppServer(async ({ request }) => {
     return request('plugin/read', {
@@ -805,6 +830,8 @@ module.exports = {
   withCodexAppServer,
   readCodexConfigSnapshot,
   listPluginsWithDetails,
+  listSkills,
+  listApps,
   listRecommendedSkills,
   readPluginDetail,
   installPlugin,

@@ -109,6 +109,25 @@ export function toAttachmentUrl(filePath) {
   return `ccgui-asset://local?path=${encodeURIComponent(source)}`
 }
 
+export function getAttachmentIconUrl(attachment) {
+  if (!attachment || typeof attachment !== 'object') return ''
+
+  const providerMeta = attachment.providerMeta && typeof attachment.providerMeta === 'object'
+    ? attachment.providerMeta
+    : {}
+  const candidate = providerMeta.iconPath || providerMeta.logoPath || ''
+
+  if (candidate) {
+    return toAttachmentUrl(candidate)
+  }
+
+  if (attachment.kind === 'image' && attachment.path) {
+    return toAttachmentUrl(attachment.path)
+  }
+
+  return ''
+}
+
 export function getAttachmentIcon(attachment) {
   if (!attachment) return '📎'
   if (attachment.kind === 'image') return '🖼️'
@@ -116,6 +135,7 @@ export function getAttachmentIcon(attachment) {
   if (attachment.kind === 'reference-agent') return '🤖'
   if (attachment.kind === 'reference-plugin') return '🔌'
   if (attachment.kind === 'reference-skill') return '⚡'
+  if (attachment.kind === 'reference-app') return '📱'
 
   const name = String(attachment.name || attachment.path || '').toLowerCase()
   const extension = name.includes('.') ? `.${name.split('.').pop()}` : ''

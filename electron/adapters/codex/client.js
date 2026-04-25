@@ -1593,6 +1593,13 @@ class CodexClient {
       groups: Array.from(groupsMap.values())
     }
   }
+
+  async queryAtReferences() {
+    return {
+      provider: 'codex',
+      groups: []
+    }
+  }
 }
 
 module.exports = {

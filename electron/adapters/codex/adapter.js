@@ -12,6 +12,7 @@ const {
   mergeTurnUsage
 } = require('./client')
 const logger = require('../../logger')
+const codexAppServer = require('../../services/codex-app-server')
 
 function buildCodexUsageStateError(errorLike = null, fallbackMessage = 'Codex usage refresh failed') {
   if (!errorLike || typeof errorLike !== 'object') {
@@ -34,6 +35,71 @@ function buildCodexUsageStateError(errorLike = null, fallbackMessage = 'Codex us
     code: code || 'unknown',
     message,
     status
+  }
+}
+
+function normalizeSkillSourceSegment(value = '') {
+  return String(value || '')
+    .trim()
+    .replace(/^[._-]+|[._-]+$/g, '')
+}
+
+function toTitleLabel(value = '') {
+  const normalized = normalizeSkillSourceSegment(value)
+  if (!normalized) return ''
+  return normalized
+    .split(/[-_.:/]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function deriveCodexSkillSource(skill = {}) {
+  const skillName = typeof skill?.name === 'string' ? skill.name.trim() : ''
+  const skillPath = typeof skill?.path === 'string' ? skill.path.trim() : ''
+
+  if (skillName.includes(':')) {
+    const namespace = normalizeSkillSourceSegment(skillName.split(':')[0])
+    if (namespace) {
+      return {
+        key: namespace.toLowerCase(),
+        label: toTitleLabel(namespace) || namespace
+      }
+    }
+  }
+
+  if (skillPath.includes('/.codex/skills/.system/')) {
+    return {
+      key: 'built-in',
+      label: 'Built-in'
+    }
+  }
+
+  const pluginCacheMatch = skillPath.match(/\/plugins\/cache\/([^/]+)\/([^/]+)/)
+  if (pluginCacheMatch) {
+    const pluginId = normalizeSkillSourceSegment(pluginCacheMatch[2] || pluginCacheMatch[1] || '')
+    if (pluginId) {
+      return {
+        key: pluginId.toLowerCase(),
+        label: toTitleLabel(pluginId) || pluginId
+      }
+    }
+  }
+
+  const pluginPathMatch = skillPath.match(/\/plugins\/(?:[^/]+\/)?([^/]+)\/(?:[^/]+\/)?skills\//)
+  if (pluginPathMatch) {
+    const pluginId = normalizeSkillSourceSegment(pluginPathMatch[1] || '')
+    if (pluginId) {
+      return {
+        key: pluginId.toLowerCase(),
+        label: toTitleLabel(pluginId) || pluginId
+      }
+    }
+  }
+
+  return {
+    key: 'other',
+    label: 'Other'
   }
 }
 
@@ -60,6 +126,236 @@ class CodexAdapter extends CodexClient {
       this.pendingUserMessageUuid = uuid
     }
     return super.sendMessage(message)
+  }
+
+  async queryAtReferences() {
+    const groups = []
+    const cwd = this.workingDirectory || process.cwd()
+
+    let pluginServiceData = null
+    let skillsServiceData = null
+    let appsServiceData = null
+
+    const [pluginsResult, skillsResult, appsResult] = await Promise.allSettled([
+      codexAppServer.listPluginsWithDetails(cwd),
+      codexAppServer.listSkills(cwd),
+      codexAppServer.listApps(cwd)
+    ])
+
+    if (pluginsResult.status === 'fulfilled') {
+      pluginServiceData = pluginsResult.value
+    } else {
+      logger.warn(`[CodexAdapter] Failed to load codex-service plugins: ${pluginsResult.reason?.message || String(pluginsResult.reason)}`)
+    }
+
+    if (skillsResult.status === 'fulfilled') {
+      skillsServiceData = skillsResult.value
+    } else {
+      logger.warn(`[CodexAdapter] Failed to load codex-service skills: ${skillsResult.reason?.message || String(skillsResult.reason)}`)
+    }
+
+    if (appsResult.status === 'fulfilled') {
+      appsServiceData = appsResult.value
+    } else {
+      logger.warn(`[CodexAdapter] Failed to load codex-service apps: ${appsResult.reason?.message || String(appsResult.reason)}`)
+    }
+
+    const marketplaces = Array.isArray(pluginServiceData?.marketplaces) ? pluginServiceData.marketplaces : []
+    const detailMap = pluginServiceData?.detailMap && typeof pluginServiceData.detailMap === 'object'
+      ? pluginServiceData.detailMap
+      : {}
+    const enabledPlugins = []
+
+    for (const marketplace of marketplaces) {
+      const marketplacePath = marketplace?.path || ''
+      const marketplaceLabel = marketplace?.interface?.displayName || marketplace?.name || ''
+      const plugins = Array.isArray(marketplace?.plugins) ? marketplace.plugins : []
+
+      for (const plugin of plugins) {
+        if (!plugin || plugin.enabled !== true) continue
+
+        const pluginId = plugin?.id || plugin?.name || ''
+        const pluginName = plugin?.name || ''
+        if (!pluginId || !pluginName) continue
+
+        enabledPlugins.push({
+          pluginId,
+          pluginName,
+          marketplacePath,
+          marketplaceLabel,
+          summary: plugin,
+          detail: detailMap[`${marketplacePath}::${pluginName}`] || null
+        })
+      }
+    }
+
+    const pluginChildren = enabledPlugins
+      .map(plugin => {
+        const pluginId = plugin.pluginId
+        const label = plugin.summary?.interface?.displayName || plugin.pluginName || pluginId
+        const detailInterface = plugin.detail?.summary?.interface || {}
+        const summaryInterface = plugin.summary?.interface || {}
+        const iconPath = detailInterface?.composerIcon
+          || detailInterface?.logo
+          || summaryInterface?.composerIcon
+          || summaryInterface?.logo
+          || ''
+        return {
+          id: `plugin:${pluginId}`,
+          label,
+          name: label,
+          value: `plugin://${pluginId}`,
+          kind: 'plugin',
+          description: plugin.detail?.summary?.interface?.shortDescription || plugin.summary?.interface?.shortDescription || '',
+          providerMeta: {
+            pluginId,
+            path: `plugin://${pluginId}`,
+            iconPath,
+            marketplaceName: plugin.marketplaceLabel || '',
+            marketplacePath: plugin.marketplacePath || ''
+          }
+        }
+      })
+      .sort((a, b) => a.label.localeCompare(b.label))
+
+    if (pluginChildren.length > 0) {
+      groups.push({
+        id: 'plugins',
+        label: 'Plugins',
+        children: pluginChildren
+      })
+    }
+
+    const skillSubGroups = []
+    const normalizedSkillEntries = Array.isArray(skillsServiceData?.data)
+      ? skillsServiceData.data
+      : []
+    const scopeLabelMap = {
+      system: 'System',
+      user: 'User',
+      repo: 'Repo',
+      project: 'Project',
+      team: 'Team',
+      admin: 'Admin',
+      personal: 'Personal',
+      'built-in': 'Built-in',
+      builtin: 'Built-in'
+    }
+    const skillsByScopeAndSource = new Map()
+
+    normalizedSkillEntries.forEach((entry, entryIndex) => {
+      const sourceCwd = typeof entry?.cwd === 'string' ? entry.cwd : ''
+      const skills = Array.isArray(entry?.skills) ? entry.skills : []
+
+      skills
+        .filter(skill => skill && typeof skill === 'object')
+        .forEach((skill, skillIndex) => {
+          const label = skill?.interface?.displayName || skill?.name || `skill-${skillIndex + 1}`
+          const skillPath = typeof skill?.path === 'string' ? skill.path : ''
+          const rawScope = typeof skill?.scope === 'string' && skill.scope.trim()
+            ? skill.scope.trim().toLowerCase()
+            : 'user'
+          const scopeKey = rawScope || 'user'
+          const sourceInfo = deriveCodexSkillSource(skill)
+          const groupKey = `${scopeKey}::${sourceInfo.key}`
+
+          if (!skillPath) {
+            return
+          }
+
+          if (!skillsByScopeAndSource.has(groupKey)) {
+            skillsByScopeAndSource.set(groupKey, {
+              scopeKey,
+              sourceKey: sourceInfo.key,
+              sourceLabel: sourceInfo.label,
+              children: []
+            })
+          }
+
+          skillsByScopeAndSource.get(groupKey).children.push({
+            id: `skill:${entryIndex}:${skill?.id || skill?.name || skillIndex}`,
+            label,
+            name: label,
+            value: skillPath,
+            kind: 'skill',
+            description: skill?.interface?.shortDescription || skill?.shortDescription || skill?.short_description || skill?.description || '',
+            providerMeta: {
+              path: skillPath,
+              sourceCwd,
+              scope: scopeKey,
+              skillId: skill?.id || '',
+              slug: skill?.name || ''
+            }
+          })
+        })
+    })
+
+    const normalizedSkillGroups = Array.from(skillsByScopeAndSource.values())
+      .map(({ scopeKey, sourceKey, sourceLabel, children }) => ({
+        id: `skills:${scopeKey}:${sourceKey}`,
+        label: sourceLabel,
+        children: children.sort((a, b) => a.label.localeCompare(b.label))
+      }))
+      .filter(group => group.children.length > 0)
+      .sort((a, b) => a.label.localeCompare(b.label))
+
+    const normalizedAppsRoot = Array.isArray(appsServiceData?.apps)
+      ? appsServiceData.apps
+      : (Array.isArray(appsServiceData?.data)
+        ? appsServiceData.data
+        : (Array.isArray(appsServiceData)
+          ? appsServiceData
+          : []))
+    const appChildren = normalizedAppsRoot
+      .filter(app => app && typeof app === 'object')
+      .map((app, index) => {
+        const appId = app?.id || app?.appId || app?.connector_id || app?.connectorId || ''
+        const label = app?.name || app?.displayName || appId || `app-${index + 1}`
+        const path = appId ? `app://${appId}` : ''
+        return {
+          id: `app:${appId || index}`,
+          label,
+          name: label,
+          value: path,
+          kind: 'app',
+          description: app?.description || app?.shortDescription || '',
+          providerMeta: {
+            appId,
+            path,
+            connectorId: app?.connector_id || app?.connectorId || '',
+            enabled: app?.enabled === true,
+            connected: app?.connected === true
+          }
+        }
+      })
+      .filter(app => app.providerMeta.path)
+      .sort((a, b) => a.label.localeCompare(b.label))
+
+    if (normalizedSkillGroups.length > 0) {
+      skillSubGroups.push(...normalizedSkillGroups)
+    }
+
+    if (skillSubGroups.length > 0) {
+      groups.push({
+        id: 'skills',
+        label: 'Skills',
+        children: [],
+        subGroups: skillSubGroups
+      })
+    }
+
+    if (appChildren.length > 0) {
+      groups.push({
+        id: 'apps',
+        label: 'Apps',
+        children: appChildren
+      })
+    }
+
+    return {
+      provider: 'codex',
+      groups
+    }
   }
 
   sanitizeSemanticId(value, fallback = 'agent') {

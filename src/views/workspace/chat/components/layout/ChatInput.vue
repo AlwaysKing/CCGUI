@@ -5,7 +5,7 @@
  */
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import AttachmentComposer from './AttachmentComposer.vue'
-import { ATTACHMENT_TOKEN_REGEX, stripAttachmentTokens } from '../../../../../utils/chatAttachments'
+import { ATTACHMENT_TOKEN_REGEX, stripAttachmentTokens, toAttachmentUrl } from '../../../../../utils/chatAttachments'
 
 const props = defineProps({
   modelValue: {
@@ -328,6 +328,12 @@ function addReferenceItem(item) {
   showAtMenu.value = false
 }
 
+function resolveReferenceLeafIconSrc(item) {
+  const iconPath = item?.providerMeta?.iconPath || ''
+  if (!iconPath) return ''
+  return toAttachmentUrl(iconPath)
+}
+
 // ====== @ 引用菜单计算属性 ======
 
 const atMenuGroups = computed(() => Array.isArray(atReferenceGroups.value) ? atReferenceGroups.value : [])
@@ -413,7 +419,13 @@ const atLeftMenuItems = computed(() => {
     items.push({ type: 'primary', id: group.id, label: group.label })
     for (const sg of subGroups) {
       if (!Array.isArray(sg.children) || sg.children.length === 0) continue
-      items.push({ type: 'secondary', id: group.id, label: sg.label, count: sg.children.length })
+      items.push({
+        type: 'secondary',
+        id: group.id,
+        subGroupId: sg.id,
+        label: sg.label,
+        count: sg.children.length
+      })
     }
   }
   return items
@@ -1012,8 +1024,8 @@ defineExpose({
                     <button
                       v-else
                       class="ref-menu-secondary"
-                      :class="{ active: activeAtSubGroupId === item.label }"
-                      @click="selectAtSubGroup(item.id, item.label)"
+                      :class="{ active: activeAtSubGroupId === item.subGroupId }"
+                      @click="selectAtSubGroup(item.id, item.subGroupId)"
                     >
                       <span class="ref-menu-secondary-label">{{ item.label }}</span>
                       <span class="ref-menu-secondary-count">{{ item.count }}</span>
@@ -1033,8 +1045,16 @@ defineExpose({
                         :title="leaf.description || leaf.label"
                         @click="addReferenceItem(leaf)"
                       >
-                        <span class="ref-menu-leaf-name">{{ leaf.label }}</span>
-                        <span v-if="leaf.description" class="ref-menu-leaf-desc">{{ leaf.description }}</span>
+                        <img
+                          v-if="resolveReferenceLeafIconSrc(leaf)"
+                          class="ref-menu-leaf-icon"
+                          :src="resolveReferenceLeafIconSrc(leaf)"
+                          :alt="`${leaf.label} icon`"
+                        />
+                        <span class="ref-menu-leaf-content">
+                          <span class="ref-menu-leaf-name">{{ leaf.label }}</span>
+                          <span v-if="leaf.description" class="ref-menu-leaf-desc">{{ leaf.description }}</span>
+                        </span>
                       </button>
                     </template>
                   </template>
@@ -1432,8 +1452,8 @@ defineExpose({
 
 .ref-menu-leaf {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: flex-start;
+  gap: 8px;
   width: 100%;
   padding: 6px 10px;
   background: transparent;
@@ -1445,6 +1465,23 @@ defineExpose({
 
 .ref-menu-leaf:hover {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.ref-menu-leaf-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.ref-menu-leaf-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
 }
 
 .ref-menu-leaf-name {

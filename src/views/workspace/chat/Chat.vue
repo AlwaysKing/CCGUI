@@ -1338,7 +1338,8 @@ function handleAddReference(refData) {
   const kindMap = {
     agent: 'reference-agent',
     plugin: 'reference-plugin',
-    skill: 'reference-skill'
+    skill: 'reference-skill',
+    app: 'reference-app'
   }
 
   const attachment = {

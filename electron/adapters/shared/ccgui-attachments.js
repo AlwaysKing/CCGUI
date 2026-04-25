@@ -62,7 +62,25 @@ function buildCodexAttachmentReference(attachment) {
   if (!attachment) return '[附件]'
 
   if (attachment.kind?.startsWith('reference-')) {
-    return ''
+    const kind = attachment.kind.replace('reference-', '')
+    const name = attachment.name || ''
+    const value = attachment.value || ''
+    const providerMeta = attachment.providerMeta || {}
+
+    switch (kind) {
+      case 'agent':
+      case 'plugin': {
+        const target = providerMeta.path || value || ''
+        return name && target ? `[@${name}](${target})` : ''
+      }
+      case 'skill':
+      case 'app': {
+        const target = providerMeta.path || value || ''
+        return name && target ? `[$${name}](${target})` : ''
+      }
+      default:
+        return ''
+    }
   }
 
   if (attachment.kind === 'image') {

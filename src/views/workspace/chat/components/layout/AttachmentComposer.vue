@@ -6,6 +6,7 @@ import {
   createAttachmentToken,
   formatAttachmentSize,
   getAttachmentIcon,
+  getAttachmentIconUrl,
   getAttachmentDisplayLabel,
   isImageAttachment,
   isReferenceAttachment,
@@ -70,7 +71,26 @@ function buildTokenNode(attachment) {
   }
   token.setAttribute('contenteditable', 'false')
   token.dataset.attachmentId = attachment.id
-  token.textContent = createAttachmentChipText(attachment)
+
+  const iconUrl = getAttachmentIconUrl(attachment)
+  if (iconUrl) {
+    const iconImage = document.createElement('img')
+    iconImage.className = 'attachment-inline-token-icon attachment-inline-token-icon--image'
+    iconImage.src = iconUrl
+    iconImage.alt = ''
+    token.appendChild(iconImage)
+  } else {
+    const iconText = document.createElement('span')
+    iconText.className = 'attachment-inline-token-icon'
+    iconText.textContent = getAttachmentIcon(attachment)
+    token.appendChild(iconText)
+  }
+
+  const label = document.createElement('span')
+  label.className = 'attachment-inline-token-label'
+  label.textContent = createAttachmentChipText(attachment)
+  token.appendChild(label)
+
   return token
 }
 
@@ -698,6 +718,7 @@ onMounted(() => {
 .composer-editor :deep(.attachment-inline-token) {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
   max-width: 260px;
   margin: 0 2px;
   padding: 1px 7px;
@@ -708,6 +729,29 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.4;
   vertical-align: middle;
+}
+
+.composer-editor :deep(.attachment-inline-token-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.composer-editor :deep(.attachment-inline-token-icon--image) {
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.composer-editor :deep(.attachment-inline-token-label) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer-editor :deep(.attachment-inline-token--reference) {

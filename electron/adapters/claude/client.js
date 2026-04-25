@@ -362,10 +362,16 @@ class ClaudeClient {
         const skillName = String(skill.name || '').trim()
         const shortSkillName = skillName.includes(':') ? skillName.slice(skillName.lastIndexOf(':') + 1) : skillName
         const matchedCommand = commandByName.get(skillName) || commandByShortName.get(shortSkillName) || null
+        const groupLabel = skill.groupLabel || 'other'
+        const displayLabel = groupLabel &&
+          groupLabel !== 'other' &&
+          skillName.startsWith(`${groupLabel}:`)
+          ? skillName.slice(groupLabel.length + 1)
+          : skillName
 
         return {
           id: `skill:${skillName}`,
-          label: skillName,
+          label: displayLabel,
           name: skillName,
           value: skillName,
           kind: 'skill',
@@ -373,7 +379,8 @@ class ClaudeClient {
           providerMeta: {
             source: skill.source || '',
             groupId: matchedCommand?.groupId || '',
-            groupLabel: skill.groupLabel || 'other'
+            groupLabel,
+            fullName: skillName
           }
         }
       })

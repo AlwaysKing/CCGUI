@@ -1344,7 +1344,7 @@ function handleAddReference(refData) {
   const attachment = {
     id: crypto.randomUUID(),
     kind: kindMap[refData.kind] || refData.kind,
-    name: refData.name,
+    name: refData.displayLabel || refData.name,
     value: refData.value,
     providerMeta: refData.providerMeta || {}
   }

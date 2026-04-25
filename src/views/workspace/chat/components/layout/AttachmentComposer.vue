@@ -8,6 +8,7 @@ import {
   getAttachmentIcon,
   getAttachmentDisplayLabel,
   isImageAttachment,
+  isReferenceAttachment,
   toAttachmentUrl
 } from '../../../../../utils/chatAttachments'
 
@@ -55,6 +56,7 @@ const isComposing = ref(false)
 let isApplyingExternalState = false
 
 const attachmentMap = computed(() => new Map((props.attachments || []).map(item => [item.id, item])))
+const visibleAttachments = computed(() => (props.attachments || []).filter(item => !isReferenceAttachment(item)))
 const hasContent = computed(() => {
   const withoutTokens = String(props.modelValue || '').replace(ATTACHMENT_TOKEN_REGEX, '').trim()
   return Boolean(withoutTokens || props.attachments.length > 0)
@@ -63,6 +65,9 @@ const hasContent = computed(() => {
 function buildTokenNode(attachment) {
   const token = document.createElement('span')
   token.className = 'attachment-inline-token'
+  if (isReferenceAttachment(attachment)) {
+    token.classList.add('attachment-inline-token--reference')
+  }
   token.setAttribute('contenteditable', 'false')
   token.dataset.attachmentId = attachment.id
   token.textContent = createAttachmentChipText(attachment)
@@ -472,9 +477,9 @@ onMounted(() => {
 
 <template>
   <div class="attachment-composer">
-    <div v-if="attachments.length" class="attachment-strip">
+    <div v-if="visibleAttachments.length" class="attachment-strip">
       <button
-        v-for="attachment in attachments"
+        v-for="attachment in visibleAttachments"
         :key="attachment.id"
         class="attachment-chip"
         :class="{ image: isImageAttachment(attachment) }"
@@ -703,6 +708,14 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.4;
   vertical-align: middle;
+}
+
+.composer-editor :deep(.attachment-inline-token--reference) {
+  padding: 3px 10px;
+  background: rgba(255, 140, 46, 0.18);
+  border-color: rgba(255, 140, 46, 0.42);
+  color: #FFD7B0;
+  box-shadow: inset 0 0 0 1px rgba(255, 166, 87, 0.08);
 }
 
 .hidden-file-input {

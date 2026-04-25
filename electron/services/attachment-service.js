@@ -159,6 +159,10 @@ function finalizeAttachmentsForHistory(projectId, sessionId, attachments = []) {
       return attachment
     }
 
+    if (typeof attachment.kind === 'string' && attachment.kind.startsWith('reference-')) {
+      return attachment
+    }
+
     if (!attachment.path || !fs.existsSync(attachment.path)) {
       const attachmentName = attachment.name || attachment.path || attachment.id || 'unknown'
       throw new Error(`Attachment file not found: ${attachmentName}`)

@@ -320,7 +320,8 @@ function addReferenceItem(item) {
 
   emit('addReference', {
     kind: item.kind,
-    name: item.label,
+    name: item.name || item.label,
+    displayLabel: item.label || item.name || '',
     value: item.value,
     providerMeta: item.providerMeta || {}
   })

@@ -929,27 +929,20 @@ class ClaudeAdapter extends ClaudeClient {
   translateReferenceAttachment(attachment) {
     const kind = attachment?.kind?.replace('reference-', '') || ''
     const name = attachment?.name || ''
+    const value = attachment?.value || name
     const providerMeta = attachment?.providerMeta || {}
 
     switch (kind) {
       case 'agent': {
-        // Agent 工具接受 agent_type 参数
-        const desc = providerMeta.description || ''
-        const hint = desc ? ` (${desc})` : ''
-        return `[引用 Agent: ${name}${hint} — 请使用 Agent 工具，agent_type 为 "${name}"]`
+        return value ? `@"${value} (agent)"` : ''
       }
       case 'plugin': {
-        // MCP Tool 使用完整名 mcp__server__tool
-        const fullName = providerMeta.fullName || name
-        const serverName = providerMeta.serverName || ''
-        const hint = serverName ? ` (来自 ${serverName})` : ''
-        return `[引用 MCP Tool: ${name}${hint} — 工具全名为 "${fullName}"]`
+        const fullName = providerMeta.fullName || value || name
+        return fullName ? `/${fullName}` : ''
       }
       case 'skill': {
-        // Skill 工具接受 skill 参数
-        const groupLabel = providerMeta.groupLabel || ''
-        const hint = groupLabel ? ` (来自 ${groupLabel})` : ''
-        return `[引用 Skill: ${name}${hint} — 请使用 Skill 工具，skill 为 "${name}"]`
+        const fullName = providerMeta.fullName || value || name
+        return fullName ? `/${fullName}` : ''
       }
       default:
         return name ? `[引用: ${name}]` : ''
@@ -963,17 +956,15 @@ class ClaudeAdapter extends ClaudeClient {
       : ''
 
     const content = []
-    const tokenSafeText = replaceAttachmentTokens(rawText, attachments, buildClaudeAttachmentReference)
+    const tokenSafeText = replaceAttachmentTokens(rawText, attachments, attachment => {
+      if (attachment?.kind?.startsWith('reference-')) {
+        return this.translateReferenceAttachment(attachment)
+      }
+      return buildClaudeAttachmentReference(attachment)
+    })
 
     for (const attachment of attachments) {
-      // 引用型附件（agent / plugin / skill）
       if (attachment?.kind?.startsWith('reference-')) {
-        // TODO: 翻译引用附件为 Claude 可理解的格式
-        // 需要进一步调查各 kind 的具体翻译规则
-        const refText = this.translateReferenceAttachment(attachment)
-        if (refText) {
-          content.push({ type: 'text', text: refText })
-        }
         continue
       }
 

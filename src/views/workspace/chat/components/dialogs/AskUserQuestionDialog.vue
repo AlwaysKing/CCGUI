@@ -119,7 +119,7 @@ function handleSubmit() {
   })
 
   // 支持多种字段名：request_id, tool_use_id
-  const requestId = props.request.request_id || props.request.tool_use_id
+  const requestId = props.request.request_id ?? props.request.tool_use_id
   logger.info('[AskUserQuestionDialog] Submitting answers', {
     requestId,
     answers: answersMap

@@ -54,6 +54,24 @@ function toTitleLabel(value = '') {
     .join(' ')
 }
 
+function normalizeCodexAppMentionName(value = '') {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized || 'app'
+}
+
+function resolveCodexPluginMentionName(pluginId = '', pluginName = '', displayName = '') {
+  if (pluginName === 'computer-use') {
+    return String(displayName || pluginName || pluginId || '').trim()
+  }
+
+  return String(pluginName || pluginId || displayName || '').trim()
+}
+
 function deriveCodexSkillSource(skill = {}) {
   const skillName = typeof skill?.name === 'string' ? skill.name.trim() : ''
   const skillPath = typeof skill?.path === 'string' ? skill.path.trim() : ''
@@ -101,6 +119,28 @@ function deriveCodexSkillSource(skill = {}) {
     key: 'other',
     label: 'Other'
   }
+}
+
+function getCodexElicitationProperties(params = {}) {
+  const requestedSchema = params?.requestedSchema
+  if (!requestedSchema || typeof requestedSchema !== 'object' || Array.isArray(requestedSchema)) {
+    return {}
+  }
+
+  const properties = requestedSchema.properties
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return {}
+  }
+
+  return properties
+}
+
+function isCodexApprovalStyleElicitation(params = {}) {
+  if (params?.mode !== 'form') {
+    return false
+  }
+
+  return Object.keys(getCodexElicitationProperties(params)).length === 0
 }
 
 /**
@@ -210,6 +250,8 @@ class CodexAdapter extends CodexClient {
           providerMeta: {
             pluginId,
             path: `plugin://${pluginId}`,
+            codexMentionName: resolveCodexPluginMentionName(pluginId, plugin.pluginName, label),
+            codexMentionPath: `plugin://${pluginId}`,
             iconPath,
             marketplaceName: plugin.marketplaceLabel || '',
             marketplacePath: plugin.marketplacePath || ''
@@ -281,6 +323,8 @@ class CodexAdapter extends CodexClient {
             description: skill?.interface?.shortDescription || skill?.shortDescription || skill?.short_description || skill?.description || '',
             providerMeta: {
               path: skillPath,
+              codexMentionName: skill?.name || label,
+              codexMentionPath: skillPath,
               sourceCwd,
               scope: scopeKey,
               skillId: skill?.id || '',
@@ -322,6 +366,8 @@ class CodexAdapter extends CodexClient {
           providerMeta: {
             appId,
             path,
+            codexMentionName: normalizeCodexAppMentionName(app?.name || app?.displayName || appId),
+            codexMentionPath: path,
             connectorId: app?.connector_id || app?.connectorId || '',
             enabled: app?.enabled === true,
             connected: app?.connected === true
@@ -1899,6 +1945,27 @@ class CodexAdapter extends CodexClient {
       return
     }
 
+    if (method === 'mcpServer/elicitation/request' && isCodexApprovalStyleElicitation(requestParams)) {
+      const normalized = normalizeControlRequest({
+        request_id: id,
+        tool_use_id: requestParams.itemId || requestParams.callId || id,
+        requestMethod: method,
+        tool_name: normalizeToolName('request_permissions'),
+        tool_input: {
+          description: requestParams.message || requestParams.reason || 'Codex 请求额外确认',
+          permissions: {
+            kind: 'mcp_elicitation',
+            serverName: requestParams.serverName || '',
+            mode: requestParams.mode || '',
+            requestedSchema: requestParams.requestedSchema || null
+          }
+        },
+        ...requestParams
+      })
+      this.emit('control-request', normalized)
+      return
+    }
+
     if (method === 'item/tool/requestUserInput' || method === 'mcpServer/elicitation/request') {
       const normalized = normalizeControlRequest({
         request_id: id,
@@ -1982,8 +2049,11 @@ class CodexAdapter extends CodexClient {
 
     if (method === 'mcpServer/elicitation/request') {
       return {
-        description: params.reason || 'Codex 需要更多输入',
-        questions: params.questions || []
+        description: params.message || params.reason || 'Codex 需要更多输入',
+        questions: params.questions || [],
+        requestedSchema: params.requestedSchema || null,
+        serverName: params.serverName || '',
+        mode: params.mode || ''
       }
     }
 
@@ -2018,7 +2088,7 @@ class CodexAdapter extends CodexClient {
       result = approved
         ? { permissions: params.permissions || {}, scope: 'session' }
         : { permissions: {}, scope: 'turn' }
-    } else if (method === 'item/tool/requestUserInput' || method === 'mcpServer/elicitation/request') {
+    } else if (method === 'item/tool/requestUserInput') {
       const rawAnswers = options?.updatedInput?.answers || {}
       const mappedAnswers = {}
       for (const question of params.questions || []) {
@@ -2032,6 +2102,18 @@ class CodexAdapter extends CodexClient {
         }
       }
       result = { answers: mappedAnswers }
+    } else if (method === 'mcpServer/elicitation/request') {
+      if (isCodexApprovalStyleElicitation(params)) {
+        result = approved
+          ? { action: 'accept', content: {} }
+          : { action: 'decline', content: null }
+      } else {
+        const rawAnswers = options?.updatedInput?.answers || {}
+        result = {
+          action: approved ? 'accept' : 'decline',
+          content: approved ? rawAnswers : null
+        }
+      }
     } else if (method === 'item/tool/call') {
       result = approved
         ? (options?.updatedInput?.result || options?.result || {})

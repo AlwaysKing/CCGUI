@@ -470,6 +470,46 @@ function removeQueuedMessage(queueId) {
   }
 }
 
+function buildOutgoingContent(content, attachments = []) {
+  if (typeof content === 'string') {
+    const normalizedAttachments = Array.isArray(attachments)
+      ? attachments
+          .filter(item => item && typeof item === 'object')
+          .map(item => ({ ...item }))
+      : []
+
+    if (normalizedAttachments.length === 0) {
+      return content
+    }
+
+    return {
+      text: content,
+      attachments: normalizedAttachments
+    }
+  }
+
+  if (content && typeof content === 'object') {
+    const normalizedText = typeof content.text === 'string' ? content.text : ''
+    const normalizedAttachments = Array.isArray(content.attachments)
+      ? content.attachments
+          .filter(item => item && typeof item === 'object')
+          .map(item => ({ ...item }))
+      : []
+
+    if (normalizedAttachments.length === 0) {
+      return normalizedText
+    }
+
+    return {
+      text: normalizedText,
+      attachments: normalizedAttachments,
+      ...(content.ccgui ? { ccgui: JSON.parse(JSON.stringify(content.ccgui)) } : {})
+    }
+  }
+
+  return ''
+}
+
 async function flushQueuedMessages() {
   if (isFlushingQueuedMessage.value) return
   if (isProcessing.value || pendingPermission.value || pendingControlRequest.value) return
@@ -1350,11 +1390,30 @@ function handleAddReference(refData) {
     providerMeta: refData.providerMeta || {}
   }
 
+  logger.info('[Chat] handleAddReference', {
+    refKind: refData.kind,
+    refName: refData.name,
+    refDisplayLabel: refData.displayLabel,
+    refValue: refData.value,
+    attachment
+  })
+
   const nextAttachments = [...inputAttachments.value, attachment]
   inputAttachments.value = nextAttachments
 
+  logger.info('[Chat] handleAddReference attachments updated', {
+    attachmentCount: nextAttachments.length,
+    attachmentKinds: nextAttachments.map(item => item?.kind),
+    attachmentIds: nextAttachments.map(item => item?.id)
+  })
+
   // 插入 token 到编辑器（复用现有附件机制）
   nextTick(() => {
+    logger.info('[Chat] handleAddReference append token', {
+      attachmentId: attachment.id,
+      token: `[[att:${attachment.id}]] `,
+      currentInputMessage: inputMessage.value
+    })
     chatInputRef.value?.appendText(`[[att:${attachment.id}]] `)
   })
 }
@@ -1560,7 +1619,15 @@ function addRawMessage(displayMessage, rawMessage) {
 }
 
 // 处理发送消息（从 ChatInput 组件调用）
-async function handleSendMessage(userText) {
+async function handleSendMessage(content) {
+  logger.info('[Chat] handleSendMessage start', {
+    rawContent: content,
+    inputMessage: inputMessage.value,
+    inputAttachmentCount: inputAttachments.value.length,
+    inputAttachmentKinds: inputAttachments.value.map(item => item?.kind),
+    inputAttachmentIds: inputAttachments.value.map(item => item?.id)
+  })
+
   if (sessionAvailability.value.available === false) {
     messages.value.push({
       role: 'system',
@@ -1570,9 +1637,14 @@ async function handleSendMessage(userText) {
     return
   }
 
+  const outgoingContent = buildOutgoingContent(content, inputAttachments.value)
+  logger.info('[Chat] handleSendMessage outgoingContent', {
+    outgoingContent
+  })
+
   // 如果实例未启动，先入队并启动实例
   if (!runtimeActive.value) {
-    enqueueMessage(userText)
+    enqueueMessage(outgoingContent)
     inputMessage.value = ''
     inputAttachments.value = []
     autoScrollActive = true
@@ -1582,7 +1654,7 @@ async function handleSendMessage(userText) {
   }
 
   if (isProcessing.value || pendingPermission.value || pendingControlRequest.value || isFlushingQueuedMessage.value) {
-    enqueueMessage(userText)
+    enqueueMessage(outgoingContent)
     inputMessage.value = ''
     inputAttachments.value = []
     autoScrollActive = true
@@ -1599,14 +1671,13 @@ async function handleSendMessage(userText) {
     })
   }
 
-  inputMessage.value = ''
-  inputAttachments.value = []
-  autoScrollActive = true
-  scrollToBottom(true) // 用户发送消息时强制滚动
-
   try {
     // 使用 SessionStore 发送消息（会自动处理 sessionId）
-    await sessionStore.sendMessage(userText)
+    await sessionStore.sendMessage(outgoingContent)
+    inputMessage.value = ''
+    inputAttachments.value = []
+    autoScrollActive = true
+    scrollToBottom(true) // 用户发送消息时强制滚动
   } catch (error) {
     console.error('[ChatWindow] Failed to send message:', error)
     const errorText = error?.message || String(error)
@@ -1964,7 +2035,7 @@ async function handlePermissionApprove(requestId, toolName, displayDetail) {
       const options = {}
 
       // 添加 toolUseID (从 controlRequest.tool_use_id 获取)
-      if (controlRequest.tool_use_id) {
+      if (controlRequest.tool_use_id !== undefined && controlRequest.tool_use_id !== null && controlRequest.tool_use_id !== '') {
         options.toolUseID = controlRequest.tool_use_id
       }
 
@@ -2024,7 +2095,7 @@ async function handlePermissionDeny(requestId) {
         message: 'Permission denied by user'
       }
       // 添加 toolUseID (从 controlRequest.tool_use_id 获取)
-      if (controlRequest.tool_use_id) {
+      if (controlRequest.tool_use_id !== undefined && controlRequest.tool_use_id !== null && controlRequest.tool_use_id !== '') {
         options.toolUseID = controlRequest.tool_use_id
       }
 
@@ -2054,7 +2125,7 @@ async function handlePermissionApproveAll(requestId) {
       const options = {}
 
       // 添加 toolUseID (从 controlRequest.tool_use_id 获取)
-      if (controlRequest.tool_use_id) {
+      if (controlRequest.tool_use_id !== undefined && controlRequest.tool_use_id !== null && controlRequest.tool_use_id !== '') {
         options.toolUseID = controlRequest.tool_use_id
       }
 
@@ -2338,7 +2409,8 @@ async function handleQuestionAnswer(requestId, answers) {
 
   if (question) {
     // 获取 tool_use_id - 支持多种可能的字段名
-    const toolUseId = question.tool_use_id || question.toolUseId || question.id || requestId
+    const toolUseId =
+      question.tool_use_id ?? question.toolUseId ?? question.id ?? requestId
 
     // 获取问题数据 - 支持多种字段名格式
     let toolInput = question.input || question.tool_input || question.toolInput

@@ -323,17 +323,7 @@ function toPlainAttachment(attachment) {
     return attachment
   }
 
-  return {
-    id: attachment.id || '',
-    kind: attachment.kind || 'file',
-    name: attachment.name || '',
-    path: attachment.path || '',
-    size: Number.isFinite(attachment.size) ? attachment.size : null,
-    mimeType: attachment.mimeType || null,
-    source: attachment.source || 'picker',
-    ...(Number.isFinite(attachment.startLine) ? { startLine: attachment.startLine } : {}),
-    ...(Number.isFinite(attachment.endLine) ? { endLine: attachment.endLine } : {})
-  }
+  return JSON.parse(JSON.stringify(attachment))
 }
 
 function normalizeOutgoingContent(content) {
@@ -1798,7 +1788,15 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     const sessionId = session.id
+    log('sendMessage input', {
+      sessionId,
+      content
+    })
     let outgoingContent = normalizeOutgoingContent(content)
+    log('sendMessage normalized outgoingContent', {
+      sessionId,
+      outgoingContent
+    })
     const inputTargetAgentId = pickFirstDefined(
       session.agentWorkspaceState?.inputTargetAgentId,
       session.agentWorkspaceState?.activeAgentId,
@@ -1865,6 +1863,10 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] Cleared active tasks for new message')
 
     try {
+      log('sendMessage ipc payload', {
+        sessionId,
+        content: outgoingContent
+      })
       const result = await window.electronAPI.sendMessage({
         sessionId,
         content: outgoingContent,
@@ -3090,7 +3092,12 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] requestData:', JSON.stringify(requestData, null, 2))
 
     // 获取 tool_use_id - 支持多种可能的字段名
-    const toolUseId = requestData.tool_use_id || requestData.toolUseId || requestData.id || data.tool_use_id
+    const toolUseId = pickFirstDefined(
+      requestData.tool_use_id,
+      requestData.toolUseId,
+      requestData.id,
+      data.tool_use_id
+    )
 
     // 检查是否是 AskUserQuestion 请求
     // 支持多种可能的字段名格式
@@ -3115,10 +3122,10 @@ export const useSessionStore = defineStore('session', () => {
     // 将解析后的 input 放入 mergedRequestData
     const mergedRequestData = {
       ...requestData,
-      request_id: outerRequestId || requestData.request_id,
+      request_id: pickFirstDefined(outerRequestId, requestData.request_id),
       tool_use_id: toolUseId, // 确保 tool_use_id 被保留
       input: toolInput, // 使用解析后的 input
-      ccgui: data.ccgui || requestData.ccgui || null
+      ccgui: pickFirstDefined(data.ccgui, requestData.ccgui) || null
     }
 
     log('[SessionStore] mergedRequestData:', JSON.stringify(mergedRequestData, null, 2))
@@ -3146,7 +3153,7 @@ export const useSessionStore = defineStore('session', () => {
     const requestId = requestData.request_id
     const options = {}
 
-    if (requestData.tool_use_id) {
+    if (requestData.tool_use_id !== undefined && requestData.tool_use_id !== null && requestData.tool_use_id !== '') {
       options.toolUseID = requestData.tool_use_id
     }
 
@@ -3175,7 +3182,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function removePendingPermission(session, requestId) {
-    if (!session || !requestId) return null
+    if (!session || requestId === undefined || requestId === null || requestId === '') return null
 
     const index = session.pendingPermissions.findIndex(permission =>
       permission?.request_id === requestId ||
@@ -3188,7 +3195,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function removePendingControlRequest(session, requestId) {
-    if (!session || !requestId) return null
+    if (!session || requestId === undefined || requestId === null || requestId === '') return null
 
     const index = session.pendingControlRequests.findIndex(request =>
       request?.request_id === requestId ||
@@ -3954,14 +3961,15 @@ export const useSessionStore = defineStore('session', () => {
   function clearPendingPermissions(requestId = null, saveForResponse = false) {
     const session = currentSession.value
     if (session) {
-      const currentPermission = requestId
+      const hasRequestId = !(requestId === undefined || requestId === null || requestId === '')
+      const currentPermission = hasRequestId
         ? session.pendingPermissions.find(permission =>
             permission?.request_id === requestId ||
             permission?.tool_use_id === requestId ||
             permission?.id === requestId
           ) || null
         : (session.pendingPermissions[0] || null)
-      const currentRequest = requestId
+      const currentRequest = hasRequestId
         ? session.pendingControlRequests.find(request =>
             request?.request_id === requestId ||
             request?.tool_use_id === requestId ||
@@ -3977,13 +3985,13 @@ export const useSessionStore = defineStore('session', () => {
       if (currentPermission) {
         removePendingPermission(
           session,
-          currentPermission.request_id || currentPermission.tool_use_id || currentPermission.id
+          pickFirstDefined(currentPermission.request_id, currentPermission.tool_use_id, currentPermission.id)
         )
       }
       if (currentRequest) {
         removePendingControlRequest(
           session,
-          currentRequest.request_id || currentRequest.tool_use_id || currentRequest.id
+          pickFirstDefined(currentRequest.request_id, currentRequest.tool_use_id, currentRequest.id)
         )
       }
       session.pendingQuestion = null

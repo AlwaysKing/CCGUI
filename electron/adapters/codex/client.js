@@ -1126,6 +1126,20 @@ class CodexClient {
     const imageInputs = []
     const codexAttachments = []
 
+    logger.info('[CodexClient] sendMessage input', {
+      threadId: this.currentThreadId,
+      rawText,
+      attachmentCount: attachments.length,
+      attachments: attachments.map(attachment => ({
+        id: attachment?.id || null,
+        kind: attachment?.kind || null,
+        name: attachment?.name || null,
+        path: attachment?.path || null,
+        value: attachment?.value || null,
+        providerMeta: attachment?.providerMeta || null
+      }))
+    })
+
     for (const attachment of attachments) {
       if (!attachment?.path) {
         continue
@@ -1153,6 +1167,14 @@ class CodexClient {
     }
 
     const text = replaceAttachmentTokens(rawText, attachments, buildCodexAttachmentReference)
+    logger.info('[CodexClient] sendMessage translated', {
+      threadId: this.currentThreadId,
+      rawText,
+      translatedText: text,
+      codexAttachmentCount: codexAttachments.length,
+      codexAttachments,
+      imageInputCount: imageInputs.length
+    })
     const turnParams = {
       threadId: this.currentThreadId,
       input: [

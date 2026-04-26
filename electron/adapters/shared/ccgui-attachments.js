@@ -66,17 +66,21 @@ function buildCodexAttachmentReference(attachment) {
     const name = attachment.name || ''
     const value = attachment.value || ''
     const providerMeta = attachment.providerMeta || {}
+    const codexMentionName = typeof providerMeta.codexMentionName === 'string' && providerMeta.codexMentionName.trim()
+      ? providerMeta.codexMentionName.trim()
+      : name
+    const codexMentionPath = typeof providerMeta.codexMentionPath === 'string' && providerMeta.codexMentionPath.trim()
+      ? providerMeta.codexMentionPath.trim()
+      : (providerMeta.path || value || '')
 
     switch (kind) {
       case 'agent':
       case 'plugin': {
-        const target = providerMeta.path || value || ''
-        return name && target ? `[@${name}](${target})` : ''
+        return codexMentionName && codexMentionPath ? `[@${codexMentionName}](${codexMentionPath})` : ''
       }
       case 'skill':
       case 'app': {
-        const target = providerMeta.path || value || ''
-        return name && target ? `[$${name}](${target})` : ''
+        return codexMentionName && codexMentionPath ? `[$${codexMentionName}](${codexMentionPath})` : ''
       }
       default:
         return ''

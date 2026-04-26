@@ -2063,7 +2063,7 @@ class SessionInstance {
         rawMessages: updates?.rawMessages,
         rawMessage: updates?.rawMessage,
         toolInput: updates?.toolInput,
-        tool_use_id: updates?.tool_use_id || updates?.toolUseId || msg?.request_id || msg?.id,
+        tool_use_id: pickFirstDefined(updates?.tool_use_id, updates?.toolUseId, msg?.request_id, msg?.id),
         ccgui: mergeCcguiSemantics(msg?.ccgui || null, updates?.ccgui || null)
       })
       if (msg) {
@@ -2086,7 +2086,7 @@ class SessionInstance {
         rawMessages: replacement?.rawMessages,
         rawMessage: replacement?.rawMessage,
         toolInput: replacement?.toolInput,
-        tool_use_id: replacement?.tool_use_id || replacement?.toolUseId || msg?.request_id || msg?.id,
+        tool_use_id: pickFirstDefined(replacement?.tool_use_id, replacement?.toolUseId, msg?.request_id, msg?.id),
         ccgui: mergeCcguiSemantics(msg?.ccgui || null, replacement?.ccgui || null)
       })
       if (msg) {
@@ -2790,7 +2790,7 @@ class SessionInstance {
       controlRequest.request_id,
       controlRequest.tool_use_id,
       controlRequest.id
-    ].filter(Boolean)
+    ].filter(candidateId => candidateId !== undefined && candidateId !== null && candidateId !== '')
 
     for (const candidateId of candidateIds) {
       this.pendingControlRequests.set(String(candidateId), controlRequest)
@@ -2800,7 +2800,9 @@ class SessionInstance {
   }
 
   consumePendingControlRequest(requestId) {
-    const lookupId = requestId ? String(requestId) : null
+    const lookupId = requestId !== undefined && requestId !== null && requestId !== ''
+      ? String(requestId)
+      : null
     const resolvedRequest = lookupId
       ? (this.pendingControlRequests.get(lookupId) || this.pendingControlRequest)
       : this.pendingControlRequest
@@ -2813,7 +2815,7 @@ class SessionInstance {
       resolvedRequest.request_id,
       resolvedRequest.tool_use_id,
       resolvedRequest.id
-    ].filter(Boolean)
+    ].filter(candidateId => candidateId !== undefined && candidateId !== null && candidateId !== '')
 
     for (const candidateId of candidateIds) {
       this.pendingControlRequests.delete(String(candidateId))
@@ -2850,7 +2852,13 @@ class SessionInstance {
     const normalizedUpdates = attachExistingCcgui({
       ...updates,
       id: message.id,
-      tool_use_id: updates.tool_use_id || updates.toolUseId || message.request_id || message.tool_use_id || message.id,
+      tool_use_id: pickFirstDefined(
+        updates.tool_use_id,
+        updates.toolUseId,
+        message.request_id,
+        message.tool_use_id,
+        message.id
+      ),
       ccgui: mergeCcguiSemantics(message.ccgui || null, updates.ccgui || null)
     })
 
@@ -2992,7 +3000,12 @@ class SessionInstance {
       }
 
       if (!approved && toolName !== 'AskUserQuestion') {
-        const toolUseId = pendingRequest.tool_use_id || pendingRequest.toolUseId || pendingRequest.id || requestId
+        const toolUseId = pickFirstDefined(
+          pendingRequest.tool_use_id,
+          pendingRequest.toolUseId,
+          pendingRequest.id,
+          requestId
+        )
         this.updateToolMessageState(toolUseId, {
           isExecuting: false,
           isError: true,
@@ -3058,7 +3071,7 @@ class SessionInstance {
 
       const response = await this.runtimeManager.sendControlRequest(normalizedRequest)
       if (response) {
-        const responseRequestId = response?.response?.request_id || response?.request_id || null
+        const responseRequestId = pickFirstDefined(response?.response?.request_id, response?.request_id, null)
         const pendingRequest = this.consumePendingControlRequest(responseRequestId) || normalizedRequest
         const payload = this.extractControlResponsePayload(response)
 
@@ -3548,13 +3561,14 @@ class SessionInstance {
   buildQuestionMessage(controlRequest, answers = {}) {
     if (!controlRequest) return null
 
-    const toolUseId =
-      controlRequest.tool_use_id ||
-      controlRequest.toolUseId ||
-      controlRequest.id ||
+    const toolUseId = pickFirstDefined(
+      controlRequest.tool_use_id,
+      controlRequest.toolUseId,
+      controlRequest.id,
       controlRequest.request_id
+    )
 
-    if (!toolUseId) return null
+    if (toolUseId === undefined || toolUseId === null || toolUseId === '') return null
 
     const toolInput =
       controlRequest.input ||
@@ -3595,12 +3609,13 @@ class SessionInstance {
   buildPermissionResultMessage(controlRequest, approved, options = {}) {
     if (!controlRequest) return null
 
-    const toolUseId =
-      controlRequest.tool_use_id ||
-      controlRequest.toolUseId ||
-      controlRequest.id ||
-      controlRequest.request_id ||
+    const toolUseId = pickFirstDefined(
+      controlRequest.tool_use_id,
+      controlRequest.toolUseId,
+      controlRequest.id,
+      controlRequest.request_id,
       `permission-${Date.now()}`
+    )
 
     const updatedInput = options?.updatedInput || {}
     const updatedPermissions = Array.isArray(options?.permissionRules) ? options.permissionRules : []

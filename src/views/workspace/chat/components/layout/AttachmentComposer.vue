@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { logger } from '../../../../../utils/logger'
 import {
   ATTACHMENT_TOKEN_REGEX,
   createAttachmentChipText,
@@ -164,6 +165,11 @@ function syncModelFromDom() {
   if (!editorRef.value || isApplyingExternalState) return
   const serialized = getSerializedDomValue()
   const normalized = serialized.replace(/\u00a0/g, ' ').replace(/\n+$/, '')
+  logger.info('[AttachmentComposer] syncModelFromDom', {
+    serialized,
+    normalized,
+    attachmentIds: (props.attachments || []).map(item => item?.id).filter(Boolean)
+  })
   emit('update:modelValue', normalized)
 }
 
@@ -440,6 +446,11 @@ function closeImagePreview() {
 }
 
 function appendText(text) {
+  logger.info('[AttachmentComposer] appendText', {
+    text: String(text || ''),
+    beforeModelValue: props.modelValue,
+    attachmentIds: (props.attachments || []).map(item => item?.id).filter(Boolean)
+  })
   insertTextAtCursor(String(text || ''))
 }
 

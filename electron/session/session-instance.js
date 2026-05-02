@@ -675,6 +675,8 @@ class SessionInstance {
 
     // 权限相关
     this.permissionMode = 'default'  // 权限模式
+    this.autoApprove = false           // 自动批准开关（独立于权限模式）
+    this.taskDockHistory = []          // task-dock 历史记录
     this.pendingPermission = null      // 待处理的工具权限请求
     this.pendingControlRequest = null  // 待处理的控制请求（AskUserQuestion 等）
     this.pendingControlRequests = new Map()
@@ -1222,7 +1224,9 @@ class SessionInstance {
       historyTurns: this.historyTurns,
       runtimeReady: this.runtimeManager?.isReady() || false,
       provider: this.provider,
-      permissionMode: this.permissionMode
+      permissionMode: this.permissionMode,
+      autoApprove: this.autoApprove,
+      taskDockHistory: this.taskDockHistory
     }
   }
 
@@ -2321,6 +2325,20 @@ class SessionInstance {
 
     // Unknown message
     manager.on('unknown_message', (message) => {
+      if (
+        message?.method === 'mcpServer/elicitation/request' && message?.params?.serverName === 'computer-use'
+      ) {
+        logger.info('[SessionInstance] Observed raw Computer Use unknown_message passthrough', {
+          sessionId: this.id,
+          provider: this.provider,
+          requestId: message.id ?? null,
+          threadId: message.params?.threadId || null,
+          turnId: message.params?.turnId || null,
+          mode: message.params?.mode || null,
+          prompt: message.params?.message || message.params?.reason || null
+        })
+      }
+
       const normalizedEvent = normalizeLegacyManagerEvent(message, this.provider)
       if (normalizedEvent) {
         if (normalizedEvent.eventType === 'system-notification' && normalizedEvent.data?.type) {
@@ -3173,6 +3191,56 @@ class SessionInstance {
     }
   }
 
+  /**
+   * 设置自动批准开关（独立于权限模式）
+   */
+  async setAutoApprove(enabled) {
+    logger.info(`[SessionInstance] Setting autoApprove to: ${enabled}`)
+    const previousAutoApprove = this.autoApprove
+    const previousSettings = { ...(this.sessionSettings || {}) }
+
+    this.autoApprove = !!enabled
+    this.sessionSettings = {
+      ...previousSettings,
+      autoApprove: this.autoApprove
+    }
+
+    try {
+      await projectService.updateSessionConfig(this.projectId, this.id, {
+        name: projectService.getSessionConfig(this.projectId, this.id)?.name || '新会话',
+        settings: this.sessionSettings
+      })
+    } catch (error) {
+      this.autoApprove = previousAutoApprove
+      this.sessionSettings = previousSettings
+      throw error
+    }
+  }
+
+  /**
+   * 保存 task-dock 历史记录到 session 配置
+   */
+  async saveTaskDockHistory(items) {
+    const history = Array.isArray(items) ? items.map(item => ({
+      label: item.label || '',
+      commandLine: item.commandLine || '',
+      lastUsedAt: item.lastUsedAt || Date.now()
+    })) : []
+
+    this.taskDockHistory = history
+
+    const sessionConfig = projectService.getSessionConfig(this.projectId, this.id)
+    const nextSettings = {
+      ...((sessionConfig?.settings && typeof sessionConfig.settings === 'object') ? sessionConfig.settings : {}),
+      taskDockHistory: history
+    }
+
+    await projectService.updateSessionConfig(this.projectId, this.id, {
+      name: sessionConfig?.name || '新会话',
+      settings: nextSettings
+    })
+  }
+
   async setSessionEffort(effort, options = {}) {
     const normalizedEffort = typeof effort === 'string' ? effort.trim() : ''
     if (!normalizedEffort) {
@@ -3487,6 +3555,12 @@ class SessionInstance {
       ? this.sessionSettings.permissionMode.trim()
       : ''
     this.permissionMode = persistedPermissionMode || 'default'
+
+    this.autoApprove = this.sessionSettings.autoApprove === true
+
+    this.taskDockHistory = Array.isArray(this.sessionSettings.taskDockHistory)
+      ? this.sessionSettings.taskDockHistory
+      : []
 
     if (this.runtimeManager && typeof this.runtimeManager.setDebugEnabled === 'function') {
       this.runtimeManager.setDebugEnabled(this.sessionSettings.debug === true)

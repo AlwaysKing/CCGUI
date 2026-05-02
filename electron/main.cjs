@@ -1466,6 +1466,30 @@ ipcMain.handle('set-permission-mode', async (event, { sessionId, mode }) => {
   }
 })
 
+// Set auto-approve toggle
+ipcMain.handle('set-auto-approve', async (event, { sessionId, enabled }) => {
+  logger.info('[IPC] set-auto-approve:', { sessionId, enabled })
+
+  try {
+    await sessionManager.setAutoApprove(sessionId, enabled)
+    return { success: true }
+  } catch (error) {
+    logger.error('[IPC] set-auto-approve error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Save task-dock history
+ipcMain.handle('save-task-dock-history', async (event, { sessionId, items }) => {
+  try {
+    await sessionManager.saveTaskDockHistory(sessionId, items)
+    return { success: true }
+  } catch (error) {
+    logger.error('[IPC] save-task-dock-history error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
 ipcMain.handle('get-runtime-info', async (event, options) => {
   const sessionId = options?.sessionId
 

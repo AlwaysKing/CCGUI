@@ -56,11 +56,15 @@ const props = defineProps({
   showSidebarToggle: {
     type: Boolean,
     default: false
+  },
+  taskDockItems: {
+    type: Array,
+    default: () => []
   }
 })
 
 // Emits
-const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'startSession', 'closeSession'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'startSession', 'closeSession', 'runTaskDockItem', 'stopTaskDockItem'])
 
 // 使用 SessionStore 的状态（只读 computed）
 const messages = computed(() => sessionStore.currentMessages)
@@ -243,6 +247,7 @@ const mainTimelineBlocks = computed(() => {
 
 // 权限模式
 const permissionMode = ref('default') // 当前权限模式
+const autoApprove = ref(false)         // 自动批准开关（独立于权限模式）
 const showPermissionMenu = ref(false) // 是否显示权限菜单
 const permissionModes = [
   { value: 'default', label: '默认', icon: '💡' },
@@ -644,6 +649,14 @@ function handleChatShortcut(event) {
   }
 }
 
+function handleRunTaskDockItem(task) {
+  emit('runTaskDockItem', task)
+}
+
+function handleStopTaskDockItem(task) {
+  emit('stopTaskDockItem', task)
+}
+
 const currentNotificationChannels = computed(() => {
   const settings = sessionConfig.value?.settings || {}
   if (!Array.isArray(settings.notificationChannels)) {
@@ -729,6 +742,18 @@ watch(
     if (newMode && newMode !== permissionMode.value) {
       permissionMode.value = newMode
       console.log('[Chat] Permission mode synced from session:', newMode)
+    }
+  },
+  { immediate: true }
+)
+
+// 监听 session 的 autoApprove 变化
+watch(
+  () => sessionStore.currentSession?.autoApprove,
+  (newValue) => {
+    if (newValue !== autoApprove.value) {
+      autoApprove.value = !!newValue
+      console.log('[Chat] AutoApprove synced from session:', newValue)
     }
   },
   { immediate: true }
@@ -1006,8 +1031,8 @@ watch(() => {
   if (wasNearBottomBeforeStreaming) {
     // 等待 DOM 更新
     await nextTick()
-    // 如果之前在底部，强制滚动
-    scrollToBottom(true)
+    // 如果之前在底部，自动滚动（尊重 autoScrollActive 用户意图）
+    scrollToBottom()
   }
 }, { immediate: false })
 
@@ -1146,6 +1171,7 @@ watch(() => sessionStore.currentSessionId, async (newSessionId, oldSessionId) =>
 
     if (currentSession) {
       permissionMode.value = currentSession.permissionMode || 'default'
+      autoApprove.value = !!currentSession.autoApprove
       console.log('[Chat] ✅ Synced permission mode from session:', permissionMode.value)
 
       if (currentSession.envInfo?.provider === 'codex') {
@@ -1154,6 +1180,7 @@ watch(() => sessionStore.currentSessionId, async (newSessionId, oldSessionId) =>
       }
     } else {
       permissionMode.value = 'default'
+      autoApprove.value = false
       console.log('[Chat] ❌ No current session, using default permission mode')
     }
 
@@ -1782,7 +1809,7 @@ function syncMainScrollContentResizeObserver() {
     if (!autoScrollActive) {
       return
     }
-    scrollToBottom(true)
+    scrollToBottom()
   })
 
   mainScrollContentResizeObserver.observe(content)
@@ -1829,6 +1856,16 @@ function scrollToBottom(forceScroll = false) {
       doScroll()
     })
   })
+}
+
+// 处理用户滚轮事件（在 scroll 事件之前触发，不受 programmaticScrollCounter 影响）
+function handleWheelEvent(event) {
+  // 排除缩放手势（ctrl/cmd + wheel）
+  if (event.ctrlKey || event.metaKey) return
+  // 仅在向上滚动时关闭自动跟随
+  if (event.deltaY < 0) {
+    autoScrollActive = false
+  }
 }
 
 // 处理用户滚动事件
@@ -2403,6 +2440,20 @@ function selectPermissionMode(mode) {
   handlePermissionModeChange(mode)
 }
 
+// 自动批准开关切换
+async function handleAutoApproveChange(enabled) {
+  const previousValue = autoApprove.value
+  autoApprove.value = enabled
+  try {
+    await sessionStore.setAutoApprove(enabled)
+    console.log('[Chat] AutoApprove changed successfully:', enabled)
+  } catch (error) {
+    autoApprove.value = previousValue
+    console.error('Failed to set autoApprove:', error)
+    notifyTurnError(`设置自动批准失败: ${error.message || error}`)
+  }
+}
+
 async function handleQuestionAnswer(requestId, answers) {
   const question = pendingQuestion.value
   sessionStore.clearPendingQuestion()
@@ -2637,7 +2688,7 @@ function handleToggleAgentRail() {
       @toggle-agent-rail="handleToggleAgentRail"
       @toggle-view-mode="handleToggleAgentViewMode"
     />
-    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" @mousedown="handleMessagesMouseDown" :style="messagesHeight ? { height: messagesHeight } : {}">
+    <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" @wheel="handleWheelEvent" @mousedown="handleMessagesMouseDown" :style="messagesHeight ? { height: messagesHeight } : {}">
       <AgentWorkspace
         :timeline-blocks="mainTimelineBlocks"
         :has-collaborative-children="hasCollaborativeChildren"
@@ -2804,6 +2855,7 @@ function handleToggleAgentRail() {
         :has-permission="pendingPermission !== null || pendingControlRequest !== null"
         :permission-mode="permissionMode"
         :permission-modes="permissionModes"
+        :auto-approve="autoApprove"
         :current-model-label="currentModelLabel"
         :current-model-key="currentModelSelectionKey"
         :model-options="availableModelOptions"
@@ -2832,6 +2884,7 @@ function handleToggleAgentRail() {
         :can-switch-effort="canQuickSwitchEffort"
         :query-slash-commands="querySlashCommands"
         :query-at-references="queryAtReferences"
+        :task-dock-items="taskDockItems"
         :input-history="inputHistory"
         @send="handleSendMessage"
         @interrupt="handleInterrupt"
@@ -2840,10 +2893,13 @@ function handleToggleAgentRail() {
         @notification-toggle="handleNotificationToggle"
         @toggle-queue-visibility="queuePanelVisible = !queuePanelVisible"
         @permission-mode-change="selectPermissionMode"
+        @auto-approve-change="handleAutoApproveChange"
         @effort-change="handleQuickEffortChange"
         @input-target-change="handleInputTargetChange"
         @run-slash-command="handleRunSlashCommand"
         @add-reference="handleAddReference"
+        @run-task-dock-item="handleRunTaskDockItem"
+        @stop-task-dock-item="handleStopTaskDockItem"
       />
       <div v-if="sessionUnavailableMessage" class="session-unavailable-banner">
         {{ sessionUnavailableMessage }}

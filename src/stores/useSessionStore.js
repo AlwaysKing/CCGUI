@@ -105,6 +105,8 @@ class SessionData {
     this.currentStreamingAssistantId = null // 用于去重
 
     this.permissionMode = 'default' // 当前权限模式
+    this.autoApprove = false         // 自动批准开关（独立于权限模式）
+    this.taskDockHistory = []         // task-dock 历史记录
     this.fastModeState = 'off' // 快速模式状态: 'off' | 'auto' | 'on'
     this.activeTasks = new Map() // 活跃的子任务 Map<taskId, taskData>
     this.currentTurnUsageSources = {}
@@ -1533,6 +1535,14 @@ export const useSessionStore = defineStore('session', () => {
           console.log('[SessionStore] No permission mode in result.state for session:', sessionId)
           console.log('[SessionStore] Session state keys:', Object.keys(result.state))
         }
+        // 恢复自动批准开关
+        if (result.state.autoApprove !== undefined) {
+          sessionData.autoApprove = result.state.autoApprove
+          console.log('[SessionStore] Restored autoApprove:', result.state.autoApprove, 'for session:', sessionId)
+        }
+        if (Array.isArray(result.state.taskDockHistory)) {
+          sessionData.taskDockHistory = result.state.taskDockHistory
+        }
         if (result.state.pendingPermission) {
           sessionData.pendingPermissions = [reactive(result.state.pendingPermission)]
         }
@@ -1548,6 +1558,7 @@ export const useSessionStore = defineStore('session', () => {
         sessionData.envInfo = result.state?.envInfo || null
         sessionData.runtimeReady = result.state?.runtimeReady || false
         sessionData.permissionMode = result.state?.permissionMode || sessionData.permissionMode
+        sessionData.autoApprove = result.state?.autoApprove ?? sessionData.autoApprove
         sessionData.inputAttachments = result.state?.inputAttachments || []
         sessionData.inputHistory = result.state?.inputHistory || []
 
@@ -2173,10 +2184,45 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function setAutoApprove(enabled) {
+    const session = currentSession.value
+    if (!session) {
+      console.log('[SessionStore] Cannot set autoApprove: no current session')
+      return
+    }
+
+    const previousValue = session.autoApprove
+    session.autoApprove = !!enabled
+    console.log('[SessionStore] Setting autoApprove:', {
+      sessionId: session.id,
+      previousValue,
+      newValue: !!enabled
+    })
+
+    try {
+      const result = await window.electronAPI.setAutoApprove({
+        sessionId: session.id,
+        enabled: !!enabled
+      })
+
+      if (result?.success === false) {
+        console.error('[SessionStore] Failed to set autoApprove:', result.error)
+        session.autoApprove = previousValue
+      } else {
+        console.log('[SessionStore] Successfully set autoApprove for session:', session.id)
+      }
+    } catch (error) {
+      console.error('[SessionStore] Error setting autoApprove:', error)
+      session.autoApprove = previousValue
+      throw error
+    }
+  }
+
   function createHistoryReplaySession(baseSession) {
     const replaySession = new SessionData(baseSession.id, baseSession.projectPath)
     replaySession.mainAgentId = baseSession.mainAgentId
     replaySession.permissionMode = baseSession.permissionMode
+    replaySession.autoApprove = baseSession.autoApprove
     replaySession.envInfo = baseSession.envInfo
     return replaySession
   }
@@ -3135,9 +3181,9 @@ export const useSessionStore = defineStore('session', () => {
     if (toolName === 'AskUserQuestion' || hasQuestions) {
       log('[SessionStore] Setting pendingQuestion, request_id:', mergedRequestData.request_id)
       session.pendingQuestion = mergedRequestData
-    } else if (session.permissionMode === 'bypassPermissions') {
-      // bypass 模式下自动批准，不弹窗
-      log('[SessionStore] Auto-approving in bypass mode, toolName:', toolName, 'request_id:', mergedRequestData.request_id)
+    } else if (session.autoApprove) {
+      // 自动批准开关开启时，不弹窗直接批准
+      log('[SessionStore] Auto-approving (autoApprove enabled), toolName:', toolName, 'request_id:', mergedRequestData.request_id)
       autoApproveControlRequest(session, mergedRequestData)
     } else {
       // 添加到队列而不是覆盖
@@ -3147,7 +3193,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * bypass 模式下自动批准权限请求（不弹窗，直接回复）
+   * 自动批准开关开启时自动批准权限请求（不弹窗，直接回复）
    */
   function autoApproveControlRequest(session, requestData) {
     const requestId = requestData.request_id
@@ -4058,6 +4104,7 @@ export const useSessionStore = defineStore('session', () => {
     listSessionEffortOptions,
     setSessionEffort,
     setPermissionMode,
+    setAutoApprove,
     startEventListener,
     stopEventListener,
     clearAll,

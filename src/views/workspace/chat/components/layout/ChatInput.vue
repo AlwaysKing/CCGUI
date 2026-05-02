@@ -45,6 +45,10 @@ const props = defineProps({
       { value: 'bypassPermissions', label: '全部允许', icon: '✅' }
     ]
   },
+  autoApprove: {
+    type: Boolean,
+    default: false
+  },
   inputHistory: {
     type: Array,
     default: () => []
@@ -157,9 +161,13 @@ const props = defineProps({
     type: Function,
     default: null
   },
+  taskDockItems: {
+    type: Array,
+    default: () => []
+  }
 })
 
-const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'runSlashCommand', 'addReference'])
+const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'autoApproveChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'runSlashCommand', 'addReference', 'runTaskDockItem', 'stopTaskDockItem'])
 
 // 输入区域 ref
 const inputArea = ref(null)
@@ -697,6 +705,11 @@ function selectPermissionMode(mode) {
   emit('permissionModeChange', mode)
 }
 
+// 切换自动批准
+function toggleAutoApprove() {
+  emit('autoApproveChange', !props.autoApprove)
+}
+
 // 当前思考力度的标签
 const currentEffortLabel = computed(() => {
   const effort = props.effortOptions.find(e => e.value === props.effort)
@@ -858,6 +871,26 @@ function openAttachmentPicker() {
   attachmentComposerRef.value?.openFilePicker()
 }
 
+function getTaskDockItemTitle(task) {
+  const actionLabel = task?.running ? '停止任务' : '快速启动'
+  const label = String(task?.label || '').trim()
+  const commandLine = String(task?.commandLine || '').trim()
+  return commandLine ? `${actionLabel}: ${label} · ${commandLine}` : `${actionLabel}: ${label}`
+}
+
+function handleTaskDockItemClick(task) {
+  if (!task?.label) {
+    return
+  }
+
+  if (task.running) {
+    emit('stopTaskDockItem', task)
+    return
+  }
+
+  emit('runTaskDockItem', task)
+}
+
 // 暴露方法
 defineExpose({
   focus: () => attachmentComposerRef.value?.focus(),
@@ -983,6 +1016,23 @@ defineExpose({
                 <span v-if="permissionMode === mode.value" class="permission-menu-check">✓</span>
               </button>
             </div>
+          </div>
+        </div>
+
+        <div class="toolbar-center">
+          <div v-if="props.taskDockItems.length > 0" class="task-dock" role="toolbar" aria-label="快捷命令停靠栏">
+            <button
+              v-for="task in props.taskDockItems"
+              :key="task.label"
+              class="task-dock-item"
+              :class="{ running: task.running }"
+              :title="getTaskDockItemTitle(task)"
+              @click="handleTaskDockItemClick(task)"
+            >
+              <span class="task-dock-item-indicator" aria-hidden="true"></span>
+              <span class="task-dock-item-label">{{ task.label }}</span>
+              <span class="task-dock-item-state">{{ task.running ? '运行中' : '待启动' }}</span>
+            </button>
           </div>
         </div>
 
@@ -1123,6 +1173,19 @@ defineExpose({
             :disabled="disableAttachmentControl"
           >
             📎
+          </button>
+
+          <button
+            @click="toggleAutoApprove"
+            class="auto-approve-btn"
+            :class="{ active: props.autoApprove }"
+            :title="props.autoApprove ? '自动批准: 已开启' : '自动批准: 已关闭'"
+            :disabled="props.toolbarLocked"
+          >
+            <svg class="auto-approve-icon" viewBox="0 0 20 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path class="check check-1" d="M2 7L5.5 10.5L12 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <path class="check check-2" d="M7 7L10.5 10.5L17 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
           </button>
 
           <div ref="notificationMenuWrapper" class="notification-mode-wrapper">
@@ -1325,7 +1388,6 @@ defineExpose({
 .input-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   padding: 4px 8px;
   background: transparent;
@@ -1337,6 +1399,99 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.toolbar-center {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.task-dock {
+  max-width: min(100%, 420px);
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.task-dock::-webkit-scrollbar {
+  display: none;
+}
+
+.task-dock-item {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 132px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: #D4D4D8;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.task-dock-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #F4F4F5;
+}
+
+.task-dock-item.running {
+  background: rgba(249, 115, 22, 0.14);
+  border-color: rgba(249, 115, 22, 0.22);
+  color: #FED7AA;
+  box-shadow: inset 0 0 0 1px rgba(249, 115, 22, 0.08);
+}
+
+.task-dock-item-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(161, 161, 170, 0.82);
+  flex: 0 0 auto;
+}
+
+.task-dock-item.running .task-dock-item-indicator {
+  background: #F97316;
+  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.14);
+}
+
+.task-dock-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.task-dock-item-state {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: #71717A;
+}
+
+.task-dock-item.running .task-dock-item-state {
+  color: #FDBA74;
 }
 
 /* ====== @ 引用菜单二级结构样式 ====== */
@@ -2017,6 +2172,52 @@ defineExpose({
   cursor: not-allowed;
 }
 
+/* 自动批准开关按钮 */
+.auto-approve-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.auto-approve-icon {
+  width: 16px;
+  height: 12px;
+}
+
+.auto-approve-icon .check {
+  color: #71717A;
+  transition: color 0.2s;
+}
+
+.auto-approve-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.auto-approve-btn:hover:not(:disabled) .auto-approve-icon .check {
+  color: #A1A1AA;
+}
+
+.auto-approve-btn.active .auto-approve-icon .check {
+  color: #4ADE80;
+}
+
+.auto-approve-btn.active:hover:not(:disabled) .auto-approve-icon .check {
+  color: #86EFAC;
+}
+
+.auto-approve-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
 /* 权限模式菜单 */
 .permission-menu {
   position: absolute;
@@ -2181,6 +2382,8 @@ defineExpose({
   align-items: center;
   gap: 4px;
   margin-right: -4.5px;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .input-target-menu-wrapper {

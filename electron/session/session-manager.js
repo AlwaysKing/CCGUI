@@ -180,6 +180,32 @@ class SessionManager {
     return session.setPermissionMode(mode)
   }
 
+  /**
+   * 设置自动批准开关
+   */
+  async setAutoApprove(sessionId, enabled) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      logger.warn(`[SessionManager] Session ${sessionId} not found`)
+      return
+    }
+
+    return session.setAutoApprove(enabled)
+  }
+
+  /**
+   * 保存 task-dock 历史记录
+   */
+  async saveTaskDockHistory(sessionId, items) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      logger.warn(`[SessionManager] Session ${sessionId} not found`)
+      return
+    }
+
+    return session.saveTaskDockHistory(items)
+  }
+
   async setSessionEffort(sessionId, effort, options = {}) {
     const session = this.sessions.get(sessionId)
     if (!session) {

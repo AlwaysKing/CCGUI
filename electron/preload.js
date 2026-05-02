@@ -76,6 +76,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Set permission mode
   setPermissionMode: (options) => ipcRenderer.invoke('set-permission-mode', options),
 
+  // Set auto-approve toggle
+  setAutoApprove: (options) => ipcRenderer.invoke('set-auto-approve', options),
+
+  // Save task-dock history
+  saveTaskDockHistory: (options) => ipcRenderer.invoke('save-task-dock-history', options),
+
   // Close session
   closeSession: (options) => ipcRenderer.invoke('close-session', options),
 

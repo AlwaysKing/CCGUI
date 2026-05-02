@@ -57,12 +57,14 @@ const taskLauncherConfigDocument = ref({ version: '2.0.0', tasks: [] })
 const taskLauncherUnsupportedTasks = ref([])
 const taskLauncherConfigSaving = ref(false)
 const runningTaskLabels = ref([])
+const taskDockItems = ref([])
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
 const CHAT_EXPAND_THRESHOLD = (CHAT_MIN_WIDTH * 2) / 3
-const COLLAPSED_SIDEBAR_SAFE_WIDTH = 124
+const COLLAPSED_SIDEBAR_SAFE_WIDTH = 200
 const TERMINAL_MIN_HEIGHT = 140
 const TERMINAL_MAX_HEIGHT = 420
+const MAX_TASK_DOCK_ITEMS = 3
 const {
   sessionSidebarRef,
   chatRef,
@@ -194,6 +196,7 @@ async function loadTaskLauncherTasks(projectPath = store.currentProject?.path ||
     taskLauncherTasks.value = []
     taskLauncherUnsupportedTasks.value = []
     taskLauncherConfigDocument.value = { version: '2.0.0', tasks: [] }
+    taskDockItems.value = []
     return
   }
 
@@ -206,6 +209,7 @@ async function loadTaskLauncherTasks(projectPath = store.currentProject?.path ||
     taskLauncherTasks.value = []
     taskLauncherUnsupportedTasks.value = []
     taskLauncherConfigDocument.value = { version: '2.0.0', tasks: [] }
+    taskDockItems.value = []
     return
   }
 
@@ -228,7 +232,108 @@ async function loadTaskLauncherTasks(projectPath = store.currentProject?.path ||
     taskLauncherTasks.value = []
     taskLauncherUnsupportedTasks.value = []
     taskLauncherConfigDocument.value = { version: '2.0.0', tasks: [] }
+    taskDockItems.value = []
   }
+}
+
+function normalizeTaskDockTask(task) {
+  const label = String(task?.label || '').trim()
+  if (!label) {
+    return null
+  }
+
+  return {
+    id: String(task?.id || label),
+    label,
+    command: String(task?.command || '').trim(),
+    commandLine: String(task?.commandLine || '').trim(),
+    cwd: String(task?.cwd || '').trim(),
+    detail: String(task?.detail || '').trim()
+  }
+}
+
+function sortTaskDockItems(items) {
+  return [...items].sort((left, right) => {
+    if (left.running !== right.running) {
+      return left.running ? -1 : 1
+    }
+
+    return Number(right.lastUsedAt || 0) - Number(left.lastUsedAt || 0)
+  })
+}
+
+function trimTaskDockItems(items) {
+  return sortTaskDockItems(items).slice(0, MAX_TASK_DOCK_ITEMS)
+}
+
+function upsertTaskDockItem(task, overrides = {}) {
+  const normalizedTask = normalizeTaskDockTask(task)
+  if (!normalizedTask) {
+    return
+  }
+
+  const existingIndex = taskDockItems.value.findIndex(item => item.label === normalizedTask.label)
+  const existingItem = existingIndex >= 0 ? taskDockItems.value[existingIndex] : null
+  const nextItem = {
+    ...existingItem,
+    ...normalizedTask,
+    ...overrides,
+    running: overrides.running ?? existingItem?.running ?? false,
+    lastUsedAt: overrides.lastUsedAt ?? existingItem?.lastUsedAt ?? Date.now()
+  }
+
+  const nextItems = existingIndex >= 0
+    ? taskDockItems.value.map((item, index) => (index === existingIndex ? nextItem : item))
+    : [...taskDockItems.value, nextItem]
+
+  taskDockItems.value = trimTaskDockItems(nextItems)
+}
+
+function syncTaskDockItems() {
+  const tasksByLabel = new Map(
+    taskLauncherTasks.value
+      .map(task => normalizeTaskDockTask(task))
+      .filter(Boolean)
+      .map(task => [task.label, task])
+  )
+  const runningLabels = new Set(
+    runningTaskLabels.value
+      .map(label => String(label || '').trim())
+      .filter(Boolean)
+  )
+  const syncedItems = []
+
+  for (const item of taskDockItems.value) {
+    const latestTask = tasksByLabel.get(item.label)
+    if (!latestTask) {
+      continue
+    }
+
+    syncedItems.push({
+      ...item,
+      ...latestTask,
+      running: runningLabels.has(item.label)
+    })
+  }
+
+  for (const label of runningLabels) {
+    if (syncedItems.some(item => item.label === label)) {
+      continue
+    }
+
+    const task = tasksByLabel.get(label)
+    if (!task) {
+      continue
+    }
+
+    syncedItems.push({
+      ...task,
+      running: true,
+      lastUsedAt: Date.now()
+    })
+  }
+
+  taskDockItems.value = trimTaskDockItems(syncedItems)
 }
 
 async function handleRunTaskLauncher(task) {
@@ -236,10 +341,32 @@ async function handleRunTaskLauncher(task) {
     return
   }
 
+  upsertTaskDockItem(task, {
+    running: true,
+    lastUsedAt: Date.now()
+  })
+
   try {
     await terminalPanelRef.value?.runTaskTerminal?.(task)
   } catch (error) {
+    syncTaskDockItems()
     console.error('[Workspace] Failed to run launcher task:', error)
+  }
+}
+
+async function handleRunTaskDockItem(task) {
+  await handleRunTaskLauncher(task)
+}
+
+async function handleStopTaskDockItem(task) {
+  if (!task?.label) {
+    return
+  }
+
+  try {
+    await terminalPanelRef.value?.stopTaskTerminal?.(task)
+  } catch (error) {
+    console.error('[Workspace] Failed to stop dock task:', error)
   }
 }
 
@@ -592,6 +719,30 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
 
   primaryView.value = 'chat'
 
+  // 从 session 恢复 task-dock 历史
+  const session = sessionStore.currentSession
+  if (session?.taskDockHistory?.length && taskLauncherTasks.value.length) {
+    const tasksByLabel = new Map(
+      taskLauncherTasks.value
+        .map(t => normalizeTaskDockTask(t))
+        .filter(Boolean)
+        .map(t => [t.label, t])
+    )
+    const restored = session.taskDockHistory
+      .filter(h => tasksByLabel.has(h.label))
+      .map(h => {
+        const task = tasksByLabel.get(h.label)
+        return {
+          ...task,
+          running: false,
+          lastUsedAt: h.lastUsedAt || Date.now()
+        }
+      })
+    taskDockItems.value = trimTaskDockItems(restored)
+  } else if (!session?.taskDockHistory?.length) {
+    taskDockItems.value = []
+  }
+
   if (fileBrowserStore.shouldShowPreviewPanel && isChatCollapsed.value) {
     expandChatPanel(true)
   }
@@ -600,6 +751,34 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
 watch(() => store.currentProject?.path, nextProjectPath => {
   void loadTaskLauncherTasks(nextProjectPath || '')
 }, { immediate: true })
+
+watch([taskLauncherTasks, runningTaskLabels], () => {
+  syncTaskDockItems()
+}, { deep: true })
+
+// taskDockItems 变化时保存到 session（debounce 1s）
+let taskDockSaveTimer = null
+watch(taskDockItems, (items) => {
+  if (!items.length) return
+  const session = sessionStore.currentSession
+  if (!session) return
+
+  clearTimeout(taskDockSaveTimer)
+  taskDockSaveTimer = setTimeout(async () => {
+    try {
+      await window.electronAPI.saveTaskDockHistory({
+        sessionId: session.id,
+        items: items.map(item => ({
+          label: item.label,
+          commandLine: item.commandLine,
+          lastUsedAt: item.lastUsedAt
+        }))
+      })
+    } catch (e) {
+      console.error('[Workspace] Failed to save task-dock history:', e)
+    }
+  }, 1000)
+}, { deep: true })
 
 // Initialize
 onMounted(async () => {
@@ -633,6 +812,7 @@ onUnmounted(() => {
   window.removeEventListener('mousemove', handleTerminalResize)
   window.removeEventListener('mouseup', stopTerminalResize)
   window.removeEventListener('ccgui-shortcut', handleShortcutEvent)
+  clearTimeout(taskDockSaveTimer)
 })
 
 function handleShortcutEvent(event) {
@@ -725,16 +905,6 @@ async function handleDeleteInactiveSessions() {
 
 <template>
   <div class="workspace-layout">
-    <!-- Draggable Title Bar Area - 只在没有选择 session 时显示 -->
-    <div
-      v-if="!store.currentSession && !fileBrowserStore.shouldShowPreviewPanel"
-      class="titlebar-drag-area"
-      :style="{
-        left: sidebarCollapsed ? `${COLLAPSED_SIDEBAR_SAFE_WIDTH}px` : `${sidebarWidth}px`,
-        right: 0
-      }"
-    ></div>
-
     <div class="workspace-body">
       <!-- Session Sidebar -->
       <SessionSidebar
@@ -870,15 +1040,19 @@ async function handleDeleteInactiveSessions() {
               :show-collapse-toggle="fileBrowserStore.shouldShowPreviewPanel"
               :is-collapsed-by-preview="isChatCollapsed"
               :show-sidebar-toggle="sidebarCollapsed && !fileBrowserStore.shouldShowPreviewPanel"
+              :task-dock-items="taskDockItems"
               @toggleSidebar="toggleSidebar"
               @toggleCollapse="toggleChatPanelCollapse"
               @startSession="handleStartSession"
               @closeSession="handleCloseSession"
+              @runTaskDockItem="handleRunTaskDockItem"
+              @stopTaskDockItem="handleStopTaskDockItem"
             />
           </div>
           <div v-if="!store.currentSession && primaryView !== 'tasks'" class="empty-state-wrapper">
             <div class="empty-top-bar" :class="{ 'with-sidebar-toggle': sidebarCollapsed }">
               <div v-if="sidebarCollapsed" class="sidebar-safe-spacer">
+                <span v-if="store.currentProject?.path" class="sidebar-project-name" :title="store.currentProject.path">{{ store.currentProject.path.split('/').pop() }}</span>
                 <button class="sidebar-safe-btn" @click="toggleSidebar" title="展开侧边栏">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M10 6l6 6-6 6"/>
@@ -1054,14 +1228,6 @@ async function handleDeleteInactiveSessions() {
   position: relative;
 }
 
-.titlebar-drag-area {
-  position: absolute;
-  top: 0;
-  height: 60px;
-  -webkit-app-region: drag;
-  z-index: 999;
-}
-
 .workspace-body {
   flex: 1;
   display: flex;
@@ -1200,23 +1366,39 @@ async function handleDeleteInactiveSessions() {
 }
 
 .sidebar-safe-spacer {
-  width: 124px;
+  flex: 0 0 200px;
   height: 41.5px;
   display: flex;
   align-items: stretch;
-  justify-content: flex-end;
-  padding-left: 80px;
   background: transparent;
+  -webkit-app-region: drag;
+}
+
+.sidebar-project-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 4px 0 76px;
+  font-size: 18px;
+  font-weight: 600;
+  color: rgba(228, 228, 231, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-app-region: drag;
 }
 
 .sidebar-safe-btn {
+  flex-shrink: 0;
   width: 44px;
   height: 41.5px;
+  padding: 0;
   border: none;
   border-left: 1px solid rgba(255, 255, 255, 0.05);
   background: transparent;
   color: #E4E4E7;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;

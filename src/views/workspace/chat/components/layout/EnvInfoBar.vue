@@ -67,6 +67,11 @@ const showSilentPanel = ref(false)
 const showContextDetailDialog = ref(false)
 const activeUsageTooltip = ref('')
 
+// 项目名称（侧边栏折叠时显示）
+const projectName = computed(() => {
+  return props.projectPath?.split('/').pop() || ''
+})
+
 // 检查工作目录是否与项目路径一致
 const isDifferentFromProject = computed(() => {
   const cwd = props.envInfo?.cwd
@@ -462,6 +467,7 @@ async function copySilentMessage(message, reverseIndex) {
 <template>
   <div v-if="envInfo || showCollapseToggle || showSidebarToggle" class="top-bar">
     <div v-if="showSidebarToggle" class="sidebar-safe-spacer">
+      <span v-if="projectName" class="sidebar-project-name" :title="projectPath">{{ projectName }}</span>
       <button class="sidebar-safe-btn" title="展开侧边栏" @click="emit('toggleSidebar')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M10 6l6 6-6 6"></path>
@@ -779,14 +785,28 @@ async function copySilentMessage(message, reverseIndex) {
 }
 
 .sidebar-safe-spacer {
-  width: 124px;
-  flex: 0 0 124px;
+  width: 200px;
+  flex: 0 0 200px;
   display: flex;
   align-items: stretch;
   justify-content: flex-end;
-  padding-left: 80px;
   background: #17191E;
   border-right: 1px solid var(--bg-tertiary);
+  -webkit-app-region: drag;
+}
+
+.sidebar-project-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 4px 0 76px;
+  font-size: 18px;
+  font-weight: 600;
+  color: rgba(228, 228, 231, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   -webkit-app-region: drag;
 }
 

@@ -404,6 +404,85 @@ class CodexAdapter extends CodexClient {
     }
   }
 
+  /**
+   * 从 codexAppServer 查询技能和插件列表，归一化后写入 envInfo 并 emit。
+   * 与 queryAtReferences() 各查各的，互不相关。
+   */
+  async syncInventoryEnvInfo() {
+    try {
+      const cwd = this.workingDirectory || process.cwd()
+
+      const [skillsResult, pluginsResult] = await Promise.allSettled([
+        codexAppServer.listSkills(cwd),
+        codexAppServer.listPluginsWithDetails(cwd)
+      ])
+
+      // 归一化技能列表
+      let normalizedSkills = []
+      if (skillsResult.status === 'fulfilled' && skillsResult.value) {
+        const skillEntries = Array.isArray(skillsResult.value?.data)
+          ? skillsResult.value.data
+          : []
+        for (const entry of skillEntries) {
+          const skills = Array.isArray(entry?.skills) ? entry.skills : []
+          for (const skill of skills) {
+            if (!skill || typeof skill !== 'object') continue
+            const name = String(
+              skill?.interface?.displayName || skill?.name || ''
+            ).trim()
+            if (name) {
+              normalizedSkills.push({ name })
+            }
+          }
+        }
+      } else if (skillsResult.status === 'rejected') {
+        logger.warn('[CodexAdapter] listSkills failed in syncInventoryEnvInfo', {
+          error: skillsResult.reason?.message || String(skillsResult.reason)
+        })
+      }
+
+      // 归一化已启用插件 → mcp_servers
+      let normalizedMcpServers = []
+      if (pluginsResult.status === 'fulfilled' && pluginsResult.value) {
+        const marketplaces = Array.isArray(pluginsResult.value?.marketplaces)
+          ? pluginsResult.value.marketplaces
+          : []
+        for (const marketplace of marketplaces) {
+          const plugins = Array.isArray(marketplace?.plugins)
+            ? marketplace.plugins
+            : []
+          for (const plugin of plugins) {
+            if (!plugin || plugin.enabled !== true) continue
+            const name = String(
+              plugin?.interface?.displayName || plugin?.name || plugin?.id || ''
+            ).trim()
+            if (name) {
+              normalizedMcpServers.push({ name, status: 'connected' })
+            }
+          }
+        }
+      } else if (pluginsResult.status === 'rejected') {
+        logger.warn('[CodexAdapter] listPluginsWithDetails failed in syncInventoryEnvInfo', {
+          error: pluginsResult.reason?.message || String(pluginsResult.reason)
+        })
+      }
+
+      this.envInfo = applyCodexEnvInfoPatch({
+        ...this.envInfo,
+        skills: normalizedSkills,
+        mcp_servers: normalizedMcpServers
+      }, {
+        provider: 'codex',
+        providerPid: this.getPid()
+      })
+      this.emit('env-info', this.envInfo)
+    } catch (error) {
+      logger.warn('[CodexAdapter] syncInventoryEnvInfo failed', {
+        error: error.message
+      })
+    }
+  }
+
   sanitizeSemanticId(value, fallback = 'agent') {
     const normalized = String(value || '')
       .trim()
@@ -877,6 +956,9 @@ class CodexAdapter extends CodexClient {
           providerPid: this.getPid()
         })
         this.emit('env-info', this.envInfo)
+        this.syncInventoryEnvInfo().catch(err => {
+          logger.warn('[CodexAdapter] syncInventoryEnvInfo failed on thread/started', { error: err.message })
+        })
         break
 
       case 'thread/name/updated':
@@ -1332,6 +1414,9 @@ class CodexAdapter extends CodexClient {
       count: changedSkills.length,
       metadata: params
     })
+    this.syncInventoryEnvInfo().catch(err => {
+      logger.warn('[CodexAdapter] syncInventoryEnvInfo failed on skills/changed', { error: err.message })
+    })
   }
 
   handleAppListUpdated(params = {}) {
@@ -1341,6 +1426,9 @@ class CodexAdapter extends CodexClient {
       action: 'updated',
       count: apps.length,
       metadata: params
+    })
+    this.syncInventoryEnvInfo().catch(err => {
+      logger.warn('[CodexAdapter] syncInventoryEnvInfo failed on app/list/updated', { error: err.message })
     })
   }
 

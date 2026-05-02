@@ -340,12 +340,11 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-safe-spacer {
-  width: 124px;
-  flex: 0 0 124px;
+  width: 200px;
+  flex: 0 0 200px;
   display: flex;
   align-items: stretch;
   justify-content: flex-end;
-  padding-left: 80px;
   background: transparent;
   border-right: 1px solid rgba(255, 255, 255, 0.05);
   -webkit-app-region: drag;

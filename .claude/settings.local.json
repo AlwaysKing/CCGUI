@@ -165,7 +165,11 @@
       "Read(//Users/alwaysking/.npm/**)",
       "Bash(patch -p1 --dry-run)",
       "Read(//Users/alwaysking/Desktop/**)",
-      "Read(//Users/alwaysking/Downloads/**)"
+      "Read(//Users/alwaysking/Downloads/**)",
+      "Bash(echo \"patch created, exit: $?\")",
+      "Bash(curl -sL -o /tmp/icon1.png \"https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/81afc448-4f6b-43b0-b231-03b4ffc11a71/dcce19b6f84a801c9d56d467bd8fa31a.png?UCloudPublicKey=TOKEN_e15ba47a-d098-4fbd-9afc-a0dcf0e4e621&Expires=1777642039&Signature=YcDx8DLqZ/BaSSgay/9IMfU0mjc=\")",
+      "Bash(curl -sL -o /tmp/icon2.png \"https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/81afc448-4f6b-43b0-b231-03b4ffc11a71/0fa8c87bb8063b11e7bc5ba336e62dc7.png?UCloudPublicKey=TOKEN_e15ba47a-d098-4fbd-9afc-a0dcf0e4e621&Expires=1777642039&Signature=YcDx8DLqZ/BaSSgay/9IMfU0mjc=\")",
+      "Bash(sips -g all /tmp/icon1.png)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

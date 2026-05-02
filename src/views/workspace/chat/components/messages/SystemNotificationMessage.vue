@@ -5,6 +5,7 @@
  * 居中显示，不同类型使用不同颜色
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { stripAnsi } from '@/utils/textSanitizers'
 
 const props = defineProps({
   message: {
@@ -15,6 +16,22 @@ const props = defineProps({
 
 const now = ref(Date.now())
 let timer = null
+
+function finalizeNotificationContent(content) {
+  if (!content || typeof content !== 'object') {
+    return {
+      icon: '🔔',
+      title: '系统通知',
+      description: ''
+    }
+  }
+
+  return {
+    ...content,
+    title: stripAnsi(String(content.title || '系统通知')),
+    description: stripAnsi(String(content.description || ''))
+  }
+}
 
 onMounted(() => {
   timer = setInterval(() => {
@@ -108,11 +125,11 @@ const notificationContent = computed(() => {
         description += ' (将在运行时启动时生效)'
     }
 
-    return {
+    return finalizeNotificationContent({
       icon: '🔐',
       title: `权限模式切换 [${sourceLabel}]`,
       description: description
-    }
+    })
   }
 
   if (notificationType === 'fast-mode-change') {
@@ -121,11 +138,11 @@ const notificationContent = computed(() => {
       'auto': '自动',
       'on': '开启'
     }
-    return {
+    return finalizeNotificationContent({
       icon: '⚡',
       title: '快速模式',
       description: `快速模式: ${stateNames[data.fastModeState] || data.fastModeState}`
-    }
+    })
   }
 
   if (notificationType === 'compact-boundary') {
@@ -142,30 +159,30 @@ const notificationContent = computed(() => {
       description += `\n${summary.value}`
     }
 
-    return {
+    return finalizeNotificationContent({
       icon: '📦',
       title: '上下文压缩',
       description: description
-    }
+    })
   }
 
   if (notificationType === 'context_compacted') {
     const summary = data.summary || data.metadata?.summary || data.metadata?.compactSummary || ''
-    return {
+    return finalizeNotificationContent({
       icon: '📦',
       title: '上下文已压缩',
       description: summary || '已完成上下文压缩'
-    }
+    })
   }
 
   if (notificationType === 'model-rerouted') {
     const from = data.requestedModel || '原始模型'
     const to = data.reroutedModel || '实际模型'
-    return {
+    return finalizeNotificationContent({
       icon: '🔀',
       title: '模型已切换',
       description: `${from} -> ${to}`
-    }
+    })
   }
 
   if (notificationType === 'thread-event') {
@@ -179,11 +196,11 @@ const notificationContent = computed(() => {
       'undo-completed': '最近一次撤销已完成'
     }
 
-    return {
+    return finalizeNotificationContent({
       icon: '🧵',
       title: '会话线程更新',
       description: descriptions[event] || `线程事件: ${event}`
-    }
+    })
   }
 
   if (notificationType === 'turn-plan-updated') {
@@ -198,185 +215,185 @@ const notificationContent = computed(() => {
       description += `\n${explanation}`
     }
 
-    return {
+    return finalizeNotificationContent({
       icon: '🗂',
       title: '执行计划已更新',
       description
-    }
+    })
   }
 
   if (notificationType === 'provider-config-warning') {
     const title = data.title || '配置警告'
     const path = data.path ? `\n位置: ${data.path}` : ''
-    return {
+    return finalizeNotificationContent({
       icon: '⚙️',
       title,
       description: `${data.message || '检测到配置问题'}${path}`
-    }
+    })
   }
 
   if (notificationType === 'provider-runtime-warning') {
     const threadSuffix = data.threadId ? `\n线程 ID: ${data.threadId}` : ''
-    return {
+    return finalizeNotificationContent({
       icon: '⚠️',
       title: `${providerLabel} 运行时提醒`,
       description: `${data.message || '收到 provider 运行时提醒'}${threadSuffix}`
-    }
+    })
   }
 
   if (notificationType === 'provider-deprecation') {
-    return {
+    return finalizeNotificationContent({
       icon: '🕰️',
       title: data.title || '配置项已弃用',
       description: data.message || '当前配置项即将不再支持'
-    }
+    })
   }
 
   if (notificationType === 'account-login-completed') {
     if (data.success) {
-      return {
+      return finalizeNotificationContent({
         icon: '🔓',
         title: `${providerLabel} 登录完成`,
         description: '账号状态已更新'
-      }
+      })
     }
 
     const errorText = data.error?.message || data.error || '登录失败'
-    return {
+    return finalizeNotificationContent({
       icon: '🔒',
       title: `${providerLabel} 登录失败`,
       description: String(errorText)
-    }
+    })
   }
 
   if (notificationType === 'hook-event') {
     const hookName = data.hookName || 'Hook'
     if (data.event === 'started') {
-      return {
+      return finalizeNotificationContent({
         icon: '🪝',
         title: `${hookName} 已启动`,
         description: '后台钩子正在运行'
-      }
+      })
     }
 
     if (data.event === 'progress') {
-      return {
+      return finalizeNotificationContent({
         icon: '🪝',
         title: `${hookName} 执行中`,
         description: data.progressMessage || data.status || '后台钩子正在执行'
-      }
+      })
     }
 
     if (data.errorMessage || data.event === 'failed') {
-      return {
+      return finalizeNotificationContent({
         icon: '🪝',
         title: `${hookName} 执行失败`,
         description: data.errorMessage || data.progressMessage || 'Hook 执行失败'
-      }
+      })
     }
 
-    return {
+    return finalizeNotificationContent({
       icon: '🪝',
       title: `${hookName} 已完成`,
       description: data.progressMessage || data.status || '后台钩子已完成'
-    }
+    })
   }
 
   if (notificationType === 'turn-interrupted') {
-    return {
+    return finalizeNotificationContent({
       icon: '✋',
       title: '主动中断响应',
       description: '已中断当前响应'
-    }
+    })
   }
 
   if (notificationType === 'provider-message' || notificationType === 'provider-system-message') {
     const label = data.subtype || data.messageType || 'unknown'
-    return {
+    return finalizeNotificationContent({
       icon: '🔔',
       title: `${providerLabel} 兼容消息`,
       description: `收到尚未单独建模的 provider 事件: ${label}`
-    }
+    })
   }
 
   if (notificationType === 'runtime-exit') {
     const exitInfo = data.message || `退出码: ${data.code}`
-    return {
+    return finalizeNotificationContent({
       icon: '⏹',
       title: '运行时进程已结束',
       description: exitInfo
-    }
+    })
   }
 
   if (notificationType === 'runtime-stopped') {
     if (data.reason === 'restart-for-config') {
-      return {
+      return finalizeNotificationContent({
         icon: '🔄',
         title: `${providerLabel} 正在重新启动`,
         description: `${providerLabel} 正在重新启动以应用新配置`
-      }
+      })
     }
 
-    return {
+    return finalizeNotificationContent({
       icon: '⏸',
       title: `${providerLabel} 已停止运行`,
       description: data.message || `${providerLabel} 已停止运行`
-    }
+    })
   }
 
   if (notificationType === 'session-runtime-starting') {
-    return {
+    return finalizeNotificationContent({
       icon: '🚀',
       title: `${providerLabel} 正在启动`,
       description: elapsedText ? `正在启动中，已用时 ${elapsedText}` : '正在启动中'
-    }
+    })
   }
 
   if (notificationType === 'session-runtime-restarting') {
-    return {
+    return finalizeNotificationContent({
       icon: '🔄',
       title: `${providerLabel} 正在重启`,
       description: elapsedText ? `正在重启以应用新配置，已用时 ${elapsedText}` : '正在重启以应用新配置'
-    }
+    })
   }
 
   if (notificationType === 'session-runtime-ready') {
     const modelText = data.model || '系统'
     const subModelText = data.subModel || '默认'
     const effortText = effortLabelMap[data.effort] || data.effort || '默认'
-    return {
+    return finalizeNotificationContent({
       icon: '✅',
       title: `${providerLabel} 启动完成`,
       description: `模型供应商: ${modelText} 模型: ${subModelText} 思考力度: ${effortText}${elapsedText ? ` 耗时: ${elapsedText}` : ''}`
-    }
+    })
   }
 
   if (notificationType === 'mcp-server-starting') {
     const serverName = data.name || 'MCP Server'
-    return {
+    return finalizeNotificationContent({
       icon: '🧩',
       title: `${serverName} 启动中`,
       description: elapsedText ? `MCP 服务正在启动，已用时 ${elapsedText}` : 'MCP 服务正在启动'
-    }
+    })
   }
 
   if (notificationType === 'mcp-server-ready') {
     const serverName = data.name || 'MCP Server'
-    return {
+    return finalizeNotificationContent({
       icon: '🧩',
       title: `${serverName} 启动完成`,
       description: elapsedText ? `MCP 服务已就绪，耗时 ${elapsedText}` : 'MCP 服务已就绪'
-    }
+    })
   }
 
   if (notificationType === 'mcp-server-error') {
     const serverName = data.name || 'MCP Server'
     const errorText = data.error?.message || data.error || 'MCP 服务启动失败'
-    return {
+    return finalizeNotificationContent({
       icon: '🧩',
       title: `${serverName} 启动失败`,
       description: String(errorText)
-    }
+    })
   }
 
   if (notificationType === 'mcp-server-status') {
@@ -397,11 +414,11 @@ const notificationContent = computed(() => {
     const previousText = previousStatus ? (statusLabelMap[previousStatus] || data.previousStatus || previousStatus) : ''
     const detailPrefix = previousText ? `${previousText} -> ${statusText}` : statusText
     const errorText = data.error?.message || data.error || ''
-    return {
+    return finalizeNotificationContent({
       icon: '🧩',
       title: `${serverName} 状态更新`,
       description: errorText ? `${detailPrefix}\n${String(errorText)}` : detailPrefix
-    }
+    })
   }
 
   if (notificationType === 'session-config-applied' || notificationType === 'session-effort-changed') {
@@ -418,11 +435,11 @@ const notificationContent = computed(() => {
     const title = changeType === 'effort'
       ? '思考力度已切换'
       : `${changeTypeLabelMap[changeType] || '配置'}已应用`
-    return {
+    return finalizeNotificationContent({
       icon: iconMap[changeType] || '🧠',
       title,
       description: `模型供应商: ${modelText} 模型: ${subModelText} 思考力度: ${effortText}${elapsedText ? ` 耗时: ${elapsedText}` : ''}`
-    }
+    })
   }
 
   if (notificationType === 'turn-error') {
@@ -431,27 +448,27 @@ const notificationContent = computed(() => {
 
     // 特殊处理 usageLimitExceeded 错误
     if (errorType === 'usageLimitExceeded') {
-      return {
+      return finalizeNotificationContent({
         icon: '🚫',
         title: '使用额度已达上限',
         description: errorMessage
-      }
+      })
     }
 
     if (errorType === 'contextWindowLimit') {
-      return {
+      return finalizeNotificationContent({
         icon: '📦',
         title: '上下文窗口已满',
         description: errorMessage
-      }
+      })
     }
 
     // 其他 turn 错误
-    return {
+    return finalizeNotificationContent({
       icon: '⚠️',
       title: '请求失败',
       description: `[${errorType}] ${errorMessage}`
-    }
+    })
   }
 
   if (notificationType === 'api-retry') {
@@ -466,19 +483,19 @@ const notificationContent = computed(() => {
       : '正在重试请求'
     const statusText = errorStatus != null ? `HTTP ${errorStatus}` : '请求受限'
 
-    return {
+    return finalizeNotificationContent({
       icon: '⏳',
       title: '请求触发重试',
       description: `${statusText} ${errorText}，${attemptText}，${delayText}`
-    }
+    })
   }
 
   // 未知通知类型
-  return {
+  return finalizeNotificationContent({
     icon: '🔔',
     title: '系统通知',
     description: JSON.stringify(data, null, 2)
-  }
+  })
 })
 </script>
 

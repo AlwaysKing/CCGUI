@@ -1071,6 +1071,26 @@ class CodexClient {
   }
 
   handleMessage(message) {
+    if (
+      message?.method === 'mcpServer/elicitation/request' &&
+      message?.params?.serverName === 'computer-use'
+    ) {
+      logger.info('[CodexClient] Received raw Computer Use elicitation request', {
+        requestId: message.id ?? null,
+        threadId: message.params?.threadId || null,
+        turnId: message.params?.turnId || null,
+        mode: message.params?.mode || null,
+        prompt: message.params?.message || message.params?.reason || null
+      })
+    }
+
+    if (message?.method === 'serverRequest/resolved') {
+      logger.info('[CodexClient] Received raw serverRequest/resolved', {
+        threadId: message.params?.threadId || null,
+        requestId: message.params?.requestId || null
+      })
+    }
+
     if (this.sessionId) {
       if (this.debugEnabled && this.sessionId) {
         logger.logReceive(this.sessionId, message)

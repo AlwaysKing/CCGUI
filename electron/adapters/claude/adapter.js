@@ -3,6 +3,7 @@ const path = require('path')
 const { ClaudeClient } = require('./client')
 const logger = require('../../logger')
 const attachmentService = require('../../services/attachment-service')
+const { McpToolInspector } = require('../../services/mcp-tool-inspector')
 const {
   replaceAttachmentTokens,
   buildClaudeAttachmentReference
@@ -45,6 +46,7 @@ class ClaudeAdapter extends ClaudeClient {
       }
     }
     this.pendingAgentToolUses = new Map()
+    this.mcpToolInspector = new McpToolInspector()
     this.pendingCollaborativePreAgentsByToolUseId = new Map()
     this.pendingCollaborativePreAgentsByAddressKey = new Map()
     this.pendingCollaborativePreAgentsByTaskId = new Map()
@@ -1458,8 +1460,8 @@ class ClaudeAdapter extends ClaudeClient {
 
   /**
    * 请求 MCP 服务器状态（含每个 server 的 tools 列表及 description）
-   * 在 handleContextUsageResponse 更新 mcpTools 基础列表后调用，
-   * 补充每个 tool 的 description 信息
+   * 请求 MCP server 状态和工具列表
+   * 响应由 handleMcpStatusResponse 处理，直接构建 referenceInventory.mcpTools
    * @param {object} options - { syncServers: true } 时在响应中同时刷新 server 连接状态
    */
   requestMcpStatus(options = {}) {
@@ -1475,7 +1477,9 @@ class ClaudeAdapter extends ClaudeClient {
   }
 
   /**
-   * 将 mcp_status 响应中的 tools description 合并到 referenceInventory
+   * 从 mcp_status 响应构建 referenceInventory.mcpTools
+   * 这是 MCP 工具数据（description、inputSchema、annotations）的真值源
+   * 不依赖 get_context_usage 的 mcpTools 数据
    * @param {object} options - { syncServers: true } 时同时刷新 server 连接状态到 envInfo
    */
   handleMcpStatusResponse(payload, options = {}) {
@@ -1509,17 +1513,6 @@ class ClaudeAdapter extends ClaudeClient {
       return raw
     }
 
-    // 构建 serverName → tools map（含 description）
-    const serverToolMap = new Map()
-    for (const server of servers) {
-      if (!Array.isArray(server.tools)) continue
-      const normalizedServerName = normalizeServerName(server.name)
-      for (const tool of server.tools) {
-        const key = `${normalizedServerName}::${tool.name}`
-        serverToolMap.set(key, tool)
-      }
-    }
-
     // 仅在 MCP action（toggle/reconnect）后的刷新中同步 server 连接状态
     // 上下文用量刷新触发的不走这里，避免覆盖 init/session_state_changed 的正确状态
     if (options.syncServers) {
@@ -1529,28 +1522,73 @@ class ClaudeAdapter extends ClaudeClient {
       })
     }
 
-    // 合并 description 到已有的 referenceInventory.mcpTools
-    const currentTools = Array.isArray(this.referenceInventory.mcpTools)
-      ? this.referenceInventory.mcpTools
-      : []
-    if (currentTools.length === 0) return
-
-    this.referenceInventory.mcpTools = currentTools.map(t => {
-      // t.name 是短名，t.fullName 是全限定名；server.tools[].name 是短名
-      const key = `${normalizeServerName(t.serverName)}::${t.name}`
-      const serverTool = serverToolMap.get(key)
-      if (!serverTool) return t
-      return {
-        ...t,
-        description: typeof serverTool.description === 'string'
-          ? serverTool.description
-          : (t.description || ''),
-        annotations: serverTool.annotations && typeof serverTool.annotations === 'object'
-          ? serverTool.annotations
-          : (t.annotations || null),
-        inputSchema: normalizeInputSchema(serverTool) || t.inputSchema || null
+    // 直接从 mcp_status 响应构建 referenceInventory.mcpTools
+    // mcp_status 只返回 name + annotations，description/inputSchema 通过 mcpToolInspector 异步补充
+    const allMcpTools = []
+    for (const server of servers) {
+      if (!Array.isArray(server.tools)) continue
+      const normalizedServerName = normalizeServerName(server.name)
+      for (const tool of server.tools) {
+        const rawName = tool.name || ''
+        const fullName = `mcp__${normalizedServerName}__${rawName}`
+        allMcpTools.push({
+          name: rawName,
+          fullName,
+          serverName: normalizedServerName,
+          description: typeof tool.description === 'string' ? tool.description : '',
+          annotations: tool.annotations && typeof tool.annotations === 'object' ? tool.annotations : null,
+          inputSchema: normalizeInputSchema(tool),
+          kind: 'plugin'
+        })
       }
-    })
+    }
+
+    // 先同步赋值基础数据，确保 @ 弹窗立即能看到工具列表
+    this.referenceInventory.mcpTools = allMcpTools
+
+    // toggle/reconnect 后先清缓存，再获取新数据
+    if (options.syncServers) {
+      this.mcpToolInspector.clearAllCache()
+    }
+
+    // 异步补充 description/inputSchema（不阻塞基础数据的可用性）
+    const needsDetails = allMcpTools.some(t => !t.description || !t.inputSchema)
+    if (needsDetails) {
+      this._supplementMcpToolDetails(allMcpTools, servers)
+    }
+  }
+
+  /**
+   * 异步补充 MCP 工具的 description/inputSchema
+   * 每个 server 完成后立即更新 referenceInventory，不等所有 server 都完成
+   */
+  async _supplementMcpToolDetails(allMcpTools, servers) {
+    const connectedServers = servers.filter(s => s.status === 'connected' && s.config)
+    if (connectedServers.length === 0) return
+
+    // 为每个 server 单独发起 inspector 请求，完成后立即更新
+    const promises = connectedServers.map(server =>
+      this.mcpToolInspector.fetchToolDetails([server])
+        .then(detailMap => {
+          let supplemented = 0
+          for (const tool of allMcpTools) {
+            const detail = detailMap.get(`${tool.serverName}::${tool.name}`)
+            if (detail) {
+              if (detail.description) { tool.description = detail.description; supplemented++ }
+              if (detail.inputSchema) tool.inputSchema = detail.inputSchema
+              if (detail.annotations) tool.annotations = detail.annotations
+            }
+          }
+          if (supplemented > 0) {
+            logger.info(`[ClaudeAdapter] MCP tool details supplemented for '${server.name}': ${supplemented} tools`)
+          }
+        })
+        .catch(e => {
+          logger.warn(`[ClaudeAdapter] MCP tool detail fetch failed for '${server.name}': ${e.message}`)
+        })
+    )
+
+    await Promise.allSettled(promises)
   }
 
   /**
@@ -1595,36 +1633,16 @@ class ClaudeAdapter extends ClaudeClient {
       }
     }
 
-    // 更新 @ reference 缓存
-    // mcpTools: { name(fullQualifiedName), serverName, tokens, isLoaded }
-    // name 格式: "mcp__serverName__toolName"
-    if (rawMcpTools.length > 0) {
-      this.referenceInventory.mcpTools = rawMcpTools.map(t => {
-        const rawName = t.name || ''
-        // 从全限定名提取短名：取最后一个 __ 之后的部分
-        const lastSep = rawName.lastIndexOf('__')
-        const shortName = lastSep > 0 ? rawName.slice(lastSep + 2) : rawName
-        return {
-          name: shortName,
-          fullName: rawName,
-          serverName: t.serverName || '',
-          description: typeof t.description === 'string' ? t.description : '',
-          annotations: t.annotations && typeof t.annotations === 'object' ? t.annotations : null,
-          inputSchema: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : null,
-          isLoaded: t.isLoaded !== false,
-          kind: 'plugin'
-        }
-      })
-    }
+    // MCP 工具数据不再依赖 get_context_usage
+    // referenceInventory.mcpTools 由 handleMcpStatusResponse 直接从 mcp_status 构建
     // get_context_usage.skillFrontmatter 不是 Claude /skills 的真值源。
     // 这里不再用它填充 @ Skill，避免把 command/frontmatter 混入技能列表。
 
     this.emit('env-info', this.envInfo)
 
-    // 在 mcpTools 更新后，请求 mcp_status 补充 description
-    if (rawMcpTools.length > 0) {
-      this.requestMcpStatus()
-    }
+    // 触发 mcp_status 请求以构建/更新 referenceInventory.mcpTools
+    // mcp_status 是 MCP 工具数据的真值源（含 description、inputSchema、annotations）
+    this.requestMcpStatus()
   }
 
   getSessionIdentifier() {

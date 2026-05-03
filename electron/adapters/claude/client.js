@@ -245,7 +245,7 @@ class ClaudeClient {
    * 数据来源：
    *   - agents: initialize 控制响应
    *   - skills: Claude system/init 或 initialize 返回的 skills
-   *   - mcpTools: get_context_usage 响应的 mcpTools
+   *   - mcpTools: mcp_status 响应构建（handleMcpStatusResponse）
    */
   async queryAtReferences() {
     const hasCommandDescriptions = Array.isArray(this.commandInventory?.commands) &&

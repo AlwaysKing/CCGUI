@@ -158,6 +158,7 @@ class CodexAdapter extends CodexClient {
     this.pendingSpawnItems = new Map()
     this.sessionStoragePath = options.sessionStoragePath || null
     this.pendingUserMessageUuid = null
+    this._atReferencesCache = null
   }
 
   async sendMessage(message) {
@@ -168,7 +169,11 @@ class CodexAdapter extends CodexClient {
     return super.sendMessage(message)
   }
 
-  async queryAtReferences() {
+  async queryAtReferences(forceRefresh = true) {
+    if (!forceRefresh && this._atReferencesCache) {
+      return this._atReferencesCache
+    }
+
     const groups = []
     const cwd = this.workingDirectory || process.cwd()
 
@@ -398,10 +403,12 @@ class CodexAdapter extends CodexClient {
       })
     }
 
-    return {
+    const result = {
       provider: 'codex',
       groups
     }
+    this._atReferencesCache = result
+    return result
   }
 
   /**
@@ -947,6 +954,7 @@ class CodexAdapter extends CodexClient {
     switch (method) {
       case 'thread/started':
         this.currentThreadId = params.thread.id
+        this._atReferencesCache = null
         this.envInfo = applyCodexEnvInfoPatch({
           ...this.envInfo,
           session_id: params.thread.id,
@@ -1414,6 +1422,8 @@ class CodexAdapter extends CodexClient {
       count: changedSkills.length,
       metadata: params
     })
+    this._atReferencesCache = null
+    this.queryAtReferences(true).catch(() => {})
     this.syncInventoryEnvInfo().catch(err => {
       logger.warn('[CodexAdapter] syncInventoryEnvInfo failed on skills/changed', { error: err.message })
     })
@@ -1427,6 +1437,8 @@ class CodexAdapter extends CodexClient {
       count: apps.length,
       metadata: params
     })
+    this._atReferencesCache = null
+    this.queryAtReferences(true).catch(() => {})
     this.syncInventoryEnvInfo().catch(err => {
       logger.warn('[CodexAdapter] syncInventoryEnvInfo failed on app/list/updated', { error: err.message })
     })

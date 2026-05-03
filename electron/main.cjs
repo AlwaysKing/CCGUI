@@ -1347,9 +1347,9 @@ ipcMain.handle('query-commands', async (event, { sessionId, category } = {}) => 
   }
 })
 
-ipcMain.handle('query-at-references', async (event, { sessionId } = {}) => {
+ipcMain.handle('query-at-references', async (event, { sessionId, forceRefresh = false } = {}) => {
   try {
-    const data = await sessionManager.queryAtReferences(sessionId)
+    const data = await sessionManager.queryAtReferences(sessionId, forceRefresh)
     return { success: true, data }
   } catch (error) {
     logger.error('[IPC] query-at-references error:', {

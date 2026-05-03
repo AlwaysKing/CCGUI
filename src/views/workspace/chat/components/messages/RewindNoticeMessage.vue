@@ -137,6 +137,14 @@ function updateConnector() {
   const sourceVisible = !containerRect || (sourceRect.bottom >= containerRect.top && sourceRect.top <= containerRect.bottom)
   const targetVisible = !containerRect || (targetRect.bottom >= containerRect.top && targetRect.top <= containerRect.bottom)
 
+  // 两个元素都不在可视区域内时，隐藏整条连线
+  if (!sourceVisible && !targetVisible) {
+    connectorVisible.value = false
+    connectorPath.value = ''
+    syncConnectorObservers()
+    return
+  }
+
   const visibleTop = containerRect ? containerRect.top + 8 : 0
   const visibleBottom = containerRect ? containerRect.bottom - 8 : window.innerHeight
   const clampY = (value) => Math.max(visibleTop, Math.min(value, visibleBottom))

@@ -283,7 +283,7 @@ async function executeSlashCommand(command, event = null) {
 
 // ====== @ 引用菜单 ======
 
-async function toggleAtMenu() {
+async function toggleAtMenu(forceRefresh = false) {
   if (props.toolbarLocked || typeof props.queryAtReferences !== 'function') {
     return
   }
@@ -298,7 +298,7 @@ async function toggleAtMenu() {
   atMenuLoading.value = true
   atMenuError.value = ''
   try {
-    const result = await props.queryAtReferences()
+    const result = await props.queryAtReferences(forceRefresh)
     const groups = Array.isArray(result?.groups) ? result.groups : []
     atReferenceGroups.value = groups
     activeAtGroupId.value = groups[0]?.id || ''
@@ -1040,7 +1040,7 @@ defineExpose({
         <div class="toolbar-right">
           <div ref="atMenuWrapper" class="at-menu-wrapper">
             <button
-              @click="toggleAtMenu"
+              @click="(e) => toggleAtMenu(e.metaKey || e.ctrlKey)"
               class="at-menu-btn"
               title="引用 Agent / Plugin / Skill"
               :disabled="props.toolbarLocked"

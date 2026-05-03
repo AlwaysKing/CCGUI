@@ -1363,6 +1363,40 @@ async function handleRefreshCodexUsage() {
   await refreshCodexUsageForSession(sessionStore.currentSession)
 }
 
+const mcpLoadingServer = ref(null)
+const mcpErrorInfo = ref(null)
+
+async function handleMcpAction(action, params) {
+  mcpLoadingServer.value = params.serverName
+  mcpErrorInfo.value = null
+  logger.info('[Chat] handleMcpAction', action, params)
+
+  try {
+    const result = await sessionStore.executeMcpAction(action, params)
+    logger.info('[Chat] handleMcpAction result', result)
+    // CLI 返回 error subtype（如 obsidian 的 uvx 找不到）
+    const responseSubtype = result?.response?.subtype
+    if (responseSubtype === 'error') {
+      mcpErrorInfo.value = {
+        serverName: params.serverName,
+        message: result.response.error || '操作失败'
+      }
+    }
+  } catch (e) {
+    logger.warn('[Chat] MCP action failed:', e?.message)
+    mcpErrorInfo.value = {
+      serverName: params.serverName,
+      message: e?.message || '操作失败'
+    }
+  } finally {
+    mcpLoadingServer.value = null
+  }
+}
+
+function handleClearMcpError() {
+  mcpErrorInfo.value = null
+}
+
 async function querySlashCommands() {
   return sessionStore.queryCommands('slash_command')
 }
@@ -1389,9 +1423,9 @@ function closeSlashCommandDialog() {
  * 查询当前可用的引用项（Agent / Plugin / Skill）
  * TODO: 当前为 stub 实现，后续需要从 sessionStore 聚合真实数据
  */
-async function queryAtReferences() {
+async function queryAtReferences(forceRefresh = false) {
   try {
-    return await sessionStore.queryAtReferences()
+    return await sessionStore.queryAtReferences(forceRefresh)
   } catch (e) {
     logger.warn('[Chat] queryAtReferences failed:', e?.message)
     return { groups: [] }
@@ -1445,14 +1479,14 @@ function handleAddReference(refData) {
   })
 }
 
-async function executeSlashCommand(command = null, commandArguments = '') {
+async function executeSlashCommand(command = null, commandArguments = '', options = {}) {
   const value = typeof command?.value === 'string' ? command.value.trim() : ''
   if (!value) return
 
   const argumentHint = typeof command?.argumentHint === 'string' ? command.argumentHint.trim() : ''
   const normalizedArguments = String(commandArguments || '').trim()
 
-  if (argumentHint && !normalizedArguments) {
+  if (!options.skipArgCheck && argumentHint && !normalizedArguments) {
     openSlashCommandDialog(command)
     return
   }
@@ -1510,7 +1544,8 @@ async function confirmSlashCommandDialog() {
   const command = pendingSlashCommand.value
   const args = pendingSlashCommandArgs.value
   closeSlashCommandDialog()
-  await executeSlashCommand(command, args)
+  // 从对话框确认时，直接用空参数执行（允许不填参数提交）
+  await executeSlashCommand(command, args, { skipArgCheck: true })
 }
 
 // Rewind 确认对话框状态
@@ -2681,12 +2716,17 @@ function handleToggleAgentRail() {
       :is-agent-rail-visible="isAgentRailVisible"
       :view-mode="agentWorkspaceState.collaborativeViewMode"
       :codex-usage-refreshing="codexUsageRefreshing"
+      :mcp-capabilities="sessionStore.currentMcpCapabilities"
+      :loading-mcp-server="mcpLoadingServer"
+      :mcp-error-info="mcpErrorInfo"
       @toggle-sidebar="emit('toggleSidebar')"
       @toggle-collapse="emit('toggleCollapse')"
       @pid-click="handlePidClick"
       @refresh-codex-usage="handleRefreshCodexUsage"
       @toggle-agent-rail="handleToggleAgentRail"
       @toggle-view-mode="handleToggleAgentViewMode"
+      @mcp-action="handleMcpAction"
+      @clear-mcp-error="handleClearMcpError"
     />
     <div class="messages" ref="messagesContainer" @scroll="handleUserScroll" @wheel="handleWheelEvent" @mousedown="handleMessagesMouseDown" :style="messagesHeight ? { height: messagesHeight } : {}">
       <AgentWorkspace
@@ -4775,8 +4815,8 @@ function handleToggleAgentRail() {
 
 .command-dialog-input:focus {
   outline: none;
-  border-color: rgba(56, 189, 248, 0.7);
-  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
+  border-color: rgba(249, 115, 22, 0.7);
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.12);
 }
 
 .command-dialog-actions {
@@ -4800,7 +4840,7 @@ function handleToggleAgentRail() {
 }
 
 .command-dialog-btn.primary {
-  background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+  background: linear-gradient(135deg, #F97316 0%, #EA580C 100%);
   color: #fff;
 }
 

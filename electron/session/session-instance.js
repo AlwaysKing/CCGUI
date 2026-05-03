@@ -2917,9 +2917,9 @@ class SessionInstance {
   /**
    * 查询 @ reference 分组数据（agents / skills / mcpTools）
    */
-  queryAtReferences() {
+  queryAtReferences(forceRefresh = false) {
     if (typeof this.runtimeManager?.queryAtReferences === 'function') {
-      return this.runtimeManager.queryAtReferences()
+      return this.runtimeManager.queryAtReferences(forceRefresh)
     }
     return { provider: this.provider, groups: [] }
   }

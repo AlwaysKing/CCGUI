@@ -3,8 +3,9 @@
  * EnvInfoBar - 环境信息栏组件
  * 从 ChatWindow.vue 提取的环境信息显示组件
  */
-import { ref, computed } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useMessage } from '../../composables/useMessage'
+import { logger } from '../../../../../utils/logger'
 import CopyButton from '../ui/CopyButton.vue'
 import BaseDialog from '@/components/base/BaseDialog.vue'
 import ContextUsageDetail from './ContextUsageDetail.vue'
@@ -53,19 +54,59 @@ const props = defineProps({
   codexUsageRefreshing: {
     type: Boolean,
     default: false
+  },
+  mcpCapabilities: {
+    type: Object,
+    default: null
+  },
+  loadingMcpServer: {
+    type: String,
+    default: null
+  },
+  mcpErrorInfo: {
+    type: Object,
+    default: null
   }
 })
 
-const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode', 'refreshCodexUsage'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode', 'refreshCodexUsage', 'mcpAction', 'clearMcpError'])
 
 // 使用 useMessage composable
 const { formatMcpServers, formatSkills, copiedMessageIndex, copyToClipboard } = useMessage()
 
 // 是否显示详情
 const showEnvDetail = ref(false)
+const showMcpPanel = ref(false)
 const showSilentPanel = ref(false)
 const showContextDetailDialog = ref(false)
 const activeUsageTooltip = ref('')
+const topBarRef = ref(null)
+const mcpPanelMaxHeight = ref('')
+
+// MCP 错误信息 5 秒后自动清除
+watch(() => props.mcpErrorInfo, (info) => {
+  if (info) {
+    setTimeout(() => {
+      if (props.mcpErrorInfo === info) {
+        emit('clearMcpError')
+      }
+    }, 5000)
+  }
+})
+
+// 动态计算 MCP 面板最大高度：铺满消息区
+watch(showMcpPanel, async (visible) => {
+  if (!visible) return
+  await nextTick()
+  const topBar = topBarRef.value
+  if (!topBar) return
+  const parent = topBar.parentElement
+  if (!parent) return
+  const parentRect = parent.getBoundingClientRect()
+  const topBarRect = topBar.getBoundingClientRect()
+  const available = parentRect.bottom - topBarRect.bottom
+  mcpPanelMaxHeight.value = available > 0 ? `${available}px` : '320px'
+})
 
 // 项目名称（侧边栏折叠时显示）
 const projectName = computed(() => {
@@ -451,6 +492,62 @@ function resolveUsageStrokeColor(percent, palette = 'default') {
   return palette === 'codex' ? 'rgba(148, 163, 184, 0.72)' : 'rgba(255, 255, 255, 0.72)'
 }
 
+function toggleDetail() {
+  showEnvDetail.value = !showEnvDetail.value
+  if (showEnvDetail.value) showMcpPanel.value = false
+}
+
+function toggleMcpPanel() {
+  showMcpPanel.value = !showMcpPanel.value
+  if (showMcpPanel.value) showEnvDetail.value = false
+}
+
+function handleMcpToggle(server) {
+  if (props.loadingMcpServer) return
+  logger.info('[EnvInfoBar] handleMcpToggle', server.name, server.status)
+  emit('mcpAction', 'toggle', {
+    serverName: server.name,
+    enabled: server.status?.toLowerCase() !== 'connected'
+  })
+}
+
+function handleMcpReconnect(server) {
+  if (props.loadingMcpServer) return
+  logger.info('[EnvInfoBar] handleMcpReconnect', server.name)
+  emit('mcpAction', 'reconnect', {
+    serverName: server.name
+  })
+}
+
+function getMcpStatusClass(status) {
+  if (!status) return 'status-unknown'
+  const lower = status.toLowerCase()
+  if (lower === 'connected') return 'status-connected'
+  if (['failed', 'error'].includes(lower)) return 'status-failed'
+  if (lower === 'disabled') return 'status-disabled'
+  return 'status-other'
+}
+
+function getMcpStatusText(status) {
+  if (!status) return '?'
+  const lower = status.toLowerCase()
+  if (lower === 'connected') return '✓'
+  if (['failed', 'error'].includes(lower)) return '✗'
+  if (lower === 'disabled') return '○'
+  return status
+}
+
+function formatEnvList(items) {
+  if (!items || !Array.isArray(items)) return ''
+  return items.map(item => {
+    if (typeof item === 'string') return item
+    if (typeof item === 'object' && item !== null) {
+      return item.name || item.id || item.tool_name || item.fullName || JSON.stringify(item)
+    }
+    return String(item)
+  }).join(', ')
+}
+
 function toggleSilentPanel() {
   showSilentPanel.value = !showSilentPanel.value
 }
@@ -465,7 +562,7 @@ async function copySilentMessage(message, reverseIndex) {
 </script>
 
 <template>
-  <div v-if="envInfo || showCollapseToggle || showSidebarToggle" class="top-bar">
+  <div v-if="envInfo || showCollapseToggle || showSidebarToggle" class="top-bar" ref="topBarRef">
     <div v-if="showSidebarToggle" class="sidebar-safe-spacer">
       <span v-if="projectName" class="sidebar-project-name" :title="projectPath">{{ projectName }}</span>
       <button class="sidebar-safe-btn" title="展开侧边栏" @click="emit('toggleSidebar')">
@@ -500,11 +597,11 @@ async function copySilentMessage(message, reverseIndex) {
             <span class="env-icon">⚙️</span>
             <span class="env-label">{{ runtimePid || '未启动' }}</span>
           </span>
-          <span v-if="envInfo.provider" class="env-item">
+          <span v-if="envInfo.provider" class="env-item env-item-clickable" @click="toggleDetail" title="点击查看详情">
             <span class="env-icon">🧠</span>
             <span class="env-label">{{ providerLabel }}</span>
           </span>
-          <span v-if="envInfo.session_id" class="env-item">
+          <span v-if="envInfo.session_id" class="env-item env-item-clickable" @click="toggleDetail" title="点击查看详情">
             <span class="env-icon">🔗</span>
             <span class="env-label">{{ envInfo.session_id?.substring(0, 8) }}</span>
           </span>
@@ -512,19 +609,19 @@ async function copySilentMessage(message, reverseIndex) {
             <span class="env-icon">📁</span>
             <span class="env-label">{{ envInfo.cwd?.split('/').pop() || envInfo.cwd }}</span>
           </span>
-          <span v-if="envInfo.model" class="env-item">
+          <span v-if="envInfo.model" class="env-item env-item-clickable" @click="toggleDetail" title="点击查看详情">
             <span class="env-icon">🤖</span>
             <span class="env-label">{{ envInfo.model }}</span>
           </span>
-          <span v-if="envInfo.tools?.length" class="env-item">
+          <span v-if="envInfo.tools?.length" class="env-item env-item-clickable" @click="toggleDetail" title="点击查看工具详情">
             <span class="env-icon">🔧</span>
             <span class="env-label">{{ envInfo.tools.length }} 工具</span>
           </span>
-          <span v-if="envInfo.skills?.length" class="env-item">
+          <span v-if="envInfo.skills?.length" class="env-item env-item-clickable" @click="toggleDetail" title="点击查看技能详情">
             <span class="env-icon">⚡</span>
             <span class="env-label">{{ envInfo.skills.length }} 技能</span>
           </span>
-          <span v-if="envInfo.mcp_servers?.length" class="env-item">
+          <span v-if="envInfo.mcp_servers?.length" class="env-item env-item-clickable" @click="toggleMcpPanel" title="点击管理 MCP 服务器">
             <span class="env-icon">🔌</span>
             <span class="env-label">
               {{ envInfo.mcp_servers.length }} MCP
@@ -631,9 +728,6 @@ async function copySilentMessage(message, reverseIndex) {
                 <span v-if="item.resetAt" class="env-usage-tooltip-summary env-usage-tooltip-reset">{{ item.resetAt }}</span>
               </span>
             </span>
-          </button>
-          <button class="env-detail-btn" @click="showEnvDetail = !showEnvDetail">
-            {{ showEnvDetail ? '收起' : '详情' }}
           </button>
           <div v-if="showAgentRailToggle" class="env-view-mode-toggle">
             <button
@@ -746,7 +840,7 @@ async function copySilentMessage(message, reverseIndex) {
         </div>
         <div v-if="envInfo.plugins?.length" class="env-detail-row">
           <span class="env-detail-label">插件</span>
-          <span class="env-detail-value tools-list">{{ envInfo.plugins.join(', ') }}</span>
+          <span class="env-detail-value tools-list">{{ formatEnvList(envInfo.plugins) }}</span>
         </div>
         <div v-if="envInfo.mcp_servers?.length" class="env-detail-row">
           <span class="env-detail-label">MCP</span>
@@ -758,7 +852,52 @@ async function copySilentMessage(message, reverseIndex) {
         </div>
         <div v-if="envInfo.tools?.length" class="env-detail-row env-tools">
           <span class="env-detail-label">工具</span>
-          <span class="env-detail-value tools-list">{{ envInfo.tools.join(', ') }}</span>
+          <span class="env-detail-value tools-list">{{ formatEnvList(envInfo.tools) }}</span>
+        </div>
+      </div>
+
+      <!-- MCP 管理面板 -->
+      <div v-if="showMcpPanel && envInfo.mcp_servers?.length" class="env-detail-dropdown mcp-management-panel" :style="{ maxHeight: mcpPanelMaxHeight || undefined }">
+        <div class="mcp-panel-header">
+          <span class="mcp-panel-title">MCP 服务器管理</span>
+          <span class="mcp-panel-count">{{ envInfo.mcp_servers.length }}</span>
+        </div>
+        <div class="mcp-server-list">
+          <div v-for="server in envInfo.mcp_servers" :key="server.name" class="mcp-server-item" :class="{ 'mcp-disabled': loadingMcpServer && loadingMcpServer !== server.name }">
+            <span class="mcp-server-name">
+              {{ server.name }}
+              <span v-if="server.tools?.length" class="mcp-tool-count">{{ server.tools.length }} 工具</span>
+            </span>
+            <span v-if="mcpErrorInfo?.serverName === server.name" class="mcp-error-inline">{{ mcpErrorInfo.message }}</span>
+            <span v-else-if="server.error" class="mcp-server-error-inline">{{ server.error }}</span>
+            <span v-else-if="server.description" class="mcp-server-desc-inline">{{ server.description }}</span>
+            <span class="mcp-server-actions">
+              <span v-if="loadingMcpServer === server.name" class="mcp-action-spinner">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <circle cx="12" cy="12" r="9" stroke-opacity="0.25"/>
+                  <path d="M12 3a9 9 0 0 1 9 9" stroke-linecap="round"/>
+                </svg>
+              </span>
+              <span v-if="!mcpCapabilities?.toggle && !mcpCapabilities?.reconnect" class="mcp-server-status" :class="getMcpStatusClass(server.status)">
+                {{ getMcpStatusText(server.status) }}
+              </span>
+              <span v-if="mcpCapabilities?.toggle" class="mcp-switch" :class="{ 'is-on': server.status?.toLowerCase() === 'connected' }" :title="server.status?.toLowerCase() === 'connected' ? '点击禁用' : '点击启用'" @click="handleMcpToggle(server)">
+                <span class="mcp-switch-track"></span>
+              </span>
+              <button v-if="mcpCapabilities?.reconnect"
+                      class="mcp-action-btn mcp-action-reconnect"
+                      :disabled="!!loadingMcpServer"
+                      @click="handleMcpReconnect(server)"
+                      title="重连">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21.5 2v6h-6"/>
+                  <path d="M2.5 22v-6h6"/>
+                  <path d="M2.5 11.5a10 10 0 0 1 18.4-4.5"/>
+                  <path d="M21.5 12.5a10 10 0 0 1-18.4 4.5"/>
+                </svg>
+              </button>
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -882,6 +1021,7 @@ async function copySilentMessage(message, reverseIndex) {
 .env-left {
   flex: 1;
   overflow: hidden;
+  padding: 4px 0;
 }
 
 .env-right {
@@ -1107,19 +1247,19 @@ async function copySilentMessage(message, reverseIndex) {
 
 .env-item-clickable {
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast);
   border-radius: var(--radius-sm);
-  padding: 2px 8px;
-  margin: -2px -8px;
+  padding: 6px 8px;
+  margin: -6px -8px;
   -webkit-app-region: no-drag;
 }
 
 .env-item-clickable:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .env-item-clickable:active {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .silent-detail-dropdown {
@@ -1347,8 +1487,10 @@ async function copySilentMessage(message, reverseIndex) {
   top: 100%;
   left: 0;
   right: 0;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--bg-tertiary);
+  background: #27272a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
   padding: var(--spacing-md) var(--spacing-lg);
   z-index: 140;
   -webkit-app-region: no-drag;
@@ -1392,5 +1534,258 @@ async function copySilentMessage(message, reverseIndex) {
 
 .env-detail-value-error {
   color: #FCA5A5;
+}
+
+/* MCP 管理面板 */
+.mcp-management-panel {
+  max-height: 320px;
+  overflow-y: auto;
+  background: #27272a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.mcp-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--bg-tertiary);
+}
+
+.mcp-panel-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.mcp-panel-count {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.mcp-server-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mcp-server-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mcp-server-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-server-name {
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mcp-tool-count {
+  font-family: var(--font-family-base);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0 5px;
+  border-radius: 999px;
+}
+
+.mcp-server-error-inline {
+  font-size: 11px;
+  color: #f87171;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-desc-inline {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-status {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.status-connected {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
+.status-failed {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+
+.status-disabled {
+  background: rgba(113, 113, 122, 0.15);
+  color: #a1a1aa;
+}
+
+.status-unknown,
+.status-other {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+}
+
+.mcp-server-error {
+  font-size: 11px;
+  color: #f87171;
+  padding-left: 2px;
+}
+
+.mcp-server-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.mcp-action-btn {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  -webkit-app-region: no-drag;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.mcp-action-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.mcp-action-btn:active {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(0.96);
+}
+
+/* MCP Switch */
+.mcp-switch {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+.mcp-switch-track {
+  display: block;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: rgba(113, 113, 122, 0.4);
+  border: 1px solid rgba(113, 113, 122, 0.5);
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.mcp-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #a1a1aa;
+  transition: all 0.2s ease;
+}
+
+.mcp-switch.is-on .mcp-switch-track {
+  background: rgba(249, 115, 22, 0.3);
+  border-color: rgba(249, 115, 22, 0.5);
+}
+
+.mcp-switch.is-on .mcp-switch-track::after {
+  transform: translateX(14px);
+  background: #f97316;
+}
+
+.mcp-switch:hover .mcp-switch-track {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.mcp-action-reconnect {
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  padding: 4px;
+}
+
+.mcp-action-reconnect:hover {
+  color: #60a5fa;
+}
+
+.mcp-action-reconnect:active {
+  transform: scale(0.9);
+}
+
+.mcp-action-reconnect:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* MCP Loading spinner */
+.mcp-action-spinner {
+  display: inline-flex;
+  align-items: center;
+  color: #f97316;
+  animation: mcp-spin 0.6s linear infinite;
+}
+
+@keyframes mcp-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* MCP 禁用态（其他 server 行） */
+.mcp-server-item.mcp-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* MCP 错误信息 */
+.mcp-error-inline {
+  color: #ef4444;
+  font-size: 11px;
+  margin-right: 8px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

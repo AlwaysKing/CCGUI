@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const { ClaudeClient } = require('./client')
+const logger = require('../../logger')
 const attachmentService = require('../../services/attachment-service')
 const {
   replaceAttachmentTokens,
@@ -35,6 +36,7 @@ class ClaudeAdapter extends ClaudeClient {
       session_id: this.sessionId,
       provider: 'claude',
       providerPid: null,
+      mcp_capabilities: { toggle: true, reconnect: true },
       rewindCapabilities: {
         reset: true,
         patch: false,
@@ -132,6 +134,12 @@ class ClaudeAdapter extends ClaudeClient {
     const previousByName = new Map(this.lastMcpServersByName)
     const nextByName = new Map(normalizedServers.map(entry => [entry.name, entry]))
     this.lastMcpServersByName = nextByName
+
+    logger.info('[ClaudeAdapter] syncMcpServers', {
+      source: options.source || 'unknown',
+      serverCount: normalizedServers.length,
+      servers: normalizedServers.map(s => ({ name: s.name, status: s.status }))
+    })
 
     this.envInfo = {
       ...this.envInfo,
@@ -1221,7 +1229,20 @@ class ClaudeAdapter extends ClaudeClient {
       // MCP 状态响应：补充 mcpTools 的 description
       if (requestContext?.kind === 'mcp-status') {
         this.pendingDryRunRequests.delete(requestId)
-        this.handleMcpStatusResponse(payload)
+        this.handleMcpStatusResponse(payload, { syncServers: requestContext.syncServers === true })
+        return
+      }
+
+      // MCP 操作响应（toggle/reconnect）：刷新 MCP 状态
+      if (requestContext?.kind === 'mcp-action') {
+        this.pendingDryRunRequests.delete(requestId)
+        logger.info('[ClaudeAdapter] MCP action response received', { requestId, payloadKeys: Object.keys(payload || {}), payload })
+        // 延迟一下让 CLI 完成 MCP 状态变更，然后刷新
+        setTimeout(() => {
+          logger.info('[ClaudeAdapter] requestMcpStatus after MCP action')
+          this.requestMcpStatus({ syncServers: true })
+        }, 500)
+        this.emit('control-response', message)
         return
       }
 
@@ -1348,6 +1369,16 @@ class ClaudeAdapter extends ClaudeClient {
     delete normalizedRequest.numTurns
     delete normalizedRequest.preview_only
 
+    // 跟踪 MCP 控制请求，响应时刷新 MCP 状态
+    if (normalizedRequest?.subtype === 'mcp_toggle' || normalizedRequest?.subtype === 'mcp_reconnect') {
+      const mcpRequestId = normalizedRequest.__ccguiRequestId || `mcp_action_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+      this.pendingDryRunRequests.set(mcpRequestId, { kind: 'mcp-action' })
+      if (!normalizedRequest.__ccguiRequestId) {
+        normalizedRequest.__ccguiRequestId = mcpRequestId
+      }
+      logger.info('[ClaudeAdapter] MCP action request tracked', { subtype: normalizedRequest.subtype, serverName: normalizedRequest.serverName, enabled: normalizedRequest.enabled, requestId: mcpRequestId })
+    }
+
     if (normalizedRequest?.subtype === 'set_session_submodel' && normalizedRequest.model) {
       super.sendControlRequest({
         subtype: 'set_model',
@@ -1429,10 +1460,14 @@ class ClaudeAdapter extends ClaudeClient {
    * 请求 MCP 服务器状态（含每个 server 的 tools 列表及 description）
    * 在 handleContextUsageResponse 更新 mcpTools 基础列表后调用，
    * 补充每个 tool 的 description 信息
+   * @param {object} options - { syncServers: true } 时在响应中同时刷新 server 连接状态
    */
-  requestMcpStatus() {
+  requestMcpStatus(options = {}) {
     const requestId = `mcp_status_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-    this.pendingDryRunRequests.set(requestId, { kind: 'mcp-status' })
+    this.pendingDryRunRequests.set(requestId, {
+      kind: 'mcp-status',
+      syncServers: options.syncServers === true
+    })
     super.sendControlRequest({
       subtype: 'mcp_status',
       __ccguiRequestId: requestId
@@ -1441,9 +1476,11 @@ class ClaudeAdapter extends ClaudeClient {
 
   /**
    * 将 mcp_status 响应中的 tools description 合并到 referenceInventory
+   * @param {object} options - { syncServers: true } 时同时刷新 server 连接状态到 envInfo
    */
-  handleMcpStatusResponse(payload) {
+  handleMcpStatusResponse(payload, options = {}) {
     const servers = Array.isArray(payload?.mcpServers) ? payload.mcpServers : []
+    logger.info('[ClaudeAdapter] handleMcpStatusResponse', { serverCount: servers.length, syncServers: options.syncServers, firstServer: servers[0] ? { name: servers[0].name, status: servers[0].status, toolCount: servers[0].tools?.length } : null })
     if (servers.length === 0) return
 
     const normalizeInputSchema = (tool = {}) => {
@@ -1481,6 +1518,15 @@ class ClaudeAdapter extends ClaudeClient {
         const key = `${normalizedServerName}::${tool.name}`
         serverToolMap.set(key, tool)
       }
+    }
+
+    // 仅在 MCP action（toggle/reconnect）后的刷新中同步 server 连接状态
+    // 上下文用量刷新触发的不走这里，避免覆盖 init/session_state_changed 的正确状态
+    if (options.syncServers) {
+      this.syncMcpServers(servers, {
+        emitNotifications: true,
+        source: 'mcp_status_refresh'
+      })
     }
 
     // 合并 description 到已有的 referenceInventory.mcpTools

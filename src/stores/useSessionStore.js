@@ -1910,14 +1910,15 @@ export const useSessionStore = defineStore('session', () => {
     return result.data || { provider: session.provider || null, category, groups: [] }
   }
 
-  async function queryAtReferences() {
+  async function queryAtReferences(forceRefresh = false) {
     const session = currentSession.value
     if (!session) {
       throw new Error('No active session')
     }
 
     const result = await window.electronAPI.queryAtReferences({
-      sessionId: session.id
+      sessionId: session.id,
+      forceRefresh
     })
 
     if (!result?.success) {
@@ -2057,6 +2058,30 @@ export const useSessionStore = defineStore('session', () => {
     // 返回 Promise，让调用者可以 await 响应
     return responsePromise
   }
+
+  /**
+   * 执行 MCP 操作（toggle / reconnect），复用已有的 sendControlRequest 通道
+   */
+  async function executeMcpAction(action, params = {}) {
+    const session = currentSession.value
+    if (!session) {
+      log('[SessionStore] executeMcpAction: no active session')
+      return null
+    }
+
+    const subtypeMap = { toggle: 'mcp_toggle', reconnect: 'mcp_reconnect' }
+    const request = { subtype: subtypeMap[action], serverName: params.serverName }
+    if (action === 'toggle') {
+      request.enabled = params.enabled
+    }
+
+    log('[SessionStore] executeMcpAction', action, request)
+    return sendControlRequest(request)
+  }
+
+  const currentMcpCapabilities = computed(() => {
+    return currentSession.value?.envInfo?.mcp_capabilities || null
+  })
 
   async function listSessionSubmodels(options = {}) {
     const session = currentSession.value
@@ -4096,6 +4121,8 @@ export const useSessionStore = defineStore('session', () => {
     sendRuntimeToolResult,
     sendInterrupt,
     sendControlRequest,
+    executeMcpAction,
+    currentMcpCapabilities,
     setSessionModel,
     listSessionSubmodels,
     getAvailableTargets,

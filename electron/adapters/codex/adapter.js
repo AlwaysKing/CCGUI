@@ -1279,6 +1279,11 @@ class CodexAdapter extends CodexClient {
         this.emit('cli-status', errorDetails)
         break
 
+      case 'remoteControl/status/changed':
+        // Remote Control 是 Codex CLI 的远程控制功能（通过手机 ChatGPT 监控本地会话），
+        // CCGUI 不集成此功能，静默忽略
+        break
+
       default:
         this.emit('unknown_message', message)
         break

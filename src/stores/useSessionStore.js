@@ -1289,11 +1289,12 @@ export const useSessionStore = defineStore('session', () => {
    * 2. 若无精确匹配，查找 subagent 首条消息之前最近的未绑定 Agent tool_use
    */
   function ensureParentAgentToolUseBinding(session, agentId) {
-    if (!session?.agentToolUseBindings || !agentId) return
+    if (!session?.agentBuckets || !agentId) return
 
-    // 已有 Agent tool_use 绑定到此 agent，无需处理
-    for (const [, boundAgentId] of session.agentToolUseBindings) {
-      if (boundAgentId === agentId) return
+    // 检查此 agent 的 bucket 是否已包含 Agent tool_use（说明父级已正确归类）
+    const existingBucket = session.agentBuckets.get(agentId)
+    if (existingBucket?.messages?.some(m => m?.role === 'tool_use' && m?.toolName === 'Agent')) {
+      return
     }
 
     // 策略 1：搜索带有 ccgui 精确指向此 agent 的 Agent tool_use

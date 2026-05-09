@@ -1280,6 +1280,68 @@ export const useSessionStore = defineStore('session', () => {
     syncAgentWorkspaceState(session)
   }
 
+  /**
+   * 当首次发现 execution agent 时，搜索并绑定对应的父级 Agent tool_use 消息。
+   * 场景：Agent tool_use 消息有时缺少 ccgui 数据（或缺少 agentKind），
+   * 导致 getMessageAgentId 返回 mainAgentId，消息被放入主 agent 的 bucket。
+   * 此函数通过以下策略定位并修复归类：
+   * 1. 先尝试通过 ccgui 数据精确匹配
+   * 2. 若无精确匹配，查找 subagent 首条消息之前最近的未绑定 Agent tool_use
+   */
+  function ensureParentAgentToolUseBinding(session, agentId) {
+    if (!session?.agentToolUseBindings || !agentId) return
+
+    // 已有 Agent tool_use 绑定到此 agent，无需处理
+    for (const [, boundAgentId] of session.agentToolUseBindings) {
+      if (boundAgentId === agentId) return
+    }
+
+    // 策略 1：搜索带有 ccgui 精确指向此 agent 的 Agent tool_use
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      const msg = session.messages[i]
+      if (msg?.role !== 'tool_use' || msg?.toolName !== 'Agent') continue
+      const msgAgentId = resolveAgentIdFromCcguiPayload(msg?.ccgui)
+      if (msgAgentId === agentId) {
+        const msgToolUseId = msg.id || msg.request_id
+        if (msgToolUseId) {
+          session.agentToolUseBindings.set(msgToolUseId, agentId)
+          moveBoundToolMessageToBucket(session, msgToolUseId, agentId)
+          return
+        }
+      }
+    }
+
+    // 策略 2：找到此 agent 在 session.messages 中最早出现的 ccgui 消息位置，
+    // 然后向前搜索最近的未绑定 Agent tool_use
+    let earliestAnchorIndex = -1
+    for (let i = 0; i < session.messages.length; i++) {
+      const msg = session.messages[i]
+      const msgAgentId = resolveAgentIdFromCcguiPayload(msg?.ccgui)
+      if (msgAgentId === agentId) {
+        earliestAnchorIndex = i
+        break
+      }
+    }
+
+    if (earliestAnchorIndex <= 0) return
+
+    // 向前搜索最近的未绑定 Agent tool_use
+    // 注意：此启发式依赖事件到达顺序保证配对正确性——在极端并发 subagent 场景下可能错配，
+    // 但实际场景中同一时刻极少有多个 Agent tool_use 都缺少 ccgui 数据的情况
+    for (let i = earliestAnchorIndex - 1; i >= 0; i--) {
+      const msg = session.messages[i]
+      if (msg?.role !== 'tool_use' || msg?.toolName !== 'Agent') continue
+      const msgToolUseId = msg.id || msg.request_id
+      if (!msgToolUseId) continue
+      // 跳过已绑定的（可能属于其他 subagent）
+      if (session.agentToolUseBindings.has(msgToolUseId)) continue
+
+      session.agentToolUseBindings.set(msgToolUseId, agentId)
+      moveBoundToolMessageToBucket(session, msgToolUseId, agentId)
+      return
+    }
+  }
+
   function recordAgentSemantics(session, payload = {}, options = {}) {
     if (!session || !payload || typeof payload !== 'object') {
       return
@@ -1322,6 +1384,13 @@ export const useSessionStore = defineStore('session', () => {
       if (prevBinding !== semanticAgentId) {
         moveBoundToolMessageToBucket(session, toolUseId, semanticAgentId)
       }
+    }
+
+    // 当首次发现 execution agent 时，搜索并绑定对应的父级 Agent tool_use 消息
+    // 有些情况下 Agent tool_use 消息本身没有 ccgui 数据或缺少 agentKind，
+    // 导致它被归类到主 agent 的 bucket 中。这里通过定位来解决。
+    if (semanticAgentId && semanticAgentKind === 'execution') {
+      ensureParentAgentToolUseBinding(session, semanticAgentId)
     }
 
     syncAgentWorkspaceState(session)
@@ -1552,6 +1621,14 @@ export const useSessionStore = defineStore('session', () => {
   // 当前会话是否正在处理
   const isProcessing = computed(() => {
     return currentSession.value?.isProcessing || false
+  })
+
+  // 是否有任何会话正在处理（实时检查 renderer 内存中的状态）
+  const hasAnyProcessingSession = computed(() => {
+    for (const session of sessions.value.values()) {
+      if (session.isProcessing) return true
+    }
+    return false
   })
 
   // 当前会话的工具权限请求（队列中的第一个）
@@ -3069,9 +3146,10 @@ export const useSessionStore = defineStore('session', () => {
   function handleMessageStart(session, message) {
     log('[SessionStore] handleMessageStart:', message.role, message.subtype, message.id)
 
-    const nextMessage = {
-      ...message
-    }
+    // 直接使用原始 message 对象，确保 session.messages 和 agent bucket 引用同一个对象
+    // 之前用 { ...message } 创建浅拷贝会导致 bucket 中的引用与 session.messages 中的不同，
+    // 后续对 isExecuting 等字段的更新无法传播到 bucket，computed 无法感知变化
+    const nextMessage = message
 
     if ((nextMessage.role === 'tool_use' || nextMessage.role === 'diff') && !nextMessage.manuallyExpanded) {
       nextMessage.collapsed = true
@@ -4300,6 +4378,7 @@ export const useSessionStore = defineStore('session', () => {
     splitCollaborativeSessions,
     currentInputTargetAgent,
     isProcessing,
+    hasAnyProcessingSession,
     inputMessage,
     inputAttachments,
     pendingPermission,

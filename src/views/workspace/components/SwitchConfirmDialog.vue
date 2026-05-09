@@ -35,8 +35,8 @@ useDialogStack(computed(() => true), () => emit('close'))
             <line x1="12" y1="17" x2="12.01" y2="17"/>
           </svg>
           <div class="warning-content">
-            <p class="warning-title">当前项目有正在运行的会话</p>
-            <p class="warning-text">切换项目将会中断这些会话</p>
+            <p class="warning-title">当前项目有正在运行的会话或终端任务</p>
+            <p class="warning-text">切换项目将会中断这些操作</p>
           </div>
         </div>
       </div>

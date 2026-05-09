@@ -32,6 +32,11 @@ const chatMessageThemeMode = ref('app')
 const chatMessageThemePreset = ref('classic')
 const chatMessageTheme = ref(buildChatMessageThemeFromPreset('classic'))
 
+// 思考设置
+const thinkingMode = ref('system')
+const localThinkingEnabled = ref(true)
+const localMaxThinkingTokens = ref(10240)
+
 // 选择的配置
 const selectedClaudeTargetId = ref(null)
 const selectedClaudeModelId = ref(null)
@@ -190,6 +195,14 @@ async function loadProjectConfig() {
       } else {
         documentsMode.value = savedDocumentMode
         selectedDocumentIds.value = []
+      }
+
+      // 思考设置
+      const savedThinkingMode = settings.thinkingMode || (settings.thinkingEnabled !== undefined ? 'custom' : 'system')
+      thinkingMode.value = savedThinkingMode
+      if (savedThinkingMode === 'custom') {
+        localThinkingEnabled.value = settings.thinkingEnabled !== undefined ? settings.thinkingEnabled : true
+        localMaxThinkingTokens.value = settings.maxThinkingTokens !== undefined ? settings.maxThinkingTokens : 10240
       }
 
       const savedChatThemeMode = settings.chatMessageThemeMode || 'app'
@@ -373,6 +386,9 @@ async function handleSave() {
           modelCardId: codexModelMode.value === 'custom' && codexModelCardMode.value === 'custom' ? selectedCodexModelCardId.value : null
         }
       },
+      thinkingMode: thinkingMode.value,
+      thinkingEnabled: thinkingMode.value === 'custom' ? localThinkingEnabled.value : undefined,
+      maxThinkingTokens: thinkingMode.value === 'custom' ? localMaxThinkingTokens.value : undefined,
       promptMode: promptsMode.value,
       promptIds: promptsMode.value === 'custom' ? [...selectedPromptIds.value] : [],
       documentMode: documentsMode.value,
@@ -592,6 +608,42 @@ onMounted(() => {
               <p v-if="availableCodexModels.length === 0" class="empty-hint">暂无可用模型供应商，请先在设置中添加并激活模型供应商</p>
             </div>
           </div>
+
+          <!-- 思考 -->
+          <div class="config-section">
+            <label class="config-label">思考</label>
+            <div class="radio-group">
+              <label class="radio-item">
+                <input type="radio" v-model="thinkingMode" value="system" />
+                <span>系统</span>
+              </label>
+              <label class="radio-item">
+                <input type="radio" v-model="thinkingMode" value="custom" />
+                <span>自定义</span>
+              </label>
+            </div>
+            <div v-if="thinkingMode === 'custom'" class="thinking-custom">
+              <div class="thinking-row">
+                <span class="thinking-row-label">开启:</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" v-model="localThinkingEnabled">
+                  <span class="toggle-slider"></span>
+                </label>
+                <span class="thinking-row-label thinking-limit-label">上限</span>
+                <input
+                  type="number"
+                  v-model.number="localMaxThinkingTokens"
+                  class="form-input thinking-input"
+                  min="0"
+                  max="30000"
+                  step="1024"
+                  placeholder="10240"
+                >
+              </div>
+            </div>
+          </div>
+
+          <div class="config-divider"></div>
 
           <!-- 提示词选择 -->
           <div class="config-section">
@@ -1053,5 +1105,115 @@ onMounted(() => {
 .btn-confirm:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 输入框样式 */
+.form-input {
+  appearance: none;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid #52525B;
+  border-radius: 6px;
+  background: #27272A;
+  color: #F4F4F5;
+  font-size: 14px;
+  line-height: 1.4;
+  box-sizing: border-box;
+}
+
+.form-input::placeholder {
+  color: #71717A;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #F97316;
+}
+
+.form-input:hover {
+  border-color: #71717A;
+}
+
+/* 开关切换 */
+.toggle-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.toggle-slider {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: #52525B;
+  border-radius: 10px;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #F4F4F5;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: #F97316;
+}
+
+.toggle-switch input:checked + .toggle-slider::after {
+  transform: translateX(16px);
+}
+
+/* 思考自定义区域 - 无边框 */
+.thinking-custom {
+  margin-top: 8px;
+}
+
+/* 思考行布局 */
+.thinking-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.thinking-row-label {
+  font-size: 14px;
+  color: #D1D5DB;
+  white-space: nowrap;
+}
+
+.thinking-limit-label {
+  margin-left: 4px;
+}
+
+.thinking-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.thinking-input::-webkit-inner-spin-button,
+.thinking-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.thinking-input[type='number'] {
+  -moz-appearance: textfield;
 }
 </style>

@@ -548,6 +548,8 @@ function handleTerminalRunningChange(nextState) {
     count: Number(nextState?.count || 0)
   }
   runningTaskLabels.value = Array.isArray(nextState?.taskLabels) ? nextState.taskLabels : []
+  // 同步到 store，供窗口关闭检测和项目切换检测使用
+  store.setHasRunningTerminals(terminalRunningState.value.hasRunning)
 }
 
 const shouldShowChatPanel = computed(() => {
@@ -719,29 +721,33 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
 
   primaryView.value = 'chat'
 
-  // 从 session 恢复 task-dock 历史
-  const session = sessionStore.currentSession
-  if (session?.taskDockHistory?.length && taskLauncherTasks.value.length) {
-    const tasksByLabel = new Map(
-      taskLauncherTasks.value
-        .map(t => normalizeTaskDockTask(t))
-        .filter(Boolean)
-        .map(t => [t.label, t])
-    )
-    const restored = session.taskDockHistory
-      .filter(h => tasksByLabel.has(h.label))
-      .map(h => {
-        const task = tasksByLabel.get(h.label)
-        return {
-          ...task,
-          running: false,
-          lastUsedAt: h.lastUsedAt || Date.now()
-        }
-      })
-    taskDockItems.value = trimTaskDockItems(restored)
-  } else if (!session?.taskDockHistory?.length) {
-    taskDockItems.value = []
+  // taskDockItems 是 project 级别的，session 切换不应影响
+  // 只有在 taskDockItems 为空时（首次加载），才尝试从 project 历史恢复
+  if (!taskDockItems.value.length) {
+    const session = sessionStore.currentSession
+    if (session?.taskDockHistory?.length && taskLauncherTasks.value.length) {
+      const tasksByLabel = new Map(
+        taskLauncherTasks.value
+          .map(t => normalizeTaskDockTask(t))
+          .filter(Boolean)
+          .map(t => [t.label, t])
+      )
+      const restored = session.taskDockHistory
+        .filter(h => tasksByLabel.has(h.label))
+        .map(h => {
+          const task = tasksByLabel.get(h.label)
+          return {
+            ...task,
+            running: false,
+            lastUsedAt: h.lastUsedAt || Date.now()
+          }
+        })
+      taskDockItems.value = trimTaskDockItems(restored)
+    }
   }
+
+  // 从终端实际运行状态同步 running 标记
+  syncTaskDockItems()
 
   if (fileBrowserStore.shouldShowPreviewPanel && isChatCollapsed.value) {
     expandChatPanel(true)
@@ -756,7 +762,7 @@ watch([taskLauncherTasks, runningTaskLabels], () => {
   syncTaskDockItems()
 }, { deep: true })
 
-// taskDockItems 变化时保存到 session（debounce 1s）
+// taskDockItems 变化时保存到 project 配置（debounce 1s）
 let taskDockSaveTimer = null
 watch(taskDockItems, (items) => {
   if (!items.length) return
@@ -768,6 +774,7 @@ watch(taskDockItems, (items) => {
     try {
       await window.electronAPI.saveTaskDockHistory({
         sessionId: session.id,
+        projectId: store.currentProject?.id,
         items: items.map(item => ({
           label: item.label,
           commandLine: item.commandLine,
@@ -1006,6 +1013,7 @@ async function handleDeleteInactiveSessions() {
             @close-panel="fileBrowserStore.hidePreviewPanel"
             @toggle-sidebar="toggleSidebar"
             @toggle-diff="fileBrowserStore.toggleTabDiff"
+            @open-markdown-preview="fileBrowserStore.openMarkdownPreview"
             @toggle-chat-panel="toggleChatPanelCollapse"
           />
 
@@ -1139,7 +1147,7 @@ async function handleDeleteInactiveSessions() {
     <SwitchConfirmDialog
       v-if="showSwitchConfirmDialog"
       :projectName="selectedProject?.name"
-      :hasRunningSessions="store.hasProcessingSessions"
+      :hasRunningSessions="store.hasRunningSessions || store.hasRunningTerminals"
       @close="showSwitchConfirmDialog = false"
       @replace="handleReplaceProject"
       @newWindow="handleNewWindow"

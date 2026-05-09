@@ -294,6 +294,17 @@ async function createTerminal(terminalOptions = {}) {
   }
 }
 
+function quoteShellEnvValue(value) {
+  const text = String(value ?? '')
+  if (!text) {
+    return "''"
+  }
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(text)) {
+    return text
+  }
+  return `'${text.replaceAll("'", `'\"'\"'`)}'`
+}
+
 async function runTaskInTerminal(task) {
   if (!task?.commandLine) {
     throw new Error('缺少可执行的任务命令')
@@ -328,6 +339,15 @@ async function runTaskInTerminal(task) {
   }
 
   const commands = []
+  if (task.env && typeof task.env === 'object') {
+    for (const [key, value] of Object.entries(task.env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        console.warn(`[TerminalPanel] Skipping invalid env key: ${key}`)
+        continue
+      }
+      commands.push(`export ${key}=${quoteShellEnvValue(String(value))}`)
+    }
+  }
   if (task.cwd) {
     commands.push(`cd ${JSON.stringify(task.cwd)}`)
   }

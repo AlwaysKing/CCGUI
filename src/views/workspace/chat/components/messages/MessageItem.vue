@@ -545,6 +545,17 @@ async function onToggleResponseCollapse(messageIndex, event = null) {
     }
   }
 
+  // 展开被释放的问答：从缓存中恢复响应消息
+  if (!nextCollapsed && message._releasedResponses) {
+    const ownerSession = props.sessionId
+      ? sessionStore.sessions.get(props.sessionId)
+      : sessionStore.currentSession
+
+    if (ownerSession) {
+      sessionStore.restoreReleasedTurn(ownerSession, message)
+    }
+  }
+
   toggleResponseCollapse(props.allMessages, messageIndex)
 }
 

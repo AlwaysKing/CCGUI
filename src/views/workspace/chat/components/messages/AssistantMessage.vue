@@ -129,6 +129,12 @@ function copyContent() {
   gap: 4px;
 }
 
+/* ghost 模式下让 markdown 内容填满 flex 容器剩余空间 */
+.message-text.surface-ghost :deep(.markdown-content) {
+  flex: 1;
+  min-width: 0;
+}
+
 /* 简约模式下复制按钮跟随内容 */
 .message-text.surface-ghost :deep(.copy-btn) {
   position: static;
@@ -216,6 +222,11 @@ function copyContent() {
 /* 非 Markdown 内容保持 pre-wrap */
 .message-text:not(:has(.markdown-content)) {
   white-space: pre-wrap;
+}
+
+/* 包含代码块时撑满可用最大宽度，配合 MarkdownRenderer 的 contain: inline-size 使用 */
+.message-text:has(.code-block-shell) {
+  min-width: var(--ccgui-message-fill-width, fit-content);
 }
 
 /* 复制按钮定位到右上角 */

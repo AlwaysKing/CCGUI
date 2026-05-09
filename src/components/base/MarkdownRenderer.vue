@@ -241,6 +241,8 @@ onBeforeUnmount(() => {
 .markdown-content :deep(.code-block-shell) {
   position: relative;
   margin: 1em 0;
+  max-width: 100%;
+  contain: inline-size;
 }
 
 .markdown-content :deep(.code-block-shell pre) {

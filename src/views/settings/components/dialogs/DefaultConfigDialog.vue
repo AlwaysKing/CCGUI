@@ -34,6 +34,8 @@ const formData = ref({
   authToken: '',
   anthropicModel: '',
   effort: 'default',
+  maxThinkingTokens: 10240,
+  thinkingEnabled: true,
   anthropicDefaultSonnetModel: '',
   anthropicDefaultOpusModel: '',
   anthropicDefaultHaikuModel: '',
@@ -52,6 +54,8 @@ function syncFormData() {
       authToken: props.config.authToken || '',
       anthropicModel: props.config.anthropicModel || '',
       effort: props.config.effort || 'default',
+      maxThinkingTokens: props.config.maxThinkingTokens ?? 10240,
+      thinkingEnabled: props.config.thinkingEnabled !== undefined ? props.config.thinkingEnabled : true,
       anthropicDefaultSonnetModel: props.config.anthropicDefaultSonnetModel || '',
       anthropicDefaultOpusModel: props.config.anthropicDefaultOpusModel || '',
       anthropicDefaultHaikuModel: props.config.anthropicDefaultHaikuModel || '',
@@ -175,6 +179,31 @@ function handleSave() {
             full-width
             :options="effortOptions"
           />
+        </div>
+
+        <!-- 思考 -->
+        <div class="form-item">
+          <label class="form-label">
+            思考
+            <span class="label-hint">关闭后所有会话默认禁用思考，可通过会话工具栏单独开启</span>
+          </label>
+          <div class="thinking-row">
+            <span class="thinking-row-label">开启:</span>
+            <label class="toggle-switch">
+              <input type="checkbox" v-model="formData.thinkingEnabled">
+              <span class="toggle-slider"></span>
+            </label>
+            <span class="thinking-row-label thinking-limit-label">上限</span>
+            <input
+              type="number"
+              v-model.number="formData.maxThinkingTokens"
+              class="form-input thinking-input"
+              min="0"
+              max="30000"
+              step="1024"
+              placeholder="10240"
+            >
+          </div>
         </div>
 
         <!-- 模型映射 -->
@@ -446,5 +475,88 @@ function handleSave() {
 
 .btn-primary:hover:not(:disabled) {
   background: #EA580C;
+}
+
+/* 开关切换 */
+.toggle-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.toggle-slider {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: #52525B;
+  border-radius: 10px;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #F4F4F5;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: #F97316;
+}
+
+.toggle-switch input:checked + .toggle-slider::after {
+  transform: translateX(16px);
+}
+
+.toggle-label {
+  font-size: 13px;
+  color: #A1A1AA;
+}
+
+/* 思考行布局 */
+.thinking-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.thinking-row-label {
+  font-size: 14px;
+  color: #D1D5DB;
+  white-space: nowrap;
+}
+
+.thinking-limit-label {
+  margin-left: 4px;
+}
+
+.thinking-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 隐藏 number input 的上下步进按钮 */
+.thinking-input::-webkit-inner-spin-button,
+.thinking-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.thinking-input[type='number'] {
+  -moz-appearance: textfield;
 }
 </style>

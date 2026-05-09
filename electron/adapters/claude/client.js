@@ -434,6 +434,7 @@ class ClaudeClient {
 
   resolveSessionMode() {
     this.shouldLinkSanitizedSessionArtifacts = false
+
     const sessionFile = this.getSessionFilePath()
     if (!sessionFile || !fs.existsSync(sessionFile)) {
       return 'new'
@@ -663,9 +664,15 @@ class ClaudeClient {
       '--permission-prompt-tool', 'stdio',
       '--include-partial-messages',
       '--replay-user-messages',  // 重新发送用户消息以便跟踪消息 ID
-      '--max-thinking-tokens', '31999',
       '--setting-sources', 'user,project,local'  // 启用设置源
     ]
+
+    // Add max thinking tokens from settings
+    const maxThinkingTokens = this.projectSettings?.maxThinkingTokens
+    if (maxThinkingTokens !== null && maxThinkingTokens !== undefined && maxThinkingTokens >= 0) {
+      args.push('--max-thinking-tokens', String(maxThinkingTokens))
+      logger.info(`[ClaudeClient] Setting max thinking tokens: ${maxThinkingTokens}`)
+    }
 
     // Add permission mode if not default
     if (this.permissionMode && this.permissionMode !== 'default') {

@@ -6,6 +6,14 @@ ipcRenderer.on('app-before-quit', () => {
   appQuitting = true
 })
 
+// 窗口关闭请求的回调
+let windowCloseRequestCallback = null
+ipcRenderer.on('window-close-request', () => {
+  if (windowCloseRequestCallback) {
+    windowCloseRequestCallback()
+  }
+})
+
 process.once('loaded', () => {
   const nativeAlert = window.alert?.bind(window)
   const nativeConfirm = window.confirm?.bind(window)
@@ -52,7 +60,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setSessionSubmodel: (options) => ipcRenderer.invoke('set-session-submodel', options),
   listSessionEffortOptions: (options) => ipcRenderer.invoke('list-session-effort-options', options),
   setSessionEffort: (options) => ipcRenderer.invoke('set-session-effort', options),
-
+  setSessionMaxThinkingTokens: (options) => ipcRenderer.invoke('set-session-max-thinking-tokens', options),
+  setSessionThinkingEnabled: (options) => ipcRenderer.invoke('set-session-thinking-enabled', options),
   // Update session UI state (sync input state, etc.)
   updateSessionUIState: (options) => ipcRenderer.invoke('update-session-ui-state', options),
 
@@ -162,6 +171,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateWindowTitle: (options) => ipcRenderer.invoke('update-window-title', options),
   resizeWindow: (options) => ipcRenderer.invoke('resize-window', options),
   focusProjectWindow: (options) => ipcRenderer.invoke('focus-project-window', options),
+  // 窗口关闭请求：注册回调（由 main 进程的 close 事件触发）
+  onWindowCloseRequest: (callback) => { windowCloseRequestCallback = callback },
+  // 窗口关闭请求：回复是否允许关闭
+  windowCloseResponse: (options) => ipcRenderer.invoke('window-close-response', options),
   listProjectFiles: (options) => ipcRenderer.invoke('list-project-files', options),
   getProjectGitStatus: (options) => ipcRenderer.invoke('get-project-git-status', options),
   watchProjectFiles: (options) => ipcRenderer.invoke('watch-project-files', options),

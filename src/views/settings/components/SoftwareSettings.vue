@@ -8,6 +8,8 @@ import SettingsSection from './common/SettingsSection.vue'
 import SettingItem from './common/SettingItem.vue'
 import AppSelect from '@/components/base/AppSelect.vue'
 
+const version = __APP_VERSION__
+
 const systemSoundGroups = [
   {
     label: '系统提示音',
@@ -218,7 +220,7 @@ async function handleTestAlertSound() {
       </div>
       <div class="about-info">
         <p><strong>CCGUI</strong></p>
-        <p class="version">版本 1.0.0</p>
+        <p class="version">版本 {{ version }}</p>
         <p class="description">Claude Code 的图形化界面客户端</p>
       </div>
     </div>

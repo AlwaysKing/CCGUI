@@ -676,7 +676,7 @@ class SessionInstance {
     // 权限相关
     this.permissionMode = 'default'  // 权限模式
     this.autoApprove = false           // 自动批准开关（独立于权限模式）
-    this.taskDockHistory = []          // task-dock 历史记录
+    this.taskDockHistory = []          // task-dock 历史记录（从 projectConfig 加载，project 级别共享）
     this.pendingPermission = null      // 待处理的工具权限请求
     this.pendingControlRequest = null  // 待处理的控制请求（AskUserQuestion 等）
     this.pendingControlRequests = new Map()
@@ -2917,7 +2917,21 @@ class SessionInstance {
   /**
    * 查询 @ reference 分组数据（agents / skills / mcpTools）
    */
-  queryAtReferences(forceRefresh = false) {
+  async queryAtReferences(forceRefresh = false) {
+    if (!this.runtimeManager || !this.runtimeManager.isReady()) {
+      this.loadResolvedRuntimeConfig()
+      await this.startRuntime()
+
+      // 启动后主动触发 mcp_status 并等待响应，确保 MCP 工具数据就绪
+      if (typeof this.runtimeManager?.requestMcpStatus === 'function') {
+        try {
+          await this.runtimeManager.requestMcpStatus()
+        } catch (e) {
+          logger.warn(`[SessionInstance] requestMcpStatus after start failed: ${e.message}`)
+        }
+      }
+    }
+
     if (typeof this.runtimeManager?.queryAtReferences === 'function') {
       return this.runtimeManager.queryAtReferences(forceRefresh)
     }
@@ -3218,7 +3232,7 @@ class SessionInstance {
   }
 
   /**
-   * 保存 task-dock 历史记录到 session 配置
+   * 保存 task-dock 历史记录到 project 配置（project 级别共享）
    */
   async saveTaskDockHistory(items) {
     const history = Array.isArray(items) ? items.map(item => ({
@@ -3229,16 +3243,13 @@ class SessionInstance {
 
     this.taskDockHistory = history
 
-    const sessionConfig = projectService.getSessionConfig(this.projectId, this.id)
+    const projectConfig = projectService.getProjectConfig(this.projectId) || {}
     const nextSettings = {
-      ...((sessionConfig?.settings && typeof sessionConfig.settings === 'object') ? sessionConfig.settings : {}),
+      ...((projectConfig.settings && typeof projectConfig.settings === 'object') ? projectConfig.settings : {}),
       taskDockHistory: history
     }
 
-    await projectService.updateSessionConfig(this.projectId, this.id, {
-      name: sessionConfig?.name || '新会话',
-      settings: nextSettings
-    })
+    await projectService.updateProjectConfig(this.projectId, { settings: nextSettings })
   }
 
   async setSessionEffort(effort, options = {}) {
@@ -3322,6 +3333,83 @@ class SessionInstance {
       provider,
       appliedLive: false,
       restarted: true
+    }
+  }
+
+  /**
+   * 运行时动态修改 maxThinkingTokens（不禁用思考，仅限运行时）
+   * 通过 control request 发送给 provider，不持久化到配置
+   */
+  async setMaxThinkingTokens(value) {
+    const normalizedValue = typeof value === 'number' && Number.isFinite(value)
+      ? Math.max(0, Math.min(30000, Math.floor(value)))
+      : null
+
+    if (this.runtimeManager?.sendControlRequest) {
+      this.runtimeManager.sendControlRequest({
+        subtype: 'set_max_thinking_tokens',
+        max_thinking_tokens: normalizedValue
+      })
+      return { success: true, value: normalizedValue }
+    }
+
+    return { success: false, error: 'Runtime not started' }
+  }
+
+  /**
+   * 切换思考开关
+   * 1. 持久化 thinkingEnabled 到 session 配置
+   * 2. 如果运行时已启动，根据 thinkingEnabled + 实际 tokens 值调用 control request
+   */
+  async setThinkingEnabled(enabled) {
+    const normalizedEnabled = enabled === true
+
+    // 1. 持久化到 session 配置
+    try {
+      const sessionConfig = projectService.getSessionConfig(this.projectId, this.id)
+      const nextSettings = {
+        ...((sessionConfig?.settings && typeof sessionConfig.settings === 'object') ? sessionConfig.settings : {})
+      }
+      nextSettings.thinkingEnabled = normalizedEnabled
+      nextSettings.thinkingMode = 'custom'
+
+      const updatedConfig = await projectService.updateSessionConfig(this.projectId, this.id, {
+        name: sessionConfig?.name || '新会话',
+        settings: nextSettings
+      })
+
+      if (updatedConfig?.settings) {
+        this.applySessionSettings(updatedConfig.settings)
+      }
+
+      // 2. 如果运行时已启动，重新解析配置并发送 control request
+      if (this.runtimeManager?.sendControlRequest) {
+        const resolvedConfig = this.loadResolvedRuntimeConfig()
+        const effectiveTokens = resolvedConfig.settings.maxThinkingTokens
+        // resolvedConfig.settings.maxThinkingTokens 已被 config-resolution 根据
+        // thinkingEnabled 覆盖过（thinkingEnabled=false → 0）
+
+        this.runtimeManager.sendControlRequest({
+          subtype: 'set_max_thinking_tokens',
+          max_thinking_tokens: effectiveTokens
+        })
+
+        return {
+          success: true,
+          thinkingEnabled: normalizedEnabled,
+          effectiveTokens,
+          appliedLive: true
+        }
+      }
+
+      return {
+        success: true,
+        thinkingEnabled: normalizedEnabled,
+        appliedLive: false
+      }
+    } catch (error) {
+      logger.error(`[SessionInstance] Failed to set thinkingEnabled: ${error.message}`)
+      return { success: false, error: error.message }
     }
   }
 
@@ -3558,8 +3646,10 @@ class SessionInstance {
 
     this.autoApprove = this.sessionSettings.autoApprove === true
 
-    this.taskDockHistory = Array.isArray(this.sessionSettings.taskDockHistory)
-      ? this.sessionSettings.taskDockHistory
+    // taskDockHistory 从 projectConfig 读取（project 级别共享）
+    const projectConfig = projectService.getProjectConfig(this.projectId) || {}
+    this.taskDockHistory = Array.isArray(projectConfig.settings?.taskDockHistory)
+      ? projectConfig.settings.taskDockHistory
       : []
 
     if (this.runtimeManager && typeof this.runtimeManager.setDebugEnabled === 'function') {

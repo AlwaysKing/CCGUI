@@ -129,8 +129,11 @@ export function useWorkspaceDialogs({
     showProjectSwitchDialog.value = true
   }
 
-  function handleGoHomeFromSidebar() {
-    handleGoHomeFromDialog(store.hasProcessingSessions)
+  async function handleGoHomeFromSidebar() {
+    // 先刷新 session 状态，确保检测的是最新数据
+    await store.fetchRunningSessions()
+    const hasActiveWork = store.hasRunningSessions || store.hasRunningTerminals
+    handleGoHomeFromDialog(hasActiveWork)
   }
 
   function handleOpenProjectConfig() {
@@ -251,11 +254,16 @@ export function useWorkspaceDialogs({
     }
   }
 
-  async function handleGoHomeFromDialog(hasRunningSessions) {
-    if (hasRunningSessions) {
+  async function handleGoHomeFromDialog(hasActiveWork) {
+    // 如果传入的参数没包含最新状态，先刷新
+    if (!hasActiveWork) {
+      await store.fetchRunningSessions()
+      hasActiveWork = store.hasRunningSessions || store.hasRunningTerminals
+    }
+    if (hasActiveWork) {
       confirmDialogConfig.value = {
         title: '返回首页',
-        message: '当前有正在运行的会话，返回首页将中断这些操作。确定要返回吗？',
+        message: '当前有正在运行的会话或终端任务，返回首页将中断这些操作。确定要返回吗？',
         onConfirm: async () => {
           await performGoHome()
           showConfirmDialog.value = false

@@ -90,6 +90,27 @@ html {
   scroll-behavior: smooth;
 }
 
+/* 代码块滚动条：缩小高度 + 轨道透明 + 无边框，避免遮挡 pre 底部边框 */
+pre::-webkit-scrollbar {
+  height: 6px;
+}
+
+pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+pre::-webkit-scrollbar-thumb {
+  background: #52525B;
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 4px;
+}
+
+pre::-webkit-scrollbar-thumb:hover {
+  background: #71717A;
+  background-clip: content-box;
+}
+
 /* Remove default outline and add custom focus styles */
 *:focus-visible {
   outline: 2px solid #F97316;

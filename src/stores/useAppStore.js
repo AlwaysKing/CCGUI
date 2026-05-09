@@ -50,6 +50,7 @@ export const useAppStore = defineStore('app', () => {
   const currentProject = ref(null)
   const currentSession = ref(null) // 会话元信息（从文件系统扫描）
   const sessionStatuses = ref({}) // session 状态对象：{ ready, processing, streaming, unseenCompleted }
+  const hasRunningTerminals = ref(false) // 终端运行状态（由 Workspace 同步）
   const sidebarCollapsed = ref(loadFromStorage(STORAGE_KEYS.SIDEBAR_STATE, {
     project: false,
     session: false
@@ -92,7 +93,7 @@ export const useAppStore = defineStore('app', () => {
     })
   })
 
-  // 检查当前项目是否有正在处理的 session
+  // 检查当前项目是否有正在处理的 session（用于侧边栏显示计数等）
   const hasProcessingSessions = computed(() => {
     if (!currentProject.value) return false
     return currentProjectSessions.value.some(session => {
@@ -100,6 +101,24 @@ export const useAppStore = defineStore('app', () => {
       return status?.processing || status?.streaming
     })
   })
+
+  // 检查当前项目是否有 runtime 在运行的 session（即侧边栏显示绿点的那些）
+  const hasRunningSessions = computed(() => {
+    if (!currentProject.value) return false
+    return currentProjectSessions.value.some(session => {
+      const status = sessionStatuses.value[session.id]
+      return status?.ready
+    })
+  })
+
+  // 综合检查：session 或终端是否有运行中的任务
+  const hasActiveWork = computed(() => {
+    return hasRunningSessions.value || hasRunningTerminals.value
+  })
+
+  function setHasRunningTerminals(value) {
+    hasRunningTerminals.value = Boolean(value)
+  }
 
   function ensureSessionStatus(sessionId) {
     if (!sessionId) {
@@ -596,6 +615,7 @@ export const useAppStore = defineStore('app', () => {
     currentProject,
     currentSession,
     sessionStatuses,
+    hasRunningTerminals,
     sidebarCollapsed,
     isLoading,
     error,
@@ -603,6 +623,8 @@ export const useAppStore = defineStore('app', () => {
     // Computed
     currentProjectSessions,
     hasProcessingSessions,
+    hasRunningSessions,
+    hasActiveWork,
 
     // Actions
     fetchProjects,
@@ -612,6 +634,7 @@ export const useAppStore = defineStore('app', () => {
     selectProject,
     fetchSessions,
     fetchRunningSessions,
+    setHasRunningTerminals,
     markSessionCompletedUnseen,
     clearSessionUnseenCompleted,
     createSession,

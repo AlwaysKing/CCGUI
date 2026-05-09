@@ -103,7 +103,7 @@ function selectProject(project) {
 }
 
 function handleGoHome() {
-  emit('goHome', store.hasProcessingSessions)
+  emit('goHome', store.hasRunningSessions || store.hasRunningTerminals)
 }
 
 // 检查所有项目是否存在

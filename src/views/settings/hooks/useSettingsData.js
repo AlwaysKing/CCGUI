@@ -105,6 +105,8 @@ export function useSettingsData(emit) {
     model: 'claude-sonnet-4-6',
     anthropicModel: '',
     effort: 'default',
+    maxThinkingTokens: 10240,
+    thinkingEnabled: true,
     anthropicDefaultSonnetModel: '',
     anthropicDefaultOpusModel: '',
     anthropicDefaultHaikuModel: '',
@@ -208,6 +210,16 @@ export function useSettingsData(emit) {
         defaultConfig.value.anthropicSmallFastModel = env.ANTHROPIC_SMALL_FAST_MODEL || ''
       }
 
+      // 从 CCGUI 内部配置读取 maxThinkingTokens（非 Claude 设置）
+      if (result?.success && result.config?.settings?.maxThinkingTokens !== undefined) {
+        defaultConfig.value.maxThinkingTokens = result.config.settings.maxThinkingTokens
+      }
+
+      // 读取 thinkingEnabled
+      if (result?.success && result.config?.settings?.thinkingEnabled !== undefined) {
+        defaultConfig.value.thinkingEnabled = result.config.settings.thinkingEnabled
+      }
+
       const codexResult = await window.electronAPI.getCodexSettings()
       if (codexResult?.success && codexResult.settings) {
         codexConfig.value.authMode = codexResult.settings.authMode || 'provider'
@@ -237,6 +249,8 @@ export function useSettingsData(emit) {
       const updates = {
         settings: {
           ...toDeepPlain(settings.value),
+          maxThinkingTokens: defaultConfig.value.maxThinkingTokens,
+          thinkingEnabled: defaultConfig.value.thinkingEnabled,
           claudeModels: toDeepPlain(claudeModels.value),
           codexModels: toDeepPlain(codexModels.value),
           prompts: toDeepPlain(prompts.value),
@@ -525,7 +539,11 @@ export function useSettingsData(emit) {
         ANTHROPIC_AUTH_TOKEN: credential?.token || ''
       }
 
-      if (mappings.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = mappings.ANTHROPIC_MODEL
+      if (mappings.ANTHROPIC_MODEL) {
+        env.ANTHROPIC_MODEL = mappings.ANTHROPIC_MODEL
+        // 同步 ANTHROPIC_REASONING_MODEL，避免切换到新供应商后仍残留旧的推理模型（如 glm-5.1）
+        env.ANTHROPIC_REASONING_MODEL = mappings.ANTHROPIC_MODEL
+      }
       if (mappings.ANTHROPIC_DEFAULT_SONNET_MODEL) env.ANTHROPIC_DEFAULT_SONNET_MODEL = mappings.ANTHROPIC_DEFAULT_SONNET_MODEL
       if (mappings.ANTHROPIC_DEFAULT_OPUS_MODEL) env.ANTHROPIC_DEFAULT_OPUS_MODEL = mappings.ANTHROPIC_DEFAULT_OPUS_MODEL
       if (mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL

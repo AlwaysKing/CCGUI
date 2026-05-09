@@ -164,10 +164,14 @@ const props = defineProps({
   taskDockItems: {
     type: Array,
     default: () => []
+  },
+  thinkingEnabled: {
+    type: Boolean,
+    default: true
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'autoApproveChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'runSlashCommand', 'addReference', 'runTaskDockItem', 'stopTaskDockItem'])
+const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'autoApproveChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'runSlashCommand', 'addReference', 'runTaskDockItem', 'stopTaskDockItem', 'thinkingToggle'])
 
 // 输入区域 ref
 const inputArea = ref(null)
@@ -380,6 +384,8 @@ const filteredAtGroups = computed(() => {
     .filter(group => {
       const hasChildren = Array.isArray(group.children) && group.children.length > 0
       const hasSubGroups = Array.isArray(group.subGroups) && group.subGroups.length > 0
+      // skill 分组为空时也保留（显示提示）
+      if (group.id === 'skill') return true
       return hasChildren || hasSubGroups
     })
 })
@@ -728,6 +734,10 @@ function selectEffort(effort) {
   emit('effortChange', effort)
 }
 
+function toggleThinking() {
+  emit('thinkingToggle', !props.thinkingEnabled)
+}
+
 function selectModel(option) {
   showModelMenu.value = false
   emit('modelChange', option)
@@ -885,10 +895,12 @@ function handleTaskDockItemClick(task) {
 
   if (task.running) {
     emit('stopTaskDockItem', task)
-    return
+  } else {
+    emit('runTaskDockItem', task)
   }
 
-  emit('runTaskDockItem', task)
+  // 点击后将焦点还给输入框，防止键盘输入误触发按钮
+  nextTick(() => attachmentComposerRef.value?.focusAndPlaceCaretAtEnd?.())
 }
 
 // 暴露方法
@@ -992,6 +1004,24 @@ defineExpose({
             </div>
           </div>
 
+          <!-- 思考开关 -->
+          <button
+            @click="toggleThinking"
+            class="thinking-toggle-btn"
+            :class="{ active: thinkingEnabled }"
+            :title="thinkingEnabled ? '思考已启用，点击禁用' : '思考已禁用，点击启用'"
+            :disabled="disablePrimarySessionControls"
+          >
+            <svg class="thinking-toggle-icon" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path class="brain-outline" d="M9 2C6.5 2 5 3.5 5 5.5C5 7 5.8 8 6.5 8.5L6 10C6 10.5 6.3 11 6.8 11.2L7.5 13C7.6 13.6 8.2 14 9 14C9.8 14 10.4 13.6 10.5 13L11.2 11.2C11.7 11 12 10.5 12 10L11.5 8.5C12.2 8 13 7 13 5.5C13 3.5 11.5 2 9 2Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              <path class="brain-mid" d="M9 2V14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              <path class="brain-waves" d="M6 4.5C6 4.5 5.5 5 5.5 6C5.5 7 6 7.5 6 7.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+              <path class="brain-waves" d="M12 4.5C12 4.5 12.5 5 12.5 6C12.5 7 12 7.5 12 7.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+              <line class="brain-off-line" x1="2" y1="2" x2="16" y2="16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <span class="thinking-toggle-label">{{ thinkingEnabled ? '思考中' : '免思考' }}</span>
+          </button>
+
           <div ref="permissionMenuWrapper" class="permission-mode-wrapper">
             <button
               @click="togglePermissionMenu"
@@ -1083,6 +1113,10 @@ defineExpose({
                   </template>
                 </div>
                 <div class="slash-menu-items ref-menu-items">
+                  <!-- skill 为空时的提示 -->
+                  <div v-if="activeAtGroup?.id === 'skill' && atLeafItems.length === 0" class="ref-menu-empty-hint">
+                    发送消息后加载技能列表
+                  </div>
                   <template v-for="(section, idx) in atRightPanelSections" :key="idx">
                     <div v-if="section.type === 'separator'" class="ref-menu-separator">
                       <span class="ref-menu-separator-label">{{ section.label }}</span>
@@ -1580,6 +1614,14 @@ defineExpose({
 /* 右侧面板 - 带分隔线的列表 */
 .ref-menu-items {
   padding: 4px 0;
+}
+
+.ref-menu-empty-hint {
+  padding: 20px 16px;
+  text-align: center;
+  color: #71717A;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .ref-menu-separator {
@@ -2374,6 +2416,86 @@ defineExpose({
 
 .effort-menu-check {
   color: #A78BFA;
+}
+
+/* 思考开关按钮 */
+.thinking-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #71717A;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.thinking-toggle-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #A1A1AA;
+}
+
+.thinking-toggle-btn.active {
+  color: #A1A1AA;
+}
+
+.thinking-toggle-btn.active:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #A1A1AA;
+}
+
+.thinking-toggle-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.thinking-toggle-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.thinking-toggle-icon .brain-outline,
+.thinking-toggle-icon .brain-mid,
+.thinking-toggle-icon .brain-waves {
+  color: #71717A;
+  transition: color 0.2s;
+}
+
+.thinking-toggle-icon .brain-off-line {
+  color: #EF4444;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.thinking-toggle-btn.active .thinking-toggle-icon .brain-outline,
+.thinking-toggle-btn.active .thinking-toggle-icon .brain-mid,
+.thinking-toggle-btn.active .thinking-toggle-icon .brain-waves {
+  color: #A1A1AA;
+}
+
+.thinking-toggle-btn.active .thinking-toggle-icon .brain-off-line {
+  opacity: 0;
+}
+
+.thinking-toggle-btn:hover:not(:disabled) .thinking-toggle-icon .brain-outline,
+.thinking-toggle-btn:hover:not(:disabled) .thinking-toggle-icon .brain-mid,
+.thinking-toggle-btn:hover:not(:disabled) .thinking-toggle-icon .brain-waves {
+  color: #A1A1AA;
+}
+
+.thinking-toggle-btn.active:hover:not(:disabled) .thinking-toggle-icon .brain-outline,
+.thinking-toggle-btn.active:hover:not(:disabled) .thinking-toggle-icon .brain-mid,
+.thinking-toggle-btn.active:hover:not(:disabled) .thinking-toggle-icon .brain-waves {
+  color: #A1A1AA;
+}
+
+.thinking-toggle-label {
+  font-size: 11px;
+  line-height: 1;
 }
 
 /* 右侧按钮组 */

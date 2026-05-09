@@ -128,8 +128,8 @@ useDialogStack(computed(() => true), () => emit('cancel'))
 }
 
 .btn-cancel:hover {
-  background: #374151;
-  border-color: #6B7280;
+  background: #2A2A2E;
+  border-color: #3F3F46;
 }
 
 .btn-confirm {

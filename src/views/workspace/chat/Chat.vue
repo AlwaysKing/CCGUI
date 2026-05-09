@@ -328,6 +328,25 @@ const {
   isSessionRuntimeStarted
 })
 
+// 思考开关：默认启用（--max-thinking-tokens > 0），运行时通过 control request 动态切换
+const thinkingEnabled = ref(true)
+
+async function handleThinkingToggle(enabled) {
+  thinkingEnabled.value = enabled
+  try {
+    const result = await sessionStore.setThinkingEnabled(enabled)
+    if (!result?.success) {
+      console.error('[Chat] Failed to toggle thinking:', result?.error)
+      thinkingEnabled.value = !enabled
+      notifyTurnError(`切换思考模式失败: ${result?.error || '未知错误'}`)
+    }
+  } catch (error) {
+    console.error('[Chat] Failed to toggle thinking:', error)
+    thinkingEnabled.value = !enabled
+    notifyTurnError(`切换思考模式失败: ${error.message || error}`)
+  }
+}
+
 const notificationOptions = computed(() => [
   {
     value: 'sound',
@@ -630,6 +649,7 @@ function toPlainObject(value) {
 
 function toggleAllMessageCollapse() {
   const shouldCollapse = !collapsibleStats.value.allCollapsed
+  const session = sessionStore.currentSession
 
   for (let index = 0; index < messages.value.length; index += 1) {
     const message = messages.value[index]
@@ -637,9 +657,18 @@ function toggleAllMessageCollapse() {
 
     if (isTurnMessage(message)) {
       if (findAssistantResponse(messages.value, index)) {
+        // 展开时，如果该问答已被释放，先恢复
+        if (!shouldCollapse && message._releasedResponses && session) {
+          sessionStore.restoreReleasedTurn(session, message)
+        }
         message.responseCollapsed = shouldCollapse
       }
     }
+  }
+
+  // 折叠时，释放超过 5 轮之前的折叠问答
+  if (shouldCollapse && session) {
+    sessionStore.releaseOldCollapsedTurns(session, 5)
   }
 }
 
@@ -838,6 +867,10 @@ onMounted(async () => {
   }
 
   await loadModelConfigContext()
+  // 从 sessionConfig 初始化思考开关状态
+  if (sessionConfig.value?.settings?.thinkingEnabled !== undefined) {
+    thinkingEnabled.value = sessionConfig.value.settings.thinkingEnabled
+  }
   await loadProviderSubModels()
   await loadSessionEffortCapabilities()
   await nextTick()
@@ -1731,6 +1764,12 @@ async function handleSendMessage(content) {
         msg.responseCollapsed = true
       }
     })
+
+    // 释放超过 5 轮之前的折叠问答的响应消息，节省内存
+    const session = sessionStore.currentSession
+    if (session) {
+      sessionStore.releaseOldCollapsedTurns(session, 5)
+    }
   }
 
   try {
@@ -2602,6 +2641,67 @@ const contextThemeMenuGroups = [
   }
 ]
 
+function isCollapseOnSendEnabled() {
+  return appConfig.value?.settings?.collapseOnSend !== false
+}
+
+async function toggleCollapseOnSend() {
+  const currentSettings = appConfig.value?.settings || {}
+  const newValue = currentSettings.collapseOnSend === false ? true : false
+  const nextSettings = { ...currentSettings, collapseOnSend: newValue }
+
+  try {
+    const result = await window.electronAPI.updateAppConfig({
+      updates: { settings: nextSettings }
+    })
+    if (result?.success) {
+      if (appConfig.value) {
+        appConfig.value.settings = nextSettings
+      }
+      window.dispatchEvent(new CustomEvent('ccgui-app-config-updated', {
+        detail: { settings: nextSettings }
+      }))
+      closeContextMenu()
+      return
+    }
+    throw new Error(result?.error || '保存设置失败')
+  } catch (error) {
+    logger.error('[Chat] Failed to toggle collapseOnSend', { error: error.message })
+  }
+}
+
+function expandAllResponses() {
+  const session = sessionStore.currentSession
+  for (let i = 0; i < messages.value.length; i += 1) {
+    const msg = messages.value[i]
+    if (msg && isTurnMessage(msg)) {
+      // 如果有被释放的响应消息，先恢复
+      if (msg._releasedResponses && session) {
+        sessionStore.restoreReleasedTurn(session, msg)
+      }
+      msg.responseCollapsed = false
+    }
+  }
+  closeContextMenu()
+}
+
+function collapseAllResponses() {
+  for (let i = 0; i < messages.value.length; i += 1) {
+    const msg = messages.value[i]
+    if (msg && isTurnMessage(msg) && findAssistantResponse(messages.value, i)) {
+      msg.responseCollapsed = true
+    }
+  }
+
+  // 释放超过 5 轮之前的折叠问答的响应消息
+  const session = sessionStore.currentSession
+  if (session) {
+    sessionStore.releaseOldCollapsedTurns(session, 5)
+  }
+
+  closeContextMenu()
+}
+
 function handleContextMenu(event) {
   const selection = window.getSelection()
   const text = selection?.toString()?.trim()
@@ -2922,6 +3022,7 @@ function handleToggleAgentRail() {
         :effort-options="availableEffortOptions"
         :effort-loading="providerEffortLoading"
         :can-switch-effort="canQuickSwitchEffort"
+        :thinking-enabled="thinkingEnabled"
         :query-slash-commands="querySlashCommands"
         :query-at-references="queryAtReferences"
         :task-dock-items="taskDockItems"
@@ -2935,6 +3036,7 @@ function handleToggleAgentRail() {
         @permission-mode-change="selectPermissionMode"
         @auto-approve-change="handleAutoApproveChange"
         @effort-change="handleQuickEffortChange"
+        @thinking-toggle="handleThinkingToggle"
         @input-target-change="handleInputTargetChange"
         @run-slash-command="handleRunSlashCommand"
         @add-reference="handleAddReference"
@@ -3143,6 +3245,40 @@ function handleToggleAgentRail() {
               <span v-if="resolvedChatMessageTheme[group.key] === option.value" class="chat-context-menu-check">✓</span>
             </span>
             <span>{{ option.label }}</span>
+          </button>
+        </div>
+      </div>
+      <div class="chat-context-menu-group">
+        <button class="chat-context-menu-item chat-context-menu-item--submenu" type="button">
+          <span>消息折叠</span>
+          <span class="chat-context-menu-arrow">›</span>
+        </button>
+        <div class="chat-context-submenu">
+          <button
+            class="chat-context-menu-item chat-context-menu-item--option"
+            type="button"
+            @click="toggleCollapseOnSend"
+          >
+            <span class="chat-context-menu-check-slot">
+              <span v-if="isCollapseOnSendEnabled()" class="chat-context-menu-check">✓</span>
+            </span>
+            <span>自动折叠回答</span>
+          </button>
+          <button
+            class="chat-context-menu-item chat-context-menu-item--option"
+            type="button"
+            @click="expandAllResponses"
+          >
+            <span class="chat-context-menu-check-slot"></span>
+            <span>展开所有回答</span>
+          </button>
+          <button
+            class="chat-context-menu-item chat-context-menu-item--option"
+            type="button"
+            @click="collapseAllResponses"
+          >
+            <span class="chat-context-menu-check-slot"></span>
+            <span>折叠所有回答</span>
           </button>
         </div>
       </div>

@@ -593,6 +593,12 @@ function toggleSectionCollapse(section) {
         <DetailRow v-if="defaultConfig.effort && defaultConfig.effort !== 'default'" label="思考力度">
           {{ effortOptions.find(o => o.value === defaultConfig.effort)?.label || defaultConfig.effort }}
         </DetailRow>
+        <DetailRow label="思考">
+          <template v-if="defaultConfig.thinkingEnabled !== false">
+            {{ defaultConfig.maxThinkingTokens > 0 ? defaultConfig.maxThinkingTokens : '禁用' }}
+          </template>
+          <span v-else class="status-disabled">禁用</span>
+        </DetailRow>
         <DetailRow v-if="hasAnyModelMapping" label="模型映射">
           <div class="model-metadata-badges">
             <span v-if="defaultConfig.anthropicDefaultSonnetModel" class="model-metadata-badge">
@@ -2033,5 +2039,15 @@ function toggleSectionCollapse(section) {
 .card-chip.is-default {
   background: #F97316;
   color: #fff;
+}
+
+.status-enabled {
+  color: #4ADE80;
+  font-weight: 500;
+}
+
+.status-disabled {
+  color: #F87171;
+  font-weight: 500;
 }
 </style>

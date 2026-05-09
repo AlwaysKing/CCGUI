@@ -5,6 +5,7 @@ const { execFileSync } = require('child_process')
 const yaml = require('js-yaml')
 const appService = require('./app-service')
 const codexAppServer = require('./codex-app-server')
+const { getClaudePath } = require('./claude-path')
 
 function fileExists(targetPath) {
   if (!targetPath) return false
@@ -62,7 +63,10 @@ function safeExecJson(command, args = []) {
       maxBuffer: 10 * 1024 * 1024
     })
     return JSON.parse(output)
-  } catch {
+  } catch (error) {
+    if (process.env.DEBUG_PROVIDER_INSPECTOR) {
+      console.error(`[ProviderInspector] safeExecJson failed: ${command} ${args.join(' ')}`, error.message)
+    }
     return null
   }
 }
@@ -599,9 +603,10 @@ function normalizeClaudePluginManifestPath(pluginPath = '') {
 }
 
 function readClaudeCliPluginState() {
-  const installedPayload = safeExecJson('claude', ['plugin', 'list', '--json'])
-  const availablePayload = safeExecJson('claude', ['plugin', 'list', '--available', '--json'])
-  const marketplacesPayload = safeExecJson('claude', ['plugin', 'marketplace', 'list', '--json'])
+  const claudeBin = getClaudePath()
+  const installedPayload = safeExecJson(claudeBin, ['plugin', 'list', '--json'])
+  const availablePayload = safeExecJson(claudeBin, ['plugin', 'list', '--available', '--json'])
+  const marketplacesPayload = safeExecJson(claudeBin, ['plugin', 'marketplace', 'list', '--json'])
 
   return {
     installed: Array.isArray(installedPayload)

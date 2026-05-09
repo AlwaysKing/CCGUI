@@ -11,6 +11,10 @@ const store = useAppStore()
 const shortcutBindings = ref(getDefaultShortcutBindings())
 const runtimeShortcuts = computed(() => buildRuntimeShortcuts(shortcutBindings.value))
 
+// 窗口关闭确认弹窗
+const showCloseConfirm = ref(false)
+const closeConfirmBusy = ref(false)
+
 function isEditableTarget(target) {
   if (!(target instanceof HTMLElement)) {
     return false
@@ -93,10 +97,41 @@ function handleAppConfigUpdated(event) {
   }
 }
 
+// 窗口关闭请求处理
+async function handleWindowCloseRequest() {
+  // 先刷新 session 状态，确保拿到最新数据
+  await store.fetchRunningSessions()
+  const hasActive = store.hasRunningSessions || store.hasRunningTerminals
+  if (hasActive) {
+    showCloseConfirm.value = true
+    return
+  }
+  // 没有运行中的任务，直接关闭
+  await window.electronAPI?.windowCloseResponse({ canClose: true })
+}
+
+async function confirmCloseWindow() {
+  closeConfirmBusy.value = true
+  try {
+    await window.electronAPI?.windowCloseResponse({ canClose: true })
+  } finally {
+    closeConfirmBusy.value = false
+    showCloseConfirm.value = false
+  }
+}
+
+function cancelCloseWindow() {
+  showCloseConfirm.value = false
+  // 不回复 canClose: true，窗口保持打开
+}
+
 // 当前视图: 'welcome' | 'workspace'
 const currentView = computed(() => {
   return store.currentProject ? 'workspace' : 'welcome'
 })
+
+// Dock 拖拽文件夹路径（用于 Welcome 页面自动弹出新建项目对话框）
+const dockDropPath = ref(null)
 
 // 更新窗口标题
 async function updateWindowTitle() {
@@ -134,6 +169,13 @@ onMounted(async () => {
 
   const urlParams = new URLSearchParams(searchString)
   const projectId = urlParams.get('projectId')
+  const dropPath = urlParams.get('dockDropPath')
+
+  // 读取 Dock 拖拽的文件夹路径
+  if (dropPath) {
+    dockDropPath.value = dropPath
+    logger.info('Dock drop path detected from URL', { dockDropPath: dropPath })
+  }
 
   if (projectId) {
     logger.info('Opening project from URL param', { projectId })
@@ -167,6 +209,9 @@ onMounted(async () => {
   document.addEventListener('keydown', handleGlobalShortcut, true)
   window.addEventListener('ccgui-app-config-updated', handleAppConfigUpdated)
 
+  // 注册窗口关闭请求回调
+  window.electronAPI?.onWindowCloseRequest(handleWindowCloseRequest)
+
   // Get runtime info
   try {
     const info = await window.electronAPI.getRuntimeInfo()
@@ -192,10 +237,37 @@ onUnmounted(() => {
 <template>
   <div class="app-container">
     <!-- Welcome Page - 显示项目列表 -->
-    <Welcome v-if="currentView === 'welcome'" />
+    <Welcome v-if="currentView === 'welcome'" :dock-drop-path="dockDropPath" @dock-drop-consumed="dockDropPath = null" />
 
     <!-- Workspace - 两栏布局（会话 + 聊天） -->
     <Workspace v-else />
+
+    <!-- 窗口关闭确认弹窗 -->
+    <div v-if="showCloseConfirm" class="close-confirm-overlay">
+      <div class="close-confirm-dialog">
+        <div class="close-confirm-content">
+          <div class="close-confirm-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#F97316" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 8v4"/>
+              <path d="M12 16h.01"/>
+            </svg>
+          </div>
+          <div class="close-confirm-text">
+            <h3>确认关闭窗口？</h3>
+            <p>当前有正在运行的会话或终端任务，关闭窗口将中断这些操作。</p>
+          </div>
+        </div>
+        <div class="close-confirm-actions">
+          <button class="close-confirm-btn cancel" @click="cancelCloseWindow">
+            取消
+          </button>
+          <button class="close-confirm-btn confirm" :disabled="closeConfirmBusy" @click="confirmCloseWindow">
+            {{ closeConfirmBusy ? '关闭中...' : '确认关闭' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -224,5 +296,99 @@ body {
   flex-direction: column;
   background: #1E1E1E;
   color: #E4E4E7;
+}
+
+.close-confirm-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.close-confirm-dialog {
+  background: #2D2D2D;
+  border: 1px solid #3F3F46;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 420px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.close-confirm-content {
+  padding: 28px 24px;
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.close-confirm-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.close-confirm-text h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #E5E7EB;
+}
+
+.close-confirm-text p {
+  margin: 0;
+  font-size: 13px;
+  color: #9CA3AF;
+  line-height: 1.5;
+}
+
+.close-confirm-actions {
+  padding: 14px 24px;
+  border-top: 1px solid #3F3F46;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.close-confirm-btn {
+  padding: 7px 18px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.close-confirm-btn.cancel {
+  background: transparent;
+  border: 1px solid #4B5563;
+  color: #9CA3AF;
+}
+
+.close-confirm-btn.cancel:hover {
+  background: #2A2A2E;
+  border-color: #3F3F46;
+}
+
+.close-confirm-btn.confirm {
+  background: #F97316;
+  border: 1px solid #F97316;
+  color: white;
+}
+
+.close-confirm-btn.confirm:hover:not(:disabled) {
+  background: #EA580C;
+}
+
+.close-confirm-btn.confirm:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 </style>

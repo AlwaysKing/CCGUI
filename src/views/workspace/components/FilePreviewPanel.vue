@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import CodeEditor from './CodeEditor.vue'
+import MarkdownRenderer from '../../../components/base/MarkdownRenderer.vue'
 
 const props = defineProps({
   visible: {
@@ -33,7 +34,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel', 'toggle-sidebar', 'toggle-diff'])
+const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel', 'toggle-sidebar', 'toggle-diff', 'open-markdown-preview'])
 
 const contextMenuRef = ref(null)
 const contextMenu = reactive({
@@ -75,15 +76,15 @@ function resolveTabAbsolutePath(tab) {
   return normalizePath(`${projectPath.replace(/\/$/, '')}/${targetPath.replace(/^\//, '')}`)
 }
 
-function handleTabClose(event, tabPath) {
+function handleTabClose(event, tabId) {
   event.preventDefault()
   event.stopPropagation()
-  emit('close-tab', tabPath)
+  emit('close-tab', tabId)
 }
 
-function handleCloseOthers(event, tabPath) {
+function handleCloseOthers(event, tabId) {
   event.preventDefault()
-  emit('close-others', tabPath)
+  emit('close-others', tabId)
 }
 
 function closeContextMenu() {
@@ -126,10 +127,10 @@ function handleClosePanel(event) {
   emit('close-panel')
 }
 
-function handleActivateTab(event, tabPath) {
+function handleActivateTab(event, tabId) {
   event.preventDefault()
   event.stopPropagation()
-  emit('activate-tab', tabPath)
+  emit('activate-tab', tabId)
 }
 
 function handleToggleChatPanel(event) {
@@ -183,13 +184,30 @@ async function handleOpenWithApplication(application = 'default') {
 }
 
 function handleCloseOthersFromMenu() {
+  const targetId = contextMenu.tab?.id
+  if (!targetId) {
+    closeContextMenu()
+    return
+  }
+
+  emit('close-others', targetId)
+  closeContextMenu()
+}
+
+function isMarkdownTab(tab) {
+  if (!tab) return false
+  const name = tab.name || ''
+  return name.endsWith('.md') || name.endsWith('.markdown')
+}
+
+function handleOpenMarkdownPreview() {
   const targetPath = contextMenu.tab?.path
   if (!targetPath) {
     closeContextMenu()
     return
   }
 
-  emit('close-others', targetPath)
+  emit('open-markdown-preview', targetPath)
   closeContextMenu()
 }
 
@@ -225,16 +243,17 @@ onBeforeUnmount(() => {
           v-for="tab in tabs"
           :key="tab.id"
           class="preview-tab"
-          :class="{ active: activeTab?.path === tab.path }"
+          :class="{ active: activeTab?.id === tab.id }"
           :title="tab.path"
-          @click="handleActivateTab($event, tab.path)"
+          @click="handleActivateTab($event, tab.id)"
           @mousedown.stop
           @contextmenu="handleContextMenu($event, tab)"
         >
           <span v-if="tab.isDirty" class="tab-dirty-prefix">*</span>
           <span class="tab-name">{{ tab.name }}</span>
-          <span v-if="tab.isPreview && !tab.pinned && !tab.isDirty" class="tab-preview">预览</span>
-          <span class="tab-close" @click="handleTabClose($event, tab.path)">×</span>
+          <span v-if="tab.markdownPreview" class="tab-md-badge">MD</span>
+          <span v-else-if="tab.isPreview && !tab.pinned && !tab.isDirty" class="tab-preview">预览</span>
+          <span class="tab-close" @click="handleTabClose($event, tab.id)">×</span>
         </button>
       </div>
 
@@ -267,6 +286,7 @@ onBeforeUnmount(() => {
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
     >
+      <button v-if="isMarkdownTab(contextMenu.tab) && !contextMenu.tab?.markdownPreview" class="menu-item" @click="handleOpenMarkdownPreview">以预览方式打开</button>
       <button class="menu-item" @click="handleOpenInFinder('reveal')">在 Finder 中选中</button>
       <button class="menu-item" @click="handleOpenWithApplication('Visual Studio Code')">使用 VSCode 打开</button>
       <button class="menu-item" @click="handleOpenWithApplication('Sublime Text')">使用 Sublime 打开</button>
@@ -278,6 +298,11 @@ onBeforeUnmount(() => {
     <div v-if="activeTab" class="preview-body">
       <div v-if="activeTab.loading" class="preview-state">正在读取文件...</div>
       <div v-else-if="activeTab.error" class="preview-state error">{{ activeTab.error }}</div>
+      <template v-else-if="activeTab.markdownPreview">
+        <div class="markdown-preview-container">
+          <MarkdownRenderer :content="activeTab.content" />
+        </div>
+      </template>
       <CodeEditor
         v-else
         :model-value="activeTab.content"
@@ -289,7 +314,7 @@ onBeforeUnmount(() => {
         @save="emit('save-file', activeTab.path)"
       />
 
-      <div v-if="!activeTab.loading && !activeTab.error" class="preview-statusbar">
+      <div v-if="!activeTab.loading && !activeTab.error && !activeTab.markdownPreview" class="preview-statusbar">
         <div class="statusbar-path" :title="titleText">{{ titleText }}</div>
         <div class="statusbar-actions">
           <span v-if="activeTab.diffMode && activeTab.diffBaseError" class="statusbar-note error">{{ activeTab.diffBaseError }}</span>
@@ -474,6 +499,15 @@ onBeforeUnmount(() => {
   -webkit-app-region: no-drag;
 }
 
+.tab-md-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(249, 115, 22, 0.15);
+  color: #FB923C;
+  -webkit-app-region: no-drag;
+}
+
 .tab-close {
   width: 16px;
   height: 16px;
@@ -644,5 +678,12 @@ onBeforeUnmount(() => {
 
 .empty-text {
   font-size: 12px;
+}
+
+.markdown-preview-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  background: rgba(17, 19, 23, 0.28);
 }
 </style>

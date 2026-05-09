@@ -1,6 +1,8 @@
 const BASE_DOCUMENT_ENABLED = (doc) => doc?.isBase !== false
 const BASE_PROMPT_ENABLED = (prompt) => prompt?.isBase === true
 const SUPPORTED_EFFORT_LEVELS = new Set(['low', 'medium', 'high'])
+const DEFAULT_MAX_THINKING_TOKENS = 10240
+const MAX_THINKING_TOKENS_MAX = 30000
 const { readCodexAuthFile } = require('./services/app-service')
 const CHAT_THEME_PRESETS = {
   classic: {
@@ -41,6 +43,20 @@ function normalizeEffortValue(value) {
   }
 
   return SUPPORTED_EFFORT_LEVELS.has(normalized) ? normalized : null
+}
+
+function normalizeMaxThinkingTokensValue(value) {
+  if (value === null || value === undefined || value === '') return null
+  const num = Number(value)
+  return Number.isFinite(num) && num >= 0
+    ? Math.min(Math.max(0, Math.floor(num)), MAX_THINKING_TOKENS_MAX)
+    : null
+}
+
+function normalizeThinkingEnabled(value) {
+  if (value === true) return true
+  if (value === false) return false
+  return undefined
 }
 
 function getBasePromptIds(appConfig) {
@@ -194,6 +210,9 @@ function normalizeProjectSettings(settings = {}, provider = 'claude') {
       ? modelSettings.targetKind.trim()
       : null,
     effort: normalizeEffortValue(modelSettings.effort),
+    thinkingMode: modelSettings.thinkingMode || (modelSettings.thinkingEnabled !== undefined ? 'custom' : 'system'),
+    maxThinkingTokens: normalizeMaxThinkingTokensValue(modelSettings.maxThinkingTokens),
+    thinkingEnabled: normalizeThinkingEnabled(modelSettings.thinkingEnabled),
     debug: modelSettings.debug === true,
     promptMode,
     promptIds: promptMode === 'custom' && Array.isArray(settings.promptIds) ? settings.promptIds : [],
@@ -220,6 +239,9 @@ function normalizeSessionSettings(settings = {}) {
       ? settings.targetKind.trim()
       : null,
     effort: normalizeEffortValue(settings.effort),
+    thinkingMode: settings.thinkingMode || (settings.thinkingEnabled !== undefined ? 'custom' : 'project'),
+    maxThinkingTokens: normalizeMaxThinkingTokensValue(settings.maxThinkingTokens),
+    thinkingEnabled: normalizeThinkingEnabled(settings.thinkingEnabled),
     debug: settings.debug === true,
     promptMode,
     promptIds: promptMode === 'custom' && Array.isArray(settings.promptIds) ? settings.promptIds : [],
@@ -239,7 +261,9 @@ function resolveSystemModelSettings(appConfig, provider = 'claude') {
       modelCardId: null,
       credentialId: null,
       targetKind: 'openai',
-      effort: null
+      effort: null,
+      maxThinkingTokens: null,
+      thinkingEnabled: undefined
     }
   }
 
@@ -255,7 +279,9 @@ function resolveSystemModelSettings(appConfig, provider = 'claude') {
     modelCardId: null,
     credentialId,
     targetKind: modelId ? 'provider' : (isCodex ? 'openai' : null),
-    effort: null
+    effort: null,
+    maxThinkingTokens: null,
+    thinkingEnabled: undefined
   }
 }
 
@@ -265,12 +291,34 @@ function resolveProjectSettings(appConfig, projectSettings = {}, provider = 'cla
   const baseDocumentIds = getBaseDocumentIds(appConfig)
   const systemResolved = resolveSystemModelSettings(appConfig, provider)
 
+  // 解析 thinkingEnabled：依据 thinkingMode
+  // custom → 用项目自己的值；system → 从 app 取，跳过项目自己的覆盖
+  const projectThinkingEnabled = normalized.thinkingMode === 'custom'
+    ? (normalized.thinkingEnabled !== undefined
+        ? normalized.thinkingEnabled
+        : normalizeThinkingEnabled(appConfig?.settings?.thinkingEnabled))
+    : normalizeThinkingEnabled(appConfig?.settings?.thinkingEnabled)
+
+  // 解析 maxThinkingTokens（原始值，不受 thinkingEnabled 覆盖）
+  const projectRawMaxThinkingTokens = normalized.maxThinkingTokens !== null
+    ? normalized.maxThinkingTokens
+    : (normalizeMaxThinkingTokensValue(appConfig?.settings?.maxThinkingTokens)
+      ?? DEFAULT_MAX_THINKING_TOKENS)
+
+  // 最终生效的 maxThinkingTokens（受 thinkingEnabled 覆盖）
+  const projectMaxThinkingTokens = projectThinkingEnabled === false
+    ? 0
+    : projectRawMaxThinkingTokens
+
   return {
     modelId: normalized.modelMode === 'custom' ? normalized.modelId : systemResolved.modelId,
     modelCardId: normalized.modelMode === 'custom' ? normalized.modelCardId : systemResolved.modelCardId,
     credentialId: normalized.modelMode === 'custom' ? normalized.credentialId : systemResolved.credentialId,
     targetKind: normalized.modelMode === 'custom' ? normalized.targetKind : systemResolved.targetKind,
     effort: normalized.effort,
+    thinkingEnabled: projectThinkingEnabled,
+    maxThinkingTokens: projectMaxThinkingTokens,
+    _rawMaxThinkingTokens: projectRawMaxThinkingTokens,
     promptIds: normalized.promptMode === 'custom'
       ? normalized.promptIds
       : (normalized.promptMode === 'none' ? [] : basePromptIds),
@@ -298,6 +346,37 @@ function resolveSessionSettings(appConfig, projectSettings = {}, sessionSettings
   const basePromptIds = getBasePromptIds(appConfig)
   const baseDocumentIds = getBaseDocumentIds(appConfig)
 
+  // 解析 thinkingEnabled 和 maxThinkingTokens：依据 thinkingMode
+  // custom → 用 session 自己的值；project → 用 project 解析后的值；system → 直接用 app 跳过 project
+  let sessionThinkingEnabled, sessionMaxThinkingTokens
+
+  if (normalizedSession.thinkingMode === 'custom') {
+    // 自定义：使用 session 自己的值
+    sessionThinkingEnabled = normalizedSession.thinkingEnabled !== undefined
+      ? normalizedSession.thinkingEnabled
+      : projectResolved.thinkingEnabled
+
+    sessionMaxThinkingTokens = sessionThinkingEnabled === false
+      ? 0
+      : (normalizedSession.maxThinkingTokens !== null
+          ? normalizedSession.maxThinkingTokens
+          // session 启用但 project 禁用：取原始 token 而非被覆写为 0 的值
+          : (sessionThinkingEnabled === true && projectResolved.thinkingEnabled === false
+              ? projectResolved._rawMaxThinkingTokens
+              : projectResolved.maxThinkingTokens))
+  } else if (normalizedSession.thinkingMode === 'system') {
+    // 系统：直接从 app 取，跳过 project
+    const systemThinkingEnabled = normalizeThinkingEnabled(appConfig?.settings?.thinkingEnabled)
+    const systemRawMaxTokens = normalizeMaxThinkingTokensValue(appConfig?.settings?.maxThinkingTokens)
+      ?? DEFAULT_MAX_THINKING_TOKENS
+    sessionThinkingEnabled = systemThinkingEnabled
+    sessionMaxThinkingTokens = systemThinkingEnabled === false ? 0 : systemRawMaxTokens
+  } else {
+    // 项目：使用 project 解析后的值
+    sessionThinkingEnabled = projectResolved.thinkingEnabled
+    sessionMaxThinkingTokens = projectResolved.maxThinkingTokens
+  }
+
   return {
     modelId: normalizedSession.modelMode === 'custom'
       ? normalizedSession.modelId
@@ -312,6 +391,8 @@ function resolveSessionSettings(appConfig, projectSettings = {}, sessionSettings
     effort: normalizedSession.effort !== null
       ? normalizedSession.effort
       : projectResolved.effort,
+    thinkingEnabled: sessionThinkingEnabled,
+    maxThinkingTokens: sessionMaxThinkingTokens,
     promptIds: normalizedSession.promptMode === 'custom'
       ? normalizedSession.promptIds
       : (normalizedSession.promptMode === 'project'
@@ -331,9 +412,13 @@ function resolveSessionSettings(appConfig, projectSettings = {}, sessionSettings
 }
 
 module.exports = {
+  DEFAULT_MAX_THINKING_TOKENS,
+  MAX_THINKING_TOKENS_MAX,
   getBasePromptIds,
   getBaseDocumentIds,
   normalizeChatMessageTheme,
+  normalizeMaxThinkingTokensValue,
+  normalizeThinkingEnabled,
   normalizeProjectSettings,
   normalizeSessionSettings,
   resolveAppChatMessageTheme,

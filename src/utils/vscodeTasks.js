@@ -167,7 +167,6 @@ function toCommandLine(task, projectPath) {
 function isSupportedTask(task) {
   const type = String(task?.type || 'shell').trim()
   const label = String(task?.label || '').trim()
-  const hasEnv = task?.options?.env && typeof task.options.env === 'object' && Object.keys(task.options.env).length > 0
   const hasDependsOn = Array.isArray(task?.dependsOn)
     ? task.dependsOn.length > 0
     : Boolean(task?.dependsOn)
@@ -181,7 +180,7 @@ function isSupportedTask(task) {
     return false
   }
 
-  if (hasEnv || hasDependsOn || !argsAreValid) {
+  if (hasDependsOn || !argsAreValid) {
     return false
   }
 
@@ -202,7 +201,12 @@ export function parseSupportedTasksJson(source, projectPath) {
       command: String(task.command || '').trim(),
       commandLine: toCommandLine(task, projectPath),
       cwd: resolveTaskCwd(task, projectPath),
-      detail: String(task.detail || '').trim()
+      detail: String(task.detail || '').trim(),
+      env: task?.options?.env && typeof task.options.env === 'object'
+        ? Object.fromEntries(
+            Object.entries(task.options.env).map(([k, v]) => [k, replaceVariables(String(v), projectPath)])
+          )
+        : null
     }))
     .filter(task => task.commandLine)
 }

@@ -367,7 +367,8 @@ class ClaudeAdapter extends ClaudeClient {
       normalized === 'stopped' ||
       normalized === 'failed' ||
       normalized === 'cancelled' ||
-      normalized === 'canceled'
+      normalized === 'canceled' ||
+      normalized === 'killed'
   }
 
   clearProviderAgentMappings(agentId) {
@@ -1232,6 +1233,9 @@ class ClaudeAdapter extends ClaudeClient {
       if (requestContext?.kind === 'mcp-status') {
         this.pendingDryRunRequests.delete(requestId)
         this.handleMcpStatusResponse(payload, { syncServers: requestContext.syncServers === true })
+        if (typeof requestContext.resolve === 'function') {
+          requestContext.resolve()
+        }
         return
       }
 
@@ -1466,14 +1470,18 @@ class ClaudeAdapter extends ClaudeClient {
    */
   requestMcpStatus(options = {}) {
     const requestId = `mcp_status_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-    this.pendingDryRunRequests.set(requestId, {
-      kind: 'mcp-status',
-      syncServers: options.syncServers === true
+    const promise = new Promise(resolve => {
+      this.pendingDryRunRequests.set(requestId, {
+        kind: 'mcp-status',
+        syncServers: options.syncServers === true,
+        resolve
+      })
     })
     super.sendControlRequest({
       subtype: 'mcp_status',
       __ccguiRequestId: requestId
     })
+    return promise
   }
 
   /**
@@ -1954,6 +1962,43 @@ class ClaudeAdapter extends ClaudeClient {
         eventType: 'notification',
         taskId: message.task_id,
         tool_use_id: message.tool_use_id || null,
+        ccgui: this.buildCcguiPatch({
+          ...(executionTerminalCcgui?.registry ? { registry: executionTerminalCcgui.registry } : {}),
+          ...(executionTerminalCcgui?.orchestration ? { orchestration: executionTerminalCcgui.orchestration } : {}),
+          attribution: agentId
+            ? {
+                agentId,
+                actorId: agentId
+              }
+            : null
+        }),
+        rawMessage: message
+      })
+      return
+    }
+
+    if (message.subtype === 'task_updated') {
+      const agentId = this.taskIdToAgentId.get(message.task_id) || null
+      const patch = message.patch || {}
+      const isTerminal = this.isTerminalTaskStatus(patch.status)
+      const terminalExecutionStatus = isTerminal && agentId && !this.isCollaborativeAgentId(agentId)
+      const executionTerminalCcgui = terminalExecutionStatus
+        ? this.buildLifecycleCcgui({
+            agentId,
+            agentKind: 'execution',
+            status: patch.status === 'failed' || patch.status === 'killed' ? 'failed' : 'ended'
+          }, {
+            eventType: 'end',
+            agentId,
+            agentKind: 'execution',
+            reason: patch.status || 'completed',
+            status: patch.status === 'failed' || patch.status === 'killed' ? 'failed' : 'ended'
+          })
+        : null
+      this.emit('task-event', {
+        eventType: 'updated',
+        taskId: message.task_id,
+        patch,
         ccgui: this.buildCcguiPatch({
           ...(executionTerminalCcgui?.registry ? { registry: executionTerminalCcgui.registry } : {}),
           ...(executionTerminalCcgui?.orchestration ? { orchestration: executionTerminalCcgui.orchestration } : {}),

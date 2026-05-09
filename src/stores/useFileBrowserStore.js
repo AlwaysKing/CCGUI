@@ -130,7 +130,8 @@ function createTabBase(filePath, options = {}) {
     diffBaseLoaded: !!options.diffBaseLoaded,
     diffBaseLoading: !!options.diffBaseLoading,
     diffBaseError: options.diffBaseError || null,
-    readOnly: !!options.readOnly
+    readOnly: !!options.readOnly,
+    markdownPreview: !!options.markdownPreview
   }
 }
 
@@ -167,8 +168,8 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
   const projectPath = computed(() => appStore.currentProject?.path || '')
 
-  const activeTab = computed(() => tabs.value.find(tab => tab.path === activeFilePath.value) || null)
-  const activeFileGitStatus = computed(() => gitStatusMap.value[activeFilePath.value] || '')
+  const activeTab = computed(() => tabs.value.find(tab => tab.id === activeFilePath.value) || null)
+  const activeFileGitStatus = computed(() => activeTab.value ? (gitStatusMap.value[activeTab.value.path] || '') : '')
   const hasOpenFiles = computed(() => tabs.value.length > 0 || !!activeFilePath.value)
   const shouldShowPreviewPanel = computed(() => isPreviewPanelVisible.value)
 
@@ -300,7 +301,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
   async function reloadOpenTabIfClean(filePath) {
     const normalizedPath = normalizePath(filePath)
-    const tab = tabs.value.find(item => item.path === normalizedPath)
+    const tab = tabs.value.find(item => item.path === normalizedPath && !item.markdownPreview)
     if (!tab || tab.isDirty) return
 
     tab.loaded = false
@@ -474,7 +475,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
   async function ensureFileLoaded(filePath) {
     const normalizedPath = normalizePath(filePath)
-    const currentTab = tabs.value.find(tab => tab.path === normalizedPath)
+    const currentTab = tabs.value.find(tab => tab.path === normalizedPath && !tab.markdownPreview)
     if (!currentTab) return null
     if (currentTab.loaded || currentTab.error) return currentTab
 
@@ -504,6 +505,10 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       currentTab.isDirty = false
       currentTab.readOnly = relativePath === null
       currentTab.loaded = true
+
+      // Sync content to markdown preview tabs
+      syncToMarkdownPreviewTabs(normalizedPath, currentTab.content)
+
       return currentTab
     } catch (error) {
       currentTab.error = error.message || '读取文件失败'
@@ -515,7 +520,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
   async function ensureDiffBaseLoaded(filePath) {
     const normalizedPath = normalizePath(filePath)
-    const currentTab = tabs.value.find(tab => tab.path === normalizedPath)
+    const currentTab = tabs.value.find(tab => tab.path === normalizedPath && !tab.markdownPreview)
     if (!currentTab) return null
     if (currentTab.diffBaseLoaded || currentTab.diffBaseLoading) return currentTab
 
@@ -544,8 +549,8 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     }
   }
 
-  function setActiveTab(tabPath) {
-    activeFilePath.value = normalizePath(tabPath)
+  function setActiveTab(tabId) {
+    activeFilePath.value = tabId
   }
 
   function setSelectedNode(nodePath) {
@@ -565,7 +570,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     if (!projectPath.value) return null
 
     const normalizedPath = normalizePath(filePath)
-    let targetTab = tabs.value.find(tab => tab.path === normalizedPath)
+    let targetTab = tabs.value.find(tab => tab.path === normalizedPath && !tab.markdownPreview)
 
     if (!targetTab) {
       if (preview && previewTabId.value) {
@@ -600,7 +605,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       previewTabId.value = ''
     }
 
-    activeFilePath.value = normalizedPath
+    activeFilePath.value = targetTab.id
     selectedNodePath.value = normalizedPath
     isPreviewPanelVisible.value = true
     await ensureFileLoaded(normalizedPath)
@@ -621,7 +626,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
   async function toggleTabDiff(filePath) {
     const normalizedPath = normalizePath(filePath)
-    const tab = tabs.value.find(item => item.path === normalizedPath)
+    const tab = tabs.value.find(item => item.path === normalizedPath && !item.markdownPreview)
     if (!tab) return { success: false, error: '文件未打开' }
 
     if (tab.diffMode) {
@@ -751,17 +756,13 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       tabs.value.forEach(tab => {
         if (tab.path === oldPath || tab.path.startsWith(`${oldPath}/`)) {
           tab.path = tab.path.replace(oldPath, newPath)
-          tab.id = tab.path
+          tab.id = tab.markdownPreview ? `${tab.path}__md_preview` : tab.path
           tab.name = getBaseName(tab.path)
         }
       })
 
-      if (activeFilePath.value === oldPath || activeFilePath.value.startsWith(`${oldPath}/`)) {
-        activeFilePath.value = activeFilePath.value.replace(oldPath, newPath)
-      }
-      if (previewTabId.value === oldPath || previewTabId.value.startsWith(`${oldPath}/`)) {
-        previewTabId.value = previewTabId.value.replace(oldPath, newPath)
-      }
+      activeFilePath.value = activeFilePath.value.replace(oldPath, newPath)
+      previewTabId.value = previewTabId.value.replace(oldPath, newPath)
 
       selectedNodePath.value = newPath
       editingNodePath.value = ''
@@ -788,10 +789,10 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       }
 
       tabs.value = tabs.value.filter(tab => tab.path !== normalizedTargetPath && !tab.path.startsWith(`${normalizedTargetPath}/`))
-      if (activeFilePath.value === normalizedTargetPath || activeFilePath.value.startsWith(`${normalizedTargetPath}/`)) {
-        activeFilePath.value = tabs.value[0]?.path || ''
+      if (!tabs.value.some(tab => tab.id === activeFilePath.value)) {
+        activeFilePath.value = tabs.value[0]?.id || ''
       }
-      if (previewTabId.value === normalizedTargetPath || previewTabId.value.startsWith(`${normalizedTargetPath}/`)) {
+      if (!tabs.value.some(tab => tab.id === previewTabId.value)) {
         previewTabId.value = ''
       }
       expandedDirs.value = new Set(
@@ -813,17 +814,20 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
   function updateTabContent(filePath, content) {
     const normalizedPath = normalizePath(filePath)
-    const tab = tabs.value.find(item => item.path === normalizedPath)
+    const tab = tabs.value.find(item => item.path === normalizedPath && !item.markdownPreview)
     if (!tab) return
 
     tab.content = content
     tab.isDirty = tab.content !== tab.savedContent
     tab.error = null
+
+    // Sync content to markdown preview tabs
+    syncToMarkdownPreviewTabs(normalizedPath, content)
   }
 
   async function saveFile(filePath) {
     const normalizedPath = normalizePath(filePath)
-    const tab = tabs.value.find(item => item.path === normalizedPath)
+    const tab = tabs.value.find(item => item.path === normalizedPath && !item.markdownPreview)
     if (!tab) return { success: false, error: '文件未打开' }
     if (tab.readOnly) {
       tab.error = '附件预览为只读，暂不支持保存'
@@ -856,9 +860,82 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     }
   }
 
-  function closeTab(filePath) {
+  function syncToMarkdownPreviewTabs(filePath, content) {
+    tabs.value.forEach(tab => {
+      if (tab.markdownPreview && tab.path === filePath) {
+        tab.content = content
+      }
+    })
+  }
+
+  async function openMarkdownPreview(filePath) {
+    if (!projectPath.value) return null
+
     const normalizedPath = normalizePath(filePath)
-    const index = tabs.value.findIndex(tab => tab.path === normalizedPath)
+    const mdPreviewId = `${normalizedPath}__md_preview`
+
+    // If preview tab already exists, activate it and sync content
+    let previewTab = tabs.value.find(tab => tab.id === mdPreviewId)
+    if (previewTab) {
+      const editTab = tabs.value.find(tab => tab.path === normalizedPath && !tab.markdownPreview)
+      if (editTab?.loaded) {
+        previewTab.content = editTab.content
+      }
+      activeFilePath.value = previewTab.id
+      isPreviewPanelVisible.value = true
+      return previewTab
+    }
+
+    // Get content from edit tab or load from file
+    let content = ''
+    let loaded = false
+    const editTab = tabs.value.find(tab => tab.path === normalizedPath && !tab.markdownPreview)
+    if (editTab?.loaded) {
+      content = editTab.content
+      loaded = true
+    } else {
+      try {
+        const relativePath = getProjectRelativePath(projectPath.value, normalizedPath)
+        const result = relativePath !== null
+          ? await window.electronAPI.readProjectFile({
+            projectPath: projectPath.value,
+            filePath: relativePath
+          })
+          : await window.electronAPI.readAttachmentFile({
+            filePath: normalizedPath
+          })
+
+        if (result?.success) {
+          content = result.file.content || ''
+          loaded = true
+        }
+      } catch (_error) {
+        // Will create tab anyway, content will be empty
+      }
+    }
+
+    previewTab = createTabBase(normalizedPath, {
+      markdownPreview: true,
+      pinned: true,
+      isPreview: false,
+      loaded,
+      loading: false,
+      readOnly: true,
+      content,
+      savedContent: content,
+      isDirty: false,
+      language: 'markdown'
+    })
+    previewTab.id = mdPreviewId
+
+    tabs.value.push(previewTab)
+    activeFilePath.value = previewTab.id
+    isPreviewPanelVisible.value = true
+    return previewTab
+  }
+
+  function closeTab(tabId) {
+    const index = tabs.value.findIndex(tab => tab.id === tabId)
     if (index === -1) return
 
     const [removedTab] = tabs.value.splice(index, 1)
@@ -866,9 +943,9 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       previewTabId.value = ''
     }
 
-    if (activeFilePath.value === normalizedPath) {
+    if (activeFilePath.value === tabId) {
       const nextTab = tabs.value[index] || tabs.value[index - 1] || null
-      activeFilePath.value = nextTab?.path || ''
+      activeFilePath.value = nextTab?.id || ''
     }
   }
 
@@ -880,11 +957,11 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     isPreviewPanelVisible.value = !isPreviewPanelVisible.value
   }
 
-  function closeOtherTabs(filePath) {
-    const normalizedPath = normalizePath(filePath)
-    tabs.value = tabs.value.filter(tab => tab.path === normalizedPath)
-    previewTabId.value = tabs.value[0]?.pinned ? '' : tabs.value[0]?.id || ''
-    activeFilePath.value = tabs.value[0]?.path || ''
+  function closeOtherTabs(tabId) {
+    tabs.value = tabs.value.filter(tab => tab.id === tabId)
+    const remaining = tabs.value[0]
+    previewTabId.value = (remaining?.pinned || remaining?.markdownPreview) ? '' : (remaining?.id || '')
+    activeFilePath.value = remaining?.id || ''
   }
 
   function toggleFilePanel() {
@@ -895,14 +972,19 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     return {
       isFilePanelVisible: Boolean(isFilePanelVisible.value),
       isPreviewPanelVisible: Boolean(isPreviewPanelVisible.value),
-      activeFilePath: normalizePath(activeFilePath.value),
-      previewTabId: normalizePath(previewTabId.value),
-      tabs: tabs.value.map(tab => ({
-        path: normalizePath(tab.path),
-        pinned: Boolean(tab.pinned),
-        isPreview: Boolean(tab.isPreview),
-        diffMode: Boolean(tab.diffMode)
-      }))
+      activeFilePath: activeTab.value ? normalizePath(activeTab.value.path) : '',
+      previewTabId: (() => {
+        const tab = tabs.value.find(t => t.id === previewTabId.value)
+        return tab ? normalizePath(tab.path) : ''
+      })(),
+      tabs: tabs.value
+        .filter(tab => !tab.markdownPreview)
+        .map(tab => ({
+          path: normalizePath(tab.path),
+          pinned: Boolean(tab.pinned),
+          isPreview: Boolean(tab.isPreview),
+          diffMode: Boolean(tab.diffMode)
+        }))
     }
   }
 
@@ -926,12 +1008,12 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       }
     }
 
-    const restoredActiveTab = tabs.value.find(tab => tab.path === requestedActiveFilePath)
+    const restoredActiveTab = tabs.value.find(tab => tab.path === requestedActiveFilePath && !tab.markdownPreview)
     if (restoredActiveTab) {
-      activeFilePath.value = restoredActiveTab.path
+      activeFilePath.value = restoredActiveTab.id
       selectedNodePath.value = restoredActiveTab.path
     } else if (tabs.value.length > 0) {
-      activeFilePath.value = tabs.value[0].path
+      activeFilePath.value = tabs.value[0].id
       selectedNodePath.value = tabs.value[0].path
     }
 
@@ -1028,6 +1110,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     setActiveTab,
     updateTabContent,
     saveFile,
+    openMarkdownPreview,
     closeTab,
     closeOtherTabs,
     hidePreviewPanel,

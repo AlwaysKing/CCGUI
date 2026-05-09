@@ -16,6 +16,16 @@ const PromptDialog = defineAsyncComponent(() => import('@/views/tools/PromptDial
 const TaskTemplatesDialog = defineAsyncComponent(() => import('@/views/tools/TaskTemplatesDialog.vue'))
 
 const store = useAppStore()
+const version = __APP_VERSION__
+
+const props = defineProps({
+  dockDropPath: {
+    type: String,
+    default: null
+  }
+})
+
+const emit = defineEmits(['dock-drop-consumed'])
 const {
   searchQuery,
   showSettingsDialog,
@@ -121,6 +131,24 @@ onMounted(async () => {
   logger.info('[Welcome] mount complete', {
     sinceMountedMs: Math.round(performance.now() - mountedAt)
   })
+
+  // 处理 Dock 拖拽文件夹：自动弹出新建项目对话框
+  if (props.dockDropPath) {
+    logger.info('[Welcome] Dock drop path received, checking project existence', { path: props.dockDropPath })
+
+    // 检查是否已有该项目（防止竞态）
+    const found = store.projects.find(project => project.path === props.dockDropPath)
+    if (found) {
+      logger.info('[Welcome] Dock drop path already has a project, opening it', { projectId: found.id })
+      store.selectProject(found)
+      emit('dock-drop-consumed')
+    } else {
+      logger.info('[Welcome] Dock drop path has no project, opening new project dialog', { path: props.dockDropPath })
+      initialProjectPath.value = props.dockDropPath
+      showNewProjectDialog.value = true
+      emit('dock-drop-consumed')
+    }
+  }
 })
 
 onUnmounted(() => {
@@ -259,6 +287,7 @@ function handleShortcutEvent(event) {
       </div>
       <h1>Claude Code GUI</h1>
       <p class="subtitle">选择一个项目开始工作</p>
+      <p class="version">{{ version }}</p>
     </div>
 
     <div class="search-bar">
@@ -693,6 +722,12 @@ function handleShortcutEvent(event) {
   font-size: 16px;
   color: #71717A;
   margin: 0;
+}
+
+.welcome-header .version {
+  font-size: 12px;
+  color: #52525B;
+  margin: 6px 0 0;
 }
 
 .search-bar {

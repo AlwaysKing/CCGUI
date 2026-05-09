@@ -12,7 +12,9 @@ const projectService = require('./services/project-service')
 const attachmentService = require('./services/attachment-service')
 const codexAppServer = require('./services/codex-app-server')
 const providerInspector = require('./services/provider-inspector')
+const { getClaudePath } = require('./services/claude-path')
 const historyManager = require('./storage/history-manager')
+const projectConfigManager = require('./storage/project-config-manager')
 const processRegistry = require('./services/process-registry')
 
 const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -381,6 +383,14 @@ function createWindow() {
   initSessionManager()
 
   const mainWindowWebContentsId = mainWindow.webContents.id
+
+  // 拦截窗口关闭，让前端检查是否有运行中的任务
+  mainWindow.on('close', (e) => {
+    if (isAppQuitting) return
+    e.preventDefault()
+    mainWindow.webContents.send('window-close-request')
+  })
+
   mainWindow.on('closed', () => {
     disposeTerminalsForWebContents(mainWindowWebContentsId)
     stopProjectFileWatcher(mainWindowWebContentsId)
@@ -1479,10 +1489,11 @@ ipcMain.handle('set-auto-approve', async (event, { sessionId, enabled }) => {
   }
 })
 
-// Save task-dock history
-ipcMain.handle('save-task-dock-history', async (event, { sessionId, items }) => {
+// Save task-dock history (project level)
+ipcMain.handle('save-task-dock-history', async (event, { sessionId, projectId, items }) => {
   try {
-    await sessionManager.saveTaskDockHistory(sessionId, items)
+    const targetSessionId = sessionId
+    await sessionManager.saveTaskDockHistory(targetSessionId, items)
     return { success: true }
   } catch (error) {
     logger.error('[IPC] save-task-dock-history error:', error)
@@ -1886,6 +1897,56 @@ ipcMain.handle('set-session-effort', async (event, {
   }
 })
 
+// 运行时动态修改 maxThinkingTokens（不禁用思考，不重启，仅限运行时 control request）
+ipcMain.handle('set-session-max-thinking-tokens', async (event, { sessionId, value }) => {
+  try {
+    if (!sessionId) {
+      throw new Error('Missing sessionId')
+    }
+    const session = sessionManager.getSession(sessionId)
+    if (!session) {
+      throw new Error('Session not found')
+    }
+    const result = await session.setMaxThinkingTokens(value)
+    return { success: true, ...result }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to set max thinking tokens', {
+      sessionId,
+      value,
+      error: error.message
+    })
+    return { success: false, error: error.message }
+  }
+})
+
+// 切换思考开关（持久化 thinkingEnabled + 运行时立即生效）
+ipcMain.handle('set-session-thinking-enabled', async (event, { sessionId, enabled }) => {
+  try {
+    if (!sessionId) {
+      throw new Error('Missing sessionId')
+    }
+    const session = sessionManager.getSession(sessionId)
+    if (!session) {
+      throw new Error('Session not found')
+    }
+    const result = await session.setThinkingEnabled(enabled)
+    logger.info('[SessionConfig] Thinking enabled set', {
+      sessionId,
+      enabled,
+      effectiveTokens: result?.effectiveTokens,
+      appliedLive: result?.appliedLive
+    })
+    return { success: true, ...result }
+  } catch (error) {
+    logger.error('[SessionConfig] Failed to set thinking enabled', {
+      sessionId,
+      enabled,
+      error: error.message
+    })
+    return { success: false, error: error.message }
+  }
+})
+
 // Delete session config (reset settings)
 ipcMain.handle('delete-session-config', async (event, { projectId, sessionId }) => {
   try {
@@ -2089,8 +2150,15 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
       newWindow.loadURL(`file://${indexPath}?projectId=${encodeURIComponent(projectId)}`)
     }
 
-    // Handle window close
+    // Handle window close: 拦截关闭以检测运行中的任务
+    newWindow.on('close', (e) => {
+      if (isAppQuitting) return
+      e.preventDefault()
+      newWindow.webContents.send('window-close-request')
+    })
+
     newWindow.on('closed', () => {
+      disposeTerminalsForWebContents(newWindowWebContentsId)
       stopProjectFileWatcher(newWindowWebContentsId)
       logger.info('[Window] Closed window', { projectId })
     })
@@ -2186,6 +2254,15 @@ ipcMain.handle('resize-window', async (event, { width, height, center = false, a
     if (center) {
       win.center()
     }
+  }
+  return { success: true }
+})
+
+// 前端回复窗口关闭请求：允许关闭或取消
+ipcMain.handle('window-close-response', async (event, { canClose }) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (window && canClose) {
+    window.destroy() // destroy() 不会触发 close 事件，直接销毁
   }
   return { success: true }
 })
@@ -3708,7 +3785,8 @@ ipcMain.handle('read-codex-plugin-detail', async (event, options = {}) => {
 ipcMain.handle('manage-claude-plugin', async (event, options = {}) => {
   try {
     const args = buildClaudePluginCommand(options)
-    const { stdout, stderr } = await execFileAsync('claude', args, {
+    const claudeBin = getClaudePath()
+    const { stdout, stderr } = await execFileAsync(claudeBin, args, {
       cwd: options.projectPath || process.cwd()
     })
     const data = await providerInspector.inspectProviderSetup({
@@ -5975,29 +6053,50 @@ app.on('open-file', (event, filePath) => {
     return
   }
 
-  // Check if there's already a window with this project
-  const existingWindow = findWindowByProjectPath(filePath)
-  if (existingWindow) {
-    logger.info('[Dock] Found existing window for project, focusing it')
-    existingWindow.focus()
-    return
-  }
-
   // Create project ID from path
   const projectId = encodeProjectPath(filePath)
 
-  if (!app.isReady()) {
-    logger.info('[Dock] App not ready yet, queueing project open:', filePath)
-    pendingDockProjectOpens.push({
-      projectId,
-      projectName: path.basename(filePath),
-      projectPath: filePath
-    })
-    return
-  }
+  // Check if project already exists in CCGUI
+  const projectExists = projectConfigManager.projectExists(projectId)
 
-  // Open in new window
-  openProjectWindow(projectId, path.basename(filePath), filePath)
+  if (projectExists) {
+    // 项目已存在：检查是否有已打开的窗口
+    const existingWindow = findWindowByProjectPath(filePath)
+    if (existingWindow) {
+      logger.info('[Dock] Found existing window for project, focusing it')
+      existingWindow.focus()
+      return
+    }
+
+    if (!app.isReady()) {
+      logger.info('[Dock] App not ready yet, queueing project open:', filePath)
+      pendingDockProjectOpens.push({
+        projectId,
+        projectName: path.basename(filePath),
+        projectPath: filePath
+      })
+      return
+    }
+
+    // 直接打开项目
+    openProjectWindow(projectId, path.basename(filePath), filePath)
+  } else {
+    // 项目不存在：打开 Welcome 页面，并传递文件夹路径以便弹出新建项目对话框
+    logger.info('[Dock] Project does not exist, opening Welcome with drop path:', filePath)
+
+    if (!app.isReady()) {
+      logger.info('[Dock] App not ready yet, queueing dock drop open:', filePath)
+      pendingDockProjectOpens.push({
+        projectId: null,
+        projectName: null,
+        projectPath: filePath,
+        dockDropPath: filePath
+      })
+      return
+    }
+
+    openWelcomeWithDropPath(filePath)
+  }
 })
 
 /**
@@ -6065,6 +6164,13 @@ function openProjectWindow(projectId, projectName, projectPath) {
     newWindow.loadURL(`file://${indexPath}?projectId=${encodeURIComponent(projectId)}`)
   }
 
+  // 拦截窗口关闭以检测运行中的任务
+  newWindow.on('close', (e) => {
+    if (isAppQuitting) return
+    e.preventDefault()
+    newWindow.webContents.send('window-close-request')
+  })
+
   newWindow.on('closed', () => {
     disposeTerminalsForWebContents(newWindowWebContentsId)
     logger.info('[Window] Closed window', { projectId })
@@ -6075,6 +6181,56 @@ function openProjectWindow(projectId, projectName, projectPath) {
   return newWindow
 }
 
+/**
+ * Open Welcome window with a dock-dropped folder path
+ * @param {string} folderPath - The folder path dropped on dock icon
+ */
+function openWelcomeWithDropPath(folderPath) {
+  // 始终创建新窗口，通过 URL 参数传递文件夹路径
+  // 不复用已有窗口，因为主窗口可能正在显示 Workspace（无法可靠区分）
+  const newWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
+    title: '首页',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 16 },
+    icon: getIconPath(),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  const newWindowWebContentsId = newWindow.webContents.id
+
+  if (isDev) {
+    const url = `http://127.0.0.1:5173/?dockDropPath=${encodeURIComponent(folderPath)}`
+    logger.info('[Window] Loading Welcome URL with dockDropPath', { url })
+    newWindow.loadURL(url)
+  } else {
+    const indexPath = path.join(__dirname, '../dist/index.html')
+    newWindow.loadURL(`file://${indexPath}?dockDropPath=${encodeURIComponent(folderPath)}`)
+  }
+
+  // 拦截窗口关闭以检测运行中的任务
+  newWindow.on('close', (e) => {
+    if (isAppQuitting) return
+    e.preventDefault()
+    newWindow.webContents.send('window-close-request')
+  })
+
+  newWindow.on('closed', () => {
+    disposeTerminalsForWebContents(newWindowWebContentsId)
+    stopProjectFileWatcher(newWindowWebContentsId)
+    logger.info('[Window] Closed Welcome window with dockDropPath')
+  })
+
+  logger.info('[Window] Created Welcome window with dockDropPath', { folderPath })
+  return newWindow
+}
+
 function flushPendingDockProjectOpens() {
   if (!app.isReady() || pendingDockProjectOpens.length === 0) {
     return
@@ -6082,6 +6238,12 @@ function flushPendingDockProjectOpens() {
 
   const queuedOpens = pendingDockProjectOpens.splice(0, pendingDockProjectOpens.length)
   for (const pendingProject of queuedOpens) {
+    // 如果是 dock drop（项目不存在）的情况
+    if (pendingProject.dockDropPath) {
+      openWelcomeWithDropPath(pendingProject.dockDropPath)
+      continue
+    }
+
     const existingWindow = findWindowByProjectPath(pendingProject.projectPath)
     if (existingWindow) {
       logger.info('[Dock] Found existing window for queued project, focusing it')
@@ -6168,6 +6330,13 @@ function createNewWindow() {
     const indexPath = path.join(__dirname, '../dist/index.html')
     newWindow.loadURL(`file://${indexPath}`)
   }
+
+  // 拦截窗口关闭以检测运行中的任务
+  newWindow.on('close', (e) => {
+    if (isAppQuitting) return
+    e.preventDefault()
+    newWindow.webContents.send('window-close-request')
+  })
 
   newWindow.on('closed', () => {
     disposeTerminalsForWebContents(newWindowWebContentsId)

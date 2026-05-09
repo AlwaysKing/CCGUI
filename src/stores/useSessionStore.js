@@ -881,6 +881,163 @@ export const useSessionStore = defineStore('session', () => {
     )
   }
 
+  /**
+   * 增量地将消息添加到对应 agent 的 bucket 中（替代全量遍历重建）
+   * 仅在消息是新添加时执行，已有消息跳过（防止重复）
+   */
+  function addMessageToBucketIfNew(session, message) {
+    if (!message?.id || !session?.agentBuckets) {
+      return
+    }
+    const mainAgentId = getMainAgentId(session)
+    const agentId = getMessageAgentId(message, session) || mainAgentId
+    let bucket = session.agentBuckets.get(agentId)
+    if (!bucket) {
+      bucket = createAgentBucket(agentId)
+      session.agentBuckets.set(agentId, bucket)
+    }
+    // 按 ID 去重，防止同一消息被多次加入
+    if (bucket.messages.some(m => m.id === message.id)) {
+      return
+    }
+    bucket.messages.push(message)
+    const timestamp = getMessageTimestamp(message)
+    if (timestamp) {
+      if (!bucket.firstTimestamp) {
+        bucket.firstTimestamp = timestamp
+      }
+      bucket.lastTimestamp = timestamp
+    }
+  }
+
+  /**
+   * 当 agentToolUseBindings 建立/变更后，将对应 tool_use 消息从旧 bucket 移到新 bucket。
+   * 从后往前查找（最新的优先），找到即移动并返回。
+   */
+  function moveBoundToolMessageToBucket(session, toolUseId, newAgentId) {
+    if (!session?.agentBuckets || !toolUseId || !newAgentId) return
+
+    if (!session.agentBuckets.has(newAgentId)) {
+      session.agentBuckets.set(newAgentId, createAgentBucket(newAgentId))
+    }
+    const newBucket = session.agentBuckets.get(newAgentId)
+
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      const msg = session.messages[i]
+      if (!msg || (msg.role !== 'tool_use' && msg.role !== 'diff')) continue
+      const msgId = msg.id || msg.request_id
+      if (msgId !== toolUseId) continue
+
+      // 从所有旧 bucket 中移除
+      for (const [, bucket] of session.agentBuckets) {
+        const idx = bucket.messages.findIndex(m => m.id === msg.id)
+        if (idx !== -1) {
+          bucket.messages.splice(idx, 1)
+          break
+        }
+      }
+
+      // 加入目标 bucket
+      if (!newBucket.messages.some(m => m.id === msg.id)) {
+        newBucket.messages.push(msg)
+        const timestamp = getMessageTimestamp(msg)
+        if (timestamp) {
+          if (!newBucket.firstTimestamp) newBucket.firstTimestamp = timestamp
+          newBucket.lastTimestamp = timestamp
+        }
+      }
+      return
+    }
+  }
+
+  /**
+   * 获取用户消息对应的回答消息范围（在 session.messages 中的索引范围）
+   * 返回 { responseStart, responseEnd } 或 null
+   */
+  function getTurnResponseRange(messages, userMessageIndex) {
+    const msg = messages[userMessageIndex]
+    if (!msg || !isTurnInitiatorMessage(msg)) return null
+
+    let responseStart = userMessageIndex + 1
+    if (responseStart >= messages.length) return null
+    if (isTurnInitiatorMessage(messages[responseStart])) return null
+
+    let responseEnd = responseStart
+    while (responseEnd < messages.length && !isTurnInitiatorMessage(messages[responseEnd])) {
+      responseEnd++
+    }
+    return { responseStart, responseEnd }
+  }
+
+  /**
+   * 释放被折叠的旧问答——从 session.messages 中移除响应消息，
+   * 并以普通对象缓存到 userMessage._releasedResponses 上，节省 Vue reactivity 开销。
+   * 只在问答完成（非 streaming）后调用。
+   */
+  function releaseOldCollapsedTurns(session, keepRecentCount = 5) {
+    if (!session?.messages?.length) return
+
+    // 反向扫描，从后往前统计 user message 数量，找到超过 keepRecentCount 的折叠老问答
+    let userCount = 0
+    const toRelease = []
+
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      if (isTurnInitiatorMessage(session.messages[i])) {
+        userCount++
+        if (userCount > keepRecentCount && session.messages[i].responseCollapsed) {
+          toRelease.push(i)
+        }
+      }
+    }
+
+    // toRelease 是降序排列（反向扫描的结果），
+    // 正向迭代即先释放较后面的索引，前面索引不受影响，防止索引漂移
+    for (let r = 0; r < toRelease.length; r++) {
+      const userIdx = toRelease[r]
+      const range = getTurnResponseRange(session.messages, userIdx)
+      if (!range) continue
+
+      const userMsg = session.messages[userIdx]
+      const responseMessages = session.messages.splice(range.responseStart, range.responseEnd - range.responseStart)
+
+      // 以 JSON 序列化缓存（释放 Vue reactive 追踪开销）
+      userMsg._releasedResponses = JSON.parse(JSON.stringify(responseMessages))
+
+      // 同步从 agentBuckets 中移除
+      for (const resp of responseMessages) {
+        if (!resp?.id) continue
+        for (const [, bucket] of session.agentBuckets) {
+          const idx = bucket.messages.findIndex(m => m.id === resp.id)
+          if (idx !== -1) {
+            bucket.messages.splice(idx, 1)
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * 恢复被释放的问答——将缓存的响应消息重新插入 session.messages 和 agentBuckets
+   */
+  function restoreReleasedTurn(session, userMessage) {
+    if (!userMessage?._releasedResponses || !session?.messages) return
+
+    const userIdx = session.messages.findIndex(m => m.id === userMessage.id)
+    if (userIdx === -1) return
+
+    // 重新创建 reactive 消息对象并插入
+    const restoredMessages = userMessage._releasedResponses.map(data => reactive(data))
+    session.messages.splice(userIdx + 1, 0, ...restoredMessages)
+
+    // 恢复到 agentBuckets
+    for (const msg of restoredMessages) {
+      addMessageToBucketIfNew(session, msg)
+    }
+
+    // 清除缓存
+    userMessage._releasedResponses = null
+  }
+
   function syncAgentWorkspaceState(session) {
     if (!session) {
       return
@@ -1156,7 +1313,11 @@ export const useSessionStore = defineStore('session', () => {
     )
     const toolUseId = getToolUseIdFromPayload(payload)
     if (toolUseId && semanticAgentId && semanticAgentKind === 'execution') {
+      const prevBinding = session.agentToolUseBindings.get(toolUseId)
       session.agentToolUseBindings.set(toolUseId, semanticAgentId)
+      if (prevBinding !== semanticAgentId) {
+        moveBoundToolMessageToBucket(session, toolUseId, semanticAgentId)
+      }
     }
 
     syncAgentWorkspaceState(session)
@@ -1219,12 +1380,23 @@ export const useSessionStore = defineStore('session', () => {
         const timelineItems = items.filter(message =>
           (message?.role === 'tool_use' || message?.role === 'diff') &&
           message?.toolName !== 'Agent'
-        )
+        ).map(message => {
+          // 确保嵌套工具消息默认折叠
+          if ((message.role === 'tool_use' || message.role === 'diff') && !message.manuallyExpanded && message.collapsed !== true) {
+            if (typeof message === 'object' && message !== null) {
+              message.collapsed = true
+            }
+          }
+          return message
+        })
         const activeTimelineItems = timelineItems.filter(message => message?.isExecuting)
         const rawStatus = entry.status || 'running'
-        const resolvedStatus = (!hasLiveRuntime && (rawStatus === 'running' || rawStatus === 'starting') && activeTimelineItems.length === 0)
-          ? 'interrupted'
-          : rawStatus
+        // 优先级：task_complete 消息存在 → 已结束；无 runtime 且无活跃工具 → 中断；否则取注册表状态
+        const resolvedStatus = latestTaskComplete
+          ? 'ended'
+          : (!hasLiveRuntime && (rawStatus === 'running' || rawStatus === 'starting') && activeTimelineItems.length === 0)
+            ? 'interrupted'
+            : rawStatus
         const completedToolCount = toolCalls.filter(toolCall => toolCall.status === 'completed').length
         const errorToolCount = toolCalls.filter(toolCall => toolCall.status === 'error').length
         const displayTimelineItems = activeTimelineItems.length
@@ -1446,8 +1618,6 @@ export const useSessionStore = defineStore('session', () => {
     if (typeof envInfo.providerPid !== 'undefined') {
       session.runtimeReady = Boolean(envInfo.providerPid)
     }
-
-    rebuildAgentSemanticState(session)
   }
 
   async function hydrateSessionEnvInfo(sessionId) {
@@ -2168,6 +2338,36 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
+   * 运行时动态修改 maxThinkingTokens（不禁用思考，仅限运行时 control request）
+   */
+  async function setMaxThinkingTokens(value) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    return window.electronAPI.setSessionMaxThinkingTokens({
+      sessionId: session.id,
+      value
+    })
+  }
+
+  /**
+   * 切换思考开关（持久化 thinkingEnabled + 运行时立即生效）
+   */
+  async function setThinkingEnabled(enabled) {
+    const session = currentSession.value
+    if (!session) {
+      throw new Error('No active session')
+    }
+
+    return window.electronAPI.setSessionThinkingEnabled({
+      sessionId: session.id,
+      enabled
+    })
+  }
+
+  /**
    * 设置权限模式
    */
   async function setPermissionMode(mode) {
@@ -2407,12 +2607,14 @@ export const useSessionStore = defineStore('session', () => {
       case 'message':
         recordAgentSemantics(session, data)
         handleAddMessage(session, data)
+        addMessageToBucketIfNew(session, data)
         break
 
       case 'message-start':
         // 后端发送的消息创建事件
         recordAgentSemantics(session, data)
         handleMessageStart(session, data)
+        addMessageToBucketIfNew(session, data)
         break
 
       case 'message-delta':
@@ -2489,6 +2691,7 @@ export const useSessionStore = defineStore('session', () => {
         }
         if (!isSilentMessageHandled(data)) {
           session.silentMessages.push(reactive(data))
+          addMessageToBucketIfNew(session, data)
         }
         break
 
@@ -2529,6 +2732,7 @@ export const useSessionStore = defineStore('session', () => {
         log('[SessionStore] Task event:', data)
         session.taskEvents.push(reactive(data))
         recordAgentSemantics(session, data)
+        addMessageToBucketIfNew(session, data)
         handleTaskEvent(session, data)
         break
 
@@ -2564,20 +2768,8 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     if ([
-      'message',
-      'message-start',
-      'message-replace',
-      'message-complete',
-      'message-update',
-      'message-result',
       'messages-reset',
-      'tool-result',
       'result',
-      'env-info',
-      'silent-message',
-      'agent-update',
-      'system-message',
-      'unknown-message',
       'abnormal-exit',
       'normal-exit'
     ].includes(eventType)) {
@@ -2662,7 +2854,6 @@ export const useSessionStore = defineStore('session', () => {
   function handleMessagesReset(session, data) {
     const nextMessages = Array.isArray(data?.messages) ? data.messages.map(message => reactive(message)) : []
     session.messages = nextMessages
-    rebuildAgentSemanticState(session)
     session.currentAssistantMessageIndex = -1
     session.currentStreamingAssistantId = null
     session.currentContentBlockType = null
@@ -3763,6 +3954,20 @@ export const useSessionStore = defineStore('session', () => {
         task.ccgui = data.ccgui || task.ccgui || null
         log('[SessionStore] Task progress:', taskId, data.summary)
       }
+    } else if (eventType === 'updated') {
+      // 任务状态变更：将 patch 合并到 activeTask
+      // 注意：collaborative agent 的 task 不在 activeTasks 中，此处静默忽略是预期行为
+      // （collaborative agent 的终态由 task_notification 的 else 分支处理）
+      const task = session.activeTasks.get(taskId)
+      if (task) {
+        const patch = data.patch || {}
+        if (patch.status) task.status = patch.status
+        if (patch.description) task.description = patch.description
+        if (patch.error) task.error = patch.error
+        task.agentId = task.agentId || resolveAgentIdFromCcguiPayload(data.ccgui)
+        task.ccgui = data.ccgui || task.ccgui || null
+        log('[SessionStore] Task updated:', taskId, patch)
+      }
     } else if (eventType === 'notification') {
       // 任务通知：通常是任务结束，从活跃列表移除
       const task = session.activeTasks.get(taskId)
@@ -4130,6 +4335,8 @@ export const useSessionStore = defineStore('session', () => {
     setSessionTarget,
     listSessionEffortOptions,
     setSessionEffort,
+    setMaxThinkingTokens,
+    setThinkingEnabled,
     setPermissionMode,
     setAutoApprove,
     startEventListener,
@@ -4141,6 +4348,8 @@ export const useSessionStore = defineStore('session', () => {
     setPendingPermission,
     setPendingControlRequest,
     clearPendingPermissions,
-    clearPendingQuestion
+    clearPendingQuestion,
+    releaseOldCollapsedTurns,
+    restoreReleasedTurn
   }
 })

@@ -889,6 +889,10 @@ export const useSessionStore = defineStore('session', () => {
     if (!message?.id || !session?.agentBuckets) {
       return
     }
+    // 确保 tool_use / diff 消息在入桶时默认折叠（覆盖历史恢复等未经过 handleMessageStart 的场景）
+    if ((message.role === 'tool_use' || message.role === 'diff') && !message.manuallyExpanded && message.collapsed !== true) {
+      message.collapsed = true
+    }
     const mainAgentId = getMainAgentId(session)
     const agentId = getMessageAgentId(message, session) || mainAgentId
     let bucket = session.agentBuckets.get(agentId)
@@ -1380,23 +1384,18 @@ export const useSessionStore = defineStore('session', () => {
         const timelineItems = items.filter(message =>
           (message?.role === 'tool_use' || message?.role === 'diff') &&
           message?.toolName !== 'Agent'
-        ).map(message => {
-          // 确保嵌套工具消息默认折叠
-          if ((message.role === 'tool_use' || message.role === 'diff') && !message.manuallyExpanded && message.collapsed !== true) {
-            if (typeof message === 'object' && message !== null) {
-              message.collapsed = true
-            }
-          }
-          return message
-        })
+        )
         const activeTimelineItems = timelineItems.filter(message => message?.isExecuting)
         const rawStatus = entry.status || 'running'
-        // 优先级：task_complete 消息存在 → 已结束；无 runtime 且无活跃工具 → 中断；否则取注册表状态
-        const resolvedStatus = latestTaskComplete
-          ? 'ended'
-          : (!hasLiveRuntime && (rawStatus === 'running' || rawStatus === 'starting') && activeTimelineItems.length === 0)
-            ? 'interrupted'
-            : rawStatus
+        const isTerminalRawStatus = rawStatus === 'ended' || rawStatus === 'failed' || rawStatus === 'deleted'
+        // 优先级：注册表已有终态 → 保留；task_complete 消息存在 → 已结束；无 runtime 且无活跃工具 → 中断；否则取注册表状态
+        const resolvedStatus = isTerminalRawStatus
+          ? rawStatus
+          : latestTaskComplete
+            ? 'ended'
+            : (!hasLiveRuntime && (rawStatus === 'running' || rawStatus === 'starting') && activeTimelineItems.length === 0)
+              ? 'interrupted'
+              : rawStatus
         const completedToolCount = toolCalls.filter(toolCall => toolCall.status === 'completed').length
         const errorToolCount = toolCalls.filter(toolCall => toolCall.status === 'error').length
         const displayTimelineItems = activeTimelineItems.length

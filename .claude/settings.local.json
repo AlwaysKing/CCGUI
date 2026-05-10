@@ -204,7 +204,16 @@
       "Bash(python3 -c \" import sys, json for line in sys.stdin: d = json.loads\\(line.strip\\(\\)\\) data = d.get\\('data', {}\\) t = data.get\\('type', ''\\) st = data.get\\('subtype', ''\\) ts = d.get\\('timestamp', ''\\) uuid = data.get\\('uuid', ''\\) msg_id = data.get\\('message', {}\\).get\\('id', ''\\) if isinstance\\(data.get\\('message'\\), dict\\) else '' evt = data.get\\('event', {}\\) evt_type = evt.get\\('type', ''\\) if isinstance\\(evt, dict\\) else '' print\\(f' [{ts}] type={t} subtype={st} uuid={uuid[:20]} msg_id={msg_id[:30]} evt_type={evt_type}'\\) \")",
       "Bash(python3 -c \" import sys, json d = json.loads\\(sys.stdin.read\\(\\)\\) data = d['data'] print\\(f'type: {data.get\\(\\\\\"type\\\\\"\\)}'\\) msg = data.get\\('message', {}\\) content = msg.get\\('content', []\\) if isinstance\\(msg, dict\\) else [] print\\(f'parent_tool_use_id: {data.get\\(\\\\\"parent_tool_use_id\\\\\", \\\\\"N/A\\\\\"\\)}'\\) for c in content: t = c.get\\('type', ''\\) if t == 'tool_result': print\\(f' tool_result: tool_use_id={c.get\\(\\\\\"tool_use_id\\\\\",\\\\\"\\\\\"\\)} content={str\\(c.get\\(\\\\\"content\\\\\",\\\\\"\\\\\"\\)\\)[:80]}'\\) else: print\\(f' {t}: ...'\\) \")",
       "Bash(mkdir -p /tmp/ccgui/patches)",
-      "Bash(/usr/bin/patch -R --dry-run)"
+      "Bash(/usr/bin/patch -R --dry-run)",
+      "Bash(git format-patch *)",
+      "Bash(/usr/local/bin/node -c /Users/alwaysking/AKProject/CCGUI/src/stores/useSessionStore.js)",
+      "Bash(/opt/homebrew/bin/node -c /Users/alwaysking/AKProject/CCGUI/src/stores/useSessionStore.js)",
+      "Read(//Users/alwaysking/.nvm/versions/node/**)",
+      "Read(//usr/**)",
+      "Bash(/usr/local/bin/node --version)",
+      "Bash(/opt/homebrew/bin/node --version)",
+      "Read(//Users/alwaysking/.local/share/fnm/**)",
+      "Read(//Users/alwaysking/.volta/tools/image/**)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

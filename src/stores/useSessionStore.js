@@ -1438,7 +1438,7 @@ export const useSessionStore = defineStore('session', () => {
       .sort((left, right) => {
         const leftTime = left.bucket?.firstTimestamp || left.registry.startTime || ''
         const rightTime = right.bucket?.firstTimestamp || right.registry.startTime || ''
-        return leftTime.localeCompare(rightTime)
+        return String(leftTime).localeCompare(String(rightTime))
       })
   })
 
@@ -1472,7 +1472,7 @@ export const useSessionStore = defineStore('session', () => {
         if (right.isMain) return 1
         const leftTime = left.bucket?.firstTimestamp || left.registry.startTime || ''
         const rightTime = right.bucket?.firstTimestamp || right.registry.startTime || ''
-        return leftTime.localeCompare(rightTime)
+        return String(leftTime).localeCompare(String(rightTime))
       })
   })
 

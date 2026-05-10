@@ -762,15 +762,40 @@ watch([taskLauncherTasks, runningTaskLabels], () => {
   syncTaskDockItems()
 }, { deep: true })
 
+// 竞争条件兜底：taskLauncherTasks 可能在 session 恢复之后才加载完成，
+// 此时 taskDockItems 仍为空但历史数据可用，尝试重新恢复
+watch(taskLauncherTasks, (tasks) => {
+  if (!tasks.length || taskDockItems.value.length) return
+  const session = sessionStore.currentSession
+  if (!session?.taskDockHistory?.length) return
+
+  const tasksByLabel = new Map(
+    tasks.map(t => normalizeTaskDockTask(t)).filter(Boolean).map(t => [t.label, t])
+  )
+  const restored = session.taskDockHistory
+    .filter(h => tasksByLabel.has(h.label))
+    .map(h => ({
+      ...tasksByLabel.get(h.label),
+      running: false,
+      lastUsedAt: h.lastUsedAt || Date.now()
+    }))
+  if (restored.length) {
+    taskDockItems.value = trimTaskDockItems(restored)
+  }
+})
+
 // taskDockItems 变化时保存到 project 配置（debounce 1s）
 let taskDockSaveTimer = null
+let pendingTaskDockItems = null
 watch(taskDockItems, (items) => {
   if (!items.length) return
   const session = sessionStore.currentSession
   if (!session) return
 
+  pendingTaskDockItems = items
   clearTimeout(taskDockSaveTimer)
   taskDockSaveTimer = setTimeout(async () => {
+    taskDockSaveTimer = null
     try {
       await window.electronAPI.saveTaskDockHistory({
         sessionId: session.id,
@@ -781,8 +806,12 @@ watch(taskDockItems, (items) => {
           lastUsedAt: item.lastUsedAt
         }))
       })
+      // 保存成功后刷新前端缓存，避免 persistProjectWorkspaceState 使用过时数据覆盖 taskDockHistory
+      await refreshProjectSettingsCache()
     } catch (e) {
       console.error('[Workspace] Failed to save task-dock history:', e)
+    } finally {
+      pendingTaskDockItems = null
     }
   }, 1000)
 }, { deep: true })
@@ -819,7 +848,23 @@ onUnmounted(() => {
   window.removeEventListener('mousemove', handleTerminalResize)
   window.removeEventListener('mouseup', stopTerminalResize)
   window.removeEventListener('ccgui-shortcut', handleShortcutEvent)
+  // 组件卸载时 flush 未完成的 task-dock 保存，避免丢失最后一次变更
   clearTimeout(taskDockSaveTimer)
+  if (pendingTaskDockItems?.length) {
+    const session = sessionStore.currentSession
+    if (session) {
+      window.electronAPI.saveTaskDockHistory({
+        sessionId: session.id,
+        projectId: store.currentProject?.id,
+        items: pendingTaskDockItems.map(item => ({
+          label: item.label,
+          commandLine: item.commandLine,
+          lastUsedAt: item.lastUsedAt
+        }))
+      }).catch(e => console.error('[Workspace] Failed to flush task-dock history on unmount:', e))
+    }
+    pendingTaskDockItems = null
+  }
 })
 
 function handleShortcutEvent(event) {

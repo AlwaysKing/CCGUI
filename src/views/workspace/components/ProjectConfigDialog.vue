@@ -37,6 +37,10 @@ const thinkingMode = ref('system')
 const localThinkingEnabled = ref(true)
 const localMaxThinkingTokens = ref(10240)
 
+// 项目提示词
+const projectPromptEnabled = ref(false)
+const projectPromptText = ref('')
+
 // 选择的配置
 const selectedClaudeTargetId = ref(null)
 const selectedClaudeModelId = ref(null)
@@ -204,6 +208,10 @@ async function loadProjectConfig() {
         localThinkingEnabled.value = settings.thinkingEnabled !== undefined ? settings.thinkingEnabled : true
         localMaxThinkingTokens.value = settings.maxThinkingTokens !== undefined ? settings.maxThinkingTokens : 10240
       }
+
+      // 项目提示词
+      projectPromptEnabled.value = settings.projectPromptEnabled === true
+      projectPromptText.value = typeof settings.projectPromptText === 'string' ? settings.projectPromptText : ''
 
       const savedChatThemeMode = settings.chatMessageThemeMode || 'app'
       chatMessageThemeMode.value = savedChatThemeMode === 'preset' ? 'custom' : savedChatThemeMode
@@ -393,6 +401,8 @@ async function handleSave() {
       promptIds: promptsMode.value === 'custom' ? [...selectedPromptIds.value] : [],
       documentMode: documentsMode.value,
       documentIds: documentsMode.value === 'custom' ? [...selectedDocumentIds.value] : [],
+      projectPromptEnabled: projectPromptEnabled.value,
+      projectPromptText: projectPromptText.value.trim(),
       chatMessageThemeMode: chatMessageThemeMode.value,
       chatMessageThemePreset: chatMessageThemeMode.value === 'custom' ? chatMessageThemePreset.value : null,
       chatMessageTheme: chatMessageThemeMode.value === 'custom' ? { ...chatMessageTheme.value } : {}
@@ -720,6 +730,29 @@ onMounted(() => {
                 </label>
               </div>
               <p v-else class="empty-hint">暂无规范文档</p>
+            </div>
+          </div>
+
+          <!-- 项目说明 -->
+          <div class="config-section">
+            <label class="config-label">项目说明</label>
+            <div class="radio-group">
+              <label class="radio-item">
+                <input type="radio" v-model="projectPromptEnabled" :value="false" />
+                <span>不使用</span>
+              </label>
+              <label class="radio-item">
+                <input type="radio" v-model="projectPromptEnabled" :value="true" />
+                <span>启用</span>
+              </label>
+            </div>
+            <div v-if="projectPromptEnabled" class="config-content">
+              <textarea
+                v-model="projectPromptText"
+                class="project-prompt-textarea"
+                placeholder="输入项目级别的自定义提示词，将作为附加要求的第一项发送给模型..."
+                rows="6"
+              ></textarea>
             </div>
           </div>
 
@@ -1215,5 +1248,28 @@ onMounted(() => {
 
 .thinking-input[type='number'] {
   -moz-appearance: textfield;
+}
+
+/* 项目提示词 */
+.project-prompt-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  color: #E5E7EB;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.project-prompt-textarea:focus {
+  outline: none;
+}
+
+.project-prompt-textarea::placeholder {
+  color: #71717A;
 }
 </style>

@@ -555,16 +555,12 @@ class ClaudeClient {
    * @returns {Promise<string|null>} 系统提示词内容
    */
   async buildSystemPrompt() {
-    logger.info(`[ClaudeClient] buildSystemPrompt called, projectSettings:`, this.projectSettings)
-
     if (!this.projectSettings) {
-      logger.info('[ClaudeClient] No projectSettings, returning null')
       return null
     }
 
     try {
       const prompt = buildDeveloperInstructions(this.projectSettings, { provider: 'claude' })
-      logger.info(`[ClaudeClient] buildSystemPrompt result: ${prompt ? 1 : 0} parts, total ${prompt?.length || 0} chars`)
       return prompt
     } catch (error) {
       logger.error('[ClaudeClient] Failed to build system prompt:', error)
@@ -704,7 +700,6 @@ class ClaudeClient {
     const systemPrompt = await this.buildSystemPrompt()
     if (systemPrompt) {
       args.push('--append-system-prompt', systemPrompt)
-      logger.info(`[ClaudeClient] Added system prompt (${systemPrompt.length} chars)`)
     }
 
     // Get model environment variables

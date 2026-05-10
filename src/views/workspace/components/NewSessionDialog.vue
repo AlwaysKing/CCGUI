@@ -29,6 +29,8 @@ const selectedTargetId = ref(null)
 const selectedModelCardId = ref(null)
 const selectedPromptIds = ref([])
 const selectedDocumentIds = ref([])
+const projectPromptMode = ref('project')
+const projectPromptText = ref('')
 const systemModels = ref([])
 const providerTargets = ref([])
 const systemPrompts = ref([])
@@ -107,6 +109,14 @@ const systemPromptsSummary = computed(() => summarizeNames(systemPrompts.value.f
 const projectPromptsSummary = computed(() => summarizePromptSummary(projectConfig.value?.settings || {}, 'project'))
 const systemDocumentsSummary = computed(() => summarizeNames(systemDocuments.value.filter(doc => doc.isBase !== false)))
 const projectDocumentsSummary = computed(() => summarizeDocumentSummary(projectConfig.value?.settings || {}, 'project'))
+const projectPromptSummary = computed(() => {
+  const settings = projectConfig.value?.settings || {}
+  if (!settings.projectPromptEnabled) return '未启用'
+  const text = settings.projectPromptText || ''
+  if (!text.trim()) return '未填写'
+  const firstLine = text.trim().split('\n')[0]
+  return firstLine.length > 20 ? firstLine.slice(0, 20) + '...' : firstLine
+})
 const projectThemeSummary = computed(() => {
   const settings = projectConfig.value?.settings || {}
   const mode = settings.chatMessageThemeMode || 'app'
@@ -296,7 +306,9 @@ async function handleCreate() {
       promptMode: promptsMode.value,
       promptIds: promptsMode.value === 'custom' ? [...selectedPromptIds.value] : [],
       documentMode: documentsMode.value,
-      documentIds: documentsMode.value === 'custom' ? [...selectedDocumentIds.value] : []
+      documentIds: documentsMode.value === 'custom' ? [...selectedDocumentIds.value] : [],
+      projectPromptMode: projectPromptMode.value,
+      projectPromptText: projectPromptMode.value === 'custom' ? projectPromptText.value : ''
     }
 
     const newSession = await store.createSession(props.projectId, sessionName.value.trim() || null, { settings })
@@ -580,6 +592,35 @@ onMounted(() => {
                   </label>
                 </div>
                 <p v-else class="empty-hint">暂无规范文档</p>
+              </div>
+            </div>
+
+            <div class="config-section">
+              <label class="config-label">
+                项目说明
+                <span v-if="projectPromptMode === 'project'" class="current-config-hint">- {{ projectPromptSummary }}</span>
+              </label>
+              <div class="radio-group">
+                <label class="radio-item">
+                  <input type="radio" v-model="projectPromptMode" value="project" />
+                  <span>项目</span>
+                </label>
+                <label class="radio-item">
+                  <input type="radio" v-model="projectPromptMode" value="custom" />
+                  <span>自定义</span>
+                </label>
+                <label class="radio-item">
+                  <input type="radio" v-model="projectPromptMode" value="none" />
+                  <span>不使用</span>
+                </label>
+              </div>
+              <div v-if="projectPromptMode === 'custom'" class="config-content">
+                <textarea
+                  v-model="projectPromptText"
+                  class="project-prompt-textarea"
+                  placeholder="输入自定义项目说明..."
+                  rows="4"
+                ></textarea>
               </div>
             </div>
           </div>
@@ -1009,5 +1050,27 @@ onMounted(() => {
 .btn-confirm:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.project-prompt-textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  color: #E5E7EB;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.project-prompt-textarea:focus {
+  outline: none;
+}
+
+.project-prompt-textarea::placeholder {
+  color: #71717A;
 }
 </style>

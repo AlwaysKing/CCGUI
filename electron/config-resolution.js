@@ -217,7 +217,9 @@ function normalizeProjectSettings(settings = {}, provider = 'claude') {
     promptMode,
     promptIds: promptMode === 'custom' && Array.isArray(settings.promptIds) ? settings.promptIds : [],
     documentMode,
-    documentIds: documentMode === 'custom' && Array.isArray(settings.documentIds) ? settings.documentIds : []
+    documentIds: documentMode === 'custom' && Array.isArray(settings.documentIds) ? settings.documentIds : [],
+    projectPromptEnabled: settings.projectPromptEnabled === true,
+    projectPromptText: typeof settings.projectPromptText === 'string' ? settings.projectPromptText : ''
   }
 }
 
@@ -246,7 +248,9 @@ function normalizeSessionSettings(settings = {}) {
     promptMode,
     promptIds: promptMode === 'custom' && Array.isArray(settings.promptIds) ? settings.promptIds : [],
     documentMode,
-    documentIds: documentMode === 'custom' && Array.isArray(settings.documentIds) ? settings.documentIds : []
+    documentIds: documentMode === 'custom' && Array.isArray(settings.documentIds) ? settings.documentIds : [],
+    projectPromptMode: settings.projectPromptMode || 'project',
+    projectPromptText: typeof settings.projectPromptText === 'string' ? settings.projectPromptText : ''
   }
 }
 
@@ -310,6 +314,11 @@ function resolveProjectSettings(appConfig, projectSettings = {}, provider = 'cla
     ? 0
     : projectRawMaxThinkingTokens
 
+  // 解析项目提示词：启用且有内容时才生效
+  const projectPrompt = (normalized.projectPromptEnabled && normalized.projectPromptText.trim())
+    ? normalized.projectPromptText.trim()
+    : null
+
   return {
     modelId: normalized.modelMode === 'custom' ? normalized.modelId : systemResolved.modelId,
     modelCardId: normalized.modelMode === 'custom' ? normalized.modelCardId : systemResolved.modelCardId,
@@ -325,6 +334,7 @@ function resolveProjectSettings(appConfig, projectSettings = {}, provider = 'cla
     documentIds: normalized.documentMode === 'custom'
       ? normalized.documentIds
       : (normalized.documentMode === 'none' ? [] : baseDocumentIds),
+    projectPrompt,
     meta: normalized
   }
 }
@@ -377,6 +387,15 @@ function resolveSessionSettings(appConfig, projectSettings = {}, sessionSettings
     sessionMaxThinkingTokens = projectResolved.maxThinkingTokens
   }
 
+  // 解析 session 级别的项目提示词
+  let sessionProjectPrompt = null
+  if (normalizedSession.projectPromptMode === 'project') {
+    sessionProjectPrompt = projectResolved.projectPrompt
+  } else if (normalizedSession.projectPromptMode === 'custom') {
+    sessionProjectPrompt = normalizedSession.projectPromptText.trim() || null
+  }
+  // 'none' → null
+
   return {
     modelId: normalizedSession.modelMode === 'custom'
       ? normalizedSession.modelId
@@ -403,6 +422,7 @@ function resolveSessionSettings(appConfig, projectSettings = {}, sessionSettings
       : (normalizedSession.documentMode === 'project'
           ? projectResolved.documentIds
           : (normalizedSession.documentMode === 'none' ? [] : baseDocumentIds)),
+    projectPrompt: sessionProjectPrompt,
     meta: {
       source: 'session',
       project: projectResolved.meta,

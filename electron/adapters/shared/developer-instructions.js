@@ -49,6 +49,14 @@ function buildDeveloperInstructions(projectSettings = null, options = {}) {
     : []
   const promptSections = []
 
+  // 项目说明：作为附加要求的第一项
+  const projectPrompt = typeof projectSettings.projectPrompt === 'string' && projectSettings.projectPrompt.trim()
+    ? projectSettings.projectPrompt.trim()
+    : null
+  if (projectPrompt) {
+    promptSections.push(`## 项目说明\n\n${demoteMarkdownHeadings(projectPrompt)}`)
+  }
+
   if (promptIds.length > 0) {
     const prompts = appConfig.settings?.prompts || []
     for (const promptId of promptIds) {

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch, reactive } from 'vue'
+import { QueueManager } from './AgentQueue'
 import { logger } from '../utils/logger'
 import { stripAttachmentTokens } from '../utils/chatAttachments'
 import { openAppErrorDialog } from '../utils/appErrorDialog'
@@ -70,8 +71,9 @@ class SessionData {
     this.id = id
     this.projectPath = projectPath
 
-    // 消息列表
-    this.messages = []
+    // 消息队列系统（取代原来的扁平 messages 数组）
+    this.queueManager = new QueueManager()
+
     this.rawMessages = [] // 原始消息数据
 
     // UI 状态
@@ -112,7 +114,6 @@ class SessionData {
     this.currentTurnUsageSources = {}
     this.mainAgentId = 'master'
     this.agentRegistry = new Map()
-    this.agentBuckets = new Map()
     this.agentToolUseBindings = new Map()
     this.agentWorkspaceState = {
       activeAgentId: this.mainAgentId,
@@ -556,16 +557,6 @@ function toIsoTimestamp(value) {
   return null
 }
 
-function createAgentBucket(agentId) {
-  return {
-    agentId,
-    messages: [],
-    orchestrationEvents: [],
-    firstTimestamp: null,
-    lastTimestamp: null
-  }
-}
-
 function buildSubagentHistoryAnchor(turn = {}, agentId, registry = null) {
   const timestamp = toIsoTimestamp(turn.createdAt) || new Date().toISOString()
   const content = typeof turn.inputText === 'string' ? turn.inputText : ''
@@ -857,6 +848,13 @@ export const useSessionStore = defineStore('session', () => {
     return session?.mainAgentId || 'master'
   }
 
+  /**
+   * 获取 session 的主 agent 队列（便捷方法）
+   */
+  function getMainQueue(session) {
+    return session?.queueManager?.getOrCreateQueue(session.mainAgentId || 'master')
+  }
+
   function getMessageAgentId(message, session = currentSession.value) {
     const mainAgentId = getMainAgentId(session)
     if (!message || !session) {
@@ -882,80 +880,32 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 增量地将消息添加到对应 agent 的 bucket 中（替代全量遍历重建）
-   * 仅在消息是新添加时执行，已有消息跳过（防止重复）
+   * 增量地将消息路由到对应 agent 的队列中
+   * queue.append 通过全局索引自动去重。
+   * 对于 tool_use / diff 消息，在 append 前设置 collapsed 默认值。
    */
-  function addMessageToBucketIfNew(session, message) {
-    if (!message?.id || !session?.agentBuckets) {
+  function addMessageToQueue(session, message) {
+    if (!message?.id) {
       return
     }
-    // 确保 tool_use / diff 消息在入桶时默认折叠（覆盖历史恢复等未经过 handleMessageStart 的场景）
+    // 确保 tool_use / diff 消息默认折叠（覆盖历史恢复等未经过 handleMessageStart 的场景）
     if ((message.role === 'tool_use' || message.role === 'diff') && !message.manuallyExpanded && message.collapsed !== true) {
       message.collapsed = true
     }
-    const mainAgentId = getMainAgentId(session)
-    const agentId = getMessageAgentId(message, session) || mainAgentId
-    let bucket = session.agentBuckets.get(agentId)
-    if (!bucket) {
-      bucket = createAgentBucket(agentId)
-      session.agentBuckets.set(agentId, bucket)
-    }
-    // 按 ID 去重，防止同一消息被多次加入
-    if (bucket.messages.some(m => m.id === message.id)) {
+    const queue = session.queueManager.routeToQueue(session, message)
+    // 通过全局索引去重：如果已存在则跳过
+    if (session.queueManager.findEntryGlobal(message.id)) {
       return
     }
-    bucket.messages.push(message)
-    const timestamp = getMessageTimestamp(message)
-    if (timestamp) {
-      if (!bucket.firstTimestamp) {
-        bucket.firstTimestamp = timestamp
-      }
-      bucket.lastTimestamp = timestamp
-    }
+    queue.append(message)
   }
 
   /**
-   * 当 agentToolUseBindings 建立/变更后，将对应 tool_use 消息从旧 bucket 移到新 bucket。
-   * 从后往前查找（最新的优先），找到即移动并返回。
+   * 当 agentToolUseBindings 建立/变更后，将对应 tool_use 消息从旧队列移到新队列。
+   * 通过全局索引查找 entry，跨队列移动。
    */
-  function moveBoundToolMessageToBucket(session, toolUseId, newAgentId) {
-    if (!session?.agentBuckets || !toolUseId || !newAgentId) return
-
-    if (!session.agentBuckets.has(newAgentId)) {
-      session.agentBuckets.set(newAgentId, createAgentBucket(newAgentId))
-    }
-    const newBucket = session.agentBuckets.get(newAgentId)
-
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]
-      if (!msg || (msg.role !== 'tool_use' && msg.role !== 'diff')) continue
-      const msgId = msg.id || msg.request_id
-      if (msgId !== toolUseId) continue
-
-      // 从所有旧 bucket 中移除
-      for (const [, bucket] of session.agentBuckets) {
-        const idx = bucket.messages.findIndex(m => m.id === msg.id)
-        if (idx !== -1) {
-          bucket.messages.splice(idx, 1)
-          break
-        }
-      }
-
-      // 加入目标 bucket
-      if (!newBucket.messages.some(m => m.id === msg.id)) {
-        newBucket.messages.push(msg)
-        const timestamp = getMessageTimestamp(msg)
-        if (timestamp) {
-          if (!newBucket.firstTimestamp) newBucket.firstTimestamp = timestamp
-          newBucket.lastTimestamp = timestamp
-        }
-      }
-      return
-    }
-  }
-
   /**
-   * 获取用户消息对应的回答消息范围（在 session.messages 中的索引范围）
+   * 获取用户消息对应的回答消息范围（在主队列 entries 中的索引范围）
    * 返回 { responseStart, responseEnd } 或 null
    */
   function getTurnResponseRange(messages, userMessageIndex) {
@@ -974,21 +924,25 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 释放被折叠的旧问答——从 session.messages 中移除响应消息，
+   * 释放被折叠的旧问答——从主队列中移除响应消息，
    * 并以普通对象缓存到 userMessage._releasedResponses 上，节省 Vue reactivity 开销。
    * 只在问答完成（非 streaming）后调用。
    */
   function releaseOldCollapsedTurns(session, keepRecentCount = 5) {
-    if (!session?.messages?.length) return
+    // 在主 agent 队列中操作
+    const mainQueue = session.queueManager?.getQueue(session.mainAgentId)
+    if (!mainQueue?.length) return
+
+    const entries = mainQueue.entries
 
     // 反向扫描，从后往前统计 user message 数量，找到超过 keepRecentCount 的折叠老问答
     let userCount = 0
     const toRelease = []
 
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      if (isTurnInitiatorMessage(session.messages[i])) {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (isTurnInitiatorMessage(entries[i])) {
         userCount++
-        if (userCount > keepRecentCount && session.messages[i].responseCollapsed) {
+        if (userCount > keepRecentCount && entries[i].responseCollapsed) {
           toRelease.push(i)
         }
       }
@@ -998,45 +952,32 @@ export const useSessionStore = defineStore('session', () => {
     // 正向迭代即先释放较后面的索引，前面索引不受影响，防止索引漂移
     for (let r = 0; r < toRelease.length; r++) {
       const userIdx = toRelease[r]
-      const range = getTurnResponseRange(session.messages, userIdx)
+      const range = getTurnResponseRange(entries, userIdx)
       if (!range) continue
 
-      const userMsg = session.messages[userIdx]
-      const responseMessages = session.messages.splice(range.responseStart, range.responseEnd - range.responseStart)
+      const userMsg = entries[userIdx]
+      const responseEntries = mainQueue.splice(range.responseStart, range.responseEnd - range.responseStart)
 
       // 以 JSON 序列化缓存（释放 Vue reactive 追踪开销）
-      userMsg._releasedResponses = JSON.parse(JSON.stringify(responseMessages))
-
-      // 同步从 agentBuckets 中移除
-      for (const resp of responseMessages) {
-        if (!resp?.id) continue
-        for (const [, bucket] of session.agentBuckets) {
-          const idx = bucket.messages.findIndex(m => m.id === resp.id)
-          if (idx !== -1) {
-            bucket.messages.splice(idx, 1)
-          }
-        }
-      }
+      userMsg._releasedResponses = JSON.parse(JSON.stringify(responseEntries))
     }
   }
 
   /**
-   * 恢复被释放的问答——将缓存的响应消息重新插入 session.messages 和 agentBuckets
+   * 恢复被释放的问答——将缓存的响应消息重新插入主队列
    */
   function restoreReleasedTurn(session, userMessage) {
-    if (!userMessage?._releasedResponses || !session?.messages) return
+    if (!userMessage?._releasedResponses || !session?.queueManager) return
 
-    const userIdx = session.messages.findIndex(m => m.id === userMessage.id)
+    const mainQueue = session.queueManager.getQueue(session.mainAgentId)
+    if (!mainQueue) return
+
+    const userIdx = mainQueue.indexOfId(userMessage.id)
     if (userIdx === -1) return
 
-    // 重新创建 reactive 消息对象并插入
-    const restoredMessages = userMessage._releasedResponses.map(data => reactive(data))
-    session.messages.splice(userIdx + 1, 0, ...restoredMessages)
-
-    // 恢复到 agentBuckets
-    for (const msg of restoredMessages) {
-      addMessageToBucketIfNew(session, msg)
-    }
+    // 将缓存的响应消息重新插入到主队列（这些消息原本就在主队列中）
+    const restoredMessages = userMessage._releasedResponses
+    mainQueue.insertManyAt(userIdx + 1, restoredMessages)
 
     // 清除缓存
     userMessage._releasedResponses = null
@@ -1116,19 +1057,8 @@ export const useSessionStore = defineStore('session', () => {
         mergeAgentRegistryEntry(null, entry)
       ])
     )
-    const nextBuckets = new Map()
     const eventKeys = new Set()
     const supportedExecutionAgentIds = new Set()
-
-    const ensureBucket = (agentId) => {
-      if (!nextBuckets.has(agentId)) {
-        nextBuckets.set(agentId, createAgentBucket(agentId))
-      }
-      if (agentId) {
-        supportedExecutionAgentIds.add(agentId)
-      }
-      return nextBuckets.get(agentId)
-    }
 
     const recordEvent = (event) => {
       const normalizedEvent = normalizeOrchestrationEntry(event)
@@ -1150,7 +1080,6 @@ export const useSessionStore = defineStore('session', () => {
 
       eventKeys.add(dedupeKey)
       supportedExecutionAgentIds.add(normalizedEvent.agentId)
-      ensureBucket(normalizedEvent.agentId).orchestrationEvents.push(normalizedEvent)
       nextRegistry.set(
         normalizedEvent.agentId,
         mergeRegistryEntryFromEvent(nextRegistry.get(normalizedEvent.agentId), normalizedEvent)
@@ -1159,33 +1088,25 @@ export const useSessionStore = defineStore('session', () => {
 
     nextRegistry.set(mainAgentId, mergeAgentRegistryEntry(nextRegistry.get(mainAgentId), createMainAgentRegistryEntry(session)))
 
-    for (const message of session.messages) {
-      const messageAgentId = getMessageAgentId(message, session) || mainAgentId
-      const bucket = ensureBucket(messageAgentId)
-      bucket.messages.push(message)
-      const timestamp = getMessageTimestamp(message)
-      if (timestamp && !bucket.firstTimestamp) {
-        bucket.firstTimestamp = timestamp
-      }
-      if (timestamp) {
-        bucket.lastTimestamp = timestamp
-      }
+    // 从所有队列的 entries 中重建 registry（队列已包含正确路由的消息）
+    for (const queue of session.queueManager.queues.values()) {
+      for (const message of queue.entries) {
+        const registryEntry = sanitizeCollaborativeRegistryPatch(
+          normalizeAgentRegistryEntry(message?.ccgui?.registry),
+          message
+        )
+        if (registryEntry?.agentId) {
+          supportedExecutionAgentIds.add(registryEntry.agentId)
+          nextRegistry.set(registryEntry.agentId, mergeAgentRegistryEntry(nextRegistry.get(registryEntry.agentId), registryEntry))
+        } else if (!nextRegistry.has(queue.agentId)) {
+          nextRegistry.set(queue.agentId, mergeAgentRegistryEntry(nextRegistry.get(queue.agentId), {
+            agentId: queue.agentId,
+            status: queue.agentId === mainAgentId ? 'running' : null
+          }))
+        }
 
-      const registryEntry = sanitizeCollaborativeRegistryPatch(
-        normalizeAgentRegistryEntry(message?.ccgui?.registry),
-        message
-      )
-      if (registryEntry?.agentId) {
-        supportedExecutionAgentIds.add(registryEntry.agentId)
-        nextRegistry.set(registryEntry.agentId, mergeAgentRegistryEntry(nextRegistry.get(registryEntry.agentId), registryEntry))
-      } else if (!nextRegistry.has(messageAgentId)) {
-        nextRegistry.set(messageAgentId, mergeAgentRegistryEntry(nextRegistry.get(messageAgentId), {
-          agentId: messageAgentId,
-          status: messageAgentId === mainAgentId ? 'running' : null
-        }))
+        recordEvent(message?.ccgui?.orchestration)
       }
-
-      recordEvent(message?.ccgui?.orchestration)
     }
 
     for (const silentMessage of session.silentMessages || []) {
@@ -1218,7 +1139,7 @@ export const useSessionStore = defineStore('session', () => {
         continue
       }
 
-      ensureBucket(agentId)
+      session.queueManager.getOrCreateQueue(agentId)
       nextRegistry.set(agentId, mergeAgentRegistryEntry(nextRegistry.get(agentId), {
         ...(subagentHistory?.registry || {}),
         agentId,
@@ -1228,15 +1149,8 @@ export const useSessionStore = defineStore('session', () => {
 
       for (const turn of subagentHistory.entries || []) {
         const anchorMessage = buildSubagentHistoryAnchor(turn, agentId, subagentHistory.registry || null)
-        const bucket = ensureBucket(agentId)
-        bucket.messages.push(anchorMessage)
-        const timestamp = getMessageTimestamp(anchorMessage)
-        if (timestamp && !bucket.firstTimestamp) {
-          bucket.firstTimestamp = timestamp
-        }
-        if (timestamp) {
-          bucket.lastTimestamp = timestamp
-        }
+        const queue = session.queueManager.getOrCreateQueue(agentId)
+        queue.append(anchorMessage)
 
         if (Array.isArray(turn.loadedEvents)) {
           for (const event of turn.loadedEvents) {
@@ -1247,19 +1161,14 @@ export const useSessionStore = defineStore('session', () => {
             if (isTurnInitiatorMessage(payload) && payload.ccgui?.history?.subagentTurnId === turn.turnId) {
               continue
             }
-            bucket.messages.push(payload)
-            const payloadTimestamp = getMessageTimestamp(payload)
-            if (payloadTimestamp) {
-              bucket.lastTimestamp = payloadTimestamp
-            }
+            queue.append(payload)
           }
         }
       }
     }
 
-    if (!nextBuckets.has(mainAgentId)) {
-      nextBuckets.set(mainAgentId, createAgentBucket(mainAgentId))
-    }
+    // 确保主 agent 队列存在
+    session.queueManager.getOrCreateQueue(mainAgentId)
 
     // Execution agents should be reconstructed from concrete messages/task events.
     // If an old registry entry no longer has any supporting payload, it becomes a
@@ -1272,74 +1181,72 @@ export const useSessionStore = defineStore('session', () => {
         continue
       }
       nextRegistry.delete(agentId)
-      nextBuckets.delete(agentId)
+      session.queueManager.deleteQueue(agentId)
     }
 
     session.agentRegistry = nextRegistry
-    session.agentBuckets = nextBuckets
     syncAgentWorkspaceState(session)
   }
 
   /**
    * 当首次发现 execution agent 时，搜索并绑定对应的父级 Agent tool_use 消息。
    * 场景：Agent tool_use 消息有时缺少 ccgui 数据（或缺少 agentKind），
-   * 导致 getMessageAgentId 返回 mainAgentId，消息被放入主 agent 的 bucket。
+   * 导致消息被放入主 agent 的队列。
    * 此函数通过以下策略定位并修复归类：
    * 1. 先尝试通过 ccgui 数据精确匹配
-   * 2. 若无精确匹配，查找 subagent 首条消息之前最近的未绑定 Agent tool_use
+   * 2. 若无精确匹配，查找此 agent 队列中首条消息之前最近的未绑定 Agent tool_use
    */
   function ensureParentAgentToolUseBinding(session, agentId) {
-    if (!session?.agentBuckets || !agentId) return
+    if (!session?.queueManager || !agentId) return
 
-    // 检查此 agent 的 bucket 是否已包含 Agent tool_use（说明父级已正确归类）
-    const existingBucket = session.agentBuckets.get(agentId)
-    if (existingBucket?.messages?.some(m => m?.role === 'tool_use' && m?.toolName === 'Agent')) {
-      return
-    }
-
-    // 策略 1：搜索带有 ccgui 精确指向此 agent 的 Agent tool_use
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]
-      if (msg?.role !== 'tool_use' || msg?.toolName !== 'Agent') continue
-      const msgAgentId = resolveAgentIdFromCcguiPayload(msg?.ccgui)
-      if (msgAgentId === agentId) {
-        const msgToolUseId = msg.id || msg.request_id
-        if (msgToolUseId) {
-          session.agentToolUseBindings.set(msgToolUseId, agentId)
-          moveBoundToolMessageToBucket(session, msgToolUseId, agentId)
-          return
+    // 策略 1：在所有队列中搜索带有 ccgui 精确指向此 agent 的 Agent tool_use
+    // 只设置 binding，不移动消息——"Agent" tool_use 是父 agent 发起的调用，
+    // 必须留在父 agent 的队列中，mainTimelineBlocks 才能在主队列里找到它并渲染 execution card
+    for (const queue of session.queueManager.queues.values()) {
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const msg = queue.entries[i]
+        if (msg?.role !== 'tool_use' || msg?.toolName !== 'Agent') continue
+        const msgAgentId = resolveAgentIdFromCcguiPayload(msg?.ccgui)
+        if (msgAgentId === agentId) {
+          const msgToolUseId = msg.id || msg.request_id
+          if (msgToolUseId) {
+            session.agentToolUseBindings.set(msgToolUseId, agentId)
+            return
+          }
         }
       }
     }
 
-    // 策略 2：找到此 agent 在 session.messages 中最早出现的 ccgui 消息位置，
+    // 策略 2：在主队列中找到此 agent 最早出现的 ccgui 消息，
     // 然后向前搜索最近的未绑定 Agent tool_use
     let earliestAnchorIndex = -1
-    for (let i = 0; i < session.messages.length; i++) {
-      const msg = session.messages[i]
-      const msgAgentId = resolveAgentIdFromCcguiPayload(msg?.ccgui)
-      if (msgAgentId === agentId) {
-        earliestAnchorIndex = i
-        break
+    const mainQueue = session.queueManager.getQueue(session.mainAgentId)
+    if (mainQueue) {
+      for (let i = 0; i < mainQueue.length; i++) {
+        const msg = mainQueue.entries[i]
+        const msgAgentId = resolveAgentIdFromCcguiPayload(msg?.ccgui)
+        if (msgAgentId === agentId) {
+          earliestAnchorIndex = i
+          break
+        }
       }
     }
 
     if (earliestAnchorIndex <= 0) return
 
     // 向前搜索最近的未绑定 Agent tool_use
-    // 注意：此启发式依赖事件到达顺序保证配对正确性——在极端并发 subagent 场景下可能错配，
-    // 但实际场景中同一时刻极少有多个 Agent tool_use 都缺少 ccgui 数据的情况
-    for (let i = earliestAnchorIndex - 1; i >= 0; i--) {
-      const msg = session.messages[i]
-      if (msg?.role !== 'tool_use' || msg?.toolName !== 'Agent') continue
-      const msgToolUseId = msg.id || msg.request_id
-      if (!msgToolUseId) continue
-      // 跳过已绑定的（可能属于其他 subagent）
-      if (session.agentToolUseBindings.has(msgToolUseId)) continue
+    if (mainQueue) {
+      for (let i = earliestAnchorIndex - 1; i >= 0; i--) {
+        const msg = mainQueue.entries[i]
+        if (msg?.role !== 'tool_use' || msg?.toolName !== 'Agent') continue
+        const msgToolUseId = msg.id || msg.request_id
+        if (!msgToolUseId) continue
+        // 跳过已绑定的（可能属于其他 subagent）
+        if (session.agentToolUseBindings.has(msgToolUseId)) continue
 
-      session.agentToolUseBindings.set(msgToolUseId, agentId)
-      moveBoundToolMessageToBucket(session, msgToolUseId, agentId)
-      return
+        session.agentToolUseBindings.set(msgToolUseId, agentId)
+        return
+      }
     }
   }
 
@@ -1380,16 +1287,14 @@ export const useSessionStore = defineStore('session', () => {
     )
     const toolUseId = getToolUseIdFromPayload(payload)
     if (toolUseId && semanticAgentId && semanticAgentKind === 'execution') {
-      const prevBinding = session.agentToolUseBindings.get(toolUseId)
       session.agentToolUseBindings.set(toolUseId, semanticAgentId)
-      if (prevBinding !== semanticAgentId) {
-        moveBoundToolMessageToBucket(session, toolUseId, semanticAgentId)
-      }
+      // 不移动消息——tool_use 消息必须留在发起调用的父 agent 队列中，
+      // mainTimelineBlocks 通过 binding 查找对应的 execution card
     }
 
     // 当首次发现 execution agent 时，搜索并绑定对应的父级 Agent tool_use 消息
     // 有些情况下 Agent tool_use 消息本身没有 ccgui 数据或缺少 agentKind，
-    // 导致它被归类到主 agent 的 bucket 中。这里通过定位来解决。
+    // 导致它被归类到主 agent 的队列中。这里通过定位来解决。
     if (semanticAgentId && semanticAgentKind === 'execution') {
       ensureParentAgentToolUseBinding(session, semanticAgentId)
     }
@@ -1397,9 +1302,10 @@ export const useSessionStore = defineStore('session', () => {
     syncAgentWorkspaceState(session)
   }
 
-  // 当前会话的消息（便捷访问）
+  // 当前会话的消息（便捷访问，来自主 agent 队列）
   const currentMessages = computed(() => {
-    return currentSession.value?.messages || []
+    const session = currentSession.value
+    return session?.queueManager?.getQueue(session.mainAgentId)?.entries || []
   })
 
   const currentMainAgentId = computed(() => getMainAgentId(currentSession.value))
@@ -1409,7 +1315,7 @@ export const useSessionStore = defineStore('session', () => {
   })
 
   const currentAgentBuckets = computed(() => {
-    return currentSession.value?.agentBuckets || new Map()
+    return currentSession.value?.queueManager?.queues || new Map()
   })
 
   const currentAgentWorkspaceState = computed(() => {
@@ -1419,15 +1325,32 @@ export const useSessionStore = defineStore('session', () => {
 
   const executionAgentCards = computed(() => {
     const registryEntries = Array.from(currentAgentRegistry.value.values())
-    const buckets = currentAgentBuckets.value
-    const hasLiveRuntime = Boolean(currentSession.value?.runtimeReady || currentSession.value?.envInfo?.providerPid)
+    const queues = currentAgentBuckets.value
+    const session = currentSession.value
+    const hasLiveRuntime = Boolean(session?.runtimeReady || session?.envInfo?.providerPid)
+
+    // 通过 agentToolUseBindings 反查：哪些 tool_use_id 绑定到了哪个 subagent
+    const bindingReverseMap = new Map()
+    if (session?.agentToolUseBindings) {
+      for (const [toolUseId, agentId] of session.agentToolUseBindings) {
+        if (!bindingReverseMap.has(agentId)) {
+          bindingReverseMap.set(agentId, toolUseId)
+        }
+      }
+    }
+    // 主 agent 队列，用于查找 "Agent" tool_use 消息
+    const mainQueue = session?.queueManager?.getQueue(session.mainAgentId)
 
     return registryEntries
       .filter(entry => entry?.agentKind === 'execution')
       .map(entry => {
-        const bucket = buckets.get(entry.agentId) || createAgentBucket(entry.agentId)
-        const items = bucket.messages || []
-        const spawnRequest = items.find(message => message?.role === 'tool_use' && message?.toolName === 'Agent')
+        const queue = queues.get(entry.agentId) || session?.queueManager?.getOrCreateQueue(entry.agentId)
+        const items = queue?.entries || []
+        // "Agent" tool_use 留在父 agent 队列中，通过 binding 反查找到它
+        const boundToolUseId = bindingReverseMap.get(entry.agentId)
+        const spawnRequest = boundToolUseId && mainQueue
+          ? mainQueue.entries.find(m => (m.id === boundToolUseId || m.request_id === boundToolUseId) && m?.toolName === 'Agent')
+          : null
         const latestTaskComplete = [...items].reverse().find(message => message?.role === 'task_complete')
         const displayTitle = pickExecutionAgentDisplayTitle(items, entry)
         const promptText = pickFirstDefined(
@@ -1508,13 +1431,13 @@ export const useSessionStore = defineStore('session', () => {
           duration: aggregatedDuration,
           collapsed: true,
           items,
-          bucket,
+          bucket: queue,
           registry: entry
         }
       })
       .sort((left, right) => {
-        const leftTime = left.bucket.firstTimestamp || left.registry.startTime || ''
-        const rightTime = right.bucket.firstTimestamp || right.registry.startTime || ''
+        const leftTime = left.bucket?.firstTimestamp || left.registry.startTime || ''
+        const rightTime = right.bucket?.firstTimestamp || right.registry.startTime || ''
         return leftTime.localeCompare(rightTime)
       })
   })
@@ -1522,12 +1445,12 @@ export const useSessionStore = defineStore('session', () => {
   const collaborativeAgentSessions = computed(() => {
     const mainAgentId = currentMainAgentId.value
     const registryEntries = Array.from(currentAgentRegistry.value.values())
-    const buckets = currentAgentBuckets.value
+    const queues = currentAgentBuckets.value
 
     return registryEntries
       .filter(entry => entry?.agentKind === 'collaborative')
       .map(entry => {
-        const bucket = buckets.get(entry.agentId) || createAgentBucket(entry.agentId)
+        const queue = queues.get(entry.agentId) || currentSession.value?.queueManager?.getOrCreateQueue(entry.agentId)
         const display = inferCollaborativeDisplay(entry, mainAgentId)
         return {
           agentId: entry.agentId,
@@ -1538,8 +1461,8 @@ export const useSessionStore = defineStore('session', () => {
           canInput: entry.status !== 'deleted' && entry.canWrite !== false && entry.interactionMode !== 'read-only',
           canWrite: entry.canWrite !== false,
           interactionMode: entry.interactionMode || null,
-          messages: bucket.messages || [],
-          bucket,
+          messages: queue?.entries || [],
+          bucket: queue,
           registry: entry,
           isMain: entry.agentId === mainAgentId
         }
@@ -1547,21 +1470,21 @@ export const useSessionStore = defineStore('session', () => {
       .sort((left, right) => {
         if (left.isMain) return -1
         if (right.isMain) return 1
-        const leftTime = left.bucket.firstTimestamp || left.registry.startTime || ''
-        const rightTime = right.bucket.firstTimestamp || right.registry.startTime || ''
+        const leftTime = left.bucket?.firstTimestamp || left.registry.startTime || ''
+        const rightTime = right.bucket?.firstTimestamp || right.registry.startTime || ''
         return leftTime.localeCompare(rightTime)
       })
   })
 
   const agentWorkspaceAgents = computed(() => {
     const registryEntries = Array.from(currentAgentRegistry.value.values())
-    const buckets = currentAgentBuckets.value
+    const queues = currentAgentBuckets.value
     const mainAgentId = currentMainAgentId.value
 
     return registryEntries
       .filter(entry => entry?.agentId === mainAgentId || entry?.agentKind === 'collaborative')
       .map(entry => {
-        const bucket = buckets.get(entry.agentId) || createAgentBucket(entry.agentId)
+        const queue = queues.get(entry.agentId) || currentSession.value?.queueManager?.getOrCreateQueue(entry.agentId)
         const isMain = entry.agentId === mainAgentId
         const isCollaborative = entry.agentKind === 'collaborative'
         const display = inferCollaborativeDisplay(entry, mainAgentId)
@@ -1586,7 +1509,7 @@ export const useSessionStore = defineStore('session', () => {
           canActivate: isCollaborative,
           canWrite: entry.canWrite !== false,
           interactionMode: entry.interactionMode || null,
-          messageCount: bucket.messages.length
+          messageCount: queue?.length || 0
         }
       })
       .sort((left, right) => {
@@ -1759,8 +1682,13 @@ export const useSessionStore = defineStore('session', () => {
 
       // 从后端状态恢复数据
       if (result.state && eventLog.length === 0) {
-        // 使用 reactive 包装每个消息对象以确保响应式
-        sessionData.messages = (result.state.messages || []).map(msg => reactive(msg))
+        // 使用 reactive 包装每个消息对象以确保响应式，并路由到各队列
+        const restoredMessages = (result.state.messages || []).map(msg => reactive(msg))
+        sessionData.queueManager.resetAll()
+        for (const msg of restoredMessages) {
+          const queue = sessionData.queueManager.routeToQueue(sessionData, msg)
+          queue.append(msg)
+        }
         sessionData.inputAttachments = result.state.inputAttachments || []
         sessionData.inputHistory = result.state.inputHistory || []
         sessionData.envInfo = result.state.envInfo || null
@@ -2530,31 +2458,30 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function findHistoryAnchor(session, turnId, historyTurn = null) {
-    const mainAnchorIndex = session.messages.findIndex(message => message?.historyTurn?.turnId === turnId)
+    const mainQueue = getMainQueue(session)
+    const mainAnchorIndex = mainQueue ? mainQueue.entries.findIndex(message => message?.historyTurn?.turnId === turnId) : -1
     if (mainAnchorIndex !== -1) {
       return {
         scope: 'main',
-        collection: session.messages,
+        queue: mainQueue,
         index: mainAnchorIndex,
-        message: session.messages[mainAnchorIndex]
+        message: mainQueue.entries[mainAnchorIndex]
       }
     }
 
     const targetAgentId = historyTurn?.agentId || null
-    const bucketCandidates = targetAgentId
-      ? [session.agentBuckets.get(targetAgentId)].filter(Boolean)
-      : Array.from(session.agentBuckets.values())
+    const queueCandidates = targetAgentId
+      ? [session.queueManager.getQueue(targetAgentId)].filter(Boolean)
+      : Array.from(session.queueManager.queues.values())
 
-    for (const bucket of bucketCandidates) {
-      const bucketMessages = Array.isArray(bucket?.messages) ? bucket.messages : []
-      const index = bucketMessages.findIndex(message => message?.historyTurn?.turnId === turnId)
+    for (const queue of queueCandidates) {
+      const index = queue.entries.findIndex(message => message?.historyTurn?.turnId === turnId)
       if (index !== -1) {
         return {
           scope: 'subagent',
-          collection: bucketMessages,
+          queue,
           index,
-          message: bucketMessages[index],
-          bucket
+          message: queue.entries[index]
         }
       }
     }
@@ -2617,7 +2544,10 @@ export const useSessionStore = defineStore('session', () => {
           handleSessionEvent(event, replaySession)
         }
 
-        const replayedMessages = Array.isArray(replaySession.messages) ? replaySession.messages : []
+        const replayedMessages = (() => {
+          const mainQ = getMainQueue(replaySession)
+          return mainQ ? mainQ.entries : []
+        })()
         const replayedUserIndex = replayedMessages.findIndex(message =>
           isTurnInitiatorMessage(message) && message?.id === anchorMessage.id
         )
@@ -2644,7 +2574,8 @@ export const useSessionStore = defineStore('session', () => {
       })
 
       if (isSubagentTurn) {
-        anchorRef.collection.splice(anchorRef.index, 1, mergedUserMessage, ...insertedMessages)
+        const queue = anchorRef.queue
+        queue.splice(anchorRef.index, 1, mergedUserMessage, ...insertedMessages)
         const subagentEntry = (session.subagentHistories || [])
           .find(item => item?.agentId === anchorMessage.historyTurn.agentId)
         const turnEntry = subagentEntry?.entries?.find(entry => entry?.turnId === turnId)
@@ -2654,7 +2585,8 @@ export const useSessionStore = defineStore('session', () => {
         }
         rebuildAgentSemanticState(session)
       } else {
-        anchorRef.collection.splice(anchorRef.index, 1, mergedUserMessage, ...insertedMessages)
+        const queue = anchorRef.queue
+        queue.splice(anchorRef.index, 1, mergedUserMessage, ...insertedMessages)
         rebuildAgentSemanticState(session)
       }
 
@@ -2684,14 +2616,17 @@ export const useSessionStore = defineStore('session', () => {
       case 'message':
         recordAgentSemantics(session, data)
         handleAddMessage(session, data)
-        addMessageToBucketIfNew(session, data)
+        // addMessageToQueue 兜底：handleAddMessage 对 tool_result/streaming 等场景走 early return
+        // 不会 append，addMessageToQueue 通过全局索引去重确保不会重复插入
+        addMessageToQueue(session, data)
         break
 
       case 'message-start':
         // 后端发送的消息创建事件
         recordAgentSemantics(session, data)
         handleMessageStart(session, data)
-        addMessageToBucketIfNew(session, data)
+        // 同上兜底逻辑
+        addMessageToQueue(session, data)
         break
 
       case 'message-delta':
@@ -2768,7 +2703,7 @@ export const useSessionStore = defineStore('session', () => {
         }
         if (!isSilentMessageHandled(data)) {
           session.silentMessages.push(reactive(data))
-          addMessageToBucketIfNew(session, data)
+          addMessageToQueue(session, data)
         }
         break
 
@@ -2809,7 +2744,7 @@ export const useSessionStore = defineStore('session', () => {
         log('[SessionStore] Task event:', data)
         session.taskEvents.push(reactive(data))
         recordAgentSemantics(session, data)
-        addMessageToBucketIfNew(session, data)
+        addMessageToQueue(session, data)
         handleTaskEvent(session, data)
         break
 
@@ -2859,10 +2794,12 @@ export const useSessionStore = defineStore('session', () => {
    * 注意：对于 assistant 消息，需要检查是否已有流式创建的消息
    */
   function handleAddMessage(session, message) {
+    const queue = session.queueManager.routeToQueue(session, message)
+
     if (message?.id) {
-      const existingIndex = session.messages.findIndex(item => item?.id === message.id)
-      if (existingIndex >= 0) {
-        Object.assign(session.messages[existingIndex], message)
+      const existing = queue.findById(message.id)
+      if (existing) {
+        Object.assign(existing, message)
         return
       }
     }
@@ -2870,32 +2807,30 @@ export const useSessionStore = defineStore('session', () => {
     // 如果是 assistant 消息，检查是否已有流式创建的消息
     if (message.role === 'assistant') {
       // 查找是否有正在流式传输的 assistant 消息
-      const streamingIndex = session.messages.findIndex(m =>
+      const streamingMsg = queue.findLatest(m =>
         m.role === 'assistant' && (m.isStreaming || m.id === session.currentStreamingAssistantId)
       )
 
-      if (streamingIndex >= 0) {
+      if (streamingMsg) {
         // 更新现有消息而不是添加新消息
-        const existingMsg = session.messages[streamingIndex]
-        existingMsg.content = message.content || existingMsg.content
-        existingMsg.isStreaming = false
+        streamingMsg.content = message.content || streamingMsg.content
+        streamingMsg.isStreaming = false
         if (message.rawMessage) {
-          existingMsg.rawMessage = message.rawMessage
+          streamingMsg.rawMessage = message.rawMessage
         }
         return
       }
 
       // 处理 tool_result 之后的 assistant 消息（ID 不匹配的情况）
       // 查找是否有刚完成 tool_use 的 assistant 消息（isStreaming 已设置为 false 但没有 content）
-      const justFinishedIndex = session.messages.findIndex(m =>
+      const justFinished = queue.findLatest(m =>
         m.role === 'assistant' && m.content === '' && !m.isStreaming
       )
-      if (justFinishedIndex >= 0) {
-        const existingMsg = session.messages[justFinishedIndex]
-        existingMsg.content = message.content || existingMsg.content
-        existingMsg.isStreaming = false
+      if (justFinished) {
+        justFinished.content = message.content || justFinished.content
+        justFinished.isStreaming = false
         if (message.rawMessage) {
-          existingMsg.rawMessage = message.rawMessage
+          justFinished.rawMessage = message.rawMessage
         }
         log('[SessionStore] handleAddMessage: updated assistant message after tool_result')
         return
@@ -2909,28 +2844,31 @@ export const useSessionStore = defineStore('session', () => {
         const toolUseId = toolResultContent.tool_use_id
         log('[SessionStore] handleAddMessage: found tool_result for tool_use_id:', toolUseId)
 
-        // 查找对应的 tool_use 消息并更新结果
-        for (let i = session.messages.length - 1; i >= 0; i--) {
-          const msg = session.messages[i]
-          if ((msg.role === 'tool_use' || msg.role === 'diff') && (msg.id === toolUseId || msg.request_id === toolUseId)) {
-            msg.isExecuting = false
-            msg.isError = toolResultContent.is_error
-            msg.result = toolResultContent.content || '(无输出)'
-            msg.duration = Date.now() - (msg.startTime || Date.now())
-            log('[SessionStore] handleAddMessage: updated tool_use message result')
-            return // 不添加新消息
-          }
+        // 查找对应的 tool_use 消息并更新结果（跨队列搜索）
+        const toolUseRef = session.queueManager.findToolUseGlobal(toolUseId)
+        if (toolUseRef) {
+          const msg = toolUseRef.entry
+          msg.isExecuting = false
+          msg.isError = toolResultContent.is_error
+          msg.result = toolResultContent.content || '(无输出)'
+          msg.duration = Date.now() - (msg.startTime || Date.now())
+          log('[SessionStore] handleAddMessage: updated tool_use message result')
+          return // 不添加新消息
         }
       }
     }
 
-    // 使用 reactive 包装消息对象以确保响应式
-    session.messages.push(reactive(message))
+    // 使用 queue.append 追加消息（自动包装 reactive）
+    queue.append(message)
   }
 
   function handleMessagesReset(session, data) {
-    const nextMessages = Array.isArray(data?.messages) ? data.messages.map(message => reactive(message)) : []
-    session.messages = nextMessages
+    const nextMessages = Array.isArray(data?.messages) ? data.messages : []
+    session.queueManager.resetAll()
+    for (const msg of nextMessages) {
+      const queue = session.queueManager.routeToQueue(session, msg)
+      queue.append(msg)
+    }
     session.currentAssistantMessageIndex = -1
     session.currentStreamingAssistantId = null
     session.currentContentBlockType = null
@@ -2944,10 +2882,12 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] handleResult called')
     log('[SessionStore] Full result object:', JSON.stringify(result, null, 2))
 
-    // 移除 status 消息（如"正在启动运行时..."）
-    const statusIndex = session.messages.findIndex(m => m.role === 'status')
-    if (statusIndex >= 0) {
-      session.messages.splice(statusIndex, 1)
+    const mainQueue = getMainQueue(session)
+
+    // 移除 status 消息（如"正在启动运行时..."）—— status 消息在主队列
+    const statusEntry = mainQueue ? mainQueue.findLatestByRole('status') : null
+    if (statusEntry) {
+      mainQueue.removeById(statusEntry.id)
     }
 
     // 清除流式消息标记
@@ -2956,28 +2896,30 @@ export const useSessionStore = defineStore('session', () => {
     session.pendingPermissions = []
     session.pendingControlRequests = []
 
-    // 强制收尾残留的流式/执行态，避免某些边缘事件没成对回来时 UI 一直卡住
-    session.messages.forEach(msg => {
-      if (msg.isStreaming) {
-        msg.isStreaming = false
-        if (!msg.duration && msg.startTime) {
-          msg.duration = Date.now() - msg.startTime
+    // 强制收尾残留的流式/执行态，遍历所有队列
+    for (const queue of session.queueManager.queues.values()) {
+      for (const msg of queue.entries) {
+        if (msg.isStreaming) {
+          msg.isStreaming = false
+          if (!msg.duration && msg.startTime) {
+            msg.duration = Date.now() - msg.startTime
+          }
+        }
+
+        if (msg.isExecuting) {
+          msg.isExecuting = false
+          if (!msg.duration && msg.startTime) {
+            msg.duration = Date.now() - msg.startTime
+          }
         }
       }
+    }
 
-      if (msg.isExecuting) {
-        msg.isExecuting = false
-        if (!msg.duration && msg.startTime) {
-          msg.duration = Date.now() - msg.startTime
-        }
-      }
-    })
-
-    // 提取统一 result 语义
-    const latestUserMessage = [...session.messages].reverse().find(msg => isTurnInitiatorMessage(msg)) || null
-    const latestAssistantMessage = [...session.messages].reverse().find(msg =>
+    // 提取统一 result 语义（跨队列搜索最新的 user/assistant）
+    const latestUserMessage = session.queueManager.findLatestGlobal(msg => isTurnInitiatorMessage(msg))
+    const latestAssistantMessage = session.queueManager.findLatestGlobal(msg =>
       msg.role === 'assistant' && ((msg.content && msg.content.trim()) || (msg.thinking && msg.thinking.trim()))
-    ) || [...session.messages].reverse().find(msg => msg.role === 'assistant') || null
+    ) || session.queueManager.findLatestGlobal(msg => msg.role === 'assistant') || null
 
     const durationMs =
       result.duration_ms ??
@@ -3002,47 +2944,51 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] Extracted: durationMs=', durationMs, 'numTurns=', numTurns, 'usage=', usage)
 
     // 更新最后一个用户消息的统计信息
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      if (isTurnInitiatorMessage(session.messages[i])) {
-        const userMsg = session.messages[i]
-        log('[SessionStore] Found user message at index', i, 'startTime:', userMsg.startTime)
+    if (mainQueue) {
+      for (let i = mainQueue.length - 1; i >= 0; i--) {
+        if (isTurnInitiatorMessage(mainQueue.entries[i])) {
+          const userMsg = mainQueue.entries[i]
+          log('[SessionStore] Found user message at index', i, 'startTime:', userMsg.startTime)
 
-        // 使用 Object.assign 确保响应式更新
-        Object.assign(userMsg, {
-          duration: durationMs,
-          numTurns: numTurns,
-          usage: usage
-        })
+          // 使用 Object.assign 确保响应式更新
+          Object.assign(userMsg, {
+            duration: durationMs,
+            numTurns: numTurns,
+            usage: usage
+          })
 
-        log('[SessionStore] Updated user message:', JSON.stringify({
-          duration: userMsg.duration,
-          numTurns: userMsg.numTurns,
-          usage: userMsg.usage
-        }))
-        break
+          log('[SessionStore] Updated user message:', JSON.stringify({
+            duration: userMsg.duration,
+            numTurns: userMsg.numTurns,
+            usage: userMsg.usage
+          }))
+          break
+        }
       }
     }
 
     // 更新最后一个 assistant 消息的统计信息
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      if (session.messages[i].role === 'assistant') {
-        const assistantMsg = session.messages[i]
-        log('[SessionStore] Found assistant message at index', i)
+    if (mainQueue) {
+      for (let i = mainQueue.length - 1; i >= 0; i--) {
+        if (mainQueue.entries[i].role === 'assistant') {
+          const assistantMsg = mainQueue.entries[i]
+          log('[SessionStore] Found assistant message at index', i)
 
-        const updates = {
-          isStreaming: false
+          const updates = {
+            isStreaming: false
+          }
+          if (durationMs !== null && durationMs !== undefined) {
+            updates.duration = durationMs
+          }
+
+          Object.assign(assistantMsg, updates)
+
+          log('[SessionStore] Updated assistant message:', JSON.stringify({
+            duration: assistantMsg.duration,
+            usage: assistantMsg.usage
+          }))
+          break
         }
-        if (durationMs !== null && durationMs !== undefined) {
-          updates.duration = durationMs
-        }
-
-        Object.assign(assistantMsg, updates)
-
-        log('[SessionStore] Updated assistant message:', JSON.stringify({
-          duration: assistantMsg.duration,
-          usage: assistantMsg.usage
-        }))
-        break
       }
     }
 
@@ -3060,9 +3006,11 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function getLatestUserMessage(session) {
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      if (isTurnInitiatorMessage(session.messages[i])) {
-        return session.messages[i]
+    const mainQueue = getMainQueue(session)
+    if (!mainQueue) return null
+    for (let i = mainQueue.length - 1; i >= 0; i--) {
+      if (isTurnInitiatorMessage(mainQueue.entries[i])) {
+        return mainQueue.entries[i]
       }
     }
     return null
@@ -3147,30 +3095,29 @@ export const useSessionStore = defineStore('session', () => {
   function handleMessageStart(session, message) {
     log('[SessionStore] handleMessageStart:', message.role, message.subtype, message.id)
 
-    // 直接使用原始 message 对象，确保 session.messages 和 agent bucket 引用同一个对象
-    // 之前用 { ...message } 创建浅拷贝会导致 bucket 中的引用与 session.messages 中的不同，
-    // 后续对 isExecuting 等字段的更新无法传播到 bucket，computed 无法感知变化
+    // 直接使用原始 message 对象
     const nextMessage = message
 
     if ((nextMessage.role === 'tool_use' || nextMessage.role === 'diff') && !nextMessage.manuallyExpanded) {
       nextMessage.collapsed = true
     }
 
-    const existingIndex = session.messages.findIndex(item => item.id === nextMessage.id)
-    if (existingIndex >= 0) {
-      const existingMessage = session.messages[existingIndex]
+    const queue = session.queueManager.routeToQueue(session, nextMessage)
+
+    const existing = queue.findById(nextMessage.id)
+    if (existing) {
       const mergedToolInput = nextMessage.toolInput && typeof nextMessage.toolInput === 'object'
         ? {
-            ...(existingMessage.toolInput || {}),
+            ...(existing.toolInput || {}),
             ...nextMessage.toolInput
           }
-        : existingMessage.toolInput
-      Object.assign(existingMessage, {
+        : existing.toolInput
+      Object.assign(existing, {
         ...nextMessage,
         ...(mergedToolInput ? { toolInput: mergedToolInput } : {}),
-        content: existingMessage.content || nextMessage.content || '',
-        thinking: existingMessage.thinking || nextMessage.thinking || '',
-        hasThinking: existingMessage.hasThinking || nextMessage.hasThinking || false
+        content: existing.content || nextMessage.content || '',
+        thinking: existing.thinking || nextMessage.thinking || '',
+        hasThinking: existing.hasThinking || nextMessage.hasThinking || false
       })
 
       session.currentStreamingAssistantId = nextMessage.id
@@ -3185,8 +3132,8 @@ export const useSessionStore = defineStore('session', () => {
       return
     }
 
-    // 所有角色都直接添加，不再延迟
-    session.messages.push(reactive(nextMessage))
+    // 所有角色都直接添加
+    queue.append(nextMessage)
     session.currentStreamingAssistantId = nextMessage.id
 
     if (nextMessage.role === 'tool_use' || nextMessage.role === 'diff') {
@@ -3202,14 +3149,12 @@ export const useSessionStore = defineStore('session', () => {
   function handleMessageDelta(session, data) {
     const { messageId, field, delta } = data
 
-    // 查找对应的消息
-    const msgIndex = session.messages.findIndex(m => m.id === messageId)
-    if (msgIndex === -1) {
+    // 查找对应的消息（跨队列）
+    const msg = session.queueManager.findEntryGlobal(messageId)
+    if (!msg) {
       log('[SessionStore] handleMessageDelta: message not found', messageId)
       return
     }
-
-    const msg = session.messages[msgIndex]
 
     // 根据字段类型增量更新
     if (field === 'content') {
@@ -3230,7 +3175,7 @@ export const useSessionStore = defineStore('session', () => {
       return
     }
 
-    const msg = session.messages.find(m => m.id === messageId)
+    const msg = session.queueManager.findEntryGlobal(messageId)
     if (!msg) {
       log('[SessionStore] handleMessageReplace: message not found', messageId)
       return
@@ -3253,15 +3198,14 @@ export const useSessionStore = defineStore('session', () => {
   function handleMessageComplete(session, data) {
     const { messageId, updates } = data
 
-    // 查找对应的消息
-    const msgIndex = session.messages.findIndex(m => m.id === messageId)
-    if (msgIndex === -1) {
+    // 查找对应的消息（跨队列）
+    const msg = session.queueManager.findEntryGlobal(messageId)
+    if (!msg) {
       log('[SessionStore] handleMessageComplete: message not found', messageId)
       return
     }
 
     // 应用更新
-    const msg = session.messages[msgIndex]
     Object.assign(msg, updates)
     if (!msg.duration && msg.startTime) {
       msg.duration = Date.now() - msg.startTime
@@ -3281,7 +3225,7 @@ export const useSessionStore = defineStore('session', () => {
     const messageId = data?.messageId
     if (!messageId) return
 
-    const msg = session.messages.find(m => m.id === messageId)
+    const msg = session.queueManager.findEntryGlobal(messageId)
     if (msg) {
       msg.isStreaming = false
     }
@@ -3294,15 +3238,14 @@ export const useSessionStore = defineStore('session', () => {
     const { messageId, updates } = data
 
 
-    // 查找对应的消息
-    const msgIndex = session.messages.findIndex(m => m.id === messageId)
-    if (msgIndex === -1) {
+    // 查找对应的消息（跨队列）
+    const msg = session.queueManager.findEntryGlobal(messageId)
+    if (!msg) {
       log('[SessionStore] handleMessageUpdate: message not found', messageId)
       return
     }
 
     // 应用更新
-    const msg = session.messages[msgIndex]
     const mergedUpdates = {
       ...updates
     }
@@ -3344,32 +3287,32 @@ export const useSessionStore = defineStore('session', () => {
     const toolUseId = data?.toolUseId
     if (!toolUseId) return
 
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]
-      if (msg.role === 'question' && msg.tool_use_id === toolUseId) {
-        msg.resultReceived = true
-        msg.receivedAnswers = data.answers || null
-        msg.answersConsistent = data.answers ? compareAnswers(msg.userAnswers, data.answers) : true
+    // 先搜索 question 消息
+    for (const queue of session.queueManager.queues.values()) {
+      const questionEntry = queue.findLatest(m => m.role === 'question' && m.tool_use_id === toolUseId)
+      if (questionEntry) {
+        questionEntry.resultReceived = true
+        questionEntry.receivedAnswers = data.answers || null
+        questionEntry.answersConsistent = data.answers ? compareAnswers(questionEntry.userAnswers, data.answers) : true
         return
       }
     }
 
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]
-      if ((msg.role === 'tool_use' || msg.role === 'diff') && (msg.id === toolUseId || msg.request_id === toolUseId)) {
-        msg.isExecuting = false
-        msg.isError = !!data.isError
-        msg.result = data.content || '(无输出)'
-        if (data.usage) {
-          msg.usage = data.usage
-        }
-        if (!msg.duration && msg.startTime) {
-          msg.duration = Date.now() - msg.startTime
-        }
-        if (msg.role === 'tool_use' && msg.toolName === 'Agent') {
-          setUserUsageSource(session, `execution:${toolUseId}`, data.usage)
-        }
-        return
+    // 搜索 tool_use / diff 消息
+    const toolUseRef = session.queueManager.findToolUseGlobal(toolUseId)
+    if (toolUseRef) {
+      const msg = toolUseRef.entry
+      msg.isExecuting = false
+      msg.isError = !!data.isError
+      msg.result = data.content || '(无输出)'
+      if (data.usage) {
+        msg.usage = data.usage
+      }
+      if (!msg.duration && msg.startTime) {
+        msg.duration = Date.now() - msg.startTime
+      }
+      if (msg.role === 'tool_use' && msg.toolName === 'Agent') {
+        setUserUsageSource(session, `execution:${toolUseId}`, data.usage)
       }
     }
   }
@@ -3384,34 +3327,32 @@ export const useSessionStore = defineStore('session', () => {
 
     // 处理 AskUserQuestion 响应
     if (data.answers) {
-      for (let i = session.messages.length - 1; i >= 0; i--) {
-        const msg = session.messages[i]
-        if (msg.role === 'question' && msg.tool_use_id === messageId) {
-          msg.resultReceived = true
-          msg.receivedAnswers = data.answers || null
-          msg.answersConsistent = data.answers ? compareAnswers(msg.userAnswers, data.answers) : true
+      for (const queue of session.queueManager.queues.values()) {
+        const questionEntry = queue.findLatest(m => m.role === 'question' && m.tool_use_id === messageId)
+        if (questionEntry) {
+          questionEntry.resultReceived = true
+          questionEntry.receivedAnswers = data.answers || null
+          questionEntry.answersConsistent = data.answers ? compareAnswers(questionEntry.userAnswers, data.answers) : true
           return
         }
       }
     }
 
     // 更新对应 tool_use/diff 消息
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]
-      if ((msg.role === 'tool_use' || msg.role === 'diff') && (msg.id === messageId || msg.request_id === messageId)) {
-        msg.isExecuting = false
-        msg.isError = !!data.isError
-        msg.result = data.content || '(无输出)'
-        if (data.usage) {
-          msg.usage = data.usage
-        }
-        if (!msg.duration && msg.startTime) {
-          msg.duration = Date.now() - msg.startTime
-        }
-        if (msg.role === 'tool_use' && msg.toolName === 'Agent') {
-          setUserUsageSource(session, `execution:${messageId}`, data.usage)
-        }
-        return
+    const toolUseRef = session.queueManager.findToolUseGlobal(messageId)
+    if (toolUseRef) {
+      const msg = toolUseRef.entry
+      msg.isExecuting = false
+      msg.isError = !!data.isError
+      msg.result = data.content || '(无输出)'
+      if (data.usage) {
+        msg.usage = data.usage
+      }
+      if (!msg.duration && msg.startTime) {
+        msg.duration = Date.now() - msg.startTime
+      }
+      if (msg.role === 'tool_use' && msg.toolName === 'Agent') {
+        setUserUsageSource(session, `execution:${messageId}`, data.usage)
       }
     }
   }
@@ -3631,7 +3572,8 @@ export const useSessionStore = defineStore('session', () => {
       timestamp: new Date()
     }
 
-    session.messages.push(unknownMsg)
+    // unknown 消息放入主队列
+    getMainQueue(session).append(unknownMsg)
   }
 
   function normalizeProviderUnknownMessage(data = {}) {
@@ -3726,7 +3668,7 @@ export const useSessionStore = defineStore('session', () => {
     session.isProcessing = false
     session.runtimeReady = false
 
-    // 添加异常退出提示消息（使用 system_notification 类型，显示为居中通知样式）
+    // 添加异常退出提示消息到主队列（使用 system_notification 类型）
     const exitMsg = {
       id: `abnormal-exit-${Date.now()}`,
       role: 'system_notification',
@@ -3740,7 +3682,7 @@ export const useSessionStore = defineStore('session', () => {
       },
       timestamp: new Date()
     }
-    session.messages.push(exitMsg)
+    getMainQueue(session).append(exitMsg)
   }
 
   /**
@@ -3753,7 +3695,7 @@ export const useSessionStore = defineStore('session', () => {
     session.isProcessing = false
     session.runtimeReady = false
 
-    // 添加正常停止提示消息（使用 system_notification 类型，显示为居中通知样式）
+    // 添加正常停止提示消息到主队列
     const exitMsg = {
       id: `normal-exit-${Date.now()}`,
       role: 'system_notification',
@@ -3766,7 +3708,7 @@ export const useSessionStore = defineStore('session', () => {
       },
       timestamp: new Date()
     }
-    session.messages.push(exitMsg)
+    getMainQueue(session).append(exitMsg)
   }
 
   /**
@@ -3806,7 +3748,8 @@ export const useSessionStore = defineStore('session', () => {
         data.type === 'hook-event'
       )
     ) {
-      const pendingMessage = [...session.messages].reverse().find(message =>
+      const mainQueue = getMainQueue(session)
+      const pendingMessage = mainQueue ? [...mainQueue.entries].reverse().find(message =>
         message.role === 'system_notification' &&
         (
           message.notificationType === 'session-runtime-starting' ||
@@ -3815,7 +3758,7 @@ export const useSessionStore = defineStore('session', () => {
           message.notificationType === 'hook-event'
         ) &&
         message.data?.operationId === operationId
-      )
+      ) : null
 
       if (pendingMessage) {
         const applyUpdate = () => {
@@ -3861,7 +3804,7 @@ export const useSessionStore = defineStore('session', () => {
         },
         timestamp: new Date()
       }
-      session.messages.push(interruptMsg)
+      getMainQueue(session).append(interruptMsg)
       return
     }
 
@@ -3875,7 +3818,7 @@ export const useSessionStore = defineStore('session', () => {
       timestamp: new Date()
     }
 
-    session.messages.push(notificationMsg)
+    getMainQueue(session).append(notificationMsg)
   }
 
   function finalizeSessionRuntimeActivity(session, options = {}) {
@@ -3886,29 +3829,32 @@ export const useSessionStore = defineStore('session', () => {
     const markInterruptedTools = options.markInterruptedTools !== false
     const now = Date.now()
 
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]
+    // 遍历所有队列
+    for (const queue of session.queueManager.queues.values()) {
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const msg = queue.entries[i]
 
-      if (msg.isStreaming) {
-        msg.isStreaming = false
-      }
+        if (msg.isStreaming) {
+          msg.isStreaming = false
+        }
 
-      if (msg.isExecuting) {
-        msg.isExecuting = false
+        if (msg.isExecuting) {
+          msg.isExecuting = false
 
-        if (
-          markInterruptedTools &&
-          (msg.role === 'tool_use' || msg.role === 'diff')
-        ) {
-          msg.interrupted = true
-          if (!msg.isError) {
-            msg.isError = true
+          if (
+            markInterruptedTools &&
+            (msg.role === 'tool_use' || msg.role === 'diff')
+          ) {
+            msg.interrupted = true
+            if (!msg.isError) {
+              msg.isError = true
+            }
           }
         }
-      }
 
-      if (msg.startTime && !msg.duration) {
-        msg.duration = now - msg.startTime
+        if (msg.startTime && !msg.duration) {
+          msg.duration = now - msg.startTime
+        }
       }
     }
   }
@@ -3974,17 +3920,20 @@ export const useSessionStore = defineStore('session', () => {
     const normalizedTaskId = String(taskId || '')
     if (!normalizedTaskId) return null
 
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const msg = session.messages[i]
-      if (msg?.role !== 'tool_use' || msg?.toolName !== 'TaskOutput') continue
-      const msgTaskId = String(msg.toolInput?.task_id || msg.toolInput?.taskId || '')
-      if (msgTaskId !== normalizedTaskId) continue
-      // 找到匹配的 TaskOutput
-      const result = msg.result || null
-      if (result) {
-        msg.mergedIntoTaskComplete = true
+    // 跨队列搜索 TaskOutput
+    for (const queue of session.queueManager.queues.values()) {
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const msg = queue.entries[i]
+        if (msg?.role !== 'tool_use' || msg?.toolName !== 'TaskOutput') continue
+        const msgTaskId = String(msg.toolInput?.task_id || msg.toolInput?.taskId || '')
+        if (msgTaskId !== normalizedTaskId) continue
+        // 找到匹配的 TaskOutput
+        const result = msg.result || null
+        if (result) {
+          msg.mergedIntoTaskComplete = true
+        }
+        return result
       }
-      return result
     }
     return null
   }
@@ -4063,24 +4012,25 @@ export const useSessionStore = defineStore('session', () => {
             }
           : (task.ccgui || data.ccgui || null)
         // 添加任务完成消息到聊天
-        const existingTaskComplete = session.messages.find(message =>
-          message?.role === 'task_complete' && message?.taskId === taskId
-        )
+        const taskCompleteMsg = {
+          id: `task-complete-${taskId}`,
+          role: 'task_complete',
+          taskId: taskId,
+          taskType: task.taskType,
+          description: task.description,
+          summary: task.summary,
+          usage: task.usage,
+          outputResult: null,
+          ccgui: taskCcgui,
+          duration: Date.now() - task.startTime,
+          timestamp: new Date()
+        }
+        // 检查是否已存在 task_complete（跨队列搜索）
+        const existingTaskComplete = session.queueManager.findLatestGlobal(m => m?.role === 'task_complete' && m?.taskId === taskId)
         if (!existingTaskComplete) {
-          const taskOutputResult = findAndMergeTaskOutput(session, taskId)
-          session.messages.push({
-            id: `task-complete-${taskId}`,
-            role: 'task_complete',
-            taskId: taskId,
-            taskType: task.taskType,
-            description: task.description,
-            summary: task.summary,
-            usage: task.usage,
-            outputResult: taskOutputResult,
-            ccgui: taskCcgui,
-            duration: Date.now() - task.startTime,
-            timestamp: new Date()
-          })
+          taskCompleteMsg.outputResult = findAndMergeTaskOutput(session, taskId)
+          const queue = session.queueManager.routeToQueue(session, taskCompleteMsg)
+          queue.append(taskCompleteMsg)
         }
         // 从活跃列表移除
         session.activeTasks.delete(taskId)
@@ -4091,9 +4041,20 @@ export const useSessionStore = defineStore('session', () => {
         const agentId = resolveAgentIdFromCcguiPayload(data.ccgui)
         const registryEntry = agentId ? session.agentRegistry.get(agentId) : null
         if (registryEntry?.agentKind === 'collaborative') {
-          const existingTaskComplete = session.messages.find(message =>
-            message?.role === 'task_complete' && message?.taskId === taskId
-          )
+          const taskCompleteMsg = {
+            id: `task-complete-${taskId}`,
+            role: 'task_complete',
+            taskId,
+            taskType: data.taskType || null,
+            description: data.description || null,
+            summary: data.summary || null,
+            usage: data.usage || null,
+            outputResult: null,
+            ccgui: null,
+            duration: data.duration || 0,
+            timestamp: new Date()
+          }
+          const existingTaskComplete = session.queueManager.findLatestGlobal(m => m?.role === 'task_complete' && m?.taskId === taskId)
           if (!existingTaskComplete) {
             const taskCcgui = agentId
               ? {
@@ -4105,20 +4066,10 @@ export const useSessionStore = defineStore('session', () => {
                   }
                 }
               : (data.ccgui || null)
-            const taskOutputResult = findAndMergeTaskOutput(session, taskId)
-            session.messages.push({
-              id: `task-complete-${taskId}`,
-              role: 'task_complete',
-              taskId,
-              taskType: data.taskType || null,
-              description: data.description || null,
-              summary: data.summary || null,
-              usage: data.usage || null,
-              outputResult: taskOutputResult,
-              ccgui: taskCcgui,
-              duration: data.duration || 0,
-              timestamp: new Date()
-            })
+            taskCompleteMsg.ccgui = taskCcgui
+            taskCompleteMsg.outputResult = findAndMergeTaskOutput(session, taskId)
+            const queue = session.queueManager.routeToQueue(session, taskCompleteMsg)
+            queue.append(taskCompleteMsg)
             rebuildAgentSemanticState(session)
             log('[SessionStore] Collaborative task completed (no activeTask):', taskId)
           }
@@ -4177,10 +4128,11 @@ export const useSessionStore = defineStore('session', () => {
    * 添加一个临时的 status 消息到消息列表
    */
   function handleCliStatus(session, data) {
-    // 移除之前的 status 消息（如果有的话）
-    const existingStatusIndex = session.messages.findIndex(m => m.role === 'status')
-    if (existingStatusIndex >= 0) {
-      session.messages.splice(existingStatusIndex, 1)
+    // 移除之前的 status 消息（如果有的话）—— status 消息在主队列
+    const mainQueue = getMainQueue(session)
+    const existingStatus = mainQueue ? mainQueue.findLatestByRole('status') : null
+    if (existingStatus) {
+      mainQueue.removeById(existingStatus.id)
     }
 
     // 构建更详细的错误消息
@@ -4213,9 +4165,9 @@ export const useSessionStore = defineStore('session', () => {
       }
     }
 
-    // 添加新的 status 消息
+    // 添加新的 status 消息到主队列
     if (displayMessage) {
-      session.messages.push({
+      mainQueue.append({
         id: `status-${Date.now()}`,
         role: 'status',
         content: displayMessage,
@@ -4265,7 +4217,8 @@ export const useSessionStore = defineStore('session', () => {
   function addMessage(message) {
     const session = currentSession.value
     if (session) {
-      session.messages.push(message)
+      const queue = session.queueManager.routeToQueue(session, message)
+      queue.append(message)
       rebuildAgentSemanticState(session)
     }
   }
@@ -4277,11 +4230,15 @@ export const useSessionStore = defineStore('session', () => {
     const session = currentSession.value
     if (!session) return false
 
-    const index = session.messages.findIndex(predicate)
-    if (index !== -1) {
-      session.messages[index] = { ...session.messages[index], ...updates }
-      rebuildAgentSemanticState(session)
-      return true
+    // 在所有队列中搜索
+    for (const queue of session.queueManager.queues.values()) {
+      for (const entry of queue.entries) {
+        if (predicate(entry)) {
+          Object.assign(entry, updates)
+          rebuildAgentSemanticState(session)
+          return true
+        }
+      }
     }
     return false
   }

@@ -179,68 +179,44 @@ const executionAgentCardMap = computed(() => {
 })
 
 const mainTimelineMessages = computed(() => {
-  return messages.value.filter(message => {
-    const agentId = sessionStore.getMessageAgentId(message)
-    const registryEntry = sessionStore.currentAgentRegistry.get(agentId)
-
-    if (agentId !== mainAgentId.value && registryEntry?.agentKind === 'collaborative') {
-      return false
-    }
-
-    if (agentId !== mainAgentId.value && registryEntry?.agentKind === 'execution') {
-      return false
-    }
-
-    return true
-  })
+  // messages 已经是主 agent 队列的 entries，无需再过滤
+  return messages.value
 })
 
 const mainTimelineBlocks = computed(() => {
   const blocks = []
-  const insertedExecutionAgentIds = new Set()
+  const entries = messages.value  // 主 agent 队列 entries
 
-  messages.value.forEach((message, index) => {
-    const agentId = sessionStore.getMessageAgentId(message)
-    const registryEntry = sessionStore.currentAgentRegistry.get(agentId)
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]
 
-    if (agentId !== mainAgentId.value && registryEntry?.agentKind === 'collaborative') {
-      return
-    }
-
-    if (agentId !== mainAgentId.value && registryEntry?.agentKind === 'execution') {
-      if (!insertedExecutionAgentIds.has(agentId)) {
-        const card = executionAgentCardMap.value.get(agentId)
+    // 检查是否为 spawn subagent 的 Agent tool_use → 渲染为 execution card
+    if (entry.role === 'tool_use' && entry.toolName === 'Agent') {
+      const toolUseId = entry.id || entry.request_id
+      const subagentId = sessionStore.currentSession?.agentToolUseBindings?.get(toolUseId)
+      if (subagentId) {
+        const card = executionAgentCardMap.value.get(subagentId)
         if (card) {
           blocks.push({
             type: 'execution-card',
-            key: `execution-${agentId}`,
+            key: `execution-${subagentId}`,
             card
           })
-          insertedExecutionAgentIds.add(agentId)
+          continue
         }
       }
-      return
     }
 
+    // 普通消息
     blocks.push({
       type: 'message',
-      key: `message-${message.id || index}`,
-      message,
-      messageIndex: mainTimelineMessages.value.indexOf(message),
-      totalMessages: mainTimelineMessages.value.length,
-      allMessages: mainTimelineMessages.value
+      key: `message-${entry.id || i}`,
+      message: entry,
+      messageIndex: i,
+      totalMessages: entries.length,
+      allMessages: entries
     })
-  })
-
-  executionAgentCards.value.forEach(card => {
-    if (!insertedExecutionAgentIds.has(card.agentId)) {
-      blocks.push({
-        type: 'execution-card',
-        key: `execution-${card.agentId}`,
-        card
-      })
-    }
-  })
+  }
 
   return blocks
 })

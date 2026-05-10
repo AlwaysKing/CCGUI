@@ -530,11 +530,7 @@ async function onToggleResponseCollapse(messageIndex, event = null) {
   if (!nextCollapsed && message.historyTurn?.turnId && !message.historyTurn.loaded) {
     const ownerSession = props.sessionId
       ? sessionStore.sessions.get(props.sessionId)
-      : (
-          sessionStore.currentSession?.messages === props.allMessages
-            ? sessionStore.currentSession
-            : Array.from(sessionStore.sessions.values()).find(session => session?.messages === props.allMessages)
-        )
+      : sessionStore.currentSession
 
     if (ownerSession?.id) {
       const result = await sessionStore.loadHistoryTurn(ownerSession.id, message.historyTurn.turnId, message.historyTurn)

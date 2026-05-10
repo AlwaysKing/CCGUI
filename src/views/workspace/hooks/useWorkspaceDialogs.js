@@ -72,18 +72,25 @@ export function useWorkspaceDialogs({
   }
 
   async function performCloseSession(session) {
+    const t0 = performance.now()
+    logger.info('[Workspace] performCloseSession START', { sessionId: session.id, t0 })
     try {
       await window.electronAPI.stopSessionRuntime({ sessionId: session.id })
-      logger.info('[Workspace] Runtime process stopped for session:', session.id)
+      const elapsed = (performance.now() - t0).toFixed(1)
+      logger.info(`[Workspace] performCloseSession END (${elapsed}ms)`, { sessionId: session.id })
     } catch (error) {
-      logger.error('[Workspace] Failed to close runtime process:', { error: error.message })
+      const elapsed = (performance.now() - t0).toFixed(1)
+      logger.error(`[Workspace] performCloseSession ERROR (${elapsed}ms)`, { sessionId: session.id, error: error.message })
       alert('关闭运行时进程失败: ' + error.message)
     }
   }
 
   async function handleCloseSession(session) {
     const sessionState = sessionStore.sessions.get(session.id)
-    if (sessionState?.isProcessing) {
+    const isProcessing = sessionState?.isProcessing
+    logger.info('[Workspace] handleCloseSession', { sessionId: session.id, isProcessing: !!isProcessing })
+
+    if (isProcessing) {
       confirmDialogConfig.value = {
         title: '确认关闭',
         message: '会话正在处理中，关闭将中断当前操作。确定要关闭吗？',

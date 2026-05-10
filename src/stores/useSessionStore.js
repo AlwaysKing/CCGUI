@@ -1488,6 +1488,33 @@ export const useSessionStore = defineStore('session', () => {
         const aggregatedUsage = aggregateExecutionAgentUsage(items, entry)
         const aggregatedDuration = aggregateExecutionAgentDuration(items, entry, resolvedStatus)
 
+        // 诊断：execution agent 的 toolCount 为 0 时输出详细信息
+        if (toolCalls.length === 0 && resolvedStatus !== 'running' && resolvedStatus !== 'starting') {
+          const session = currentSession.value
+          const messagesWithThisAgent = session?.messages
+            ? session.messages.filter(m => getMessageAgentId(m, session) === entry.agentId).length
+            : -1
+          const bindingsForThisAgent = session?.agentToolUseBindings
+            ? [...session.agentToolUseBindings.entries()].filter(([, aid]) => aid === entry.agentId).length
+            : -1
+          logger.warn(`[ExecutionAgentCard] ${entry.agentId} has 0 toolCalls`, {
+            itemCount: items.length,
+            bucketExists: buckets.has(entry.agentId),
+            registryStatus: entry.status,
+            resolvedStatus,
+            messagesWithThisAgent,
+            bindingsForThisAgent,
+            itemRoles: items.map(m => `${m.role}:${m.toolName || m.notificationType || ''}`),
+            // 检查 session.messages 中 Explore 消息的 attribution
+            sampleAttributions: session?.messages
+              ? session.messages
+                  .filter(m => getMessageAgentId(m, session) === entry.agentId)
+                  .slice(0, 3)
+                  .map(m => ({ id: (m.id || '').slice(0, 30), role: m.role, agentId: m?.ccgui?.attribution?.agentId?.slice(0, 30) || 'N/A' }))
+              : []
+          })
+        }
+
         return {
           agentId: entry.agentId,
           title: displayTitle,

@@ -1293,9 +1293,14 @@ class ClaudeClient {
    */
   stop() {
     if (this.process) {
+      const pid = this.process.pid
+      logger.info(`[ClaudeClient] stop — sending SIGTERM to pid ${pid}`)
       this.stopSidechainMonitor()
       this.process.kill('SIGTERM')
       this.process = null
+      logger.info(`[ClaudeClient] stop — SIGTERM sent to pid ${pid}, process ref cleared`)
+    } else {
+      logger.info('[ClaudeClient] stop — no process to stop')
     }
     this.commandInventory = { commands: [], mcpServers: [] }
     this.commandInventoryReadyPromise = null

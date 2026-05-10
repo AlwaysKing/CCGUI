@@ -3838,7 +3838,8 @@ class SessionInstance {
    */
   stop(reason = 'user-stop', options = {}) {
     if (this.runtimeManager) {
-      logger.info(`[SessionInstance] Stopping provider for session ${this.id}`)
+      const t0 = Date.now()
+      logger.info(`[SessionInstance] stop START for session ${this.id}`, { reason })
       this.isManualStop = true // 标记为手动停止
       this.pendingLifecycleReason = reason || 'user-stop'
       this.pendingPostStartNotification = options.postStartNotification || null
@@ -3849,7 +3850,11 @@ class SessionInstance {
         }
       }
       this.currentStreamingAssistantId = null
+
+      const t1 = Date.now()
       this.finalizeActiveMessages()
+      logger.info(`[SessionInstance] stop finalizeActiveMessages (${Date.now() - t1}ms)`, { sessionId: this.id, messageCount: this.messages?.length })
+
       if (reason !== 'restart-for-config') {
         this.finalizePendingLifecycleNotification('runtime-stopped', {
           provider: this.provider,
@@ -3878,8 +3883,14 @@ class SessionInstance {
       this.persistRuntimeSessionSettingsPatch()
 
       processRegistry.unregister(this.id)
+      logger.info(`[SessionInstance] stop sending SIGTERM (pre-stop total ${Date.now() - t0}ms)`, { sessionId: this.id })
+
       this.runtimeManager.stop()
       this.runtimeManager = null
+
+      logger.info(`[SessionInstance] stop END (total ${Date.now() - t0}ms)`, { sessionId: this.id })
+    } else {
+      logger.info(`[SessionInstance] stop SKIPPED — runtimeManager is null`, { sessionId: this.id, reason })
     }
   }
 

@@ -1598,8 +1598,11 @@ ipcMain.handle('close-session', async (event, { sessionId }) => {
 
 // Stop runtime process (keep session alive for restart)
 ipcMain.handle('stop-session-runtime', async (event, { sessionId, reason, postStartNotification }) => {
-  logger.info('[IPC] stop-session-runtime:', { sessionId, reason, hasPostStartNotification: !!postStartNotification })
+  const t0 = Date.now()
+  logger.info('[IPC] stop-session-runtime START', { sessionId, reason, t0 })
   sessionManager.stopSessionRuntime(sessionId, { reason, postStartNotification })
+  const elapsed = Date.now() - t0
+  logger.info(`[IPC] stop-session-runtime END (${elapsed}ms)`, { sessionId, elapsed })
   return { success: true }
 })
 

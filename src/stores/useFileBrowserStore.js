@@ -165,6 +165,9 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
   let removeProjectFilesChangedListener = null
   let projectInitializationTimer = null
   let projectInitializationToken = 0
+  let gitStatusRefreshInFlight = false
+  let gitStatusRefreshPending = false
+  let gitStatusDebounceTimer = null
 
   const projectPath = computed(() => appStore.currentProject?.path || '')
 
@@ -194,6 +197,14 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       return {}
     }
 
+    // 去重：如果已有请求在飞，标记 pending，等当前请求完成后自动重试一次
+    if (gitStatusRefreshInFlight) {
+      gitStatusRefreshPending = true
+      return gitStatusMap.value
+    }
+
+    gitStatusRefreshInFlight = true
+
     try {
       const result = await window.electronAPI.getProjectGitStatus({
         projectPath: projectPath.value
@@ -207,7 +218,24 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       gitStatusMap.value = {}
       tree.value = applyGitStatuses(tree.value, {})
       return {}
+    } finally {
+      gitStatusRefreshInFlight = false
+
+      // 如果在请求期间有新的刷新请求被合并，自动重试一次
+      if (gitStatusRefreshPending) {
+        gitStatusRefreshPending = false
+        void refreshGitStatus()
+      }
     }
+  }
+
+  // 防抖版 refreshGitStatus：500ms 内多次调用只执行最后一次
+  function debouncedRefreshGitStatus() {
+    clearTimeout(gitStatusDebounceTimer)
+    gitStatusDebounceTimer = setTimeout(() => {
+      gitStatusDebounceTimer = null
+      void refreshGitStatus()
+    }, 500)
   }
 
   function setNodeChildren(nodes, targetPath, children) {
@@ -311,9 +339,26 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
   async function handleExternalFileChange(relativePath = '') {
     const normalizedPath = normalizePath(relativePath)
+    const panelVisible = isFilePanelVisible.value
+    const hasOpenTabs = tabs.value.length > 0
+
+    // 文件面板没开、也没打开任何文件 → 完全跳过
+    if (!panelVisible && !hasOpenTabs) {
+      return
+    }
+
+    // 文件面板没开，但有打开的文件 → 只刷新对应文件的内容，不跑 git status
+    if (!panelVisible && hasOpenTabs) {
+      if (normalizedPath && !normalizedPath.endsWith('/')) {
+        await reloadOpenTabIfClean(normalizedPath)
+      }
+      return
+    }
+
+    // 文件面板开着 → 正常刷新（使用防抖版 git status）
 
     if (!normalizedPath) {
-      await refreshGitStatus()
+      debouncedRefreshGitStatus()
       return
     }
 
@@ -322,7 +367,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       return
     }
 
-    await refreshGitStatus()
+    debouncedRefreshGitStatus()
     if (window.electronAPI?.statProjectEntry == null) {
       return
     }
@@ -1023,12 +1068,17 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     isPreviewPanelVisible.value = Boolean(state?.isPreviewPanelVisible)
   }
 
-  watch([projectPath, isFilePanelVisible], ([nextProjectPath, nextVisible], previous = []) => {
-    const [previousProjectPath, previousVisible] = previous
-    const projectChanged = nextProjectPath !== previousProjectPath
-    const visibilityChanged = nextVisible !== previousVisible
+  // 判断是否需要文件监听：文件面板开 或 有打开的文件（预览面板）
+  const needsFileWatching = computed(() =>
+    isFilePanelVisible.value || tabs.value.length > 0
+  )
 
-    if (!projectChanged && !visibilityChanged) return
+  watch([projectPath, needsFileWatching], ([nextProjectPath, nextNeedsWatch], previous = []) => {
+    const [previousProjectPath, previousNeedsWatch] = previous
+    const projectChanged = nextProjectPath !== previousProjectPath
+    const watchChanged = nextNeedsWatch !== previousNeedsWatch
+
+    if (!projectChanged && !watchChanged) return
 
     projectInitializationToken += 1
     const currentToken = projectInitializationToken
@@ -1044,7 +1094,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       resetState()
     }
 
-    if (!nextProjectPath || !nextVisible) {
+    if (!nextProjectPath || !nextNeedsWatch) {
       return
     }
 
@@ -1056,8 +1106,12 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
           return
         }
 
-        await refreshTree()
-        if (currentToken !== projectInitializationToken || !isFilePanelVisible.value) {
+        // 文件面板打开时才加载完整树和 git status
+        if (isFilePanelVisible.value) {
+          await refreshTree()
+        }
+
+        if (currentToken !== projectInitializationToken) {
           return
         }
 
@@ -1065,6 +1119,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       })()
     }, 0)
   }, { immediate: true })
+
 
   if (!removeProjectFilesChangedListener && window.electronEvents?.onProjectFilesChanged) {
     removeProjectFilesChangedListener = window.electronEvents.onProjectFilesChanged(async (payload) => {

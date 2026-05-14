@@ -255,13 +255,8 @@ function normalizeTaskDockTask(task) {
 }
 
 function sortTaskDockItems(items) {
-  return [...items].sort((left, right) => {
-    if (left.running !== right.running) {
-      return left.running ? -1 : 1
-    }
-
-    return Number(right.lastUsedAt || 0) - Number(left.lastUsedAt || 0)
-  })
+  // 始终保持 task 在 tasks.json 中的原始定义顺序，不因运行状态变化而重排
+  return items
 }
 
 function trimTaskDockItems(items) {
@@ -303,31 +298,30 @@ function syncTaskDockItems() {
       .map(label => String(label || '').trim())
       .filter(Boolean)
   )
-  const syncedItems = []
+  const existingByLabel = new Map(
+    taskDockItems.value.map(item => [item.label, item])
+  )
 
-  for (const item of taskDockItems.value) {
-    const latestTask = tasksByLabel.get(item.label)
-    if (!latestTask) {
-      continue
-    }
+  // 按 taskLauncherTasks 的原始顺序重建，保持定义顺序不变
+  const syncedItems = []
+  for (const [label, latestTask] of tasksByLabel) {
+    const existing = existingByLabel.get(label)
+    if (!existing) continue
 
     syncedItems.push({
-      ...item,
+      ...existing,
       ...latestTask,
-      running: runningLabels.has(item.label)
+      running: runningLabels.has(label)
     })
   }
 
+  // 补充 running 但尚未在 dock 中的 task（也按原始顺序追加）
   for (const label of runningLabels) {
     if (syncedItems.some(item => item.label === label)) {
       continue
     }
-
     const task = tasksByLabel.get(label)
-    if (!task) {
-      continue
-    }
-
+    if (!task) continue
     syncedItems.push({
       ...task,
       running: true,

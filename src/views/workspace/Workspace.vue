@@ -762,9 +762,9 @@ watch([taskLauncherTasks, runningTaskLabels], () => {
   syncTaskDockItems()
 }, { deep: true })
 
-// 竞争条件兜底：taskLauncherTasks 可能在 session 恢复之后才加载完成，
-// 此时 taskDockItems 仍为空但历史数据可用，尝试重新恢复
-watch(taskLauncherTasks, (tasks) => {
+// 竞争条件兜底：taskLauncherTasks 和 session 加载顺序不确定，
+// 无论哪个后完成，只要两者都就绪且 taskDockItems 仍为空，就尝试从历史恢复
+watch([taskLauncherTasks, () => sessionStore.currentSession?.id], ([tasks]) => {
   if (!tasks.length || taskDockItems.value.length) return
   const session = sessionStore.currentSession
   if (!session?.taskDockHistory?.length) return

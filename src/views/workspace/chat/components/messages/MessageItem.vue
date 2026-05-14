@@ -189,7 +189,6 @@ const shouldHide = computed(() => {
   }
   if (
     props.message.role === 'status' ||
-    props.message.role === 'task_complete' ||
     props.message.role === 'file_change_summary'
   ) {
     return false

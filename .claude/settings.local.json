@@ -213,7 +213,16 @@
       "Bash(/usr/local/bin/node --version)",
       "Bash(/opt/homebrew/bin/node --version)",
       "Read(//Users/alwaysking/.local/share/fnm/**)",
-      "Read(//Users/alwaysking/.volta/tools/image/**)"
+      "Read(//Users/alwaysking/.volta/tools/image/**)",
+      "Read(//Users/alwaysking/.claude/**)",
+      "Read(//Users/alwaysking/.codex/**)",
+      "Bash(top -l 1 -n 20 -stats pid,command,cpu,mem,time -o cpu)",
+      "Bash(awk '{sum += $3} END {printf \"git status 总进程数\\(不含grep\\): %d, 总CPU: %.1f%%\\\\n\", NR-1, sum}')",
+      "Bash(awk '{print $2}')",
+      "Bash(xargs -I{} ps -o ppid= -p {})",
+      "Bash(awk '{for\\(i=9;i<=NF;i++\\) printf \"%s \", $i; print \"\"}')",
+      "Bash(awk '{print $9}')",
+      "Bash(awk '{for\\(i=11;i<=NF;i++\\) printf \"%s \", $i; print \"\"}')"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

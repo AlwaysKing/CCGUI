@@ -19,6 +19,7 @@ const {
   replaceAttachmentTokens,
   buildCodexAttachmentReference
 } = require('../shared/ccgui-attachments')
+const { buildAugmentedEnv } = require('../../services/shell-env')
 
 let HttpsProxyAgent = null
 try {
@@ -973,19 +974,23 @@ class CodexClient {
     const appConfig = appConfigManager.loadConfig()
     const proxyUrl = appConfig.settings?.codexProxy || ''
     const modelRuntime = this.resolveModelRuntime()
-    const codexEnv = {
-      ...process.env
-    }
+    const codexEnvOverrides = {}
 
     if (proxyUrl) {
-      codexEnv.HTTP_PROXY = proxyUrl
-      codexEnv.HTTPS_PROXY = proxyUrl
-      codexEnv.ALL_PROXY = proxyUrl
+      codexEnvOverrides.HTTP_PROXY = proxyUrl
+      codexEnvOverrides.HTTPS_PROXY = proxyUrl
+      codexEnvOverrides.ALL_PROXY = proxyUrl
     }
 
     if (modelRuntime?.authToken) {
-      codexEnv[modelRuntime.envKey || 'CCGUI_AUTH_KEY'] = modelRuntime.authToken
+      codexEnvOverrides[modelRuntime.envKey || 'CCGUI_AUTH_KEY'] = modelRuntime.authToken
     }
+
+    const codexEnv = await buildAugmentedEnv(process.env, codexEnvOverrides)
+
+    logger.info('[CodexClient] PATH entries:', {
+      count: String(codexEnv.PATH || '').split(path.delimiter).filter(Boolean).length
+    })
 
     this.process = spawn(this.codexPath, ['app-server', '--listen', 'stdio://'], {
       cwd: this.workingDirectory,

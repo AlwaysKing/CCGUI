@@ -1010,39 +1010,31 @@ function handleClickOutsidePermissionMenu(event) {
   }
 }
 
-// 监听流式更新（消息内容变化导致高度增加）
-// 使用 sync flush 在 DOM 更新前记录状态
-let wasNearBottomBeforeStreaming = true
+// 流式更新滚动：用 currentStreamingAssistantId 精确定位，RAF 去重，一帧最多滚一次
+let streamingScrollRAF = null
 watch(() => {
-  // 检查是否有正在流式更新的消息，并返回一个会在内容变化时改变的值
-  if (!messages.value) return null
-  const streamingMsg = messages.value.find(m => m.isStreaming || m.isExecuting)
-  if (!streamingMsg) return null
-  // 返回消息 ID + 内容长度 + thinking长度，确保 thinking 和 content 变化时都能触发
-  return `${streamingMsg.id}:${streamingMsg.content?.length || 0}:${streamingMsg.thinking?.length || 0}`
+  const session = sessionStore.currentSession
+  const streamingId = session?.currentStreamingAssistantId
+  if (!streamingId) return null
+  const queue = session.queueManager?.getQueue(session.mainAgentId)
+  const msg = queue?.findById(streamingId)
+  if (!msg) return null
+  // 只读 length，不读完整内容
+  return `${msg.content?.length || 0}:${msg.thinking?.length || 0}`
 }, () => {
-  const container = getScrollContainer()
-  if (container) {
-    // 在 DOM 更新前检查滚动位置
-    wasNearBottomBeforeStreaming = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
-  }
-}, { immediate: false, flush: 'sync' })
-
-// 在 DOM 更新后处理流式更新的滚动
-watch(() => {
-  // 检查是否有正在流式更新的消息，并返回一个会在内容变化时改变的值
-  if (!messages.value) return null
-  const streamingMsg = messages.value.find(m => m.isStreaming || m.isExecuting)
-  if (!streamingMsg) return null
-  // 同时监听 content 和 thinking 字段的变化，确保 thinking 消息增长时也能触发滚动
-  return `${streamingMsg.id}:${streamingMsg.content?.length || 0}:${streamingMsg.thinking?.length || 0}`
-}, async () => {
-  if (wasNearBottomBeforeStreaming) {
-    // 等待 DOM 更新
-    await nextTick()
-    // 如果之前在底部，自动滚动（尊重 autoScrollActive 用户意图）
-    scrollToBottom()
-  }
+  // RAF 去重：同一帧内多个 delta 只触发一次滚动
+  if (streamingScrollRAF) return
+  streamingScrollRAF = requestAnimationFrame(() => {
+    streamingScrollRAF = null
+    if (!autoScrollActive) return
+    const container = getScrollContainer()
+    if (!container) return
+    // 在 DOM 更新后检查是否在底部附近
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
+    if (isNearBottom) {
+      scrollToBottom()
+    }
+  })
 }, { immediate: false })
 
 watch(
@@ -1061,9 +1053,11 @@ watch(
   { immediate: false }
 )
 
-// 监听消息变化，当有新消息时自动折叠之前已完成的消息
-watch(() => messages.value, async (newMessages) => {
-  const newLength = newMessages?.length || 0
+// 监听消息数量变化，当有新消息时自动折叠之前已完成的消息
+watch(() => messages.value?.length, async (newLength) => {
+  const currentMessages = messages.value
+  if (!currentMessages) return
+  newLength = newLength || 0
 
   if (newLength > previousMessageCount) {
     // 检查用户是否在底部（在折叠前检查）
@@ -1079,7 +1073,7 @@ watch(() => messages.value, async (newMessages) => {
     const lastIndex = newLength - 1
     let collapsedCount = 0
 
-    newMessages.forEach((message, index) => {
+    currentMessages.forEach((message, index) => {
       // 不折叠最后一条消息
       if (index === lastIndex) return
 
@@ -1111,9 +1105,7 @@ watch(() => messages.value, async (newMessages) => {
     }
   }
   previousMessageCount = newLength
-  await nextTick()
-  updateStickyMessage()
-}, { deep: true })
+})
 
 watch(() => {
   const list = messages.value || []
@@ -1904,6 +1896,8 @@ function scrollToBottom(forceScroll = false) {
     pendingScrollRAF = requestAnimationFrame(() => {
       pendingScrollRAF = null
       doScroll()
+      // 程序化滚动完成后更新 sticky 消息
+      updateStickyMessage()
     })
   })
 }

@@ -6,6 +6,7 @@ const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
 const { findProviderModel, getDefaultCredential } = require('../shared/model-config')
 const { buildDeveloperInstructions } = require('../shared/developer-instructions')
+const { buildAugmentedEnv } = require('../../services/shell-env')
 
 function encodeProjectPathForClaude(projectPath, { replaceNonAscii = false } = {}) {
   let encodedPath = projectPath
@@ -706,15 +707,14 @@ class ClaudeClient {
     const modelEnvVars = this.getModelEnvVars()
 
     // 构建完整的环境变量
-    const fullEnv = {
-      ...process.env,
+    const fullEnv = await buildAugmentedEnv(process.env, {
       CLAUDE_CODE_ENTRYPOINT: 'claude-vscode',
       CLAUDE_CODE_ENABLE_TELEMETRY: '0',
       DISABLE_TELEMETRY: '1',
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
       CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: 'true',  // 启用文件历史快照功能
       ...modelEnvVars
-    }
+    })
 
     // 打印启动参数供调试
     logger.info('[ClaudeClient] ========== Claude CLI 启动参数 ==========')
@@ -723,6 +723,9 @@ class ClaudeClient {
     logger.info(`[ClaudeClient] 参数: ${JSON.stringify(args, null, 2)}`)
     logger.info(`[ClaudeClient] 环境变量(自定义): ${JSON.stringify(modelEnvVars, null, 2)}`)
     logger.info(`[ClaudeClient] Agent Teams: ${fullEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS}`)
+    logger.info('[ClaudeClient] PATH entries:', {
+      count: String(fullEnv.PATH || '').split(path.delimiter).filter(Boolean).length
+    })
     if (systemPrompt) {
       logger.info(`[ClaudeClient] 系统提示词内容: ${systemPrompt.substring(0, 500)}${systemPrompt.length > 500 ? '...' : ''}`)
     }

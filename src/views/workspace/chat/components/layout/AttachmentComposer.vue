@@ -408,6 +408,12 @@ function handleKeydown(event) {
     return
   }
 
+  if (event.key === 'Tab') {
+    event.preventDefault()
+    document.execCommand('insertText', false, '\t')
+    return
+  }
+
   if (event.key !== 'Enter') return
 
   if (!props.enterToSend || event.shiftKey) {

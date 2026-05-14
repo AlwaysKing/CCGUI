@@ -1445,6 +1445,18 @@ async function deleteSession(projectId, sessionId) {
   }
 }
 
+async function softDeleteSession(projectId, sessionId) {
+  const updated = sessionConfigManager.softDeleteSession(projectId, sessionId)
+  logger.info('[ProjectService] Soft deleted session', { projectId, sessionId })
+  return { success: true, session: updated }
+}
+
+async function restoreSession(projectId, sessionId) {
+  const updated = sessionConfigManager.restoreSession(projectId, sessionId)
+  logger.info('[ProjectService] Restored session', { projectId, sessionId })
+  return { success: true, session: updated }
+}
+
 async function openSession(sessionId) {
   const projects = await scanProjects()
   for (const project of projects) {
@@ -1710,6 +1722,8 @@ module.exports = {
   copySession,
   createSession,
   deleteSession,
+  softDeleteSession,
+  restoreSession,
   getProjectConfig,
   getProjectSessions,
   getSessionConfig,

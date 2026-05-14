@@ -160,6 +160,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSessions: (options) => ipcRenderer.invoke('get-sessions', options),
   createSession: (options) => ipcRenderer.invoke('create-session', options),
   deleteSession: (options) => ipcRenderer.invoke('delete-session', options),
+  softDeleteSession: (options) => ipcRenderer.invoke('soft-delete-session', options),
+  restoreSession: (options) => ipcRenderer.invoke('restore-session', options),
   openSession: (options) => ipcRenderer.invoke('open-session', options),
   renameSession: (options) => ipcRenderer.invoke('rename-session', options),
   getSessionMessages: (options) => ipcRenderer.invoke('get-session-messages', options),

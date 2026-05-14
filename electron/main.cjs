@@ -2057,6 +2057,31 @@ ipcMain.handle('delete-session', async (event, { sessionId, projectId }) => {
   }
 })
 
+// Soft delete a session (move to recycle bin)
+ipcMain.handle('soft-delete-session', async (event, { sessionId, projectId }) => {
+  sessionManager.closeSession(sessionId)
+  try {
+    const result = await projectService.softDeleteSession(projectId, sessionId)
+    logger.info('[Sessions] Soft deleted session', { sessionId, projectId })
+    return result
+  } catch (e) {
+    logger.error('[Sessions] Failed to soft delete session', { sessionId, projectId, error: e.message })
+    return { success: false, error: e.message }
+  }
+})
+
+// Restore a soft-deleted session
+ipcMain.handle('restore-session', async (event, { sessionId, projectId }) => {
+  try {
+    const result = await projectService.restoreSession(projectId, sessionId)
+    logger.info('[Sessions] Restored session', { sessionId, projectId })
+    return result
+  } catch (e) {
+    logger.error('[Sessions] Failed to restore session', { sessionId, projectId, error: e.message })
+    return { success: false, error: e.message }
+  }
+})
+
 // Open a session (returns session info for compatibility)
 ipcMain.handle('open-session', async (event, { sessionId }) => {
   return projectService.openSession(sessionId)

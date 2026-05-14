@@ -91,6 +91,8 @@ const {
   renameDialogConfig,
   handleNewSession,
   handleDeleteSession,
+  handleRestoreSession,
+  handlePermanentDeleteSession,
   handleRenameSession,
   handleRenameConfirm,
   handleCloseSession,
@@ -970,6 +972,7 @@ async function handleDeleteInactiveSessions() {
         :project-path="store.currentProject?.path"
         :show-claude-filter="showClaudeSessions"
         :show-codex-filter="showCodexSessions"
+        :show-recycle-bin="store.showRecycleBin"
         :file-tree="fileBrowserStore.tree"
         :file-tree-loading="fileBrowserStore.isTreeLoading"
         :file-tree-error="fileBrowserStore.treeError"
@@ -986,6 +989,10 @@ async function handleDeleteInactiveSessions() {
         :running-task-labels="runningTaskLabels"
         @select="handleSelectSessionWithView"
         @delete="handleDeleteSession"
+        @softDelete="handleDeleteSession"
+        @restore="handleRestoreSession"
+        @permanentDelete="handlePermanentDeleteSession"
+        @toggleRecycleBin="store.showRecycleBin = !store.showRecycleBin"
         @start="handleStartSession"
         @close="handleCloseSession"
         @newSession="handleNewSession"

@@ -89,10 +89,14 @@ const props = defineProps({
   showCodexFilter: {
     type: Boolean,
     default: true
+  },
+  showRecycleBin: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openClaudeDialog', 'openCodexDialog', 'openPromptDialog', 'openTaskTemplatesDialog', 'selectPrimaryView'])
+const emit = defineEmits(['select', 'delete', 'softDelete', 'restore', 'permanentDelete', 'toggleRecycleBin', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openClaudeDialog', 'openCodexDialog', 'openPromptDialog', 'openTaskTemplatesDialog', 'selectPrimaryView'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -857,6 +861,9 @@ function handleSelect(session) {
   if (session?.sessionAvailable === false) {
     return
   }
+  if (showRecycleBin) {
+    return
+  }
   emit('select', session.id)
 }
 
@@ -875,6 +882,27 @@ function handleRename() {
 function handleDelete() {
   if (contextMenu.value.session) {
     emit('delete', contextMenu.value.session)
+  }
+  closeContextMenu()
+}
+
+function handleSoftDelete() {
+  if (contextMenu.value.session) {
+    emit('softDelete', contextMenu.value.session)
+  }
+  closeContextMenu()
+}
+
+function handleRestore() {
+  if (contextMenu.value.session) {
+    emit('restore', contextMenu.value.session)
+  }
+  closeContextMenu()
+}
+
+function handlePermanentDelete() {
+  if (contextMenu.value.session) {
+    emit('permanentDelete', contextMenu.value.session)
   }
   closeContextMenu()
 }
@@ -1449,14 +1477,25 @@ watch([showConfigPanel, fileSectionHeight], () => {
       <div class="session-section">
         <div class="session-section-header">
           <div class="session-section-title">
-            <span>会话列表</span>
-            <button class="session-add-btn" @click="emit('newSession')" title="新建会话">
+            <span>{{ showRecycleBin ? '回收站' : '会话列表' }}</span>
+            <button v-if="!showRecycleBin" class="session-add-btn" @click="emit('newSession')" title="新建会话">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="12" y1="5" x2="12" y2="19"/>
                 <line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
             </button>
-            <div class="session-list-menu-wrapper" ref="sessionListMenuRef">
+            <button
+              class="session-recycle-btn"
+              :class="{ active: showRecycleBin }"
+              @click="emit('toggleRecycleBin')"
+              :title="showRecycleBin ? '返回会话列表' : '回收站'"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+            <div v-if="!showRecycleBin" class="session-list-menu-wrapper" ref="sessionListMenuRef">
               <button class="session-list-menu-btn" @click.stop="toggleSessionListMenu" title="会话管理">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                   <circle cx="12" cy="5" r="2"/>
@@ -1621,8 +1660,11 @@ watch([showConfigPanel, fileSectionHeight], () => {
           </div>
 
           <div v-if="sessions.length === 0" class="empty-list">
-            <p>暂无会话</p>
-            <p class="hint">点击 + 创建新会话</p>
+            <p v-if="showRecycleBin">回收站为空</p>
+            <template v-else>
+              <p>暂无会话</p>
+              <p class="hint">点击 + 创建新会话</p>
+            </template>
           </div>
         </div>
       </div>
@@ -1636,75 +1678,97 @@ watch([showConfigPanel, fileSectionHeight], () => {
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
     >
-      <!-- Start session option - only show when session is inactive -->
-      <button
-        v-if="isSessionInactive(contextMenu.session?.id)"
-        class="menu-item success"
-        @click="handleStart"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="5 3 19 12 5 21 5 3"/>
-        </svg>
-        启动会话
-      </button>
+      <!-- 回收站模式的菜单 -->
+      <template v-if="showRecycleBin">
+        <button class="menu-item success" @click="handleRestore">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+          还原会话
+        </button>
+        <div class="menu-divider"></div>
+        <button class="menu-item danger" @click="handlePermanentDelete">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+          永久删除
+        </button>
+      </template>
 
-      <!-- Close session option - only show when session is running -->
-      <button
-        v-if="isSessionRunning(contextMenu.session?.id)"
-        class="menu-item warning"
-        @click="handleClose"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="15" y1="9" x2="9" y2="15"/>
-          <line x1="9" y1="9" x2="15" y2="15"/>
-        </svg>
-        关闭会话
-      </button>
+      <!-- 正常模式的菜单 -->
+      <template v-else>
+        <!-- Start session option - only show when session is inactive -->
+        <button
+          v-if="isSessionInactive(contextMenu.session?.id)"
+          class="menu-item success"
+          @click="handleStart"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          启动会话
+        </button>
 
-      <!-- Divider -->
-      <div
-        v-if="isSessionInactive(contextMenu.session?.id) || isSessionRunning(contextMenu.session?.id)"
-        class="menu-divider"
-      ></div>
+        <!-- Close session option - only show when session is running -->
+        <button
+          v-if="isSessionRunning(contextMenu.session?.id)"
+          class="menu-item warning"
+          @click="handleClose"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="15" y1="9" x2="9" y2="15"/>
+            <line x1="9" y1="9" x2="15" y2="15"/>
+          </svg>
+          关闭会话
+        </button>
 
-      <!-- Session Config -->
-      <button
-        class="menu-item"
-        @click="handleOpenSessionConfig"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-        </svg>
-        配置
-      </button>
+        <!-- Divider -->
+        <div
+          v-if="isSessionInactive(contextMenu.session?.id) || isSessionRunning(contextMenu.session?.id)"
+          class="menu-divider"
+        ></div>
 
-      <!-- Copy Session -->
-      <button class="menu-item" @click="handleCopySession">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-        </svg>
-        复制会话
-      </button>
+        <!-- Session Config -->
+        <button
+          class="menu-item"
+          @click="handleOpenSessionConfig"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          配置
+        </button>
 
-      <!-- Divider -->
-      <div class="menu-divider"></div>
+        <!-- Copy Session -->
+        <button class="menu-item" @click="handleCopySession">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          复制会话
+        </button>
 
-      <button class="menu-item" @click="handleRename">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
-        </svg>
-        重命名
-      </button>
-      <button class="menu-item danger" @click="handleDelete">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-        </svg>
-        删除会话
-      </button>
+        <!-- Divider -->
+        <div class="menu-divider"></div>
+
+        <button class="menu-item" @click="handleRename">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+          </svg>
+          重命名
+        </button>
+        <button class="menu-item danger" @click="handleSoftDelete">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+          删除会话
+        </button>
+      </template>
     </div>
   </aside>
 </template>
@@ -2242,6 +2306,30 @@ watch([showConfigPanel, fileSectionHeight], () => {
 
 .session-add-btn:hover {
   background: #27272A;
+  color: #E4E4E7;
+}
+
+.session-recycle-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #6B7280;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.session-recycle-btn:hover {
+  background: #27272A;
+  color: #E4E4E7;
+}
+
+.session-recycle-btn.active {
+  background: #3F3F46;
   color: #E4E4E7;
 }
 

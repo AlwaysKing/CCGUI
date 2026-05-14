@@ -40,7 +40,23 @@ export function useWorkspaceDialogs({
   async function handleDeleteSession(session) {
     confirmDialogConfig.value = {
       title: '删除会话',
-      message: `确定要删除会话 "${session.name || session.id.slice(0, 8)}" 吗？\n此操作不可撤销。`,
+      message: `确定要删除会话 "${session.name || session.id.slice(0, 8)}" 吗？\n会话将移入回收站，可随时还原。`,
+      onConfirm: async () => {
+        await store.softDeleteSession(session.id)
+        showConfirmDialog.value = false
+      }
+    }
+    showConfirmDialog.value = true
+  }
+
+  async function handleRestoreSession(session) {
+    await store.restoreSession(session.id)
+  }
+
+  async function handlePermanentDeleteSession(session) {
+    confirmDialogConfig.value = {
+      title: '永久删除会话',
+      message: `确定要永久删除会话 "${session.name || session.id.slice(0, 8)}" 吗？\n此操作不可撤销，会话数据将被彻底清除。`,
       onConfirm: async () => {
         await store.deleteSession(session.id)
         showConfirmDialog.value = false
@@ -310,6 +326,8 @@ export function useWorkspaceDialogs({
     renameDialogConfig,
     handleNewSession,
     handleDeleteSession,
+    handleRestoreSession,
+    handlePermanentDeleteSession,
     handleRenameSession,
     handleRenameConfirm,
     handleCloseSession,

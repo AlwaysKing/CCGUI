@@ -57,6 +57,7 @@ export const useAppStore = defineStore('app', () => {
   }))
   const isLoading = ref(false)
   const error = ref(null)
+  const showRecycleBin = ref(false)
 
   // Watch sidebar state and persist
   watch(sidebarCollapsed, (newValue) => {
@@ -73,8 +74,11 @@ export const useAppStore = defineStore('app', () => {
   const currentProjectSessions = computed(() => {
     if (!currentProject.value) return []
 
-    // 基础数据：从文件系统扫描的session列表
-    const baseSessions = sessions.value.filter(s => s.projectId === currentProject.value.id)
+    // 基础数据：从文件系统扫描的session列表，根据回收站模式过滤
+    const baseSessions = sessions.value.filter(s => {
+      if (s.projectId !== currentProject.value.id) return false
+      return showRecycleBin.value ? s.deleted === true : s.deleted !== true
+    })
 
     // 合并运行时的实时数据
     return baseSessions.map(session => {
@@ -494,6 +498,74 @@ export const useAppStore = defineStore('app', () => {
   }
 
   /**
+   * 软删除会话（移入回收站）
+   */
+  async function softDeleteSession(sessionId) {
+    try {
+      isLoading.value = true
+      error.value = null
+
+      // 关闭运行中的 session
+      const sessionStore = useSessionStore()
+      await sessionStore.closeSession(sessionId)
+
+      const result = await window.electronAPI.softDeleteSession({
+        sessionId,
+        projectId: currentProject.value?.id
+      })
+      if (!result?.success) {
+        throw new Error(result?.error || '软删除会话失败')
+      }
+
+      // 更新内存中的 session 数据
+      const idx = sessions.value.findIndex(s => s.id === sessionId)
+      if (idx !== -1) {
+        sessions.value[idx] = { ...sessions.value[idx], deleted: true, deletedAt: result.session?.deletedAt }
+      }
+
+      if (currentSession.value?.id === sessionId) {
+        currentSession.value = null
+      }
+    } catch (e) {
+      error.value = e.message
+      logger.error('Failed to soft delete session', { error: e.message })
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /**
+   * 还原被软删除的会话（从回收站恢复）
+   */
+  async function restoreSession(sessionId) {
+    try {
+      isLoading.value = true
+      error.value = null
+
+      const result = await window.electronAPI.restoreSession({
+        sessionId,
+        projectId: currentProject.value?.id
+      })
+      if (!result?.success) {
+        throw new Error(result?.error || '还原会话失败')
+      }
+
+      // 更新内存中的 session 数据
+      const idx = sessions.value.findIndex(s => s.id === sessionId)
+      if (idx !== -1) {
+        sessions.value[idx] = { ...sessions.value[idx], deleted: false, deletedAt: null }
+      }
+    } catch (e) {
+      error.value = e.message
+      logger.error('Failed to restore session', { error: e.message })
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /**
    * 选择会话
    * 新架构：委托给 SessionStore 初始化会话实例
    */
@@ -619,6 +691,7 @@ export const useAppStore = defineStore('app', () => {
     sidebarCollapsed,
     isLoading,
     error,
+    showRecycleBin,
 
     // Computed
     currentProjectSessions,
@@ -639,6 +712,8 @@ export const useAppStore = defineStore('app', () => {
     clearSessionUnseenCompleted,
     createSession,
     deleteSession,
+    softDeleteSession,
+    restoreSession,
     renameSession,
     selectSession,
     toggleSidebar,

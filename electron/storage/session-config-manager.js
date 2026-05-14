@@ -310,11 +310,39 @@ function updateMessageCount(encodedProjectId, sessionId, messageCount) {
   return updateSession(encodedProjectId, sessionId, { messageCount })
 }
 
+/**
+ * Soft delete a session (mark as deleted)
+ * @param {string} encodedProjectId - Encoded project ID
+ * @param {string} sessionId - Session ID
+ * @returns {object} Updated session configuration
+ */
+function softDeleteSession(encodedProjectId, sessionId) {
+  return updateSession(encodedProjectId, sessionId, {
+    deleted: true,
+    deletedAt: new Date().toISOString()
+  })
+}
+
+/**
+ * Restore a soft-deleted session
+ * @param {string} encodedProjectId - Encoded project ID
+ * @param {string} sessionId - Session ID
+ * @returns {object} Updated session configuration
+ */
+function restoreSession(encodedProjectId, sessionId) {
+  return updateSession(encodedProjectId, sessionId, {
+    deleted: false,
+    deletedAt: null
+  })
+}
+
 module.exports = {
   createSession,
   getSession,
   updateSession,
   deleteSession,
+  softDeleteSession,
+  restoreSession,
   getProjectSessions,
   sessionExists,
   updateMessageCount,

@@ -171,7 +171,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'autoApproveChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'runSlashCommand', 'addReference', 'runTaskDockItem', 'stopTaskDockItem', 'thinkingToggle'])
+const emit = defineEmits(['update:modelValue', 'update:attachments', 'send', 'interrupt', 'permissionModeChange', 'autoApproveChange', 'effortChange', 'modelChange', 'subModelChange', 'notificationToggle', 'toggleQueueVisibility', 'inputTargetChange', 'runSlashCommand', 'addReference', 'runTaskDockItem', 'stopTaskDockItem', 'removeTaskDockItem', 'thinkingToggle'])
 
 // 输入区域 ref
 const inputArea = ref(null)
@@ -888,6 +888,36 @@ function getTaskDockItemTitle(task) {
   return commandLine ? `${actionLabel}: ${label} · ${commandLine}` : `${actionLabel}: ${label}`
 }
 
+// --- Task Dock 右键菜单 ---
+const taskDockContextMenu = ref({ show: false, x: 0, y: 0, task: null })
+
+function handleTaskDockItemContextMenu(e, task) {
+  e.preventDefault()
+  e.stopPropagation()
+  taskDockContextMenu.value = {
+    show: true,
+    x: e.clientX,
+    y: e.clientY,
+    task
+  }
+}
+
+function closeTaskDockContextMenu() {
+  taskDockContextMenu.value = { show: false, x: 0, y: 0, task: null }
+}
+
+function handleRemoveTaskDockItem() {
+  const task = taskDockContextMenu.value.task
+  if (task?.label) {
+    emit('removeTaskDockItem', task)
+  }
+  closeTaskDockContextMenu()
+}
+
+function handleTaskDockContextMenuClickOutside() {
+  closeTaskDockContextMenu()
+}
+
 function handleTaskDockItemClick(task) {
   if (!task?.label) {
     return
@@ -1058,12 +1088,31 @@ defineExpose({
               :class="{ running: task.running }"
               :title="getTaskDockItemTitle(task)"
               @click="handleTaskDockItemClick(task)"
+              @contextmenu="(e) => handleTaskDockItemContextMenu(e, task)"
             >
               <span class="task-dock-item-indicator" aria-hidden="true"></span>
               <span class="task-dock-item-label">{{ task.label }}</span>
               <span class="task-dock-item-state">{{ task.running ? '运行中' : '待启动' }}</span>
             </button>
           </div>
+          <!-- Task Dock 右键菜单 -->
+          <Teleport to="body">
+            <div
+              v-if="taskDockContextMenu.show"
+              class="task-dock-context-menu-overlay"
+              @click="handleTaskDockContextMenuClickOutside"
+              @contextmenu.prevent="handleTaskDockContextMenuClickOutside"
+            >
+              <div
+                class="task-dock-context-menu"
+                :style="{ left: `${taskDockContextMenu.x}px`, top: `${taskDockContextMenu.y}px` }"
+              >
+                <button class="task-dock-context-menu-item" @click="handleRemoveTaskDockItem">
+                  <span>从快捷栏移除</span>
+                </button>
+              </div>
+            </div>
+          </Teleport>
         </div>
 
         <!-- 右侧按钮组 -->
@@ -1526,6 +1575,43 @@ defineExpose({
 
 .task-dock-item.running .task-dock-item-state {
   color: #FDBA74;
+}
+
+/* ====== Task Dock 右键菜单 ====== */
+.task-dock-context-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+}
+
+.task-dock-context-menu {
+  position: fixed;
+  min-width: 140px;
+  background: var(--color-bg-elevated, #1e1e2e);
+  border: 1px solid var(--color-border-default, rgba(255,255,255,0.1));
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+.task-dock-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-default, #cdd6f4);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.task-dock-context-menu-item:hover {
+  background: var(--color-bg-hover, rgba(255,255,255,0.08));
+  color: #f38ba8;
 }
 
 /* ====== @ 引用菜单二级结构样式 ====== */

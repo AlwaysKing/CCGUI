@@ -64,7 +64,7 @@ const props = defineProps({
 })
 
 // Emits
-const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'startSession', 'closeSession', 'runTaskDockItem', 'stopTaskDockItem'])
+const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'startSession', 'closeSession', 'runTaskDockItem', 'stopTaskDockItem', 'removeTaskDockItem'])
 
 // 使用 SessionStore 的状态（只读 computed）
 const messages = computed(() => sessionStore.currentMessages)
@@ -344,7 +344,6 @@ const resolvedChatMessageTheme = computed(() => {
 })
 
 const AUTO_SCROLL_NEAR_BOTTOM_PX = 5
-const STREAMING_NEAR_BOTTOM_PX = 52
 const SYSTEM_NEAR_BOTTOM_PX = 44
 
 const hasActiveConversationActivity = computed(() => {
@@ -660,6 +659,10 @@ function handleRunTaskDockItem(task) {
 
 function handleStopTaskDockItem(task) {
   emit('stopTaskDockItem', task)
+}
+
+function handleRemoveTaskDockItem(task) {
+  emit('removeTaskDockItem', task)
 }
 
 const currentNotificationChannels = computed(() => {
@@ -1027,13 +1030,7 @@ watch(() => {
   streamingScrollRAF = requestAnimationFrame(() => {
     streamingScrollRAF = null
     if (!autoScrollActive) return
-    const container = getScrollContainer()
-    if (!container) return
-    // 在 DOM 更新后检查是否在底部附近
-    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < STREAMING_NEAR_BOTTOM_PX
-    if (isNearBottom) {
-      scrollToBottom()
-    }
+    scrollToBottom()
   })
 }, { immediate: false })
 
@@ -3012,6 +3009,7 @@ function handleToggleAgentRail() {
         @add-reference="handleAddReference"
         @run-task-dock-item="handleRunTaskDockItem"
         @stop-task-dock-item="handleStopTaskDockItem"
+        @remove-task-dock-item="handleRemoveTaskDockItem"
       />
       <div v-if="sessionUnavailableMessage" class="session-unavailable-banner">
         {{ sessionUnavailableMessage }}

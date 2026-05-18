@@ -366,6 +366,13 @@ async function handleStopTaskDockItem(task) {
   }
 }
 
+function handleRemoveTaskDockItem(task) {
+  if (!task?.label) {
+    return
+  }
+  taskDockItems.value = taskDockItems.value.filter(item => item.label !== task.label)
+}
+
 async function handleOpenTaskLauncherConfig() {
   const projectPath = store.currentProject?.path || ''
   if (!projectPath) {
@@ -922,20 +929,34 @@ function handleToggleShowCodex() {
   showCodexSessions.value = !showCodexSessions.value
 }
 
+async function handleToggleLock(session) {
+  try {
+    await store.toggleSessionLock(session.id)
+  } catch (e) {
+    console.error('Failed to toggle session lock:', e)
+  }
+}
+
 watch([showClaudeSessions, showCodexSessions], () => {
   saveSessionFilterState()
 }, { immediate: true })
 
 async function handleDeleteInactiveSessions() {
   const inactiveSessions = store.currentProjectSessions.filter(session => {
+    if (session.locked) return false
     const status = store.sessionStatuses[session.id]
     return !status || !status.ready
   })
   if (inactiveSessions.length === 0) return
 
+  const lockedCount = store.currentProjectSessions.filter(s => s.locked).length
+  const message = lockedCount > 0
+    ? `确定要删除 ${inactiveSessions.length} 个未激活的会话吗？\n（已跳过 ${lockedCount} 个锁定的会话）\n此操作不可撤销。`
+    : `确定要删除 ${inactiveSessions.length} 个未激活的会话吗？\n此操作不可撤销。`
+
   confirmDialogConfig.value = {
     title: '删除未激活会话',
-    message: `确定要删除 ${inactiveSessions.length} 个未激活的会话吗？\n此操作不可撤销。`,
+    message,
     onConfirm: async () => {
       for (const session of inactiveSessions) {
         try {
@@ -992,6 +1013,7 @@ async function handleDeleteInactiveSessions() {
         @newSession="handleNewSession"
         @toggle="toggleSidebar"
         @rename="handleRenameSession"
+        @toggleLock="handleToggleLock"
         @switchProject="handleSwitchProject"
         @home="handleGoHomeFromSidebar"
         @openAppSettings="showSettingsDialog = true"
@@ -1101,6 +1123,7 @@ async function handleDeleteInactiveSessions() {
               @closeSession="handleCloseSession"
               @runTaskDockItem="handleRunTaskDockItem"
               @stopTaskDockItem="handleStopTaskDockItem"
+              @removeTaskDockItem="handleRemoveTaskDockItem"
             />
           </div>
           <div v-if="!store.currentSession && primaryView !== 'tasks'" class="empty-state-wrapper">

@@ -2111,6 +2111,20 @@ ipcMain.handle('rename-session', async (event, { sessionId, projectId, name }) =
   }
 })
 
+// Toggle session lock
+ipcMain.handle('toggle-session-lock', async (event, { sessionId, projectId }) => {
+  try {
+    if (!sessionId || !projectId) {
+      return { success: false, error: 'Invalid session lock request' }
+    }
+    const result = await projectService.toggleSessionLock(projectId, sessionId)
+    return result
+  } catch (error) {
+    logger.error('[Sessions] Failed to toggle session lock', { sessionId, projectId, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 // Open project in new window
 ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
   try {

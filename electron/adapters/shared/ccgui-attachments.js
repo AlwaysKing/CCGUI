@@ -46,7 +46,7 @@ function buildClaudeAttachmentReference(attachment) {
   }
 
   if (attachment.kind === 'image') {
-    return `[图片: ${attachment.name}]`
+    return `[图片: ${attachment.path || attachment.name}]`
   }
 
   if (attachment.kind === 'file-range') {
@@ -88,7 +88,7 @@ function buildCodexAttachmentReference(attachment) {
   }
 
   if (attachment.kind === 'image') {
-    return `[图片 ${attachment.name}]`
+    return `[图片 ${attachment.path || attachment.name}]`
   }
 
   if (attachment.kind === 'file-range') {

@@ -37,16 +37,32 @@ export function useMessageList() {
         continue
       }
 
-      // 又遇到 user 消息 → 没有回答（但如果当前 turn 未加载，可能中间有未加载的 assistant 回复）
+      // 又遇到 user 消息 → 没有回答（但如果当前 turn 未加载或已被释放，可能中间有缓存）
       if (isTurnMessage(message)) {
         if (userMessage?.historyTurn?.hasResponse) {
           break // 跳出循环，走 historyTurn fallback
+        }
+        if (userMessage?._releasedResponses) {
+          break // 跳出循环，走 _releasedResponses fallback
         }
         return null
       }
 
       // 其它任何消息都算有回答
       return { message, index: i }
+    }
+
+    // 被释放的折叠问答（响应已从队列中移除，缓存到 _releasedResponses）
+    if (userMessage?._releasedResponses) {
+      return {
+        message: {
+          id: `released-response-${userMessage.id}`,
+          role: 'assistant',
+          released: true
+        },
+        index: userMessageIndex + 1,
+        released: true
+      }
     }
 
     // 历史折叠 turn 还没加载，但记录有回答

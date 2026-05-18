@@ -1216,6 +1216,9 @@ async function getProjectSessions(projectId) {
       updatedAt: ccguiSession.updatedAt || providerData?.updatedAt,
       messageCount: providerData?.messageCount || ccguiSession.messageCount || 0,
       status: 'idle',
+      locked: ccguiSession.locked || false,
+      deleted: ccguiSession.deleted || false,
+      deletedAt: ccguiSession.deletedAt || null,
       bindingState: bindingMeta.bindingState,
       bindingLabel: bindingMeta.bindingLabel,
       bindingMissing: bindingMeta.bindingMissing,
@@ -1340,10 +1343,50 @@ function copySession(projectId, sessionId) {
 
   const sourceConfig = sessionConfigManager.getSession(projectId, sessionId)
   const hasSettings = sourceConfig?.settings && Object.keys(sourceConfig.settings).length > 0
-  return sessionConfigManager.createSession(projectId, {
+
+  // 创建新 session，带 forkedFrom 标记
+  const newSession = sessionConfigManager.createSession(projectId, {
     name: `会话${maxNum + 1}`,
-    settings: hasSettings ? { ...sourceConfig.settings } : {}
+    settings: hasSettings ? { ...sourceConfig.settings } : {},
+    forkedFrom: sessionId
   })
+
+  // 复制 history 消息文件
+  const sourceHistoryDir = historyManager.getSessionHistoryDir(projectId, sessionId)
+  const newHistoryDir = historyManager.getSessionHistoryDir(projectId, newSession.id)
+
+  if (fs.existsSync(sourceHistoryDir)) {
+    copyDirRecursive(sourceHistoryDir, newHistoryDir)
+    logger.info('[ProjectService] Copied history for fork', {
+      sourceSessionId: sessionId,
+      newSessionId: newSession.id,
+      from: sourceHistoryDir,
+      to: newHistoryDir
+    })
+  }
+
+  return newSession
+}
+
+/**
+ * Recursively copy a directory
+ */
+function copyDirRecursive(source, target) {
+  if (!fs.existsSync(target)) {
+    fs.mkdirSync(target, { recursive: true })
+  }
+
+  const entries = fs.readdirSync(source, { withFileTypes: true })
+  for (const entry of entries) {
+    const sourcePath = path.join(source, entry.name)
+    const targetPath = path.join(target, entry.name)
+
+    if (entry.isDirectory()) {
+      copyDirRecursive(sourcePath, targetPath)
+    } else {
+      fs.copyFileSync(sourcePath, targetPath)
+    }
+  }
 }
 
 async function createSession(projectId, name, settings) {
@@ -1454,6 +1497,12 @@ async function softDeleteSession(projectId, sessionId) {
 async function restoreSession(projectId, sessionId) {
   const updated = sessionConfigManager.restoreSession(projectId, sessionId)
   logger.info('[ProjectService] Restored session', { projectId, sessionId })
+  return { success: true, session: updated }
+}
+
+async function toggleSessionLock(projectId, sessionId) {
+  const updated = sessionConfigManager.toggleLock(projectId, sessionId)
+  logger.info('[ProjectService] Toggled session lock', { projectId, sessionId, locked: updated.locked })
   return { success: true, session: updated }
 }
 
@@ -1724,6 +1773,7 @@ module.exports = {
   deleteSession,
   softDeleteSession,
   restoreSession,
+  toggleSessionLock,
   getProjectConfig,
   getProjectSessions,
   getSessionConfig,

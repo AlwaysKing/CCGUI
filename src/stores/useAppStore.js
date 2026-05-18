@@ -662,6 +662,34 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function toggleSessionLock(sessionId) {
+    try {
+      isLoading.value = true
+      error.value = null
+      const result = await window.electronAPI.toggleSessionLock({
+        sessionId,
+        projectId: currentProject.value?.id
+      })
+      if (!result?.success) {
+        throw new Error(result?.error || '切换会话锁定状态失败')
+      }
+      // 更新内存中的 session 数据
+      const idx = sessions.value.findIndex(s => s.id === sessionId)
+      if (idx !== -1) {
+        sessions.value[idx] = { ...sessions.value[idx], locked: result.session?.locked }
+      }
+      if (currentSession.value?.id === sessionId) {
+        currentSession.value = { ...currentSession.value, locked: result.session?.locked }
+      }
+    } catch (e) {
+      error.value = e.message
+      logger.error('Failed to toggle session lock', { error: e.message })
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   // UI state
   function toggleSidebar(type) {
     sidebarCollapsed.value[type] = !sidebarCollapsed.value[type]
@@ -715,6 +743,7 @@ export const useAppStore = defineStore('app', () => {
     softDeleteSession,
     restoreSession,
     renameSession,
+    toggleSessionLock,
     selectSession,
     toggleSidebar,
     setSidebarCollapsed

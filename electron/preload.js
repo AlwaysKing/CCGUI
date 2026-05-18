@@ -164,6 +164,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   restoreSession: (options) => ipcRenderer.invoke('restore-session', options),
   openSession: (options) => ipcRenderer.invoke('open-session', options),
   renameSession: (options) => ipcRenderer.invoke('rename-session', options),
+  toggleSessionLock: (options) => ipcRenderer.invoke('toggle-session-lock', options),
   getSessionMessages: (options) => ipcRenderer.invoke('get-session-messages', options),
   getRunningSessions: () => ipcRenderer.invoke('get-running-sessions'),
   openProjectInNewWindow: (options) => ipcRenderer.invoke('open-project-in-new-window', options),

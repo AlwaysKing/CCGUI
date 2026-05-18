@@ -71,7 +71,8 @@ function createSession(encodedProjectId, options = {}) {
       createdAt: now,
       updatedAt: now,
       messageCount: 0,
-      settings: options.settings || {}
+      settings: options.settings || {},
+      ...(options.forkedFrom ? { forkedFrom: options.forkedFrom } : {})
     }
 
     // Write session config
@@ -336,6 +337,20 @@ function restoreSession(encodedProjectId, sessionId) {
   })
 }
 
+/**
+ * Toggle session lock status
+ * @param {string} encodedProjectId - Encoded project ID
+ * @param {string} sessionId - Session ID
+ * @returns {object} Updated session configuration
+ */
+function toggleLock(encodedProjectId, sessionId) {
+  const session = getSession(encodedProjectId, sessionId)
+  const currentLocked = session?.locked || false
+  return updateSession(encodedProjectId, sessionId, {
+    locked: !currentLocked
+  })
+}
+
 module.exports = {
   createSession,
   getSession,
@@ -343,6 +358,7 @@ module.exports = {
   deleteSession,
   softDeleteSession,
   restoreSession,
+  toggleLock,
   getProjectSessions,
   sessionExists,
   updateMessageCount,

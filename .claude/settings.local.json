@@ -222,7 +222,15 @@
       "Bash(xargs -I{} ps -o ppid= -p {})",
       "Bash(awk '{for\\(i=9;i<=NF;i++\\) printf \"%s \", $i; print \"\"}')",
       "Bash(awk '{print $9}')",
-      "Bash(awk '{for\\(i=11;i<=NF;i++\\) printf \"%s \", $i; print \"\"}')"
+      "Bash(awk '{for\\(i=11;i<=NF;i++\\) printf \"%s \", $i; print \"\"}')",
+      "Skill(superpowers:systematic-debugging)",
+      "mcp__mcpServers__navigate_page",
+      "mcp__mcpServers__list_console_messages",
+      "mcp__plugin_superpowers-chrome_chrome__use_browser",
+      "Bash(curl -s http://localhost:5173/src/views/workspace/components/SessionSidebar.vue)",
+      "Bash(curl -s http://localhost:5173/src/stores/useAppStore.js)",
+      "Skill(superpowers:brainstorming)",
+      "Skill(superpowers:brainstorming:*)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

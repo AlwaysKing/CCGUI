@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { IconButton } from '@/components/base'
 import { useAppStore } from '../../../stores/useAppStore'
-import { findProviderModel } from '../../../utils/provider-models'
+import { findProviderModel, getProviderCapabilities } from '../../../utils/provider-models'
 import FileTreePanel from './FileTreePanel.vue'
 
 const props = defineProps({
@@ -96,7 +96,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'softDelete', 'restore', 'permanentDelete', 'toggleRecycleBin', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openClaudeDialog', 'openCodexDialog', 'openPromptDialog', 'openTaskTemplatesDialog', 'selectPrimaryView'])
+const emit = defineEmits(['select', 'delete', 'softDelete', 'restore', 'permanentDelete', 'toggleRecycleBin', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openClaudeDialog', 'openCodexDialog', 'openPromptDialog', 'openTaskTemplatesDialog', 'selectPrimaryView', 'toggleLock'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -473,6 +473,15 @@ onUnmounted(() => {
 
 // 当前项目ID
 const currentProjectId = computed(() => appStore.currentProject?.id)
+
+// 判断右键菜单中的 session 是否支持 fork
+const isSessionForkCapable = computed(() => {
+  const session = contextMenu.value.session
+  if (!session) return true
+  const tool = session?.settings?.tool || session?.settings?.provider || 'claude'
+  const provider = tool === 'codex' ? 'codex' : 'claude'
+  return getProviderCapabilities(provider).fork
+})
 
 const readySessionCount = computed(() =>
   props.sessions.filter(session => {
@@ -861,7 +870,7 @@ function handleSelect(session) {
   if (session?.sessionAvailable === false) {
     return
   }
-  if (showRecycleBin) {
+  if (props.showRecycleBin) {
     return
   }
   emit('select', session.id)
@@ -938,6 +947,13 @@ function handleDeleteSessionConfig() {
 function handleCopySession() {
   if (contextMenu.value.session) {
     emit('copySession', contextMenu.value.session)
+  }
+  closeContextMenu()
+}
+
+function handleToggleLock() {
+  if (contextMenu.value.session) {
+    emit('toggleLock', contextMenu.value.session)
   }
   closeContextMenu()
 }
@@ -1594,6 +1610,7 @@ watch([showConfigPanel, fileSectionHeight], () => {
             <div class="session-info">
               <div class="session-row1">
                 <span class="session-name">
+                  <span v-if="session.locked" class="session-lock-icon" title="已锁定">🔒</span>
                   <span class="session-name-text">{{ getSessionName(session) }}</span>
                   <template v-if="getSessionBindingLabel(session)"> - <span class="session-binding-label">{{ getSessionBindingLabel(session) }}</span></template>
                   <span v-else class="session-id"> - {{ session.id.slice(0, 8) }}</span>
@@ -1744,7 +1761,7 @@ watch([showConfigPanel, fileSectionHeight], () => {
         </button>
 
         <!-- Copy Session -->
-        <button class="menu-item" @click="handleCopySession">
+        <button class="menu-item" :disabled="!isSessionForkCapable" @click="handleCopySession">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -1761,7 +1778,18 @@ watch([showConfigPanel, fileSectionHeight], () => {
           </svg>
           重命名
         </button>
-        <button class="menu-item danger" @click="handleSoftDelete">
+        <button class="menu-item" @click="handleToggleLock">
+          <svg v-if="contextMenu.session?.locked" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+          </svg>
+          {{ contextMenu.session?.locked ? '解锁会话' : '锁定会话' }}
+        </button>
+        <button class="menu-item danger" :disabled="contextMenu.session?.locked" @click="handleSoftDelete">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="3 6 5 6 21 6"/>
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -2646,6 +2674,13 @@ watch([showConfigPanel, fileSectionHeight], () => {
   color: #E4E4E7;
 }
 
+.session-lock-icon {
+  flex-shrink: 0;
+  margin-right: 4px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
 .session-name-text {
   white-space: nowrap;
   overflow: hidden;
@@ -2836,6 +2871,18 @@ watch([showConfigPanel, fileSectionHeight], () => {
 
 .menu-item.danger:hover {
   background: rgba(239, 68, 68, 0.1);
+}
+
+.menu-item.danger:disabled,
+.menu-item:disabled {
+  color: #52525B;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.menu-item.danger:disabled:hover,
+.menu-item:disabled:hover {
+  background: transparent;
 }
 
 .menu-divider {

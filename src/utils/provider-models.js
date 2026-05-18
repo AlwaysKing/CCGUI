@@ -104,3 +104,21 @@ export function findProviderModel(appConfig, provider = 'claude', modelId = null
   if (!modelId) return null
   return getProviderModels(appConfig, provider).find(model => model.id === modelId) || null
 }
+
+/**
+ * Get provider capabilities
+ * @param {string} provider - Provider name ('claude' | 'codex')
+ * @returns {object} Capabilities object
+ */
+export function getProviderCapabilities(provider) {
+  const normalizedProvider = normalizeProvider(provider)
+  if (normalizedProvider === 'codex') {
+    return {
+      fork: false
+    }
+  }
+  // claude (default)
+  return {
+    fork: true
+  }
+}

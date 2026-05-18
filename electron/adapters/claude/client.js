@@ -66,6 +66,8 @@ class ClaudeClient {
     this.commandInventoryReadyResolve = null
     // @ reference 缓存：agents / skills / mcpTools
     this.referenceInventory = { agents: [], skills: [], mcpTools: [] }
+    // Fork 来源 session ID（仅首次启动时有效）
+    this.forkedFromSessionId = options.forkedFromSessionId || null
   }
 
   /**
@@ -687,9 +689,17 @@ class ClaudeClient {
     // Add session-id to resume or create session
     if (this.sessionId) {
       if (sessionMode === 'new') {
-        // New session: use --session-id to create a new session with specific ID
-        args.push('--session-id', this.sessionId)
-        logger.info(`[ClaudeClient] Creating new session with ID: ${this.sessionId}`)
+        if (this.forkedFromSessionId) {
+          // Fork mode: new session ID + resume from source + fork-session flag
+          args.push('--session-id', this.sessionId)
+          args.push('--resume', this.forkedFromSessionId)
+          args.push('--fork-session')
+          logger.info(`[ClaudeClient] Forking session: new=${this.sessionId}, from=${this.forkedFromSessionId}`)
+        } else {
+          // New session: use --session-id to create a new session with specific ID
+          args.push('--session-id', this.sessionId)
+          logger.info(`[ClaudeClient] Creating new session with ID: ${this.sessionId}`)
+        }
       } else {
         // Existing session: use --resume to resume the session
         args.push('--resume', this.sessionId)

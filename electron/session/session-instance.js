@@ -1371,6 +1371,8 @@ class SessionInstance {
       )
     } else {
       const nativeClaudeSessionId = this.resolveClaudeRuntimeSessionId()
+      // 读取 forkedFrom：仅在首次启动（isNewSession）时传递
+      const sessionConfigForFork = isNewSession ? projectService.getSessionConfig(this.projectId, this.id) : null
       this.runtimeManager = new ClaudeAdapter(
         this.projectPath,
         nativeClaudeSessionId,
@@ -1378,7 +1380,8 @@ class SessionInstance {
         this.permissionMode,
         settings,
         {
-          debug: this.sessionSettings.debug === true
+          debug: this.sessionSettings.debug === true,
+          forkedFromSessionId: sessionConfigForFork?.forkedFrom || null
         }
       )
     }

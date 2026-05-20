@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import CodeEditor from './CodeEditor.vue'
 import MarkdownRenderer from '../../../components/base/MarkdownRenderer.vue'
 
@@ -211,6 +211,137 @@ function handleOpenMarkdownPreview() {
   closeContextMenu()
 }
 
+// ===== Image preview =====
+const imageRef = ref(null)
+const imageContainerRef = ref(null)
+const imageNaturalWidth = ref(0)
+const imageNaturalHeight = ref(0)
+const fitScale = ref(1)
+const imageScale = ref(1)
+const imageTranslateX = ref(0)
+const imageTranslateY = ref(0)
+const isDragging = ref(false)
+const imageLoadError = ref(false)
+const dragStartX = ref(0)
+const dragStartY = ref(0)
+const translateStartX = ref(0)
+const translateStartY = ref(0)
+let dragMoveHandler = null
+let dragUpHandler = null
+
+function isImageTab(tab) {
+  if (!tab) return false
+  return !!tab.isImage
+}
+
+function resolveImageUrl(tab) {
+  if (!tab || !tab.content) return ''
+  return tab.content
+}
+
+function onImageLoad(event) {
+  const img = event.target
+  imageNaturalWidth.value = img.naturalWidth
+  imageNaturalHeight.value = img.naturalHeight
+  const container = imageContainerRef.value
+  if (!container || !imageNaturalWidth.value || !imageNaturalHeight.value) {
+    fitScale.value = 1
+    imageScale.value = 1
+    return
+  }
+  const padding = 40
+  const containerW = container.clientWidth - padding
+  const containerH = container.clientHeight - padding
+  if (containerW <= 0 || containerH <= 0) {
+    fitScale.value = 1
+    imageScale.value = 1
+    return
+  }
+  const scaleW = containerW / imageNaturalWidth.value
+  const scaleH = containerH / imageNaturalHeight.value
+  fitScale.value = Math.min(scaleW, scaleH)
+  imageScale.value = fitScale.value
+  imageTranslateX.value = 0
+  imageTranslateY.value = 0
+}
+
+function onImageError() {
+  imageLoadError.value = true
+}
+
+function zoomIn() {
+  imageScale.value = Math.min(imageScale.value * 1.25, 20)
+}
+
+function zoomOut() {
+  imageScale.value = Math.max(imageScale.value / 1.25, 0.02)
+}
+
+function zoomFit() {
+  imageScale.value = fitScale.value
+  imageTranslateX.value = 0
+  imageTranslateY.value = 0
+}
+
+function zoomActual() {
+  imageScale.value = 1
+  imageTranslateX.value = 0
+  imageTranslateY.value = 0
+}
+
+const zoomPercentage = computed(() => Math.round(imageScale.value * 100))
+
+function onImageWheel(event) {
+  if (event.deltaY < 0) {
+    zoomIn()
+  } else {
+    zoomOut()
+  }
+}
+
+function onImageMouseDown(event) {
+  if (event.button !== 0) return
+  isDragging.value = true
+  dragStartX.value = event.clientX
+  dragStartY.value = event.clientY
+  translateStartX.value = imageTranslateX.value
+  translateStartY.value = imageTranslateY.value
+  event.preventDefault()
+
+  if (dragMoveHandler) window.removeEventListener('mousemove', dragMoveHandler)
+  if (dragUpHandler) window.removeEventListener('mouseup', dragUpHandler)
+
+  dragMoveHandler = (e) => {
+    imageTranslateX.value = translateStartX.value + (e.clientX - dragStartX.value)
+    imageTranslateY.value = translateStartY.value + (e.clientY - dragStartY.value)
+  }
+  dragUpHandler = () => {
+    isDragging.value = false
+    window.removeEventListener('mousemove', dragMoveHandler)
+    window.removeEventListener('mouseup', dragUpHandler)
+    dragMoveHandler = null
+    dragUpHandler = null
+  }
+  window.addEventListener('mousemove', dragMoveHandler)
+  window.addEventListener('mouseup', dragUpHandler)
+}
+
+watch(() => props.activeTab?.id, () => {
+  imageLoadError.value = false
+  imageScale.value = 1
+  imageTranslateX.value = 0
+  imageTranslateY.value = 0
+  isDragging.value = false
+  if (dragMoveHandler) {
+    window.removeEventListener('mousemove', dragMoveHandler)
+    dragMoveHandler = null
+  }
+  if (dragUpHandler) {
+    window.removeEventListener('mouseup', dragUpHandler)
+    dragUpHandler = null
+  }
+})
+
 onMounted(() => {
   window.addEventListener('pointerdown', handleGlobalPointerDown, true)
   window.addEventListener('contextmenu', handleGlobalContextMenu, true)
@@ -223,6 +354,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('contextmenu', handleGlobalContextMenu, true)
   window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('resize', handleViewportChange)
+  if (dragMoveHandler) window.removeEventListener('mousemove', dragMoveHandler)
+  if (dragUpHandler) window.removeEventListener('mouseup', dragUpHandler)
 })
 </script>
 
@@ -303,6 +436,38 @@ onBeforeUnmount(() => {
           <MarkdownRenderer :content="activeTab.content" />
         </div>
       </template>
+      <template v-else-if="isImageTab(activeTab)">
+        <div
+          class="image-preview-container"
+          ref="imageContainerRef"
+          :style="{ cursor: isDragging ? 'grabbing' : (imageScale > fitScale ? 'grab' : 'default') }"
+          @mousedown="onImageMouseDown"
+          @wheel.prevent="onImageWheel"
+        >
+          <div v-if="imageLoadError" class="preview-state error">无法加载图片</div>
+          <img
+            v-else
+            ref="imageRef"
+            :src="resolveImageUrl(activeTab)"
+            :style="{ transform: `translate(${imageTranslateX}px, ${imageTranslateY}px) scale(${imageScale})` }"
+            class="preview-image"
+            draggable="false"
+            @load="onImageLoad"
+            @error="onImageError"
+          />
+        </div>
+        <div class="image-toolbar">
+          <div class="statusbar-path" :title="titleText">{{ titleText }}</div>
+          <div class="image-toolbar-actions">
+            <button class="toolbar-btn" @click="zoomOut" title="缩小">−</button>
+            <span class="toolbar-zoom-label">{{ zoomPercentage }}%</span>
+            <button class="toolbar-btn" @click="zoomIn" title="放大">+</button>
+            <span class="toolbar-sep"></span>
+            <button class="toolbar-btn" @click="zoomFit" title="适应窗口">适应</button>
+            <button class="toolbar-btn" @click="zoomActual" title="实际尺寸">1:1</button>
+          </div>
+        </div>
+      </template>
       <CodeEditor
         v-else
         :model-value="activeTab.content"
@@ -314,7 +479,7 @@ onBeforeUnmount(() => {
         @save="emit('save-file', activeTab.path)"
       />
 
-      <div v-if="!activeTab.loading && !activeTab.error && !activeTab.markdownPreview" class="preview-statusbar">
+      <div v-if="!activeTab.loading && !activeTab.error && !activeTab.markdownPreview && !isImageTab(activeTab)" class="preview-statusbar">
         <div class="statusbar-path" :title="titleText">{{ titleText }}</div>
         <div class="statusbar-actions">
           <span v-if="activeTab.diffMode && activeTab.diffBaseError" class="statusbar-note error">{{ activeTab.diffBaseError }}</span>
@@ -685,5 +850,75 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   padding: 20px 24px;
   background: rgba(17, 19, 23, 0.28);
+}
+
+.image-preview-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: rgba(17, 19, 23, 0.28);
+  user-select: none;
+}
+
+.preview-image {
+  display: block;
+  max-width: none;
+  max-height: none;
+  transform-origin: center center;
+}
+
+.image-toolbar {
+  height: 28px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(17, 19, 23, 0.28);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+
+.image-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.toolbar-btn {
+  height: 20px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #A1A1AA;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #E4E4E7;
+}
+
+.toolbar-zoom-label {
+  font-size: 11px;
+  color: #A1A1AA;
+  min-width: 40px;
+  text-align: center;
+}
+
+.toolbar-sep {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 4px;
 }
 </style>

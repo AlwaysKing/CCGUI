@@ -185,6 +185,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   statProjectEntry: (options) => ipcRenderer.invoke('stat-project-entry', options),
   getProjectFileGitBase: (options) => ipcRenderer.invoke('get-project-file-git-base', options),
   readProjectFile: (options) => ipcRenderer.invoke('read-project-file', options),
+  readImageFile: (options) => ipcRenderer.invoke('read-image-file', options),
+  readAttachmentImage: (options) => ipcRenderer.invoke('read-attachment-image', options),
   readAttachmentFile: (options) => ipcRenderer.invoke('read-attachment-file', options),
   writeProjectFile: (options) => ipcRenderer.invoke('write-project-file', options),
   createProjectEntry: (options) => ipcRenderer.invoke('create-project-entry', options),

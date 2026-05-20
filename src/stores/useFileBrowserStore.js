@@ -82,6 +82,11 @@ function getBaseName(targetPath = '') {
   return normalizedPath.split('/').pop() || normalizedPath
 }
 
+function isImageExtension(filePath = '') {
+  const ext = filePath.split('.').pop().toLowerCase()
+  return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'avif'].includes(ext)
+}
+
 function getProjectRelativePath(projectPath = '', targetPath = '') {
   const normalizedProjectPath = normalizePath(projectPath)
   const normalizedTargetPath = normalizePath(targetPath)
@@ -131,7 +136,8 @@ function createTabBase(filePath, options = {}) {
     diffBaseLoading: !!options.diffBaseLoading,
     diffBaseError: options.diffBaseError || null,
     readOnly: !!options.readOnly,
-    markdownPreview: !!options.markdownPreview
+    markdownPreview: !!options.markdownPreview,
+    isImage: !!options.isImage
   }
 }
 
@@ -524,6 +530,39 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     if (!currentTab) return null
     if (currentTab.loaded || currentTab.error) return currentTab
 
+    // Image files: load via IPC as base64 data URL
+    if (currentTab.isImage) {
+      currentTab.loading = true
+      currentTab.error = null
+      try {
+        const relativePath = getProjectRelativePath(projectPath.value, normalizedPath)
+        const result = relativePath !== null
+          ? await window.electronAPI.readImageFile({
+            projectPath: projectPath.value,
+            filePath: relativePath
+          })
+          : await window.electronAPI.readAttachmentImage({
+            filePath: normalizedPath
+          })
+        if (!result?.success) {
+          throw new Error(result?.error || '读取图片失败')
+        }
+        currentTab.content = result.file.content || ''
+        currentTab.savedContent = result.file.content || ''
+        currentTab.size = result.file.size || 0
+        currentTab.updatedAt = result.file.updatedAt || null
+        currentTab.isDirty = false
+        currentTab.readOnly = true
+        currentTab.loaded = true
+        return currentTab
+      } catch (error) {
+        currentTab.error = error.message || '读取图片失败'
+        return currentTab
+      } finally {
+        currentTab.loading = false
+      }
+    }
+
     currentTab.loading = true
     currentTab.error = null
 
@@ -634,7 +673,8 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
         pinned,
         isPreview: preview && !pinned,
         loaded: false,
-        loading: false
+        loading: false,
+        isImage: isImageExtension(normalizedPath)
       })
       tabs.value.push(targetTab)
     } else if (pinned) {

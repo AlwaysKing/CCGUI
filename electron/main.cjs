@@ -2011,7 +2011,8 @@ ipcMain.handle('get-running-sessions', async () => {
       streaming: session.currentStreamingAssistantId !== null,
       // 添加实时统计信息
       messageCount: messages.length,
-      updatedAt: lastMessage?.timestamp || new Date().toISOString()
+      updatedAt: lastMessage?.timestamp || new Date().toISOString(),
+      autoApprove: Boolean(session.autoApprove)
     }
   }
   return sessionStatuses
@@ -2460,6 +2461,114 @@ ipcMain.handle('read-project-file', async (event, { projectPath, filePath }) => 
     }
   } catch (error) {
     logger.error('[Files] Failed to read project file', { projectPath, filePath, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+const IMAGE_MIME_MAP = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  svg: 'image/svg+xml',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  avif: 'image/avif'
+}
+
+ipcMain.handle('read-image-file', async (event, { projectPath, filePath }) => {
+  try {
+    if (!projectPath || !filePath) {
+      throw new Error('缺少文件路径')
+    }
+
+    const ext = filePath.split('.').pop().toLowerCase()
+    const mime = IMAGE_MIME_MAP[ext]
+    if (!mime) {
+      throw new Error('不支持的图片格式')
+    }
+
+    const absolutePath = resolveProjectTargetPath(projectPath, filePath)
+    const stat = fs.statSync(absolutePath)
+
+    if (!stat.isFile()) {
+      throw new Error('目标不是文件')
+    }
+
+    if (stat.size > MAX_PREVIEW_FILE_SIZE) {
+      return {
+        success: false,
+        error: '文件过大，暂不支持预览',
+        code: 'FILE_TOO_LARGE',
+        file: { path: filePath, size: stat.size }
+      }
+    }
+
+    const buffer = fs.readFileSync(absolutePath)
+    const base64 = buffer.toString('base64')
+    const dataUrl = `data:${mime};base64,${base64}`
+
+    return {
+      success: true,
+      file: {
+        path: filePath,
+        name: path.basename(filePath),
+        content: dataUrl,
+        size: stat.size,
+        updatedAt: stat.mtime.toISOString()
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to read image file', { projectPath, filePath, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('read-attachment-image', async (event, { filePath }) => {
+  try {
+    if (!filePath) {
+      throw new Error('缺少文件路径')
+    }
+
+    const ext = filePath.split('.').pop().toLowerCase()
+    const mime = IMAGE_MIME_MAP[ext]
+    if (!mime) {
+      throw new Error('不支持的图片格式')
+    }
+
+    const absolutePath = path.resolve(filePath)
+    const stat = fs.statSync(absolutePath)
+
+    if (!stat.isFile()) {
+      throw new Error('目标不是文件')
+    }
+
+    if (stat.size > MAX_PREVIEW_FILE_SIZE) {
+      return {
+        success: false,
+        error: '文件过大，暂不支持预览',
+        code: 'FILE_TOO_LARGE',
+        file: { path: absolutePath, size: stat.size }
+      }
+    }
+
+    const buffer = fs.readFileSync(absolutePath)
+    const base64 = buffer.toString('base64')
+    const dataUrl = `data:${mime};base64,${base64}`
+
+    return {
+      success: true,
+      file: {
+        path: absolutePath,
+        name: path.basename(absolutePath),
+        content: dataUrl,
+        size: stat.size,
+        updatedAt: stat.mtime.toISOString()
+      }
+    }
+  } catch (error) {
+    logger.error('[Files] Failed to read attachment image', { filePath, error: error.message })
     return { success: false, error: error.message }
   }
 })

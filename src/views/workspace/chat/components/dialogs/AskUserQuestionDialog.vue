@@ -9,18 +9,17 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['answer'])
+const emit = defineEmits(['answer', 'dismiss'])
 
 const questions = ref([])
-const answers = ref({})
+const answers = ref({})        // 存储选中的 label（含 "Other"）
+const otherTexts = ref({})     // 存储 "Other" 的自定义文本
 const currentTabIndex = ref(0)
+const otherInputRefs = ref({}) // "Other" 输入框的 ref
 
 onMounted(() => {
-  // Parse the questions from tool input
-  // 支持多种可能的字段名格式：input, tool_input, toolInput
   let toolInput = props.request.input || props.request.tool_input || props.request.toolInput
 
-  // 如果 toolInput 是字符串，尝试解析为 JSON
   if (typeof toolInput === 'string') {
     try {
       toolInput = JSON.parse(toolInput)
@@ -31,94 +30,98 @@ onMounted(() => {
 
   if (toolInput && toolInput.questions) {
     questions.value = toolInput.questions
-    // Initialize answers based on multiSelect
-    questions.value.forEach((q, index) => {
-      if (q.multiSelect) {
-        answers.value[index] = [] // 多选初始化为空数组
-      } else {
-        answers.value[index] = null // 单选初始化为 null
-      }
-    })
   } else if (props.request.questions) {
-    // 直接在 request 上有 questions
     questions.value = props.request.questions
-    questions.value.forEach((q, index) => {
-      if (q.multiSelect) {
-        answers.value[index] = []
-      } else {
-        answers.value[index] = null
-      }
-    })
   }
 
+  // Initialize answers based on multiSelect
+  questions.value.forEach((q, index) => {
+    if (q.multiSelect) {
+      answers.value[index] = []
+    } else {
+      answers.value[index] = null
+    }
+  })
 })
 
 const currentQuestion = computed(() => {
   return questions.value[currentTabIndex.value] || null
 })
 
-function handleSelect(questionIndex, optionIndex) {
+function handleSelect(questionIndex, optionLabel) {
   const question = questions.value[questionIndex]
-  const selectedOption = question.options[optionIndex]
-  const optionLabel = selectedOption.label
 
   if (question.multiSelect) {
-    // 多选模式：切换选中状态
     const currentAnswers = answers.value[questionIndex]
-    const index = currentAnswers.indexOf(optionLabel)
-    if (index > -1) {
-      // 取消选中
-      currentAnswers.splice(index, 1)
+    const idx = currentAnswers.indexOf(optionLabel)
+    if (idx > -1) {
+      currentAnswers.splice(idx, 1)
+      if (optionLabel === 'Other') {
+        otherTexts.value[questionIndex] = ''
+      }
     } else {
-      // 选中
       currentAnswers.push(optionLabel)
+      if (optionLabel === 'Other') {
+        setTimeout(() => {
+          otherInputRefs.value[questionIndex]?.focus()
+        }, 0)
+      }
     }
   } else {
-    // 单选模式：直接设置
     answers.value[questionIndex] = optionLabel
-    // 单选模式下，选择后自动跳转到下一个未回答的问题
-    const nextUnansweredIndex = questions.value.findIndex((q, idx) => !isQuestionAnswered(idx))
-    if (nextUnansweredIndex !== -1 && nextUnansweredIndex !== questionIndex) {
-      currentTabIndex.value = nextUnansweredIndex
+    if (optionLabel === 'Other') {
+      setTimeout(() => {
+        otherInputRefs.value[questionIndex]?.focus()
+      }, 0)
+    } else {
+      const nextUnansweredIndex = questions.value.findIndex((q, idx) => !isQuestionAnswered(idx))
+      if (nextUnansweredIndex !== -1 && nextUnansweredIndex !== questionIndex) {
+        currentTabIndex.value = nextUnansweredIndex
+      }
     }
   }
 }
 
-// 检查问题是否已回答
+function updateOtherText(questionIndex, text) {
+  otherTexts.value[questionIndex] = text
+}
+
 function isQuestionAnswered(index) {
   const answer = answers.value[index]
   if (Array.isArray(answer)) {
-    return answer.length > 0
+    if (answer.length === 0) return false
+    if (answer.includes('Other') && !otherTexts.value[index]?.trim()) return false
+    return true
   }
-  return answer !== null
+  if (answer === null) return false
+  if (answer === 'Other' && !otherTexts.value[index]?.trim()) return false
+  return true
 }
 
 function handleSubmit() {
-  // Check if all questions have been answered
   const allAnswered = questions.value.every((q, index) => isQuestionAnswered(index))
 
   if (!allAnswered) {
-    // Show which questions are not answered
     const unanswered = questions.value
       .map((q, index) => !isQuestionAnswered(index) ? (q.header || `问题 ${index + 1}`) : null)
       .filter(Boolean)
-
     console.warn('请回答所有问题后再提交。未回答的问题:', unanswered.join(', '))
     return
   }
 
-  // Collect all answers - 格式为 { "问题": "答案" }，多选题答案用逗号分隔
+  // 选中 "Other" 时，用自定义文本替换 "Other" 标签
+  // 多选题答案用 ", " 分隔（与 VSCode 一致）
   const answersMap = {}
   questions.value.forEach((q, index) => {
     let answer = answers.value[index]
-    // 如果是多选且是数组，转换为逗号分隔的字符串
-    if (q.multiSelect && Array.isArray(answer)) {
-      answer = answer.join(',')
+    if (Array.isArray(answer)) {
+      const parts = answer.map(a => a === 'Other' ? (otherTexts.value[index]?.trim() || 'Other') : a)
+      answersMap[q.question] = parts.join(', ')
+    } else {
+      answersMap[q.question] = answer === 'Other' ? (otherTexts.value[index]?.trim() || 'Other') : answer
     }
-    answersMap[q.question] = answer
   })
 
-  // 支持多种字段名：request_id, tool_use_id
   const requestId = props.request.request_id ?? props.request.tool_use_id
   logger.info('[AskUserQuestionDialog] Submitting answers', {
     requestId,
@@ -128,8 +131,20 @@ function handleSubmit() {
   emit('answer', requestId, answersMap)
 }
 
+function handleDismiss() {
+  emit('dismiss')
+}
+
 function switchTab(index) {
   currentTabIndex.value = index
+}
+
+function isOptionSelected(questionIndex, optionLabel) {
+  const answer = answers.value[questionIndex]
+  if (Array.isArray(answer)) {
+    return answer.includes(optionLabel)
+  }
+  return answer === optionLabel
 }
 
 const isAllAnswered = computed(() => {
@@ -154,6 +169,8 @@ const isAllAnswered = computed(() => {
           <span class="tab-label">{{ question.header || `问题 ${index + 1}` }}</span>
           <span v-if="question.multiSelect" class="multi-badge">多选</span>
         </button>
+        <div class="tab-spacer"></div>
+        <button class="close-button" @click="handleDismiss" title="关闭">✕</button>
       </div>
 
       <!-- Current Question Content -->
@@ -167,28 +184,60 @@ const isAllAnswered = computed(() => {
         <div class="question-text-short">{{ currentQuestion.question }}</div>
 
         <div class="options-list">
+          <!-- 预定义选项 -->
           <button
             v-for="(option, optionIndex) in currentQuestion.options"
             :key="optionIndex"
-            @click="handleSelect(currentTabIndex, optionIndex)"
+            @click="handleSelect(currentTabIndex, option.label)"
             class="option-item"
-            :class="{
-              selected: currentQuestion.multiSelect
-                ? (Array.isArray(answers[currentTabIndex]) && answers[currentTabIndex].includes(option.label))
-                : answers[currentTabIndex] === option.label
-            }"
+            :class="{ selected: isOptionSelected(currentTabIndex, option.label) }"
           >
             <span class="option-marker">
               <template v-if="currentQuestion.multiSelect">
-                {{ Array.isArray(answers[currentTabIndex]) && answers[currentTabIndex].includes(option.label) ? '☑' : '☐' }}
+                {{ isOptionSelected(currentTabIndex, option.label) ? '☑' : '☐' }}
               </template>
               <template v-else>
-                {{ answers[currentTabIndex] === option.label ? '✓' : '○' }}
+                {{ isOptionSelected(currentTabIndex, option.label) ? '✓' : '○' }}
               </template>
             </span>
             <div class="option-content">
               <span class="option-text">{{ option.label }}</span>
               <span v-if="option.description" class="option-description">{{ option.description }}</span>
+            </div>
+          </button>
+
+          <!-- Other 自定义选项（始终显示） -->
+          <button
+            @click="handleSelect(currentTabIndex, 'Other')"
+            class="option-item"
+            :class="{ selected: isOptionSelected(currentTabIndex, 'Other') }"
+          >
+            <span class="option-marker">
+              <template v-if="currentQuestion.multiSelect">
+                {{ isOptionSelected(currentTabIndex, 'Other') ? '☑' : '☐' }}
+              </template>
+              <template v-else>
+                {{ isOptionSelected(currentTabIndex, 'Other') ? '✓' : '○' }}
+              </template>
+            </span>
+            <div class="option-content">
+              <span class="option-text">Other</span>
+              <div
+                v-if="isOptionSelected(currentTabIndex, 'Other')"
+                class="other-input-wrapper"
+                @click.stop
+              >
+                <input
+                  :ref="el => { if (el) otherInputRefs[currentTabIndex] = el }"
+                  type="text"
+                  class="other-input"
+                  placeholder="输入你的回答…"
+                  :value="otherTexts[currentTabIndex] || ''"
+                  @input="updateOtherText(currentTabIndex, $event.target.value)"
+                  @keydown.enter.stop
+                  @keydown.stop
+                />
+              </div>
             </div>
           </button>
         </div>
@@ -239,11 +288,33 @@ const isAllAnswered = computed(() => {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+  align-items: center;
   border-bottom: 1px solid #3F3F46;
   padding-bottom: 10px;
   pointer-events: auto;
   position: relative;
   z-index: 10;
+}
+
+.tab-spacer {
+  flex: 1;
+}
+
+.close-button {
+  background: transparent;
+  border: none;
+  color: #71717A;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.close-button:hover {
+  color: #E4E4E7;
+  background: #3F3F46;
 }
 
 .tab-button {
@@ -393,8 +464,9 @@ const isAllAnswered = computed(() => {
 .option-content {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   flex: 1;
+  min-width: 0;
 }
 
 .option-text {
@@ -415,6 +487,32 @@ const isAllAnswered = computed(() => {
 
 .option-item.selected .option-description {
   color: #6EE7B7;
+}
+
+/* Other 自定义输入框 */
+.other-input-wrapper {
+  margin-top: 4px;
+  width: 100%;
+}
+
+.other-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: #09090B;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  color: #E4E4E7;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.other-input::placeholder {
+  color: #52525B;
+}
+
+.other-input:focus {
+  border-color: #F97316;
 }
 
 /* Submit Section */

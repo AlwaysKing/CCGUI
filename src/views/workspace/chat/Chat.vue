@@ -2500,14 +2500,11 @@ async function handleQuestionAnswer(requestId, answers) {
   sessionStore.clearPendingQuestion()
 
   if (question) {
-    // 获取 tool_use_id - 支持多种可能的字段名
     const toolUseId =
       question.tool_use_id ?? question.toolUseId ?? question.id ?? requestId
 
     // 获取问题数据 - 支持多种字段名格式
     let toolInput = question.input || question.tool_input || question.toolInput
-
-    // 如果 toolInput 是字符串，尝试解析为 JSON
     if (typeof toolInput === 'string') {
       try {
         toolInput = JSON.parse(toolInput)
@@ -2516,33 +2513,15 @@ async function handleQuestionAnswer(requestId, answers) {
       }
     }
 
-    let questionsData = []
-    if (toolInput && toolInput.questions) {
-      questionsData = toolInput.questions
-    } else if (question.questions) {
-      questionsData = question.questions
-    }
-
-    // 构建问题列表用于显示
-    const questionItems = questionsData.map((questionData, index) => {
-      const questionText = questionData?.question || ''
-      const header = questionData?.header || `问题 ${index + 1}`
-      const options = questionData?.options || []
-      const multiSelect = questionData?.multiSelect || false
-      const selectedAnswer = answers[questionText] || ''
-
-      return {
-        header: String(header),
-        question: String(questionText),
-        options: options,
-        selectedAnswer: selectedAnswer,
-        multiSelect: multiSelect
-      }
-    })
     try {
+      // 深拷贝 toolInput 以剥离 Vue 响应式代理，确保 Electron IPC 可序列化
+      const rawToolInput = typeof toolInput === 'object' && toolInput
+        ? JSON.parse(JSON.stringify(toolInput))
+        : {}
       const options = {
         toolUseID: toolUseId,
         updatedInput: {
+          ...rawToolInput,
           answers: answers
         }
       }
@@ -2552,8 +2531,21 @@ async function handleQuestionAnswer(requestId, answers) {
     } catch (error) {
       console.error('[ChatWindow] Failed to send control response:', error)
     }
-  } else {
-    console.warn('[ChatWindow] handleQuestionAnswer: question is null, cannot send response')
+  }
+}
+
+async function handleQuestionDismiss() {
+  const question = pendingQuestion.value
+  sessionStore.clearPendingQuestion()
+
+  if (question) {
+    const requestId = question.request_id ?? question.tool_use_id
+    const toolUseId = question.tool_use_id ?? question.toolUseId ?? question.id ?? requestId
+    try {
+      await sessionStore.sendControlResponse(requestId, false, { toolUseID: toolUseId })
+    } catch (error) {
+      console.error('[ChatWindow] Failed to dismiss question:', error)
+    }
   }
 }
 
@@ -3049,6 +3041,7 @@ function handleToggleAgentRail() {
       v-if="pendingQuestion"
       :request="pendingQuestion"
       @answer="handleQuestionAnswer"
+      @dismiss="handleQuestionDismiss"
     />
 
     <!-- Permission Dialog for tool_use - 在聊天窗口内部 -->

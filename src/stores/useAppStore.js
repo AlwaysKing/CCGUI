@@ -140,6 +140,7 @@ export const useAppStore = defineStore('app', () => {
       streaming: false,
       unseenCompleted: false,
       pendingPermission: false,
+      autoApprove: false,
       messageCount: 0,
       updatedAt: new Date().toISOString()
     }
@@ -250,7 +251,20 @@ export const useAppStore = defineStore('app', () => {
 
         break
 
-      case 'control-request':
+      case 'control-request': {
+        const status = sessionStatuses.value[sessionId]
+        const isAutoApproved = status?.autoApprove
+
+        // 判断是否为 AskUserQuestion（即使开启自动批准，仍需用户交互，应通知）
+        const requestData = data?.request || data
+        const toolName = requestData?.tool_name || requestData?.toolName
+        const isAskUserQuestion = toolName === 'AskUserQuestion'
+
+        // 自动批准模式下，非 AskUserQuestion 的权限请求不播放通知（内部消化）
+        if (isAutoApproved && !isAskUserQuestion) {
+          break
+        }
+
         patchSessionStatus(sessionId, {
           pendingPermission: true,
           updatedAt: new Date().toISOString()
@@ -260,6 +274,7 @@ export const useAppStore = defineStore('app', () => {
           playPermissionAlertSound()
         }
         break
+      }
 
       case 'control-response':
         patchSessionStatus(sessionId, {

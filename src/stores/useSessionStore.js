@@ -3,6 +3,7 @@ import { ref, computed, watch, reactive } from 'vue'
 import { QueueManager } from './AgentQueue'
 import { logger } from '../utils/logger'
 import { stripAttachmentTokens } from '../utils/chatAttachments'
+import { useAppStore } from './useAppStore'
 import { openAppErrorDialog } from '../utils/appErrorDialog'
 
 /**
@@ -1714,6 +1715,11 @@ export const useSessionStore = defineStore('session', () => {
         if (result.state.autoApprove !== undefined) {
           sessionData.autoApprove = result.state.autoApprove
           console.log('[SessionStore] Restored autoApprove:', result.state.autoApprove, 'for session:', sessionId)
+          // 同步到 useAppStore，以便后台权限请求时判断是否播放通知
+          try {
+            const appStore = useAppStore()
+            appStore.patchSessionStatus(sessionId, { autoApprove: result.state.autoApprove })
+          } catch (_) { /* ignore */ }
         }
         if (Array.isArray(result.state.taskDockHistory)) {
           sessionData.taskDockHistory = result.state.taskDockHistory
@@ -2429,6 +2435,12 @@ export const useSessionStore = defineStore('session', () => {
       newValue: !!enabled
     })
 
+    // 同步 autoApprove 状态到 useAppStore，以便后台权限请求时判断是否播放通知
+    try {
+      const appStore = useAppStore()
+      appStore.patchSessionStatus(session.id, { autoApprove: !!enabled })
+    } catch (_) { /* ignore */ }
+
     try {
       const result = await window.electronAPI.setAutoApprove({
         sessionId: session.id,
@@ -2438,12 +2450,22 @@ export const useSessionStore = defineStore('session', () => {
       if (result?.success === false) {
         console.error('[SessionStore] Failed to set autoApprove:', result.error)
         session.autoApprove = previousValue
+        // 回滚 useAppStore 同步
+        try {
+          const appStore = useAppStore()
+          appStore.patchSessionStatus(session.id, { autoApprove: previousValue })
+        } catch (_) { /* ignore */ }
       } else {
         console.log('[SessionStore] Successfully set autoApprove for session:', session.id)
       }
     } catch (error) {
       console.error('[SessionStore] Error setting autoApprove:', error)
       session.autoApprove = previousValue
+      // 回滚 useAppStore 同步
+      try {
+        const appStore = useAppStore()
+        appStore.patchSessionStatus(session.id, { autoApprove: previousValue })
+      } catch (_) { /* ignore */ }
       throw error
     }
   }

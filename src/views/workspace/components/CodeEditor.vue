@@ -88,7 +88,9 @@ function ensureTransparentEditorTheme() {
     colors: {
       'editor.background': '#00000000',
       'editorGutter.background': '#00000000',
-      'minimap.background': '#00000000'
+      'minimap.background': '#00000000',
+      'stickyScroll.background': '#111317f0',
+      'stickyScroll.shadow': '#00000066'
     }
   })
 
@@ -271,6 +273,16 @@ watch(() => props.diffMode, () => {
 
 .code-editor :deep(.monaco-editor .scroll-decoration) {
   box-shadow: none !important;
+}
+
+.code-editor :deep(.monaco-editor .sticky-widget),
+.code-editor :deep(.monaco-editor .sticky-widget .sticky-line-content),
+.code-editor :deep(.monaco-editor .sticky-widget .sticky-line) {
+  background: #111317f0 !important;
+}
+
+.code-editor :deep(.monaco-editor .sticky-widget .sticky-line:hover) {
+  background: rgba(255, 255, 255, 0.06) !important;
 }
 
 .code-editor :deep(.monaco-editor .scrollbar.vertical) {

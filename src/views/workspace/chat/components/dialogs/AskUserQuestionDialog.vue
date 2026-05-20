@@ -236,6 +236,7 @@ const isAllAnswered = computed(() => {
                   @input="updateOtherText(currentTabIndex, $event.target.value)"
                   @keydown.enter.stop
                   @keydown.stop
+                  @keyup.stop
                 />
               </div>
             </div>

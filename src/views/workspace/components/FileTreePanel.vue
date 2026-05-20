@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
 
 const props = defineProps({
@@ -61,12 +61,42 @@ const emit = defineEmits([
 ])
 
 const panelRef = ref(null)
+const showModifiedOnly = ref(false)
 const contextMenuRef = ref(null)
 const contextMenu = ref({
   show: false,
   x: 0,
   y: 0,
   node: null
+})
+
+function hasModifiedChildren(node) {
+  if (node.gitStatus) return true
+  if (node.children) {
+    return node.children.some(child =>
+      child.type === 'directory' ? hasModifiedChildren(child) : !!child.gitStatus
+    )
+  }
+  return false
+}
+
+function filterModified(nodes) {
+  return nodes
+    .filter(node => {
+      if (node.type === 'directory') return hasModifiedChildren(node)
+      return !!node.gitStatus
+    })
+    .map(node => {
+      if (node.type === 'directory' && node.children) {
+        return { ...node, children: filterModified(node.children) }
+      }
+      return node
+    })
+}
+
+const displayedTree = computed(() => {
+  if (!showModifiedOnly.value) return props.tree
+  return filterModified(props.tree)
 })
 
 function focusPanel() {
@@ -308,6 +338,19 @@ onBeforeUnmount(() => {
     <div class="file-tree-header">
       <div class="header-text">
         <div class="panel-title">文件列表</div>
+        <button
+          class="refresh-btn filter-btn"
+          :class="{ active: showModifiedOnly }"
+          title="仅显示修改文件"
+          @click="showModifiedOnly = !showModifiedOnly"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="6" y1="3" x2="6" y2="15"></line>
+            <circle cx="18" cy="6" r="3"></circle>
+            <circle cx="6" cy="18" r="3"></circle>
+            <path d="M18 9a9 9 0 0 1-9 9"></path>
+          </svg>
+        </button>
       </div>
       <div class="header-actions">
         <button class="refresh-btn" title="新建文件" @click.stop="handleCreateFromToolbar('file')">
@@ -339,9 +382,9 @@ onBeforeUnmount(() => {
     <div class="file-tree-body">
       <div v-if="isLoading" class="tree-placeholder">正在加载文件列表...</div>
       <div v-else-if="error" class="tree-placeholder error">{{ error }}</div>
-      <div v-else-if="tree.length === 0" class="tree-placeholder">当前目录暂无可展示文件</div>
+      <div v-else-if="displayedTree.length === 0" class="tree-placeholder">{{ showModifiedOnly ? '没有修改的文件' : '当前目录暂无可展示文件' }}</div>
       <FileTreeNode
-        v-for="node in tree"
+        v-for="node in displayedTree"
         :key="node.path"
         :node="node"
         :depth="0"
@@ -411,6 +454,8 @@ onBeforeUnmount(() => {
 
 .header-text {
   min-width: 0;
+  display: flex;
+  align-items: center;
 }
 
 .header-actions {
@@ -444,6 +489,20 @@ onBeforeUnmount(() => {
 .refresh-btn:hover {
   background: #27272A;
   color: #E4E4E7;
+}
+
+.refresh-btn.filter-btn {
+  margin-left: 6px;
+}
+
+.refresh-btn.filter-btn.active {
+  background: rgba(249, 115, 22, 0.15);
+  color: #F97316;
+}
+
+.refresh-btn.filter-btn.active:hover {
+  background: rgba(249, 115, 22, 0.25);
+  color: #FB923C;
 }
 
 .file-tree-body {

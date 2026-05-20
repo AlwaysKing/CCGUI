@@ -106,6 +106,7 @@ const showConfigPanel = ref(false)
 const sessionConfigs = ref({}) // Map of sessionId -> hasCustomConfig
 const compactCountLabels = ref(new Set()) // Sessions with compact count labels
 const showSessionListMenu = ref(false)
+const sessionListCollapsed = ref(false)
 const sessionListMenuRef = ref(null)
 const sessionListDropdownRef = ref(null)
 
@@ -1458,7 +1459,7 @@ watch([showConfigPanel, fileSectionHeight], () => {
       <FileTreePanel
         v-if="isFilePanelVisible"
         class="file-tree-section"
-        :style="{ flexBasis: `${fileSectionHeight}%` }"
+        :style="sessionListCollapsed ? 'flex: 1 1 0%' : { flexBasis: `${fileSectionHeight}%` }"
         :project-path="projectPath"
         :tree="fileTree"
         :is-loading="fileTreeLoading"
@@ -1490,9 +1491,20 @@ watch([showConfigPanel, fileSectionHeight], () => {
         @mousedown="startFileSplitResize"
       ></div>
 
-      <div class="session-section">
+      <div class="session-section" :style="sessionListCollapsed && isFilePanelVisible ? { flex: '0 0 auto', marginTop: 'auto' } : {}">
         <div class="session-section-header">
           <div class="session-section-title">
+            <button
+              v-if="isFilePanelVisible"
+              class="session-collapse-btn"
+              :class="{ collapsed: sessionListCollapsed }"
+              @click="sessionListCollapsed = !sessionListCollapsed"
+              :title="sessionListCollapsed ? '展开会话列表' : '折叠会话列表'"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
             <span>{{ showRecycleBin ? '回收站' : '会话列表' }}</span>
             <button v-if="!showRecycleBin" class="session-add-btn" @click="emit('newSession')" title="新建会话">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1569,7 +1581,7 @@ watch([showConfigPanel, fileSectionHeight], () => {
           </div>
         </div>
 
-        <div class="session-list">
+        <div v-show="!(sessionListCollapsed && isFilePanelVisible)" class="session-list">
           <div
             v-for="session in sessions"
             :key="session.id"
@@ -2262,6 +2274,10 @@ watch([showConfigPanel, fileSectionHeight], () => {
   flex-direction: column;
 }
 
+.session-section.collapsed {
+  flex: 0 0 auto;
+}
+
 .session-section-header {
   display: flex;
   align-items: center;
@@ -2278,6 +2294,30 @@ watch([showConfigPanel, fileSectionHeight], () => {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.session-collapse-btn {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #71717A;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 0.2s ease;
+}
+
+.session-collapse-btn:hover {
+  background: #27272A;
+  color: #E4E4E7;
+}
+
+.session-collapse-btn.collapsed svg {
+  transform: rotate(-90deg);
 }
 
 .session-section-counts {
@@ -2406,6 +2446,15 @@ watch([showConfigPanel, fileSectionHeight], () => {
   min-height: 0;
   overflow-y: auto;
   padding: 8px;
+}
+
+.session-list.collapsed {
+  flex: 0 0 0 !important;
+  min-height: 0 !important;
+  height: 0 !important;
+  max-height: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
 }
 
 .session-item {

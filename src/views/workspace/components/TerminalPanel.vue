@@ -20,6 +20,7 @@ const emit = defineEmits(['running-change', 'hide'])
 const terminals = ref([])
 const activeTerminalId = ref('')
 const isCreatingTerminal = ref(false)
+const isLaunchingTask = ref(false)
 const terminalSidebarWidth = ref(88)
 const isSidebarResizing = ref(false)
 const terminalThemeKey = ref('ccgui-dark')
@@ -38,6 +39,12 @@ const runningTerminalCount = computed(() => terminals.value.filter(isTerminalRun
 const runningTaskLabels = computed(() => {
   return terminals.value
     .filter(terminal => getTerminalKind(terminal) === TASK_TERMINAL_KIND && isTerminalRunning(terminal))
+    .map(terminal => String(terminal.taskLabel || '').trim())
+    .filter(Boolean)
+})
+const exitedTaskLabels = computed(() => {
+  return terminals.value
+    .filter(terminal => getTerminalKind(terminal) === TASK_TERMINAL_KIND && terminal.exited)
     .map(terminal => String(terminal.taskLabel || '').trim())
     .filter(Boolean)
 })
@@ -92,6 +99,7 @@ function isReusableTaskTerminal(terminal) {
   return Boolean(
     terminal &&
     !terminal.exited &&
+    !terminal.launching &&
     getTerminalKind(terminal) === TASK_TERMINAL_KIND &&
     !isTerminalRunning(terminal)
   )
@@ -253,7 +261,9 @@ function estimateTerminalSize() {
 }
 
 async function createTerminal(terminalOptions = {}) {
-  if (isCreatingTerminal.value) return
+  if (isCreatingTerminal.value) {
+    throw new Error('终端正在创建中，请稍后重试')
+  }
   isCreatingTerminal.value = true
 
   try {
@@ -280,6 +290,7 @@ async function createTerminal(terminalOptions = {}) {
         kind: terminalOptions.kind || USER_TERMINAL_KIND,
         taskLabel: terminalOptions.taskLabel || '',
         exited: false,
+        launching: false,
         buffer: ''
       }
     ]
@@ -289,6 +300,7 @@ async function createTerminal(terminalOptions = {}) {
     mountTerminal(result.terminal.id, true)
   } catch (error) {
     console.error('[TerminalPanel] Failed to create terminal:', error)
+    throw error
   } finally {
     isCreatingTerminal.value = false
   }
@@ -310,54 +322,67 @@ async function runTaskInTerminal(task) {
     throw new Error('缺少可执行的任务命令')
   }
 
-  let terminalMeta = terminals.value.find(isReusableTaskTerminal) || null
-  if (!terminalMeta) {
+  // 全局启动锁：序列化任务启动，防止并发
+  while (isLaunchingTask.value) {
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  isLaunchingTask.value = true
+
+  try {
+    const taskLabel = String(task.label || '').trim()
+
+    // 关闭同标签的旧终端（无论是否还在运行），确保全新启动
+    const oldTerminal = terminals.value.find(t =>
+      getTerminalKind(t) === TASK_TERMINAL_KIND &&
+      String(t.taskLabel || '').trim() === taskLabel
+    )
+    if (oldTerminal) {
+      console.log('[TerminalPanel] runTaskInTerminal:', taskLabel, `remove old ${oldTerminal.id}`)
+      await removeTerminal(oldTerminal.id)
+    }
+
+    // 全新创建终端
+    console.log('[TerminalPanel] runTaskInTerminal:', taskLabel, 'create new')
     await createTerminal({
       cwd: task.cwd || props.projectPath,
       kind: TASK_TERMINAL_KIND,
       taskLabel: task.label || ''
     })
-    terminalMeta = getTerminalMeta(activeTerminalId.value)
-  } else {
-    terminalMeta.cwd = task.cwd || terminalMeta.cwd || props.projectPath
-    terminalMeta.taskLabel = task.label || terminalMeta.taskLabel || ''
-    terminalMeta.kind = TASK_TERMINAL_KIND
-    activeTerminalId.value = terminalMeta.id
-  }
+    const terminalMeta = getTerminalMeta(activeTerminalId.value)
 
-  if (!terminalMeta?.id) {
-    throw new Error('任务终端创建失败')
-  }
-
-  terminalMeta.exited = false
-  activeTerminalId.value = terminalMeta.id
-  await nextTick()
-  mountTerminal(terminalMeta.id, false)
-
-  if (task.cwd && task.cwd !== terminalMeta.cwd) {
-    terminalMeta.cwd = task.cwd
-  }
-
-  const commands = []
-  if (task.env && typeof task.env === 'object') {
-    for (const [key, value] of Object.entries(task.env)) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-        console.warn(`[TerminalPanel] Skipping invalid env key: ${key}`)
-        continue
-      }
-      commands.push(`export ${key}=${quoteShellEnvValue(String(value))}`)
+    if (!terminalMeta?.id) {
+      throw new Error('任务终端创建失败')
     }
-  }
-  if (task.cwd) {
-    commands.push(`cd ${JSON.stringify(task.cwd)}`)
-  }
-  commands.push(task.commandLine)
-  await window.electronAPI.writeTerminal({
-    terminalId: terminalMeta.id,
-    data: `${commands.join('\r')}\r`
-  })
 
-  return terminalMeta.id
+    terminalMeta.exited = false
+    terminalMeta.launching = true
+
+    await nextTick()
+    mountTerminal(terminalMeta.id, false)
+
+    const commands = []
+    if (task.env && typeof task.env === 'object') {
+      for (const [key, value] of Object.entries(task.env)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          console.warn(`[TerminalPanel] Skipping invalid env key: ${key}`)
+          continue
+        }
+        commands.push(`export ${key}=${quoteShellEnvValue(String(value))}`)
+      }
+    }
+    if (task.cwd) {
+      commands.push(`cd ${JSON.stringify(task.cwd)}`)
+    }
+    commands.push(task.commandLine)
+    await window.electronAPI.writeTerminal({
+      terminalId: terminalMeta.id,
+      data: `${commands.join('\r')}\r`
+    })
+
+    return terminalMeta.id
+  } finally {
+    isLaunchingTask.value = false
+  }
 }
 
 async function stopTaskTerminal(task) {
@@ -378,10 +403,31 @@ async function stopTaskTerminal(task) {
     return false
   }
 
+  // 第一步：发送 Ctrl+C (SIGINT)
   await window.electronAPI.writeTerminal({
     terminalId: terminalMeta.id,
     data: '\u0003'
   })
+
+  // 第二步：5 秒后如果任务进程还在运行，升级为 SIGKILL 强杀
+  const terminalId = terminalMeta.id
+  setTimeout(async () => {
+    const stillAlive = terminals.value.find(t => t.id === terminalId && !t.exited)
+    if (!stillAlive) {
+      return
+    }
+    // 任务进程已退出（shell 空闲），不需要 forceKill
+    if (!isTerminalRunning(stillAlive)) {
+      return
+    }
+
+    try {
+      await window.electronAPI.forceKillTerminal({ terminalId })
+    } catch (_) {
+      // 进程可能已自行退出，忽略
+    }
+  }, 5000)
+
   return true
 }
 
@@ -597,6 +643,7 @@ function handleTerminalExit(payload) {
   const terminalMeta = getTerminalMeta(payload?.terminalId)
   if (!terminalMeta) return
   terminalMeta.exited = true
+  terminalMeta.launching = false
   terminalMeta.currentCommand = terminalMeta.shellLabel || 'shell'
 }
 
@@ -604,6 +651,10 @@ function handleTerminalStatus(payload) {
   const terminalMeta = getTerminalMeta(payload?.terminalId)
   if (!terminalMeta) return
   terminalMeta.currentCommand = payload?.command || terminalMeta.shellLabel || 'shell'
+  // 命令已被 shell 检测到，启动流程完成，清除 launching 标记
+  if (terminalMeta.launching && isTerminalRunning(terminalMeta)) {
+    terminalMeta.launching = false
+  }
 }
 
 function handleActivateTerminal(terminalId) {
@@ -670,7 +721,8 @@ watch(runningTerminalCount, count => {
   emit('running-change', {
     hasRunning: count > 0,
     count,
-    taskLabels: runningTaskLabels.value
+    taskLabels: runningTaskLabels.value,
+    exitedTaskLabels: exitedTaskLabels.value
   })
 }, { immediate: true })
 
@@ -678,7 +730,17 @@ watch(runningTaskLabels, labels => {
   emit('running-change', {
     hasRunning: runningTerminalCount.value > 0,
     count: runningTerminalCount.value,
-    taskLabels: labels
+    taskLabels: labels,
+    exitedTaskLabels: exitedTaskLabels.value
+  })
+})
+
+watch(exitedTaskLabels, () => {
+  emit('running-change', {
+    hasRunning: runningTerminalCount.value > 0,
+    count: runningTerminalCount.value,
+    taskLabels: runningTaskLabels.value,
+    exitedTaskLabels: exitedTaskLabels.value
   })
 })
 

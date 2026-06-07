@@ -201,6 +201,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   writeTerminal: (options) => ipcRenderer.invoke('write-terminal', options),
   resizeTerminal: (options) => ipcRenderer.invoke('resize-terminal', options),
   closeTerminal: (options) => ipcRenderer.invoke('close-terminal', options),
+  forceKillTerminal: (options) => ipcRenderer.invoke('force-kill-terminal', options),
 
   // ============================================
   // Project Config API

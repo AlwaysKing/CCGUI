@@ -3111,6 +3111,22 @@ ipcMain.handle('close-terminal', async (event, { terminalId } = {}) => {
   }
 })
 
+ipcMain.handle('force-kill-terminal', async (event, { terminalId } = {}) => {
+  try {
+    const terminalSession = terminalSessions.get(terminalId)
+    if (!terminalSession || terminalSession.webContentsId !== event.sender.id) {
+      throw new Error('终端不存在')
+    }
+
+    stopTerminalCommandMonitor(terminalSession)
+    terminalSessions.delete(terminalId)
+    await sendTerminalHostRequest('force-kill-terminal', { terminalId })
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message || '强制终止终端失败' }
+  }
+})
+
 // ============================================
 // App Config IPC Handlers
 // ============================================

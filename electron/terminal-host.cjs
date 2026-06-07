@@ -157,6 +157,30 @@ function disposeTerminal(terminalId) {
   terminalSessions.delete(terminalId)
 }
 
+function handleForceKillTerminal(requestId, payload = {}) {
+  const terminalSession = terminalSessions.get(payload.terminalId)
+  if (!terminalSession) {
+    sendResponse(requestId, false, { error: '终端不存在' })
+    return
+  }
+
+  const pid = terminalSession.process.pid
+  try {
+    // 使用负 PID 杀掉整个进程组（shell + 所有子进程）
+    process.kill(-pid, 'SIGKILL')
+  } catch (error) {
+    // 进程组可能已退出，尝试单独杀 shell 进程
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch (_) {
+      // 进程已不在，忽略
+    }
+  }
+
+  terminalSessions.delete(payload.terminalId)
+  sendResponse(requestId, true)
+}
+
 async function handleCreateTerminal(requestId, payload = {}) {
   ensureNodePtySpawnHelperExecutable()
   const pty = getNodePty()
@@ -287,6 +311,9 @@ process.on('message', async message => {
         break
       case 'close-terminal':
         handleCloseTerminal(requestId, payload)
+        break
+      case 'force-kill-terminal':
+        handleForceKillTerminal(requestId, payload)
         break
       case 'shutdown':
         handleShutdown(requestId)

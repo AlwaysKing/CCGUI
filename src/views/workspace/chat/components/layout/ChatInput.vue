@@ -882,7 +882,7 @@ function openAttachmentPicker() {
 }
 
 function getTaskDockItemTitle(task) {
-  const actionLabel = task?.running ? '停止任务' : '快速启动'
+  const actionLabel = task?.running ? '停止任务' : task?.starting ? '启动中...' : '快速启动'
   const label = String(task?.label || '').trim()
   const commandLine = String(task?.commandLine || '').trim()
   return commandLine ? `${actionLabel}: ${label} · ${commandLine}` : `${actionLabel}: ${label}`
@@ -920,6 +920,11 @@ function handleTaskDockContextMenuClickOutside() {
 
 function handleTaskDockItemClick(task) {
   if (!task?.label) {
+    return
+  }
+
+  // 启动中不允许重复操作
+  if (task.starting) {
     return
   }
 
@@ -1085,14 +1090,17 @@ defineExpose({
               v-for="task in props.taskDockItems"
               :key="task.label"
               class="task-dock-item"
-              :class="{ running: task.running }"
+              :class="{ running: task.running, starting: task.starting }"
               :title="getTaskDockItemTitle(task)"
+              :disabled="task.starting"
               @click="handleTaskDockItemClick(task)"
               @contextmenu="(e) => handleTaskDockItemContextMenu(e, task)"
             >
-              <span class="task-dock-item-indicator" aria-hidden="true"></span>
+              <span class="task-dock-item-indicator" aria-hidden="true">
+                <span v-if="task.starting" class="indicator-spinner"></span>
+              </span>
               <span class="task-dock-item-label">{{ task.label }}</span>
-              <span class="task-dock-item-state">{{ task.running ? '运行中' : '待启动' }}</span>
+              <span class="task-dock-item-state">{{ task.running ? '运行中' : task.starting ? '启动中' : '待启动' }}</span>
             </button>
           </div>
           <!-- Task Dock 右键菜单 -->
@@ -1551,11 +1559,43 @@ defineExpose({
   border-radius: 999px;
   background: rgba(161, 161, 170, 0.82);
   flex: 0 0 auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .task-dock-item.running .task-dock-item-indicator {
   background: #F97316;
   box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.14);
+}
+
+.task-dock-item.starting .task-dock-item-indicator {
+  background: transparent;
+  width: 10px;
+  height: 10px;
+}
+
+.indicator-spinner {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1.5px solid rgba(161, 161, 170, 0.3);
+  border-top-color: rgba(161, 161, 170, 0.9);
+  animation: indicator-spin 0.6s linear infinite;
+}
+
+@keyframes indicator-spin {
+  to { transform: rotate(360deg); }
+}
+
+.task-dock-item.starting {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.task-dock-item.starting .task-dock-item-state {
+  color: #A1A1AA;
 }
 
 .task-dock-item-label {

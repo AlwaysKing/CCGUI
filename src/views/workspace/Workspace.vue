@@ -57,6 +57,7 @@ const taskLauncherConfigDocument = ref({ version: '2.0.0', tasks: [] })
 const taskLauncherUnsupportedTasks = ref([])
 const taskLauncherConfigSaving = ref(false)
 const runningTaskLabels = ref([])
+const exitedTaskLabels = ref([])
 const taskDockItems = ref([])
 const CHAT_MIN_WIDTH = 360
 const CHAT_COLLAPSE_THRESHOLD = CHAT_MIN_WIDTH / 3
@@ -276,6 +277,7 @@ function upsertTaskDockItem(task, overrides = {}) {
     ...normalizedTask,
     ...overrides,
     running: overrides.running ?? existingItem?.running ?? false,
+    starting: overrides.starting ?? existingItem?.starting ?? false,
     lastUsedAt: overrides.lastUsedAt ?? existingItem?.lastUsedAt ?? Date.now()
   }
 
@@ -298,6 +300,11 @@ function syncTaskDockItems() {
       .map(label => String(label || '').trim())
       .filter(Boolean)
   )
+  const exitedLabels = new Set(
+    exitedTaskLabels.value
+      .map(label => String(label || '').trim())
+      .filter(Boolean)
+  )
   const existingByLabel = new Map(
     taskDockItems.value.map(item => [item.label, item])
   )
@@ -308,10 +315,18 @@ function syncTaskDockItems() {
     const existing = existingByLabel.get(label)
     if (!existing) continue
 
+    const isRunning = runningLabels.has(label)
+    const hasExited = exitedLabels.has(label)
+    // starting 状态：终端真正启动后自动转为 running 并清除 starting；
+    // 终端已退出时也必须清除 starting（处理快速结束的任务）
+    const wasStarting = existing.starting
+    const nextStarting = wasStarting && !isRunning && !hasExited
+
     syncedItems.push({
       ...existing,
       ...latestTask,
-      running: runningLabels.has(label)
+      running: isRunning,
+      starting: nextStarting
     })
   }
 
@@ -334,17 +349,21 @@ function syncTaskDockItems() {
 
 async function handleRunTaskLauncher(task) {
   if (!task?.commandLine) {
+    console.warn('[Workspace] handleRunTaskLauncher skipped: no commandLine', task?.label)
     return
   }
 
   upsertTaskDockItem(task, {
-    running: true,
+    starting: true,
     lastUsedAt: Date.now()
   })
 
   try {
-    await terminalPanelRef.value?.runTaskTerminal?.(task)
+    const result = await terminalPanelRef.value?.runTaskTerminal?.(task)
+    console.log('[Workspace] runTaskTerminal done:', task.label, result)
   } catch (error) {
+    // 启动失败，清除 starting 状态
+    upsertTaskDockItem(task, { starting: false })
     syncTaskDockItems()
     console.error('[Workspace] Failed to run launcher task:', error)
   }
@@ -551,6 +570,7 @@ function handleTerminalRunningChange(nextState) {
     count: Number(nextState?.count || 0)
   }
   runningTaskLabels.value = Array.isArray(nextState?.taskLabels) ? nextState.taskLabels : []
+  exitedTaskLabels.value = Array.isArray(nextState?.exitedTaskLabels) ? nextState.exitedTaskLabels : []
   // 同步到 store，供窗口关闭检测和项目切换检测使用
   store.setHasRunningTerminals(terminalRunningState.value.hasRunning)
 }
@@ -761,7 +781,7 @@ watch(() => store.currentProject?.path, nextProjectPath => {
   void loadTaskLauncherTasks(nextProjectPath || '')
 }, { immediate: true })
 
-watch([taskLauncherTasks, runningTaskLabels], () => {
+watch([taskLauncherTasks, runningTaskLabels, exitedTaskLabels], () => {
   syncTaskDockItems()
 }, { deep: true })
 

@@ -2747,7 +2747,10 @@ export const useSessionStore = defineStore('session', () => {
         }
         if (!isSilentMessageHandled(data)) {
           session.silentMessages.push(reactive(data))
-          addMessageToQueue(session, data)
+          // 空内容的 silent-message 只记入沉没列表，不加入消息队列渲染
+          if (hasMessageContent(data)) {
+            addMessageToQueue(session, data)
+          }
         }
         break
 
@@ -3917,6 +3920,13 @@ export const useSessionStore = defineStore('session', () => {
 
   function isSilentMessageHandled(data) {
     return HANDLED_SILENT_MESSAGE_TYPES.has(data?.messageType)
+  }
+
+  function hasMessageContent(data) {
+    if (typeof data?.content === 'string' && data.content.trim()) return true
+    if (Array.isArray(data?.content) && data.content.length > 0) return true
+    if (typeof data?.message === 'string' && data.message.trim()) return true
+    return false
   }
 
   function getEscalatedSilentMessageNotification(data) {

@@ -3,9 +3,9 @@ const path = require('path')
 function encodeProjectPath(projectPath) {
   let encodedPath = projectPath
   if (process.platform === 'win32') {
-    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
+    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-').replace(/\./g, '-')
   } else {
-    encodedPath = encodedPath.replace(/\//g, '-')
+    encodedPath = encodedPath.replace(/\//g, '-').replace(/\./g, '-')
   }
   if (encodedPath.startsWith('-')) {
     encodedPath = encodedPath.slice(1)

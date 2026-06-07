@@ -16,7 +16,7 @@ function getSanitizedClaudeProjectId(projectPath) {
   if (!projectPath) {
     return null
   }
-  return encodeProjectPath(projectPath).replace(/[^A-Za-z0-9._-]/g, '-')
+  return encodeProjectPath(projectPath).replace(/[^A-Za-z0-9_-]/g, '-')
 }
 
 function resolveClaudeProjectPaths(projectId) {

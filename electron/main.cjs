@@ -394,6 +394,10 @@ function createWindow() {
   mainWindow.on('closed', () => {
     disposeTerminalsForWebContents(mainWindowWebContentsId)
     stopProjectFileWatcher(mainWindowWebContentsId)
+    // 安全网：确保窗口销毁后清理所有残留 session
+    if (sessionManager) {
+      sessionManager.closeAll()
+    }
     mainWindow = null
   })
 }

@@ -175,7 +175,22 @@ function syncModelFromDom() {
 
 function getSerializedDomValue() {
   if (!editorRef.value) return ''
-  return Array.from(editorRef.value.childNodes).map(serializeNode).join('')
+  const children = Array.from(editorRef.value.childNodes)
+  if (children.length === 0) return ''
+  return children.map((node, index) => {
+    const serialized = serializeNode(node)
+    // 顶层子节点之间插入换行：当前节点是 DIV/P 或下一个节点是块级元素时，已有尾部 \n；
+    // 但裸文本节点后面紧跟 DIV/P 时缺少换行，需要补上
+    if (index < children.length - 1) {
+      const next = children[index + 1]
+      const currentHasTrailingNewline = serialized.endsWith('\n')
+      const nextIsBlock = next.nodeType === Node.ELEMENT_NODE && (next.nodeName === 'DIV' || next.nodeName === 'P')
+      if (!currentHasTrailingNewline && nextIsBlock) {
+        return serialized + '\n'
+      }
+    }
+    return serialized
+  }).join('')
 }
 
 function isHistoryNavigationCandidate() {

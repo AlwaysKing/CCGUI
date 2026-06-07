@@ -1321,6 +1321,18 @@ class ClaudeAdapter extends ClaudeClient {
       return
     }
 
+    // permission_denied：权限拒绝确认回执
+    // 记录完整消息用于排查来源（是主会话还是 subagent、是否有 threadId 等）
+    if (message.type === 'permission_denied') {
+      logger.info('[ClaudeAdapter] permission_denied received:', JSON.stringify(message, null, 2))
+      this.emit('silent-message', {
+        messageType: 'claude/permission_denied',
+        params: message,
+        timestamp: new Date().toISOString()
+      })
+      return
+    }
+
     this.emitProviderSystemNotification('provider-message', {
       messageType: message?.type || 'unknown',
       metadata: message

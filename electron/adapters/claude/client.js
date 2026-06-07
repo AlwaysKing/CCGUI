@@ -11,12 +11,12 @@ const { buildAugmentedEnv } = require('../../services/shell-env')
 function encodeProjectPathForClaude(projectPath, { replaceNonAscii = false } = {}) {
   let encodedPath = projectPath
   if (process.platform === 'win32') {
-    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
+    encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-').replace(/\./g, '-')
   } else {
-    encodedPath = encodedPath.replace(/\//g, '-')
+    encodedPath = encodedPath.replace(/\//g, '-').replace(/\./g, '-')
   }
   if (replaceNonAscii) {
-    encodedPath = encodedPath.replace(/[^A-Za-z0-9._-]/g, '-')
+    encodedPath = encodedPath.replace(/[^A-Za-z0-9_-]/g, '-')
   }
   if (encodedPath.startsWith('-')) {
     encodedPath = encodedPath.slice(1)
@@ -1164,6 +1164,12 @@ class ClaudeClient {
     // 添加 toolUseID (从 options 中获取)
     if (options.toolUseID) {
       responseData.toolUseID = options.toolUseID
+    }
+
+    // deny 时添加 message 和 interrupt（与 VSCode 格式一致）
+    if (!approved) {
+      responseData.message = options.message || '用户拒绝'
+      responseData.interrupt = options.interrupt || false
     }
 
     // 如果批准且有更新后的输入，添加到响应中

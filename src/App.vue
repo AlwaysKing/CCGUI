@@ -1,6 +1,7 @@
 <script setup>
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAppStore } from './stores/useAppStore'
+import { useSessionStore } from './stores/useSessionStore'
 import { logger } from './utils/logger'
 import { buildRuntimeShortcuts, findMatchingShortcut, getDefaultShortcutBindings, normalizeShortcutBindings } from './utils/shortcuts'
 
@@ -8,6 +9,7 @@ const Welcome = defineAsyncComponent(() => import('./views/welcome/Welcome.vue')
 const Workspace = defineAsyncComponent(() => import('./views/workspace/Workspace.vue'))
 
 const store = useAppStore()
+const sessionStore = useSessionStore()
 const shortcutBindings = ref(getDefaultShortcutBindings())
 const runtimeShortcuts = computed(() => buildRuntimeShortcuts(shortcutBindings.value))
 
@@ -97,6 +99,13 @@ function handleAppConfigUpdated(event) {
   }
 }
 
+// 关闭所有 session 后再允许窗口关闭
+async function closeAllSessionsBeforeClose() {
+  for (const session of store.sessions) {
+    await sessionStore.closeSession(session.id)
+  }
+}
+
 // 窗口关闭请求处理
 async function handleWindowCloseRequest() {
   // 先刷新 session 状态，确保拿到最新数据
@@ -106,13 +115,15 @@ async function handleWindowCloseRequest() {
     showCloseConfirm.value = true
     return
   }
-  // 没有运行中的任务，直接关闭
+  // 没有运行中的任务，关闭所有 session 后再关闭窗口
+  await closeAllSessionsBeforeClose()
   await window.electronAPI?.windowCloseResponse({ canClose: true })
 }
 
 async function confirmCloseWindow() {
   closeConfirmBusy.value = true
   try {
+    await closeAllSessionsBeforeClose()
     await window.electronAPI?.windowCloseResponse({ canClose: true })
   } finally {
     closeConfirmBusy.value = false

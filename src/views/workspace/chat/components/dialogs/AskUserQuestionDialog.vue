@@ -442,7 +442,7 @@ const isAllAnswered = computed(() => {
   background: #064E3B;
 }
 
-.option-item:active {
+.option-item:active:not(:focus-within) {
   transform: scale(0.98);
 }
 

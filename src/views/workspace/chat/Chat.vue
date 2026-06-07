@@ -2564,7 +2564,7 @@ async function handleQuestionDismiss() {
     const requestId = question.request_id ?? question.tool_use_id
     const toolUseId = question.tool_use_id ?? question.toolUseId ?? question.id ?? requestId
     try {
-      await sessionStore.sendControlResponse(requestId, false, { toolUseID: toolUseId })
+      await sessionStore.sendControlResponse(requestId, false, { toolUseID: toolUseId, message: '用户关闭了问题', interrupt: false })
     } catch (error) {
       console.error('[ChatWindow] Failed to dismiss question:', error)
     }

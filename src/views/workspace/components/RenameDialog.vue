@@ -60,7 +60,7 @@ useDialogStack(computed(() => true), () => emit('close'))
             v-model="name"
             type="text"
             :placeholder="placeholder"
-            @keyup.enter="handleEnterKey"
+            @keydown.enter="handleEnterKey"
             ref="inputRef"
           />
         </div>

@@ -3,6 +3,19 @@ import { ref, computed, watch } from 'vue'
 import { useSessionStore } from './useSessionStore'
 import { logger } from '../utils/logger'
 
+// CCAgent 项目路径（跨平台）
+const CCAGENT_PROJECT_PATH = window.electronAPI
+  ? null // 将在运行时通过 IPC 获取
+  : null
+
+// 判断是否为 ccagent 项目
+function isCCAgentProject(project) {
+  if (!project?.path) return false
+  // 匹配 ~/.ccgui/ccagent 路径（兼容不同平台）
+  const normalized = project.path.replace(/\\/g, '/')
+  return normalized.endsWith('/.ccgui/ccagent')
+}
+
 // Local storage keys
 const STORAGE_KEYS = {
   SIDEBAR_STATE: 'ccgui_sidebar_state',
@@ -260,8 +273,20 @@ export const useAppStore = defineStore('app', () => {
         const toolName = requestData?.tool_name || requestData?.toolName
         const isAskUserQuestion = toolName === 'AskUserQuestion'
 
-        // 自动批准模式下，非 AskUserQuestion 的权限请求不播放通知（内部消化）
-        if (isAutoApproved && !isAskUserQuestion) {
+        // 判断是否为 ~/.ccgui 目录下的文件请求（自动批准，无需音效）
+        let isCcGuiFile = false
+        try {
+          const toolInput = requestData?.input || requestData?.tool_input || requestData?.toolInput
+          const parsedInput = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput
+          const filePath = parsedInput?.file_path || parsedInput?.filePath || parsedInput?.path || ''
+          const normalized = String(filePath || '').replace(/\\/g, '/')
+          isCcGuiFile = normalized.includes('/.ccgui/') || normalized.endsWith('/.ccgui')
+        } catch {
+          // 解析失败，不做特殊处理
+        }
+
+        // 自动批准模式或 ~/.ccgui 文件请求，非 AskUserQuestion 不播放通知
+        if ((isAutoApproved || isCcGuiFile) && !isAskUserQuestion) {
           break
         }
 
@@ -305,7 +330,8 @@ export const useAppStore = defineStore('app', () => {
       isLoading.value = true
       error.value = null
       const result = await window.electronAPI.getProjects()
-      projects.value = result
+      // 过滤掉 ccagent 内置项目，不显示在项目列表中
+      projects.value = result.filter(p => !isCCAgentProject(p))
     } catch (e) {
       error.value = e.message
       logger.error('Failed to fetch projects', { error: e.message })
@@ -324,6 +350,27 @@ export const useAppStore = defineStore('app', () => {
     } catch (e) {
       error.value = e.message
       logger.error('Failed to add project', { error: e.message })
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /**
+   * 确保 CCAgent 内置项目存在并返回项目对象
+   * - 创建 ~/.ccgui/ccagent 目录（如不存在）
+   * - 创建 .ccagent.md 和 .ccagentmemory.md（如不存在）
+   * - 注册项目到后端（不添加到前端列表）
+   */
+  async function ensureCCAgentProject() {
+    try {
+      isLoading.value = true
+      error.value = null
+      const project = await window.electronAPI.ensureCCAgentProject()
+      return project
+    } catch (e) {
+      error.value = e.message
+      logger.error('Failed to ensure CCAgent project', { error: e.message })
       throw e
     } finally {
       isLoading.value = false
@@ -745,6 +792,7 @@ export const useAppStore = defineStore('app', () => {
     // Actions
     fetchProjects,
     addProject,
+    ensureCCAgentProject,
     removeProject,
     renameProject,
     selectProject,

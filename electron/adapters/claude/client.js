@@ -563,7 +563,7 @@ class ClaudeClient {
     }
 
     try {
-      const prompt = buildDeveloperInstructions(this.projectSettings, { provider: 'claude' })
+      const prompt = buildDeveloperInstructions(this.projectSettings, { provider: 'claude', projectPath: this.workingDirectory })
       return prompt
     } catch (error) {
       logger.error('[ClaudeClient] Failed to build system prompt:', error)

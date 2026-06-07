@@ -21,6 +21,28 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/**
+ * 判断权限请求是否针对 ~/.ccgui 目录下的文件
+ * 自动批准这些请求，无需弹窗和音效
+ */
+function isCcGuiFileRequest(requestData) {
+  if (!requestData || typeof requestData !== 'object') return false
+
+  let toolInput = requestData.input || requestData.tool_input || requestData.toolInput
+  if (!toolInput) return false
+
+  if (typeof toolInput === 'string') {
+    try { toolInput = JSON.parse(toolInput) } catch { return false }
+  }
+  if (!toolInput || typeof toolInput !== 'object') return false
+
+  const filePath = toolInput.file_path || toolInput.filePath || toolInput.path || ''
+  if (typeof filePath !== 'string' || !filePath) return false
+
+  const normalized = filePath.replace(/\\/g, '/')
+  return normalized.includes('/.ccgui/') || normalized.endsWith('/.ccgui')
+}
+
 function isTurnInitiatorMessage(message = null) {
   return message?.role === 'user' || message?.role === 'command'
 }
@@ -3434,6 +3456,13 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] mergedRequestData:', JSON.stringify(mergedRequestData, null, 2))
 
     const hasQuestions = toolInput?.questions || requestData.questions
+
+    // ~/.ccgui 目录下的文件请求自动批准（不弹窗、不播放音效）
+    if (isCcGuiFileRequest(mergedRequestData)) {
+      log('[SessionStore] Auto-approving ~/.ccgui file request, toolName:', toolName, 'request_id:', mergedRequestData.request_id)
+      autoApproveControlRequest(session, mergedRequestData)
+      return
+    }
 
     if (toolName === 'AskUserQuestion' || hasQuestions) {
       log('[SessionStore] Setting pendingQuestion, request_id:', mergedRequestData.request_id)

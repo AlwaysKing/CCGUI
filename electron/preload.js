@@ -155,6 +155,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   getProjects: () => ipcRenderer.invoke('get-projects'),
   addProject: (options) => ipcRenderer.invoke('add-project', options),
+  ensureCCAgentProject: () => ipcRenderer.invoke('ensure-ccagent-project'),
   removeProject: (options) => ipcRenderer.invoke('remove-project', options),
   renameProject: (options) => ipcRenderer.invoke('rename-project', options),
   getSessions: (options) => ipcRenderer.invoke('get-sessions', options),

@@ -162,6 +162,17 @@ async function refreshProjects() {
   await checkProjectsExistence()
 }
 
+async function openCCAgent() {
+  try {
+    const project = await store.ensureCCAgentProject()
+    if (project) {
+      store.selectProject(project)
+    }
+  } catch (e) {
+    logger.error('[Welcome] Failed to open CCAgent', { error: e.message })
+  }
+}
+
 async function openProjectInFinder(event, project) {
   event.stopPropagation()
 
@@ -291,16 +302,30 @@ function handleShortcutEvent(event) {
     </div>
 
     <div class="search-bar">
-      <svg class="search-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="11" cy="11" r="8"/>
-        <path d="m21 21-4.35-4.35"/>
-      </svg>
-      <input
-        v-model="searchQuery"
-        type="text"
-        placeholder="搜索项目..."
-        class="search-input"
-      />
+      <div class="search-input-wrapper">
+        <svg class="search-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/>
+          <path d="m21 21-4.35-4.35"/>
+        </svg>
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="搜索项目..."
+          class="search-input"
+        />
+      </div>
+      <button class="ccagent-btn" @click="openCCAgent" title="CCAgent">
+        <svg width="32" height="32" viewBox="0 0 24 24" shape-rendering="geometricPrecision" fill="currentColor" stroke="none">
+          <polygon points="12,1.5 12.8,8.5 12,11.2 11.2,8.5"/>
+          <polygon points="19.4,4.6 15.0,10.1 12.6,11.4 13.9,9.0"/>
+          <polygon points="22.5,12 15.5,12.8 12.8,12 15.5,11.2"/>
+          <polygon points="19.4,19.4 13.9,15.0 12.6,12.6 15.0,13.9"/>
+          <polygon points="12,22.5 11.2,15.5 12,12.8 12.8,15.5"/>
+          <polygon points="4.6,19.4 9.0,13.9 11.4,12.6 10.1,15.0"/>
+          <polygon points="1.5,12 8.5,11.2 11.2,12 8.5,12.8"/>
+          <polygon points="4.6,4.6 10.1,9.0 11.4,11.4 9.0,10.1"/>
+        </svg>
+      </button>
     </div>
 
     <div class="projects-container">
@@ -739,9 +764,13 @@ function handleShortcutEvent(event) {
   padding: 0 32px;
 }
 
+.search-input-wrapper {
+  position: relative;
+}
+
 .search-icon {
   position: absolute;
-  left: 48px;
+  left: 16px;
   top: 50%;
   transform: translateY(-50%);
   color: #71717A;
@@ -757,6 +786,7 @@ function handleShortcutEvent(event) {
   color: #F4F4F5;
   font-size: 14px;
   transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+  box-sizing: border-box;
 }
 
 .search-input:focus {
@@ -768,6 +798,35 @@ function handleShortcutEvent(event) {
 
 .search-input::placeholder {
   color: #71717A;
+}
+
+.ccagent-btn {
+  position: absolute;
+  right: -30px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #A1A1AA;
+  transition: all 0.2s;
+  padding: 0;
+}
+
+.ccagent-btn:hover {
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(249, 115, 22, 0.3);
+  color: #F97316;
+}
+
+.ccagent-btn:active {
+  background: rgba(249, 115, 22, 0.18);
 }
 
 .projects-container {

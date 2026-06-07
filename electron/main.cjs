@@ -1637,6 +1637,60 @@ ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
   }
 })
 
+// Ensure CCAgent built-in project exists
+ipcMain.handle('ensure-ccagent-project', async () => {
+  const ccagentPath = path.join(os.homedir(), '.ccgui', 'ccagent')
+
+  try {
+    // 1. 创建目录（如不存在）
+    if (!fs.existsSync(ccagentPath)) {
+      fs.mkdirSync(ccagentPath, { recursive: true })
+      logger.info('[CCAgent] Created directory:', ccagentPath)
+    }
+
+    // 2. 创建 .ccagent.md（如不存在）
+    const ccagentMdPath = path.join(ccagentPath, '.ccagent.md')
+    if (!fs.existsSync(ccagentMdPath)) {
+      const ccagentMdContent = `# CCAgent 设定
+
+在开始任何工作之前，请先与用户确认以下设定：
+
+1. **你的名称** — 你希望我怎么称呼自己？（例如：小C、Agent、或其他）
+2. **对用户的称呼** — 你希望我怎么称呼你？
+3. **性格风格** — 你希望我的交流风格是怎样的？（例如：专业简洁、活泼幽默、温和耐心等）
+4. **其他偏好** — 任何你希望我记住的偏好
+
+完成设定后，请将确认的设定内容更新到本文件（.ccagent.md）中，格式如下：
+
+\`\`\`
+## 我的设定
+- 名称：[你的名称]
+- 称呼用户：[对用户的称呼]
+- 性格风格：[性格描述]
+- 其他偏好：[其他内容]
+\`\`\`
+`
+      fs.writeFileSync(ccagentMdPath, ccagentMdContent, 'utf-8')
+      logger.info('[CCAgent] Created .ccagent.md')
+    }
+
+    // 3. 创建 .ccagentmemory.md（如不存在）
+    const ccagentMemoryPath = path.join(ccagentPath, '.ccagentmemory.md')
+    if (!fs.existsSync(ccagentMemoryPath)) {
+      fs.writeFileSync(ccagentMemoryPath, '# CCAgent Memory\n\n', 'utf-8')
+      logger.info('[CCAgent] Created .ccagentmemory.md')
+    }
+
+    // 4. 注册项目到后端
+    const project = projectService.addProject(ccagentPath, null)
+    logger.info('[CCAgent] Project ensured:', project.id)
+    return project
+  } catch (e) {
+    logger.error('[CCAgent] Failed to ensure CCAgent project:', e.message)
+    throw e
+  }
+})
+
 // Get project config
 ipcMain.handle('get-project-config', async (event, { projectId }) => {
   try {
@@ -6411,6 +6465,59 @@ function flushPendingDockProjectOpens() {
 }
 
 /**
+ * Open CCAgent built-in project in a new window
+ */
+function openCCAgentWindow() {
+  const ccagentPath = path.join(os.homedir(), '.ccgui', 'ccagent')
+  const projectId = encodeProjectPath(ccagentPath)
+  const projectName = 'CCAgent'
+
+  // Ensure directory exists
+  if (!fs.existsSync(ccagentPath)) {
+    fs.mkdirSync(ccagentPath, { recursive: true })
+  }
+
+  // Ensure template files exist
+  const ccagentMdPath = path.join(ccagentPath, '.ccagent.md')
+  if (!fs.existsSync(ccagentMdPath)) {
+    const content = `# CCAgent 设定
+
+在开始任何工作之前，请先与用户确认以下设定：
+
+1. **你的名称** — 你希望我怎么称呼自己？（例如：小C、Agent、或其他）
+2. **对用户的称呼** — 你希望我怎么称呼你？
+3. **性格风格** — 你希望我的交流风格是怎样的？（例如：专业简洁、活泼幽默、温和耐心等）
+4. **其他偏好** — 任何你希望我记住的偏好
+
+完成设定后，请将确认的设定内容更新到本文件（.ccagent.md）中，格式如下：
+
+\`\`\`
+## 我的设定
+- 名称：[你的名称]
+- 称呼用户：[对用户的称呼]
+- 性格风格：[性格描述]
+- 其他偏好：[其他内容]
+\`\`\`
+`
+    fs.writeFileSync(ccagentMdPath, content, 'utf-8')
+  }
+
+  const ccagentMemoryPath = path.join(ccagentPath, '.ccagentmemory.md')
+  if (!fs.existsSync(ccagentMemoryPath)) {
+    fs.writeFileSync(ccagentMemoryPath, '# CCAgent Memory\n\n', 'utf-8')
+  }
+
+  // Register project if needed, then open
+  try {
+    projectService.addProject(ccagentPath, null)
+  } catch (e) {
+    // May already exist, that's fine
+  }
+
+  openProjectWindow(projectId, projectName, ccagentPath)
+}
+
+/**
  * Setup dock menu (macOS only)
  */
 function setupDockMenu() {
@@ -6438,6 +6545,13 @@ function setupDockMenu() {
   }
 
   const dockMenuTemplate = [
+    {
+      label: '打开 CCAgent',
+      click: () => {
+        logger.info('[Dock] Open CCAgent clicked')
+        openCCAgentWindow()
+      }
+    },
     {
       label: '新建窗口',
       click: () => {

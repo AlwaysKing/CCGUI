@@ -36,6 +36,12 @@ function buildOverviewSection(provider = '') {
   ].join('\n')
 }
 
+function isCCAgentProjectPath(projectPath) {
+  if (!projectPath || typeof projectPath !== 'string') return false
+  const normalized = projectPath.replace(/\\/g, '/')
+  return normalized.endsWith('/.ccgui/ccagent')
+}
+
 function buildDeveloperInstructions(projectSettings = null, options = {}) {
   if (!projectSettings || typeof projectSettings !== 'object') {
     return null
@@ -94,6 +100,20 @@ function buildDeveloperInstructions(projectSettings = null, options = {}) {
 
   if (docPaths.length > 0) {
     sections.push(['# 规范文档', '', ...docPaths.map(filePath => `- ${filePath}`)].join('\n'))
+  }
+
+  // CCAgent 项目专属注入：无论项目配置如何，都追加设定和记忆文件指引
+  const projectPath = typeof options?.projectPath === 'string' ? options.projectPath : ''
+  if (isCCAgentProjectPath(projectPath)) {
+    const ccagentMdAbs = path.join(projectPath, '.ccagent.md')
+    const ccagentMemoryAbs = path.join(projectPath, '.ccagentmemory.md')
+    sections.push([
+      '# CCAgent 专属指令',
+      '',
+      `你的设定文件是 \`${ccagentMdAbs}\`，你的全局记忆文件是 \`${ccagentMemoryAbs}\`。`,
+      '在每次对话开始时，请先读取设定文件了解你的设定，并在需要时读取记忆文件获取历史记忆。',
+      '当用户要求更新设定或记忆时，请将内容写入对应的文件。'
+    ].join('\n'))
   }
 
   return sections.join('\n\n')

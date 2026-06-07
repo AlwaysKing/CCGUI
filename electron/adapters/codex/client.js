@@ -818,7 +818,7 @@ class CodexClient {
 
   async buildDeveloperInstructions() {
     try {
-      return buildDeveloperInstructions(this.projectSettings, { provider: 'codex' })
+      return buildDeveloperInstructions(this.projectSettings, { provider: 'codex', projectPath: this.workingDirectory })
     } catch (error) {
       logger.warn('[CodexClient] Failed to build developer instructions', {
         error: error.message

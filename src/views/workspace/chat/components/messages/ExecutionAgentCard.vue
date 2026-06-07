@@ -233,7 +233,7 @@ function buildCompletedSummary() {
             :message-index="index"
             :total-messages="card.displayTimelineItems.length"
             :working-directory="workingDirectory"
-            :current-time="currentTime"
+            :current-time="(message.isStreaming || message.isExecuting || (!message.duration && message.startTime)) ? currentTime : null"
             :all-messages="card.displayTimelineItems"
             :chat-theme="nestedTimelineTheme"
           />
@@ -246,7 +246,7 @@ function buildCompletedSummary() {
             :message-index="0"
             :total-messages="1"
             :working-directory="workingDirectory"
-            :current-time="currentTime"
+            :current-time="showActivePreview ? currentTime : null"
             :all-messages="[waitingShellMessage]"
             :chat-theme="nestedTimelineTheme"
           >
@@ -333,7 +333,7 @@ function buildCompletedSummary() {
               :message-index="index"
               :total-messages="card.timelineItems.length"
               :working-directory="workingDirectory"
-              :current-time="currentTime"
+              :current-time="(message.isStreaming || message.isExecuting || (!message.duration && message.startTime)) ? currentTime : null"
               :all-messages="card.timelineItems"
             :chat-theme="nestedTimelineTheme"
           />

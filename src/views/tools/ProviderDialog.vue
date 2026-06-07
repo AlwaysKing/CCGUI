@@ -30,6 +30,7 @@ const emit = defineEmits(['close', 'saved'])
 const activeSection = ref('model')
 const hookViewMode = ref('event')
 const inspectorLoading = ref(false)
+const inspectorLoaded = ref(false)
 const inspectorError = ref('')
 const pluginBusy = ref(false)
 const pluginActionError = ref('')
@@ -911,11 +912,21 @@ async function refreshInspector() {
       throw new Error(result?.error || '读取面板数据失败')
     }
     inspectorData.value = result.data || { hooks: [], plugins: [], marketplaces: [], configPaths: {} }
+    inspectorLoaded.value = true
   } catch (error) {
     inspectorError.value = error.message || '读取面板数据失败'
   } finally {
     inspectorLoading.value = false
   }
+}
+
+// 需要 inspector 数据的 tab 集合
+const INSPECTOR_TABS = new Set(['hooks', 'plugins', 'subagents', 'marketplace'])
+
+// 按需加载 inspector 数据：仅在切换到需要它的 tab 且尚未加载过时触发
+async function ensureInspectorLoaded() {
+  if (inspectorLoaded.value || inspectorLoading.value) return
+  await refreshInspector()
 }
 
 async function refreshAll() {
@@ -1392,7 +1403,8 @@ async function confirmDeleteSubagent() {
 onMounted(() => {
   pluginActionScope.value = 'all'
   selectedCodexPluginStates.value = ['enabled', 'disabled']
-  refreshAll()
+  // 只加载当前 tab（模型）所需的数据，inspector 数据按需加载
+  loadSettings()
 })
 
 watch(() => props.projectPath, () => {
@@ -1402,7 +1414,11 @@ watch(() => props.projectPath, () => {
   pluginActionScope.value = 'all'
   selectedCodexPluginStates.value = ['enabled', 'disabled']
   selectedMarketplace.value = null
-  refreshInspector()
+  // 重置 inspector 加载状态，如果当前在需要 inspector 的 tab 则立即重新加载
+  inspectorLoaded.value = false
+  if (INSPECTOR_TABS.has(activeSection.value)) {
+    refreshInspector()
+  }
 })
 
 watch(() => normalizedProvider.value, () => {
@@ -1415,6 +1431,10 @@ watch(() => normalizedProvider.value, () => {
 watch(() => activeSection.value, (section) => {
   if (section !== 'marketplace') {
     selectedMarketplace.value = null
+  }
+  // 切换到需要 inspector 数据的 tab 时，按需加载
+  if (INSPECTOR_TABS.has(section)) {
+    ensureInspectorLoaded()
   }
 })
 </script>

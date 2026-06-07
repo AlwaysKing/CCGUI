@@ -192,11 +192,26 @@ export function useSettingsData(emit) {
         if (config.documents) {
           documents.value = config.documents
         }
+
+        // 从 CCGUI 内部配置读取 maxThinkingTokens（非 Claude 设置）
+        if (config.settings?.maxThinkingTokens !== undefined) {
+          defaultConfig.value.maxThinkingTokens = config.settings.maxThinkingTokens
+        }
+
+        // 读取 thinkingEnabled
+        if (config.settings?.thinkingEnabled !== undefined) {
+          defaultConfig.value.thinkingEnabled = config.settings.thinkingEnabled
+        }
       }
 
-      const claudeResult = await window.electronAPI.getClaudeSettings()
-      if (claudeResult?.success && claudeResult.settings) {
-        const claudeSettings = claudeResult.settings
+      // 并行加载 Claude 和 Codex 的 provider 级配置
+      const [claudeResult, codexResult] = await Promise.allSettled([
+        window.electronAPI.getClaudeSettings(),
+        window.electronAPI.getCodexSettings()
+      ])
+
+      if (claudeResult.status === 'fulfilled' && claudeResult.value?.success && claudeResult.value.settings) {
+        const claudeSettings = claudeResult.value.settings
         const env = claudeSettings.env || {}
 
         defaultConfig.value.apiUrl = env.ANTHROPIC_BASE_URL || ''
@@ -210,25 +225,14 @@ export function useSettingsData(emit) {
         defaultConfig.value.anthropicSmallFastModel = env.ANTHROPIC_SMALL_FAST_MODEL || ''
       }
 
-      // 从 CCGUI 内部配置读取 maxThinkingTokens（非 Claude 设置）
-      if (result?.success && result.config?.settings?.maxThinkingTokens !== undefined) {
-        defaultConfig.value.maxThinkingTokens = result.config.settings.maxThinkingTokens
-      }
-
-      // 读取 thinkingEnabled
-      if (result?.success && result.config?.settings?.thinkingEnabled !== undefined) {
-        defaultConfig.value.thinkingEnabled = result.config.settings.thinkingEnabled
-      }
-
-      const codexResult = await window.electronAPI.getCodexSettings()
-      if (codexResult?.success && codexResult.settings) {
-        codexConfig.value.authMode = codexResult.settings.authMode || 'provider'
-        codexConfig.value.modelProvider = codexResult.settings.modelProvider || ''
-        codexConfig.value.apiUrl = codexResult.settings.apiUrl || ''
-        codexConfig.value.authToken = codexResult.settings.authToken || ''
-        codexConfig.value.model = codexResult.settings.model || ''
-        codexConfig.value.modelReasoningEffort = codexResult.settings.modelReasoningEffort || 'medium'
-        codexConfig.value.proxyUrl = codexResult.settings.proxyUrl || ''
+      if (codexResult.status === 'fulfilled' && codexResult.value?.success && codexResult.value.settings) {
+        codexConfig.value.authMode = codexResult.value.settings.authMode || 'provider'
+        codexConfig.value.modelProvider = codexResult.value.settings.modelProvider || ''
+        codexConfig.value.apiUrl = codexResult.value.settings.apiUrl || ''
+        codexConfig.value.authToken = codexResult.value.settings.authToken || ''
+        codexConfig.value.model = codexResult.value.settings.model || ''
+        codexConfig.value.modelReasoningEffort = codexResult.value.settings.modelReasoningEffort || 'medium'
+        codexConfig.value.proxyUrl = codexResult.value.settings.proxyUrl || ''
 
         if (codexConfig.value.authMode === 'chatgpt') {
           selectedCodexModelId.value = null

@@ -55,6 +55,8 @@ class ClaudeClient {
     this.debugEnabled = options.debug === true
     this.initializeResponse = null
     this.sidechainMonitorTimer = null
+    this.sidechainFsWatcher = null
+    this.sidechainDebounceTimer = null
     this.sidechainFileState = new Map()
     this.sidechainSeenEntryIds = new Set()
     this.sidechainFileAgents = new Map()
@@ -1346,20 +1348,58 @@ class ClaudeClient {
   }
 
   startSidechainMonitor() {
-    if (this.sidechainMonitorTimer) {
+    if (this.sidechainFsWatcher) {
+      // 已在监听，先做一次初始扫描
+      this.pollSidechainEntries()
       return
     }
 
+    const subagentsDir = this.getSubagentsDirectory()
+    if (!subagentsDir || !fs.existsSync(subagentsDir)) {
+      return
+    }
+
+    // 初始扫描一次，处理已有内容
     this.pollSidechainEntries()
-    this.sidechainMonitorTimer = setInterval(() => {
-      this.pollSidechainEntries()
-    }, 1000)
+
+    // 用 fs.watch 监听目录变化，事件驱动，无变化时零开销
+    try {
+      this.sidechainFsWatcher = fs.watch(
+        subagentsDir,
+        { persistent: false },
+        (eventType, filename) => {
+          if (!filename) return
+          // 只关心 .jsonl 和 .meta.json 文件的变化
+          if (!filename.endsWith('.jsonl') && !filename.endsWith('.meta.json')) return
+          // 防抖：1s 内多个事件合并为一次读取
+          if (this.sidechainDebounceTimer) return
+          this.sidechainDebounceTimer = setTimeout(() => {
+            this.sidechainDebounceTimer = null
+            this.pollSidechainEntries()
+          }, 1000)
+        }
+      )
+      this.sidechainFsWatcher.on('error', () => {
+        // 目录被删除等异常时静默关闭
+        this.stopSidechainMonitor()
+      })
+    } catch {
+      this.sidechainFsWatcher = null
+    }
   }
 
   stopSidechainMonitor() {
     if (this.sidechainMonitorTimer) {
       clearInterval(this.sidechainMonitorTimer)
       this.sidechainMonitorTimer = null
+    }
+    if (this.sidechainDebounceTimer) {
+      clearTimeout(this.sidechainDebounceTimer)
+      this.sidechainDebounceTimer = null
+    }
+    if (this.sidechainFsWatcher) {
+      this.sidechainFsWatcher.close()
+      this.sidechainFsWatcher = null
     }
     this.sidechainFileState.clear()
     this.sidechainSeenEntryIds.clear()

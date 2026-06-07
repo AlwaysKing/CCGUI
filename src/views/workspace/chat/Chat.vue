@@ -164,6 +164,22 @@ const contentViewport = ref({ left: 0, right: 0, width: 0 })
 const messagesViewportWidth = ref(0)
 let previousMessageCount = 0 // 追踪之前的消息数量
 let durationTimer = null // 消耗时间更新定时器
+
+// 按需启停：只在对话运行时才跑定时器
+function startDurationTimer() {
+  if (durationTimer) return
+  currentTime.value = Date.now()
+  durationTimer = setInterval(() => {
+    currentTime.value = Date.now()
+  }, 1000)
+}
+
+function stopDurationTimer() {
+  if (durationTimer) {
+    clearInterval(durationTimer)
+    durationTimer = null
+  }
+}
 let previousWindowHeight = null // 上一次窗口高度
 let chatPanelHeight = ref(0) // chat-panel 容器的高度
 let chatPanelResizeObserver = null // ResizeObserver 实例
@@ -571,6 +587,15 @@ const centerResizeTimerLabel = computed(() => {
   return formatCenterTimer(currentTime.value - activeUserMessage.startTime)
 })
 
+// 按需启停消耗时间定时器：对话运行时启动，空闲时停止
+watch(isProcessing, (processing) => {
+  if (processing) {
+    startDurationTimer()
+  } else {
+    stopDurationTimer()
+  }
+}, { immediate: true })
+
 const latestRuntimeTransitionMessage = computed(() => {
   return [...messages.value].reverse().find(message =>
     message?.role === 'system_notification' && (
@@ -786,10 +811,7 @@ onMounted(async () => {
   // 启动 SessionStore 的事件监听器（监听后端的 session-event 统一通道）
   sessionStore.startEventListener()
 
-  // 启动消耗时间更新定时器
-  durationTimer = setInterval(() => {
-    currentTime.value = Date.now()
-  }, 100)
+  // 消耗时间定时器由 watch(isProcessing) 按需启停，不再无条件启动
 
   // 记录初始窗口高度
   previousWindowHeight = window.innerHeight
@@ -2825,55 +2847,9 @@ function handleToggleAgentRail() {
 
     <div v-if="showConversationWave" class="conversation-wave-rail" aria-hidden="true">
       <div class="conversation-wave">
-        <svg class="conversation-wave-svg" viewBox="0 0 1200 24" preserveAspectRatio="none">
-          <defs>
-            <pattern id="conversation-wave-pattern-back" width="220" height="24" patternUnits="userSpaceOnUse">
-              <path
-                d="M0 17 C 28 12, 82 12, 110 17 C 138 22, 192 22, 220 17"
-                class="conversation-wave-path layer-back"
-              />
-              <animateTransform
-                attributeName="patternTransform"
-                type="translate"
-                from="0 0"
-                to="-220 0"
-                dur="2.9s"
-                repeatCount="indefinite"
-              />
-            </pattern>
-            <pattern id="conversation-wave-pattern-mid" width="160" height="24" patternUnits="userSpaceOnUse">
-              <path
-                d="M0 12 C 20 7, 60 7, 80 12 C 100 17, 140 17, 160 12"
-                class="conversation-wave-path layer-mid"
-              />
-              <animateTransform
-                attributeName="patternTransform"
-                type="translate"
-                from="0 0"
-                to="160 0"
-                dur="1.7s"
-                repeatCount="indefinite"
-              />
-            </pattern>
-            <pattern id="conversation-wave-pattern-front" width="108" height="24" patternUnits="userSpaceOnUse">
-              <path
-                d="M0 15 C 14 9, 40 9, 54 15 C 68 21, 94 21, 108 15"
-                class="conversation-wave-path layer-front"
-              />
-              <animateTransform
-                attributeName="patternTransform"
-                type="translate"
-                from="0 0"
-                to="-108 0"
-                dur="0.9s"
-                repeatCount="indefinite"
-              />
-            </pattern>
-          </defs>
-          <rect x="0" y="0" width="1200" height="24" fill="url(#conversation-wave-pattern-back)" />
-          <rect x="0" y="0" width="1200" height="24" fill="url(#conversation-wave-pattern-mid)" />
-          <rect x="0" y="0" width="1200" height="24" fill="url(#conversation-wave-pattern-front)" />
-        </svg>
+        <div class="wave-layer"><div class="wave-inner wave-inner-back"></div></div>
+        <div class="wave-layer"><div class="wave-inner wave-inner-mid"></div></div>
+        <div class="wave-layer"><div class="wave-inner wave-inner-front"></div></div>
       </div>
     </div>
 
@@ -3621,8 +3597,6 @@ function handleToggleAgentRail() {
   right: 0;
   bottom: -11px;
   margin: 0;
-  transform: none;
-  left: 0;
   width: 100%;
   height: 22px;
   padding: 0;
@@ -3631,40 +3605,69 @@ function handleToggleAgentRail() {
   mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.92) 4%, rgba(0, 0, 0, 0.92) 96%, transparent 100%);
 }
 
-.conversation-wave-svg {
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  transform: translateZ(0);
+/* GPU 合成层：每层独立纹理，合成器线程驱动 translate3d 动画 */
+.wave-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
 }
 
-.conversation-wave-path {
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
+.wave-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background-repeat: repeat-x;
   will-change: transform;
 }
 
-.conversation-wave-path.layer-back {
-  stroke: rgba(120, 113, 108, 0.68);
-  stroke-width: 1.3;
+/* 背景层 — 向左移动，周期 220px / 2.9s */
+.wave-inner-back {
+  width: calc(100% + 220px);
+  background-size: 220px 100%;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 24' preserveAspectRatio='none'%3E%3Cpath d='M0 17 C 28 12, 82 12, 110 17 C 138 22, 192 22, 220 17' fill='none' stroke='%2378716c' stroke-opacity='.68' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E");
   opacity: 0.8;
   filter: drop-shadow(0 0 4px rgba(120, 113, 108, 0.1));
+  animation: wave-scroll-back 2.9s linear infinite;
 }
 
-.conversation-wave-path.layer-mid {
-  stroke: rgba(251, 146, 60, 0.84);
-  stroke-width: 1.58;
+/* 中间层 — 向右移动，周期 160px / 1.7s */
+.wave-inner-mid {
+  left: -160px;
+  width: calc(100% + 320px);
+  background-size: 160px 100%;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 24' preserveAspectRatio='none'%3E%3Cpath d='M0 12 C 20 7, 60 7, 80 12 C 100 17, 140 17, 160 12' fill='none' stroke='%23fb923c' stroke-opacity='.84' stroke-width='1.58' stroke-linecap='round' stroke-linejoin='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E");
   opacity: 0.9;
   filter: drop-shadow(0 0 5px rgba(251, 146, 60, 0.16));
+  animation: wave-scroll-mid 1.7s linear infinite;
 }
 
-.conversation-wave-path.layer-front {
-  stroke: rgba(249, 115, 22, 0.96);
-  stroke-width: 1.82;
+/* 前景层 — 向左移动，周期 108px / 0.9s */
+.wave-inner-front {
+  width: calc(100% + 108px);
+  background-size: 108px 100%;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 108 24' preserveAspectRatio='none'%3E%3Cpath d='M0 15 C 14 9, 40 9, 54 15 C 68 21, 94 21, 108 15' fill='none' stroke='%23f97316' stroke-opacity='.96' stroke-width='1.82' stroke-linecap='round' stroke-linejoin='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E");
   opacity: 0.96;
   filter: drop-shadow(0 0 6px rgba(249, 115, 22, 0.2)) drop-shadow(0 0 10px rgba(251, 146, 60, 0.12));
+  animation: wave-scroll-front 0.9s linear infinite;
+}
+
+@keyframes wave-scroll-back {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-220px, 0, 0); }
+}
+
+@keyframes wave-scroll-mid {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(160px, 0, 0); }
+}
+
+@keyframes wave-scroll-front {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-108px, 0, 0); }
 }
 
 .message {

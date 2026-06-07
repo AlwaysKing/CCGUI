@@ -78,7 +78,7 @@ function handleCopyQuestionContent({ index, content }) {
     :total-messages="messages.length"
     :session-id="sessionId"
     :working-directory="workingDirectory"
-    :current-time="currentTime"
+    :current-time="(message.isStreaming || message.isExecuting || (!message.duration && message.startTime)) ? currentTime : null"
     :chat-theme="chatTheme"
     :all-messages="messages"
     @message-click="handleMessageClick"

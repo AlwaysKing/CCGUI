@@ -36,7 +36,7 @@ function finalizeNotificationContent(content) {
 onMounted(() => {
   timer = setInterval(() => {
     now.value = Date.now()
-  }, 200)
+  }, 1000)
 })
 
 onUnmounted(() => {

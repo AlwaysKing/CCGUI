@@ -1,0 +1,75 @@
+<h2>最终效果（常显背景 + hover 变橘黄）</h2>
+<p class="subtitle">默认显示半透明背景，hover 时变为主题橘黄色</p>
+
+<div class="mockup">
+  <div class="mockup-header">Preview: 默认态 vs hover 态</div>
+  <div class="mockup-body" style="background: #121316; padding: 48px 32px; display: flex; justify-content: center;">
+    <div style="width: 100%; max-width: 600px;">
+      <div style="text-align: center; margin-bottom: 48px;">
+        <h1 style="font-size: 28px; font-weight: 700; color: #F4F4F5; margin: 0 0 8px;">Claude Code GUI</h1>
+        <p style="font-size: 16px; color: #71717A; margin: 0;">选择一个项目开始工作</p>
+      </div>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <div style="position: relative; flex: 1;">
+          <svg style="position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: #71717A; pointer-events: none;" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input type="text" placeholder="搜索项目..." style="width: 100%; padding: 12px 12px 12px 48px; background: rgba(255,255,255,0.024); border: 1px solid rgba(255,255,255,0.13); border-radius: 12px; color: #F4F4F5; font-size: 14px; box-sizing: border-box;" />
+        </div>
+        <!-- 默认态：带背景 -->
+        <div style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); flex-shrink: 0; transition: all 0.2s;"
+             onmouseover="this.style.background='rgba(249,115,22,0.12)'; this.style.borderColor='rgba(249,115,22,0.3)'; this.querySelector('svg').querySelectorAll('polygon').forEach(p=>p.setAttribute('fill','#F97316'))"
+             onmouseout="this.style.background='rgba(255,255,255,0.04)'; this.style.borderColor='rgba(255,255,255,0.08)'; this.querySelector('svg').querySelectorAll('polygon').forEach(p=>p.setAttribute('fill','#A1A1AA'))"
+        >
+          <svg width="32" height="32" viewBox="0 0 24 24" shape-rendering="geometricPrecision" fill="currentColor" stroke="none">
+            <polygon points="12,1.5 12.8,8.5 12,11.2 11.2,8.5" fill="#A1A1AA"/>
+            <polygon points="19.4,4.6 15.0,10.1 12.6,11.4 13.9,9.0" fill="#A1A1AA"/>
+            <polygon points="22.5,12 15.5,12.8 12.8,12 15.5,11.2" fill="#A1A1AA"/>
+            <polygon points="19.4,19.4 13.9,15.0 12.6,12.6 15.0,13.9" fill="#A1A1AA"/>
+            <polygon points="12,22.5 11.2,15.5 12,12.8 12.8,15.5" fill="#A1A1AA"/>
+            <polygon points="4.6,19.4 9.0,13.9 11.4,12.6 10.1,15.0" fill="#A1A1AA"/>
+            <polygon points="1.5,12 8.5,11.2 11.2,12 8.5,12.8" fill="#A1A1AA"/>
+            <polygon points="4.6,4.6 10.1,9.0 11.4,11.4 9.0,10.1" fill="#A1A1AA"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="display: flex; justify-content: center; gap: 32px; margin-top: 48px; padding: 32px; background: #1a1a1a; border-radius: 12px;">
+  <div style="text-align: center;">
+    <p style="color: #71717A; font-size: 12px; margin: 0 0 12px;">默认态</p>
+    <div style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;">
+      <svg width="32" height="32" viewBox="0 0 24 24" shape-rendering="geometricPrecision" stroke="none">
+        <polygon points="12,1.5 12.8,8.5 12,11.2 11.2,8.5" fill="#A1A1AA"/>
+        <polygon points="19.4,4.6 15.0,10.1 12.6,11.4 13.9,9.0" fill="#A1A1AA"/>
+        <polygon points="22.5,12 15.5,12.8 12.8,12 15.5,11.2" fill="#A1A1AA"/>
+        <polygon points="19.4,19.4 13.9,15.0 12.6,12.6 15.0,13.9" fill="#A1A1AA"/>
+        <polygon points="12,22.5 11.2,15.5 12,12.8 12.8,15.5" fill="#A1A1AA"/>
+        <polygon points="4.6,19.4 9.0,13.9 11.4,12.6 10.1,15.0" fill="#A1A1AA"/>
+        <polygon points="1.5,12 8.5,11.2 11.2,12 8.5,12.8" fill="#A1A1AA"/>
+        <polygon points="4.6,4.6 10.1,9.0 11.4,11.4 9.0,10.1" fill="#A1A1AA"/>
+      </svg>
+    </div>
+  </div>
+  <div style="text-align: center;">
+    <p style="color: #71717A; font-size: 12px; margin: 0 0 12px;">hover 态</p>
+    <div style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: rgba(249,115,22,0.12); border: 1px solid rgba(249,115,22,0.3); border-radius: 10px;">
+      <svg width="32" height="32" viewBox="0 0 24 24" shape-rendering="geometricPrecision" stroke="none">
+        <polygon points="12,1.5 12.8,8.5 12,11.2 11.2,8.5" fill="#F97316"/>
+        <polygon points="19.4,4.6 15.0,10.1 12.6,11.4 13.9,9.0" fill="#F97316"/>
+        <polygon points="22.5,12 15.5,12.8 12.8,12 15.5,11.2" fill="#F97316"/>
+        <polygon points="19.4,19.4 13.9,15.0 12.6,12.6 15.0,13.9" fill="#F97316"/>
+        <polygon points="12,22.5 11.2,15.5 12,12.8 12.8,15.5" fill="#F97316"/>
+        <polygon points="4.6,19.4 9.0,13.9 11.4,12.6 10.1,15.0" fill="#F97316"/>
+        <polygon points="1.5,12 8.5,11.2 11.2,12 8.5,12.8" fill="#F97316"/>
+        <polygon points="4.6,4.6 10.1,9.0 11.4,11.4 9.0,10.1" fill="#F97316"/>
+      </svg>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 32px;">
+  <p style="color: #71717A; font-size: 14px;">默认：淡灰底 + 淡边框 + 灰色图标 → hover：橘黄底 + 橘黄边框 + 橘黄图标。鼠标移到搜索框旁边的图标上看 hover 效果。</p>
+</div>

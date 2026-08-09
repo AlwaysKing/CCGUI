@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { useAppStore } from './useAppStore'
 import { logger } from '../utils/logger'
+import { parseFileNavigationTarget } from '../utils/fileNavigation'
 
 function normalizePath(value = '') {
   return String(value || '').replace(/\\/g, '/')
@@ -137,7 +138,8 @@ function createTabBase(filePath, options = {}) {
     diffBaseError: options.diffBaseError || null,
     readOnly: !!options.readOnly,
     markdownPreview: !!options.markdownPreview,
-    isImage: !!options.isImage
+    isImage: !!options.isImage,
+    navigationRequest: options.navigationRequest || null
   }
 }
 
@@ -174,6 +176,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
   let gitStatusRefreshInFlight = false
   let gitStatusRefreshPending = false
   let gitStatusDebounceTimer = null
+  let navigationRequestCounter = 0
 
   const projectPath = computed(() => appStore.currentProject?.path || '')
 
@@ -650,10 +653,37 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     editingNodePath.value = ''
   }
 
+  function clearNavigationRequest(filePath, requestKey = null) {
+    const normalizedPath = normalizePath(filePath)
+    const tab = tabs.value.find(item => item.path === normalizedPath && !item.markdownPreview)
+    if (!tab?.navigationRequest) return
+
+    if (requestKey !== null && tab.navigationRequest.key !== requestKey) {
+      return
+    }
+
+    tab.navigationRequest = null
+  }
+
+  function createNavigationRequest(line = null, column = null) {
+    if (!Number.isFinite(line) || line <= 0) {
+      return null
+    }
+
+    navigationRequestCounter += 1
+    return {
+      key: navigationRequestCounter,
+      line,
+      column: Number.isFinite(column) && column > 0 ? column : 1
+    }
+  }
+
   async function openFile(filePath, { pinned = false, preview = false } = {}) {
     if (!projectPath.value) return null
 
-    const normalizedPath = normalizePath(filePath)
+    const target = parseFileNavigationTarget(filePath)
+    const normalizedPath = normalizePath(target.path)
+    const navigationRequest = createNavigationRequest(target.line, target.column)
     let targetTab = tabs.value.find(tab => tab.path === normalizedPath && !tab.markdownPreview)
 
     if (!targetTab) {
@@ -674,7 +704,8 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
         isPreview: preview && !pinned,
         loaded: false,
         loading: false,
-        isImage: isImageExtension(normalizedPath)
+        isImage: isImageExtension(normalizedPath),
+        navigationRequest
       })
       tabs.value.push(targetTab)
     } else if (pinned) {
@@ -682,6 +713,10 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
       targetTab.isPreview = false
     } else if (preview && !targetTab.pinned) {
       targetTab.isPreview = true
+    }
+
+    if (navigationRequest) {
+      targetTab.navigationRequest = navigationRequest
     }
 
     if (preview && !targetTab.pinned) {
@@ -1196,6 +1231,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     setSelectedNode,
     startRenaming,
     stopRenaming,
+    clearNavigationRequest,
     previewFile,
     previewAttachmentFile,
     pinFile,

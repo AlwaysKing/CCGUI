@@ -207,6 +207,7 @@ async function handleCreateTerminal(requestId, payload = {}) {
 
   const env = {
     ...cleanEnv,
+    ...(payload.env && typeof payload.env === 'object' ? payload.env : {}),
     TERM: process.env.TERM || 'xterm-256color',
     COLORTERM: 'truecolor'
   }

@@ -9,6 +9,7 @@ import { useAppStore } from '../../../../../stores/useAppStore'
 import { useFileBrowserStore } from '../../../../../stores/useFileBrowserStore'
 import CopyButton from '../ui/CopyButton.vue'
 import { formatAttachmentSize, getAttachmentDisplayLabel, getAttachmentIcon, isImageAttachment, toAttachmentUrl } from '../../../../../utils/chatAttachments'
+import { parseFileNavigationTarget } from '../../../../../utils/fileNavigation'
 
 const props = defineProps({
   message: {
@@ -70,10 +71,11 @@ async function handleAttachmentClick(attachment) {
   }
 
   const currentProjectPath = String(appStore.currentProject?.path || '').replace(/\\/g, '/')
-  const attachmentPath = String(attachment.path || '').replace(/\\/g, '/')
+  const navigationTarget = parseFileNavigationTarget(attachment.path)
+  const attachmentPath = String(navigationTarget.path || '').replace(/\\/g, '/')
   const projectPrefix = currentProjectPath ? `${currentProjectPath}/` : ''
   const filePath = currentProjectPath && (attachmentPath === currentProjectPath || attachmentPath.startsWith(projectPrefix))
-    ? attachmentPath
+    ? (attachment.path || attachmentPath)
     : attachment.path
 
   await fileBrowserStore.previewAttachmentFile(filePath)

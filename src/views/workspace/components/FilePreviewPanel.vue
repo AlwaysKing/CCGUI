@@ -34,7 +34,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel', 'toggle-sidebar', 'toggle-diff', 'open-markdown-preview'])
+const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel', 'toggle-sidebar', 'toggle-diff', 'open-markdown-preview', 'navigation-applied'])
 
 const contextMenuRef = ref(null)
 const contextMenu = reactive({
@@ -475,8 +475,10 @@ onBeforeUnmount(() => {
         :language="activeTab.language"
         :diff-mode="activeTab.diffMode"
         :read-only="activeTab.readOnly"
+        :navigation-request="activeTab.navigationRequest"
         @update:model-value="emit('update-content', activeTab.path, $event)"
         @save="emit('save-file', activeTab.path)"
+        @navigation-applied="emit('navigation-applied', activeTab.path, $event)"
       />
 
       <div v-if="!activeTab.loading && !activeTab.error && !activeTab.markdownPreview && !isImageTab(activeTab)" class="preview-statusbar">

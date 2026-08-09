@@ -5,6 +5,7 @@ import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import { useAppStore } from '../../stores/useAppStore'
 import { useFileBrowserStore } from '../../stores/useFileBrowserStore'
+import { parseFileNavigationTarget } from '../../utils/fileNavigation'
 
 // Configure marked with highlight.js
 marked.setOptions({
@@ -150,15 +151,16 @@ async function handleLinkClick(event) {
   }
 
   const currentProjectPath = normalizePath(appStore.currentProject?.path || '')
-  const normalizedHref = normalizePath(href)
+  const target = parseFileNavigationTarget(href)
+  const normalizedHref = normalizePath(target.path)
   const projectPrefix = currentProjectPath ? `${currentProjectPath}/` : ''
 
   if (!isAbsolutePath(normalizedHref) || normalizedHref === currentProjectPath || normalizedHref.startsWith(projectPrefix)) {
-    await fileBrowserStore.previewFile(normalizedHref)
+    await fileBrowserStore.previewFile(href)
     return
   }
 
-  await fileBrowserStore.previewAttachmentFile(normalizedHref)
+  await fileBrowserStore.previewAttachmentFile(href)
 }
 
 onMounted(() => {

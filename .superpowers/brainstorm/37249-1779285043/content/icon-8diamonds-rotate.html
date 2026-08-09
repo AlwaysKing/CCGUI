@@ -1,0 +1,65 @@
+<h2>8 菱形米字（旋转计算，确保完整）</h2>
+<p class="subtitle">一个基础菱形旋转 8 次，保证每个完全相同</p>
+
+<div class="mockup">
+  <div class="mockup-header">Preview: 整体效果</div>
+  <div class="mockup-body" style="background: #121316; padding: 48px 32px; display: flex; justify-content: center;">
+    <div style="width: 100%; max-width: 600px;">
+      <div style="text-align: center; margin-bottom: 48px;">
+        <h1 style="font-size: 28px; font-weight: 700; color: #F4F4F5; margin: 0 0 8px;">Claude Code GUI</h1>
+        <p style="font-size: 16px; color: #71717A; margin: 0;">选择一个项目开始工作</p>
+      </div>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <div style="position: relative; flex: 1;">
+          <svg style="position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: #71717A; pointer-events: none;" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input type="text" placeholder="搜索项目..." style="width: 100%; padding: 12px 12px 12px 48px; background: rgba(255,255,255,0.024); border: 1px solid rgba(255,255,255,0.13); border-radius: 12px; color: #F4F4F5; font-size: 14px; box-sizing: border-box;" />
+        </div>
+        <div style="width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 12px; background: transparent; flex-shrink: 0; transition: background 0.2s;"
+             onmouseover="this.style.background='rgba(255,255,255,0.06)'"
+             onmouseout="this.style.background='transparent'"
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+            <!-- 上 (0°) -->
+            <polygon points="12,2 13.5,6 12,10 10.5,6"/>
+            <!-- 右上 (45°) -->
+            <polygon points="19.1,4.9 17.3,8.8 13.4,10.6 15.2,6.7"/>
+            <!-- 右 (90°) -->
+            <polygon points="22,12 18,13.5 14,12 18,10.5"/>
+            <!-- 右下 (135°) -->
+            <polygon points="19.1,19.1 15.2,17.3 13.4,13.4 17.3,15.2"/>
+            <!-- 下 (180°) -->
+            <polygon points="12,22 10.5,18 12,14 13.5,18"/>
+            <!-- 左下 (225°) -->
+            <polygon points="4.9,19.1 6.7,15.2 10.6,13.4 8.8,17.3"/>
+            <!-- 左 (270°) -->
+            <polygon points="2,12 6,10.5 10,12 6,13.5"/>
+            <!-- 左上 (315°) -->
+            <polygon points="4.9,4.9 8.8,6.7 10.6,10.6 6.7,8.8"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="display: flex; justify-content: center; gap: 48px; margin-top: 48px; padding: 32px; background: #1a1a1a; border-radius: 12px;">
+  <div style="text-align: center;">
+    <p style="color: #71717A; font-size: 12px; margin: 0 0 12px;">放大预览</p>
+    <svg width="80" height="80" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <polygon points="12,2 13.5,6 12,10 10.5,6" fill="#A1A1AA"/>
+      <polygon points="19.1,4.9 17.3,8.8 13.4,10.6 15.2,6.7" fill="#A1A1AA"/>
+      <polygon points="22,12 18,13.5 14,12 18,10.5" fill="#A1A1AA"/>
+      <polygon points="19.1,19.1 15.2,17.3 13.4,13.4 17.3,15.2" fill="#A1A1AA"/>
+      <polygon points="12,22 10.5,18 12,14 13.5,18" fill="#A1A1AA"/>
+      <polygon points="4.9,19.1 6.7,15.2 10.6,13.4 8.8,17.3" fill="#A1A1AA"/>
+      <polygon points="2,12 6,10.5 10,12 6,13.5" fill="#A1A1AA"/>
+      <polygon points="4.9,4.9 8.8,6.7 10.6,10.6 6.7,8.8" fill="#A1A1AA"/>
+    </svg>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 32px;">
+  <p style="color: #71717A; font-size: 14px;">这次用旋转计算，8 个菱形完全一致，中间有间隙，数数看够 8 个。</p>
+</div>

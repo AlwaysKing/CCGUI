@@ -56,6 +56,7 @@ const taskLauncherTasks = ref([])
 const taskLauncherConfigDocument = ref({ version: '2.0.0', tasks: [] })
 const taskLauncherUnsupportedTasks = ref([])
 const taskLauncherConfigSaving = ref(false)
+const activeTaskLabels = ref([])
 const runningTaskLabels = ref([])
 const exitedTaskLabels = ref([])
 const taskDockItems = ref([])
@@ -300,6 +301,11 @@ function syncTaskDockItems() {
       .map(label => String(label || '').trim())
       .filter(Boolean)
   )
+  const activeLabels = new Set(
+    activeTaskLabels.value
+      .map(label => String(label || '').trim())
+      .filter(Boolean)
+  )
   const exitedLabels = new Set(
     exitedTaskLabels.value
       .map(label => String(label || '').trim())
@@ -317,10 +323,12 @@ function syncTaskDockItems() {
 
     const isRunning = runningLabels.has(label)
     const hasExited = exitedLabels.has(label)
-    // starting 状态：终端真正启动后自动转为 running 并清除 starting；
-    // 终端已退出时也必须清除 starting（处理快速结束的任务）
+    // starting 只在“任务终端已经存在，但尚未进入 running”时保留。
+    // 一旦任务进入 running、已经退出、或对应终端已不存在，都必须清除 starting，
+    // 避免快捷栏在快速失败/手动关闭后永久卡在转圈。
     const wasStarting = existing.starting
-    const nextStarting = wasStarting && !isRunning && !hasExited
+    const isActive = activeLabels.has(label)
+    const nextStarting = wasStarting && isActive && !isRunning && !hasExited
 
     syncedItems.push({
       ...existing,
@@ -511,6 +519,23 @@ async function handleToggleTaskLauncher(task) {
   await handleRunTaskLauncher(task)
 }
 
+function clearTaskDockTransientState(taskLabel) {
+  const normalizedLabel = String(taskLabel || '').trim()
+  if (!normalizedLabel) {
+    return
+  }
+
+  const existing = taskDockItems.value.find(item => item.label === normalizedLabel)
+  if (!existing) {
+    return
+  }
+
+  upsertTaskDockItem(existing, {
+    running: false,
+    starting: false
+  })
+}
+
 async function handleDeleteTaskLauncher(task) {
   const projectPath = store.currentProject?.path || ''
   if (!projectPath) {
@@ -569,8 +594,20 @@ function handleTerminalRunningChange(nextState) {
     hasRunning: Boolean(nextState?.hasRunning),
     count: Number(nextState?.count || 0)
   }
+  activeTaskLabels.value = Array.isArray(nextState?.activeTaskLabels) ? nextState.activeTaskLabels : []
   runningTaskLabels.value = Array.isArray(nextState?.taskLabels) ? nextState.taskLabels : []
   exitedTaskLabels.value = Array.isArray(nextState?.exitedTaskLabels) ? nextState.exitedTaskLabels : []
+  for (const item of taskDockItems.value) {
+    const label = String(item?.label || '').trim()
+    if (!label) continue
+    if (activeTaskLabels.value.includes(label)) continue
+    if (runningTaskLabels.value.includes(label)) continue
+    if (exitedTaskLabels.value.includes(label)) {
+      clearTaskDockTransientState(label)
+      continue
+    }
+    clearTaskDockTransientState(label)
+  }
   // 同步到 store，供窗口关闭检测和项目切换检测使用
   store.setHasRunningTerminals(terminalRunningState.value.hasRunning)
 }
@@ -781,7 +818,7 @@ watch(() => store.currentProject?.path, nextProjectPath => {
   void loadTaskLauncherTasks(nextProjectPath || '')
 }, { immediate: true })
 
-watch([taskLauncherTasks, runningTaskLabels, exitedTaskLabels], () => {
+watch([taskLauncherTasks, activeTaskLabels, runningTaskLabels, exitedTaskLabels], () => {
   syncTaskDockItems()
 }, { deep: true })
 
@@ -1102,6 +1139,7 @@ async function handleDeleteInactiveSessions() {
             @toggle-sidebar="toggleSidebar"
             @toggle-diff="fileBrowserStore.toggleTabDiff"
             @open-markdown-preview="fileBrowserStore.openMarkdownPreview"
+            @navigation-applied="fileBrowserStore.clearNavigationRequest"
             @toggle-chat-panel="toggleChatPanelCollapse"
           />
 

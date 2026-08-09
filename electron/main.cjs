@@ -16,6 +16,7 @@ const { getClaudePath } = require('./services/claude-path')
 const historyManager = require('./storage/history-manager')
 const projectConfigManager = require('./storage/project-config-manager')
 const processRegistry = require('./services/process-registry')
+const { buildAugmentedEnv } = require('./services/shell-env')
 
 const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -3041,7 +3042,13 @@ ipcMain.handle('open-external-url', async (event, { url }) => {
 
 ipcMain.handle('create-terminal', async (event, { cwd = '', cols = 120, rows = 30 } = {}) => {
   try {
-    const result = await sendTerminalHostRequest('create-terminal', { cwd, cols, rows })
+    const terminalEnv = await buildAugmentedEnv(process.env)
+    const result = await sendTerminalHostRequest('create-terminal', {
+      cwd,
+      cols,
+      rows,
+      env: terminalEnv
+    })
     const terminal = result.terminal
 
     const terminalSession = {

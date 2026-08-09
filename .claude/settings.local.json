@@ -258,7 +258,8 @@
       "Bash(cp -R \"/Volumes/CCGUI 1.0.0-arm64/CCGUI.app\" /Applications/ 2>&1)",
       "Bash(hdiutil detach *)",
       "Bash(cat)",
-      "Bash(python3 /tmp/extract-hunks.py /tmp/patches/electron_main.cjs.patch /tmp/test-extract.patch 2 4 5)"
+      "Bash(python3 /tmp/extract-hunks.py /tmp/patches/electron_main.cjs.patch /tmp/test-extract.patch 2 4 5)",
+      "Bash(# 用备份补丁验证：对比所有提交的 diff 合集 vs 原始备份 *)"
     ],
     "additionalDirectories": [
       "/Users/alwaysking/Desktop/CCGUI/node_modules",

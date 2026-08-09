@@ -92,10 +92,13 @@ function buildCodexAttachmentReference(attachment) {
   }
 
   if (attachment.kind === 'file-range') {
-    return `[文件片段 ${getAttachmentDisplayLabel(attachment)}]`
+    const startLine = Number.isFinite(attachment.startLine) ? attachment.startLine : null
+    const endLine = Number.isFinite(attachment.endLine) ? attachment.endLine : startLine
+    const rangeLabel = startLine ? ` (${startLine}-${endLine})` : ''
+    return `[文件片段 ${attachment.path || getAttachmentDisplayLabel(attachment)}${rangeLabel}]`
   }
 
-  return `[文件 ${attachment.name}]`
+  return `[文件 ${attachment.path || attachment.name || '附件'}]`
 }
 
 function stripAttachmentTokens(text, attachments = []) {

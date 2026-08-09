@@ -42,6 +42,12 @@ const runningTaskLabels = computed(() => {
     .map(terminal => String(terminal.taskLabel || '').trim())
     .filter(Boolean)
 })
+const activeTaskLabels = computed(() => {
+  return terminals.value
+    .filter(terminal => getTerminalKind(terminal) === TASK_TERMINAL_KIND && !terminal.exited)
+    .map(terminal => String(terminal.taskLabel || '').trim())
+    .filter(Boolean)
+})
 const exitedTaskLabels = computed(() => {
   return terminals.value
     .filter(terminal => getTerminalKind(terminal) === TASK_TERMINAL_KIND && terminal.exited)
@@ -721,15 +727,27 @@ watch(runningTerminalCount, count => {
   emit('running-change', {
     hasRunning: count > 0,
     count,
+    activeTaskLabels: activeTaskLabels.value,
     taskLabels: runningTaskLabels.value,
     exitedTaskLabels: exitedTaskLabels.value
   })
 }, { immediate: true })
 
+watch(activeTaskLabels, labels => {
+  emit('running-change', {
+    hasRunning: runningTerminalCount.value > 0,
+    count: runningTerminalCount.value,
+    activeTaskLabels: labels,
+    taskLabels: runningTaskLabels.value,
+    exitedTaskLabels: exitedTaskLabels.value
+  })
+})
+
 watch(runningTaskLabels, labels => {
   emit('running-change', {
     hasRunning: runningTerminalCount.value > 0,
     count: runningTerminalCount.value,
+    activeTaskLabels: activeTaskLabels.value,
     taskLabels: labels,
     exitedTaskLabels: exitedTaskLabels.value
   })
@@ -739,6 +757,7 @@ watch(exitedTaskLabels, () => {
   emit('running-change', {
     hasRunning: runningTerminalCount.value > 0,
     count: runningTerminalCount.value,
+    activeTaskLabels: activeTaskLabels.value,
     taskLabels: runningTaskLabels.value,
     exitedTaskLabels: exitedTaskLabels.value
   })

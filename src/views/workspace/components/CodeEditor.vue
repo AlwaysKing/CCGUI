@@ -29,10 +29,14 @@ const props = defineProps({
   readOnly: {
     type: Boolean,
     default: false
+  },
+  navigationRequest: {
+    type: Object,
+    default: null
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'save'])
+const emit = defineEmits(['update:modelValue', 'save', 'navigation-applied'])
 
 const containerRef = ref(null)
 let editor = null
@@ -167,6 +171,8 @@ function initEditor() {
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
     emit('save')
   })
+
+  applyNavigationRequest(props.navigationRequest)
 }
 
 function disposeEditor() {
@@ -187,6 +193,19 @@ function disposeEditor() {
     model.dispose()
     model = null
   }
+}
+
+function applyNavigationRequest(request) {
+  if (!editor || !request || !Number.isFinite(request.line) || request.line <= 0) {
+    return
+  }
+
+  const column = Number.isFinite(request.column) && request.column > 0 ? request.column : 1
+  const position = { lineNumber: request.line, column }
+  editor.revealPositionInCenter(position)
+  editor.setPosition(position)
+  editor.focus()
+  emit('navigation-applied', request.key)
 }
 
 onMounted(() => {
@@ -249,6 +268,10 @@ watch(() => props.readOnly, (nextReadOnly) => {
 
 watch(() => props.diffMode, () => {
   initEditor()
+})
+
+watch(() => props.navigationRequest?.key, () => {
+  applyNavigationRequest(props.navigationRequest)
 })
 </script>
 

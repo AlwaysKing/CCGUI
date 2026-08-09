@@ -72,6 +72,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   runCommands: (options) => ipcRenderer.invoke('run-commands', options),
   saveTempAttachment: (options) => ipcRenderer.invoke('save-temp-attachment', options),
   deleteTempAttachment: (options) => ipcRenderer.invoke('delete-temp-attachment', options),
+  startScreenCapture: (options) => ipcRenderer.invoke('start-screen-capture', options),
+  onScreenCaptureResult: (callback) => {
+    const listener = (event, result) => callback(result)
+    ipcRenderer.on('screen-capture-result', listener)
+    return () => ipcRenderer.removeListener('screen-capture-result', listener)
+  },
 
   // Send control response (for permission prompts)
   sendControlResponse: (options) => ipcRenderer.invoke('send-control-response', options),

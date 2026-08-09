@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, dialog, shell, protocol, screen: electronScreen } = require('electron')
+const { app, BrowserWindow, ipcMain, session, dialog, shell, protocol, systemPreferences, screen: electronScreen, clipboard, nativeImage } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -17,8 +17,12 @@ const historyManager = require('./storage/history-manager')
 const projectConfigManager = require('./storage/project-config-manager')
 const processRegistry = require('./services/process-registry')
 const { buildAugmentedEnv } = require('./services/shell-env')
+const Screenshots = require('electron-screenshots')
 
 const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
+const DEV_SERVER_URL = 'http://127.0.0.1:5183'
+const DEV_SERVER_WS_URL = 'ws://127.0.0.1:5183'
+const MAC_SCREEN_CAPTURE_PRIVACY_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
 
 if (isDevRuntime) {
   const devUserDataPath = path.join(app.getPath('appData'), 'CCGUI-dev')
@@ -39,6 +43,10 @@ const terminalSessions = new Map()
 let terminalHostProcess = null
 let terminalHostRequestSequence = 0
 const terminalHostPendingRequests = new Map()
+let screenshotsInstance = null
+let screenshotRequestWebContents = null
+let screenshotHiddenWindow = null
+let screenshotCaptureActive = false
 let isAppQuitting = false
 const pendingDockProjectOpens = []
 let appStartupStartedAt = Date.now()
@@ -127,6 +135,288 @@ function registerAssetProtocol() {
       return createTextResponse('Internal Error', 500)
     }
   })
+}
+
+function buildScreenshotFileName() {
+  const now = new Date()
+  const pad = (value, size = 2) => String(value).padStart(size, '0')
+  return [
+    'screenshot',
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+    '-',
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds()),
+    '.png'
+  ].join('')
+}
+
+function normalizeScreenshotBuffer(buffer) {
+  if (Buffer.isBuffer(buffer)) {
+    return buffer
+  }
+
+  if (buffer instanceof ArrayBuffer) {
+    return Buffer.from(buffer)
+  }
+
+  if (ArrayBuffer.isView(buffer)) {
+    return Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+  }
+
+  return Buffer.from(buffer)
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function patchScreenshotsReset(instance, timeoutMs = 300) {
+  if (!instance || instance.__ccguiResetPatched) {
+    return
+  }
+
+  instance.__ccguiResetPatched = true
+  instance.reset = async function resetScreenshotsView() {
+    this.$view.webContents.send('SCREENSHOTS:reset')
+    await new Promise(resolve => {
+      let settled = false
+      let timer = null
+      const finish = () => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        ipcMain.removeListener('SCREENSHOTS:reset', finish)
+        resolve()
+      }
+
+      timer = setTimeout(finish, timeoutMs)
+      ipcMain.once('SCREENSHOTS:reset', finish)
+    })
+  }
+}
+
+function patchScreenshotsWindowBehavior(instance) {
+  if (!instance || instance.__ccguiWindowBehaviorPatched || process.platform !== 'darwin') {
+    return
+  }
+
+  instance.__ccguiWindowBehaviorPatched = true
+  instance.createWindow = async function createScreenshotsWindow(display) {
+    await this.reset()
+
+    if (!this.$win || this.$win?.isDestroyed?.()) {
+      this.$win = new BrowserWindow({
+        title: 'screenshots',
+        x: display.x,
+        y: display.y,
+        width: display.width,
+        height: display.height,
+        useContentSize: true,
+        type: 'panel',
+        frame: false,
+        show: false,
+        autoHideMenuBar: true,
+        transparent: true,
+        resizable: false,
+        movable: false,
+        minimizable: false,
+        maximizable: false,
+        focusable: true,
+        skipTaskbar: true,
+        alwaysOnTop: true,
+        fullscreen: false,
+        fullscreenable: false,
+        kiosk: false,
+        backgroundColor: '#00000000',
+        titleBarStyle: 'hidden',
+        hasShadow: false,
+        paintWhenInitiallyHidden: false,
+        roundedCorners: false,
+        enableLargerThanScreen: false,
+        acceptFirstMouse: true
+      })
+      this.emit('windowCreated', this.$win)
+      this.$win.on('show', () => {
+        this.$win?.focus()
+        this.$win?.setAlwaysOnTop(true, 'screen-saver')
+        this.$win?.moveTop?.()
+      })
+      this.$win.on('closed', () => {
+        this.emit('windowClosed', this.$win)
+        this.$win = null
+      })
+    }
+
+    this.$win.setBrowserView(this.$view)
+    this.$win.setWindowButtonVisibility(false)
+    this.$win.setVisibleOnAllWorkspaces(true, {
+      visibleOnFullScreen: true,
+      skipTransformProcessType: true
+    })
+    this.$win.blur()
+    this.$win.setBounds(display)
+    this.$view.setBounds({
+      x: 0,
+      y: 0,
+      width: display.width,
+      height: display.height
+    })
+    this.$win.setAlwaysOnTop(true, 'screen-saver')
+    this.$win.show()
+    this.$win.setAlwaysOnTop(true, 'screen-saver')
+    this.$win.moveTop?.()
+  }
+}
+
+function getScreenshotsInstance() {
+  if (screenshotsInstance) {
+    return screenshotsInstance
+  }
+
+  const emitScreenshotAttachment = (buffer, data) => {
+    const imageBuffer = normalizeScreenshotBuffer(buffer)
+    const result = attachmentService.saveClipboardImage({
+      bufferBase64: imageBuffer.toString('base64'),
+      mimeType: 'image/png',
+      suggestedName: buildScreenshotFileName()
+    })
+    const targetWebContents = screenshotRequestWebContents && !screenshotRequestWebContents.isDestroyed()
+      ? screenshotRequestWebContents
+      : mainWindow?.webContents
+
+    targetWebContents?.send('screen-capture-result', {
+      success: true,
+      data: {
+        ...result,
+        bounds: data?.bounds || null,
+        display: data?.display || null
+      }
+    })
+  }
+
+  const emitScreenshotError = (error) => {
+    logger.error('[Screenshots] Failed to save screenshot attachment:', error)
+    screenshotRequestWebContents?.send('screen-capture-result', {
+      success: false,
+      error: error.message
+    })
+  }
+
+  const restoreScreenshotHiddenWindow = () => {
+    const targetWindow = screenshotHiddenWindow
+    screenshotHiddenWindow = null
+
+    if (!targetWindow || targetWindow.isDestroyed()) {
+      return
+    }
+
+    targetWindow.show()
+    targetWindow.focus()
+  }
+
+  const resetScreenshotRequest = () => {
+    restoreScreenshotHiddenWindow()
+    screenshotCaptureActive = false
+    screenshotRequestWebContents = null
+  }
+
+  screenshotsInstance = new Screenshots({
+    singleWindow: true,
+    lang: {
+      magnifier_position_label: '位置',
+      operation_ok_title: '完成',
+      operation_cancel_title: '取消',
+      operation_save_title: '保存',
+      operation_redo_title: '重做',
+      operation_undo_title: '撤销',
+      operation_mosaic_title: '马赛克',
+      operation_text_title: '文字',
+      operation_brush_title: '画笔',
+      operation_arrow_title: '箭头',
+      operation_ellipse_title: '椭圆',
+      operation_rectangle_title: '矩形'
+    },
+    logger: (...args) => logger.debug('[Screenshots]', args)
+  })
+  patchScreenshotsReset(screenshotsInstance)
+  patchScreenshotsWindowBehavior(screenshotsInstance)
+
+  screenshotsInstance.on('ok', (event, buffer, data) => {
+    event.preventDefault()
+    try {
+      const imageBuffer = normalizeScreenshotBuffer(buffer)
+      clipboard.writeImage(nativeImage.createFromBuffer(imageBuffer))
+      screenshotsInstance.endCapture().catch(error => {
+        logger.warn('[Screenshots] Failed to close screenshot window after ok:', error)
+      }).finally(() => {
+        try {
+          emitScreenshotAttachment(imageBuffer, data)
+        } catch (error) {
+          emitScreenshotError(error)
+        } finally {
+          resetScreenshotRequest()
+        }
+      })
+    } catch (error) {
+      emitScreenshotError(error)
+      resetScreenshotRequest()
+    }
+  })
+
+  screenshotsInstance.on('cancel', () => {
+    screenshotRequestWebContents?.send('screen-capture-result', {
+      success: false,
+      canceled: true
+    })
+    resetScreenshotRequest()
+  })
+
+  screenshotsInstance.on('save', (event, buffer, data) => {
+    event.preventDefault()
+    try {
+      emitScreenshotAttachment(buffer, data)
+    } catch (error) {
+      emitScreenshotError(error)
+    } finally {
+      resetScreenshotRequest()
+      screenshotsInstance.endCapture().catch(error => {
+        logger.warn('[Screenshots] Failed to close screenshot window after save:', error)
+      })
+    }
+  })
+
+  return screenshotsInstance
+}
+
+function ensureScreenCapturePermission() {
+  if (process.platform !== 'darwin') {
+    return { granted: true, status: 'granted' }
+  }
+
+  let status = 'unknown'
+  try {
+    status = systemPreferences.getMediaAccessStatus('screen')
+  } catch (error) {
+    logger.warn('[Screenshots] Failed to read screen capture permission status:', error)
+  }
+
+  if (status === 'granted') {
+    return { granted: true, status }
+  }
+
+  shell.openExternal(MAC_SCREEN_CAPTURE_PRIVACY_URL).catch(error => {
+    logger.warn('[Screenshots] Failed to open macOS Screen Recording settings:', error)
+  })
+
+  return {
+    granted: false,
+    status,
+    code: 'SCREEN_CAPTURE_PERMISSION_REQUIRED',
+    error: '需要在 macOS 系统设置中为 CCGUI 开启“屏幕录制”权限，然后重启应用后再截图。'
+  }
 }
 
 function getDefaultTerminalShell() {
@@ -340,14 +630,14 @@ function createWindow() {
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          "default-src 'self' http://127.0.0.1:5173; " +
-          "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:5173 ws://127.0.0.1:5173; " +
-          "style-src 'self' 'unsafe-inline' http://127.0.0.1:5173; " +
-          "connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173 https: wss:; " +
-          "img-src 'self' data: http://127.0.0.1:5173 https: ccgui-asset:; " +
-          "font-src 'self' data: http://127.0.0.1:5173; " +
-          "worker-src 'self' blob: http://127.0.0.1:5173; " +
-          "child-src 'self' blob: http://127.0.0.1:5173; " +
+          `default-src 'self' ${DEV_SERVER_URL}; ` +
+          `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${DEV_SERVER_URL} ${DEV_SERVER_WS_URL}; ` +
+          `style-src 'self' 'unsafe-inline' ${DEV_SERVER_URL}; ` +
+          `connect-src 'self' ${DEV_SERVER_URL} ${DEV_SERVER_WS_URL} https: wss:; ` +
+          `img-src 'self' data: ${DEV_SERVER_URL} https: ccgui-asset:; ` +
+          `font-src 'self' data: ${DEV_SERVER_URL}; ` +
+          `worker-src 'self' blob: ${DEV_SERVER_URL}; ` +
+          `child-src 'self' blob: ${DEV_SERVER_URL}; ` +
           "object-src 'none';"
         ]
       }
@@ -356,7 +646,7 @@ function createWindow() {
 
   // Load app
   if (isDev) {
-    mainWindow.loadURL('http://127.0.0.1:5173')
+    mainWindow.loadURL(DEV_SERVER_URL)
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
@@ -1400,6 +1690,50 @@ ipcMain.handle('save-temp-attachment', async (event, options = {}) => {
   }
 })
 
+ipcMain.handle('start-screen-capture', async (event, options = {}) => {
+  try {
+    if (screenshotCaptureActive) {
+      return { success: false, error: '截图正在进行中' }
+    }
+
+    const permission = ensureScreenCapturePermission()
+    if (!permission.granted) {
+      return {
+        success: false,
+        code: permission.code,
+        status: permission.status,
+        error: permission.error
+      }
+    }
+
+    screenshotCaptureActive = true
+    screenshotRequestWebContents = event.sender
+    screenshotHiddenWindow = null
+
+    if (options.hideCurrentWindow) {
+      const requestWindow = BrowserWindow.fromWebContents(event.sender)
+      if (requestWindow && !requestWindow.isDestroyed() && requestWindow.isVisible()) {
+        screenshotHiddenWindow = requestWindow
+        requestWindow.hide()
+        await delay(120)
+      }
+    }
+
+    await getScreenshotsInstance().startCapture()
+    return { success: true }
+  } catch (error) {
+    if (screenshotHiddenWindow && !screenshotHiddenWindow.isDestroyed()) {
+      screenshotHiddenWindow.show()
+      screenshotHiddenWindow.focus()
+    }
+    screenshotCaptureActive = false
+    screenshotRequestWebContents = null
+    screenshotHiddenWindow = null
+    logger.error('[IPC] start-screen-capture error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
 ipcMain.handle('delete-temp-attachment', async (event, { path: filePath } = {}) => {
   try {
     const deleted = attachmentService.deleteTempAttachment(filePath)
@@ -2243,7 +2577,7 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
 
     // Load app with project ID
     if (isDev) {
-      const url = `http://127.0.0.1:5173/?projectId=${encodeURIComponent(projectId)}`
+      const url = `${DEV_SERVER_URL}/?projectId=${encodeURIComponent(projectId)}`
       logger.info('[Window] Loading URL in new window', { url })
       newWindow.loadURL(url)
     } else {
@@ -6388,7 +6722,7 @@ function openProjectWindow(projectId, projectName, projectPath) {
 
   // Load app with project ID
   if (isDev) {
-    const url = `http://127.0.0.1:5173/?projectId=${encodeURIComponent(projectId)}`
+    const url = `${DEV_SERVER_URL}/?projectId=${encodeURIComponent(projectId)}`
     logger.info('[Window] Loading URL in new window', { url })
     newWindow.loadURL(url)
   } else {
@@ -6438,7 +6772,7 @@ function openWelcomeWithDropPath(folderPath) {
   const newWindowWebContentsId = newWindow.webContents.id
 
   if (isDev) {
-    const url = `http://127.0.0.1:5173/?dockDropPath=${encodeURIComponent(folderPath)}`
+    const url = `${DEV_SERVER_URL}/?dockDropPath=${encodeURIComponent(folderPath)}`
     logger.info('[Window] Loading Welcome URL with dockDropPath', { url })
     newWindow.loadURL(url)
   } else {
@@ -6617,7 +6951,7 @@ function createNewWindow() {
 
   // Load app without project ID (shows hello page)
   if (isDev) {
-    newWindow.loadURL('http://127.0.0.1:5173')
+    newWindow.loadURL(DEV_SERVER_URL)
   } else {
     newWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
@@ -6657,6 +6991,13 @@ app.whenReady().then(() => {
   createWindow()
   setupDockMenu()
   flushPendingDockProjectOpens()
+  setTimeout(() => {
+    try {
+      getScreenshotsInstance()
+    } catch (error) {
+      logger.warn('[Screenshots] Failed to warm up screenshot instance:', error)
+    }
+  }, 1000)
 
   Promise.resolve().then(() => {
     appService.syncCodexAccountsWithAuthConfig()

@@ -675,6 +675,16 @@ function toggleAllMessageCollapse() {
 function handleChatShortcut(event) {
   if (event?.detail?.action === 'toggle-all-message-collapse') {
     toggleAllMessageCollapse()
+    return
+  }
+
+  if (event?.detail?.action === 'start-screen-capture') {
+    chatInputRef.value?.startScreenCapture?.()
+    return
+  }
+
+  if (event?.detail?.action === 'start-screen-capture-hidden-window') {
+    chatInputRef.value?.startScreenCapture?.({ hideCurrentWindow: true })
   }
 }
 
@@ -924,7 +934,8 @@ onUnmounted(() => {
 
 defineExpose({
   refreshModelConfig: loadModelConfigContext,
-  appendTextToInput: (text) => chatInputRef.value?.appendText(text)
+  appendTextToInput: (text) => chatInputRef.value?.appendText(text),
+  startScreenCapture: (options) => chatInputRef.value?.startScreenCapture(options)
 })
 
 watch(

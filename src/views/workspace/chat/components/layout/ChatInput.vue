@@ -6,6 +6,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import AttachmentComposer from './AttachmentComposer.vue'
 import { ATTACHMENT_TOKEN_REGEX, stripAttachmentTokens, toAttachmentUrl } from '../../../../../utils/chatAttachments'
+import { openAppErrorDialog } from '../../../../../utils/appErrorDialog'
 
 const props = defineProps({
   modelValue: {
@@ -212,6 +213,8 @@ const atReferenceGroups = ref([])
 const activeSlashGroupId = ref('')
 const activeAtGroupId = ref('')
 const activeAtSubGroupId = ref('')  // 选中的二级分组 id，空=显示全部
+const screenCaptureActive = ref(false)
+let removeScreenCaptureResultListener = null
 
 // Enter 键模式锁定 (true = Enter 发送, false = Enter 换行)
 const enterModeLocked = ref(true)
@@ -564,6 +567,10 @@ const disableAttachmentControl = computed(() => {
   return props.toolbarLocked || props.inputTargetReadOnly
 })
 
+const disableScreenCaptureControl = computed(() => {
+  return disableAttachmentControl.value || screenCaptureActive.value
+})
+
 const disableNotificationControl = computed(() => {
   return props.toolbarLocked
 })
@@ -866,11 +873,14 @@ function getHistoryList() {
 onMounted(() => {
   document.addEventListener('click', handleGlobalClick)
   document.addEventListener('keydown', handleGlobalKeydown)
+  removeScreenCaptureResultListener = window.electronAPI?.onScreenCaptureResult?.(handleScreenCaptureResult) || null
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleGlobalClick)
   document.removeEventListener('keydown', handleGlobalKeydown)
+  removeScreenCaptureResultListener?.()
+  removeScreenCaptureResultListener = null
 })
 
 function appendText(text) {
@@ -879,6 +889,58 @@ function appendText(text) {
 
 function openAttachmentPicker() {
   attachmentComposerRef.value?.openFilePicker()
+}
+
+async function startScreenCapture(options = {}) {
+  if (disableScreenCaptureControl.value) return
+
+  screenCaptureActive.value = true
+  try {
+    const result = await window.electronAPI?.startScreenCapture?.({
+      hideCurrentWindow: Boolean(options.hideCurrentWindow)
+    })
+    if (!result?.success) {
+      screenCaptureActive.value = false
+      if (result?.code === 'SCREEN_CAPTURE_PERMISSION_REQUIRED') {
+        openAppErrorDialog({
+          title: '需要屏幕录制权限',
+          message: result.error || '请在系统设置中允许 CCGUI 录制屏幕，然后重启应用。',
+          detail: result.status ? `当前权限状态: ${result.status}` : '',
+          confirmText: '知道了'
+        })
+        return
+      }
+      console.warn('[ChatInput] Failed to start screen capture:', result?.error || 'unknown error')
+    }
+  } catch (error) {
+    screenCaptureActive.value = false
+    console.warn('[ChatInput] Failed to start screen capture:', error)
+  }
+}
+
+async function handleScreenCaptureResult(result) {
+  screenCaptureActive.value = false
+  if (!result?.success || !result.data?.path) {
+    return
+  }
+
+  const attachment = {
+    id: crypto.randomUUID(),
+    kind: 'image',
+    name: result.data.name || 'screenshot.png',
+    path: result.data.path,
+    size: Number.isFinite(result.data.size) ? result.data.size : null,
+    mimeType: result.data.mimeType || 'image/png',
+    source: 'screenshot',
+    capture: {
+      bounds: result.data.bounds || null,
+      display: result.data.display || null
+    }
+  }
+
+  await attachmentComposerRef.value?.addAttachments?.([attachment])
+  await nextTick()
+  attachmentComposerRef.value?.focusAndPlaceCaretAtEnd?.()
 }
 
 function getTaskDockItemTitle(task) {
@@ -942,7 +1004,8 @@ function handleTaskDockItemClick(task) {
 defineExpose({
   focus: () => attachmentComposerRef.value?.focus(),
   appendText,
-  openAttachmentPicker
+  openAttachmentPicker,
+  startScreenCapture
 })
 </script>
 
@@ -1264,6 +1327,21 @@ defineExpose({
             :disabled="disableAttachmentControl"
           >
             📎
+          </button>
+
+          <button
+            @click="startScreenCapture"
+            class="attach-button screenshot-button"
+            :class="{ active: screenCaptureActive }"
+            :title="screenCaptureActive ? '截图中' : '截图标注'"
+            :disabled="disableScreenCaptureControl"
+            type="button"
+          >
+            <svg class="screenshot-button-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M7 7V5.8C7 4.8 7.8 4 8.8 4h6.4c1 0 1.8.8 1.8 1.8V7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              <rect x="4" y="7" width="16" height="12" rx="2.2" stroke="currentColor" stroke-width="1.8"/>
+              <circle cx="12" cy="13" r="3" stroke="currentColor" stroke-width="1.8"/>
+            </svg>
           </button>
 
           <button
@@ -2762,6 +2840,16 @@ defineExpose({
 .attach-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.screenshot-button-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.screenshot-button.active {
+  color: #FDBA74;
+  background: rgba(249, 115, 22, 0.14);
 }
 
 .notification-mode-wrapper {

@@ -125,7 +125,13 @@ function closeImagePreview() {
     class="image-preview-overlay"
     @click.self="closeImagePreview"
   >
-    <button class="image-preview-close" type="button" @click="closeImagePreview">×</button>
+    <button
+      class="image-preview-close"
+      type="button"
+      title="关闭图片预览"
+      aria-label="关闭图片预览"
+      @click="closeImagePreview"
+    ></button>
     <div class="image-preview-card">
       <div class="image-preview-title">{{ imagePreviewTitle }}</div>
       <img :src="imagePreviewUrl" :alt="imagePreviewTitle">
@@ -307,8 +313,12 @@ function closeImagePreview() {
   position: absolute;
   top: 20px;
   right: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 36px;
   height: 36px;
+  padding: 0;
   border: none;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.12);
@@ -316,5 +326,10 @@ function closeImagePreview() {
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
+}
+
+.image-preview-close::before {
+  content: "×";
+  pointer-events: none;
 }
 </style>

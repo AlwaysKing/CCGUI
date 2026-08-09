@@ -58,6 +58,22 @@ export const SHORTCUT_ACTIONS = [
     allowInEditable: true
   },
   {
+    id: 'start-screen-capture',
+    action: 'start-screen-capture',
+    label: '截图标注',
+    description: '启动截图并将结果添加到当前输入框附件',
+    defaultCombo: 'Mod+E',
+    allowInEditable: true
+  },
+  {
+    id: 'start-screen-capture-hidden-window',
+    action: 'start-screen-capture-hidden-window',
+    label: '隐藏当前窗口截图',
+    description: '先隐藏当前 CCGUI 窗口，截图完成后恢复窗口并添加附件',
+    defaultCombo: 'Mod+Alt+E',
+    allowInEditable: true
+  },
+  {
     id: 'open-settings',
     action: 'open-settings',
     label: '打开设置',
@@ -85,6 +101,8 @@ const LEGACY_SHORTCUT_KEY_MAP = {
   toggleTerminal: 'toggle-terminal',
   toggleChatPanel: 'toggle-chat-panel',
   toggleAllMessageCollapse: 'toggle-all-message-collapse',
+  startScreenCapture: 'start-screen-capture',
+  startScreenCaptureHiddenWindow: 'start-screen-capture-hidden-window',
   openSettings: 'open-settings',
   createPrimary: 'create-primary'
 }
@@ -146,6 +164,19 @@ function normalizeKey(key = '') {
   return key
 }
 
+function normalizeEventKey(event) {
+  const code = String(event?.code || '')
+  if (/^Key[A-Z]$/.test(code)) {
+    return code.slice(3)
+  }
+
+  if (/^Digit[0-9]$/.test(code)) {
+    return code.slice(5)
+  }
+
+  return normalizeKey(event?.key || '')
+}
+
 export function normalizeShortcutCombo(combo = '') {
   const rawParts = String(combo || '')
     .split('+')
@@ -181,7 +212,7 @@ export function eventToShortcutCombo(event) {
   if (event.altKey) parts.push('Alt')
   if (event.shiftKey) parts.push('Shift')
 
-  const key = normalizeKey(event.key)
+  const key = normalizeEventKey(event)
   if (!key || ['Meta', 'Control', 'Alt', 'Shift'].includes(key)) {
     return parts.join('+')
   }
@@ -206,7 +237,7 @@ export function matchesShortcut(event, combo) {
   if (!combo) return false
 
   const required = parseShortcutCombo(combo)
-  const key = normalizeKey(event.key)
+  const key = normalizeEventKey(event)
 
   if (required.mod) {
     if (!(event.metaKey || event.ctrlKey)) return false

@@ -49,6 +49,8 @@ function getDefaultConfig() {
         'toggle-file-panel': 'Mod+Shift+F',
         'toggle-terminal': 'Ctrl+`',
         'toggle-chat-panel': 'Mod+Alt+M',
+        'start-screen-capture': 'Mod+E',
+        'start-screen-capture-hidden-window': 'Mod+Alt+E',
         'open-settings': 'Mod+,',
         'create-primary': 'Mod+N'
       },

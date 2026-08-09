@@ -213,6 +213,12 @@ function focusAndPlaceCaretAtEnd() {
   placeCaretAtEnd()
 }
 
+function isSelectionInsideEditor() {
+  const selection = window.getSelection()
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+  return Boolean(range && editorRef.value?.contains(range.startContainer))
+}
+
 function insertNodeAtSelection(node) {
   const selection = window.getSelection()
   const range = selection?.rangeCount ? selection.getRangeAt(0) : null
@@ -312,6 +318,10 @@ async function saveClipboardImage(file) {
 async function addAttachments(newAttachments) {
   if (!newAttachments.length) return
 
+  if (!isSelectionInsideEditor()) {
+    placeCaretAtEnd()
+  }
+
   const nextAttachments = [...props.attachments]
   for (const attachment of newAttachments) {
     nextAttachments.push(attachment)
@@ -319,8 +329,8 @@ async function addAttachments(newAttachments) {
     insertTextAtCursor(' ')
   }
 
-  syncModelFromDom()
   updateAttachments(nextAttachments)
+  syncModelFromDom()
   await nextTick()
 }
 
@@ -492,6 +502,7 @@ function focus() {
 
 defineExpose({
   focus,
+  addAttachments,
   appendText,
   openFilePicker,
   focusAndPlaceCaretAtEnd
@@ -589,7 +600,13 @@ onMounted(() => {
       <div class="image-preview-card" @click.stop>
         <div class="image-preview-header">
           <span>{{ imagePreviewTitle }}</span>
-          <button type="button" class="image-preview-close" @click="closeImagePreview">×</button>
+          <button
+            type="button"
+            class="image-preview-close"
+            title="关闭图片预览"
+            aria-label="关闭图片预览"
+            @click="closeImagePreview"
+          ></button>
         </div>
         <img :src="toAttachmentUrl(imagePreviewUrl)" :alt="imagePreviewTitle" class="image-preview-image">
       </div>
@@ -830,11 +847,24 @@ onMounted(() => {
 }
 
 .image-preview-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: none;
+  border-radius: 999px;
   background: transparent;
   color: #D4D4D8;
   font-size: 20px;
+  line-height: 1;
   cursor: pointer;
+}
+
+.image-preview-close::before {
+  content: "×";
+  pointer-events: none;
 }
 
 .image-preview-image {

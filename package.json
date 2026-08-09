@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://127.0.0.1:5173 && npx electron .\" --kill-others",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://127.0.0.1:5183 && npx electron .\" --kill-others",
     "electron": "npx electron .",
     "electron:build": "npm run build && electron-builder",
     "rebuild": "./scripts/rebuild.sh",
@@ -24,7 +24,8 @@
     "productName": "CCGUI",
     "appId": "com.ccgui.app",
     "asarUnpack": [
-      "**/node_modules/node-pty/**/*"
+      "**/node_modules/node-pty/**/*",
+      "**/node_modules/node-screenshots*/**/*"
     ],
     "directories": {
       "output": "output"
@@ -51,6 +52,7 @@
     }
   },
   "dependencies": {
+    "electron-screenshots": "^0.6.2",
     "highlight.js": "^11.11.1",
     "https-proxy-agent": "^7.0.5",
     "js-yaml": "^4.1.0",

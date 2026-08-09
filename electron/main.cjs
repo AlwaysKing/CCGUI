@@ -23,6 +23,7 @@ const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
 const DEV_SERVER_URL = 'http://127.0.0.1:5183'
 const DEV_SERVER_WS_URL = 'ws://127.0.0.1:5183'
 const MAC_SCREEN_CAPTURE_PRIVACY_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+const RECENT_PROJECT_WINDOW_MS = 10 * 24 * 60 * 60 * 1000
 
 if (isDevRuntime) {
   const devUserDataPath = path.join(app.getPath('appData'), 'CCGUI-dev')
@@ -1957,10 +1958,14 @@ ipcMain.handle('get-projects', async () => {
 // Add a new project (by path)
 ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
   try {
-    return projectService.addProject(projectPath, settings)
+    const project = projectService.addProject(projectPath, settings)
+    setupDockMenu().catch(error => {
+      logger.warn('[Dock] Failed to refresh dock menu after add project', { error: error.message })
+    })
+    return project
   } catch (e) {
     logger.warn('[Projects] Failed to create project config:', e.message)
-    return {
+    const fallbackProject = {
       id: encodeProjectPath(projectPath),
       name: path.basename(projectPath),
       path: projectPath,
@@ -1973,6 +1978,10 @@ ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
         codex: false
       }
     }
+    setupDockMenu().catch(error => {
+      logger.warn('[Dock] Failed to refresh dock menu after fallback add project', { error: error.message })
+    })
+    return fallbackProject
   }
 })
 
@@ -2046,6 +2055,9 @@ ipcMain.handle('update-project-config', async (event, { projectId, updates }) =>
   try {
     const updatedConfig = projectService.updateProjectConfig(projectId, updates)
     if (updatedConfig) {
+      setupDockMenu().catch(error => {
+        logger.warn('[Dock] Failed to refresh dock menu after update project config', { error: error.message })
+      })
       return { success: true, config: updatedConfig }
     } else {
       return { success: false, error: 'Project not found' }
@@ -2374,7 +2386,11 @@ ipcMain.handle('copy-session', async (event, { projectId, sessionId }) => {
 // Remove a project
 ipcMain.handle('remove-project', async (event, { projectId, deleteFolder }) => {
   try {
-    return await projectService.removeProject(projectId, deleteFolder)
+    const result = await projectService.removeProject(projectId, deleteFolder)
+    setupDockMenu().catch(error => {
+      logger.warn('[Dock] Failed to refresh dock menu after remove project', { error: error.message })
+    })
+    return result
   } catch (error) {
     logger.error('[Projects] Failed to remove project', { projectId, deleteFolder, error: error.message })
     throw new Error(`删除项目失败: ${error.message}`)
@@ -6881,7 +6897,67 @@ function openCCAgentWindow() {
 /**
  * Setup dock menu (macOS only)
  */
-function setupDockMenu() {
+function isDockRecentProject(project) {
+  if (!project?.path || !project.lastActiveAt) {
+    return false
+  }
+
+  const normalizedPath = String(project.path).replace(/\\/g, '/')
+  if (normalizedPath.endsWith('/.ccgui/ccagent')) {
+    return false
+  }
+
+  const lastActive = new Date(project.lastActiveAt).getTime()
+  return Number.isFinite(lastActive) && Date.now() - lastActive < RECENT_PROJECT_WINDOW_MS
+}
+
+function getDockProjectLabel(project) {
+  const name = project?.name || (project?.path ? path.basename(project.path) : '未命名项目')
+  return String(name).replace(/\s+/g, ' ').trim() || '未命名项目'
+}
+
+function openDockProject(project) {
+  if (!project?.path) {
+    return
+  }
+
+  const projectId = project.id || encodeProjectPath(project.path)
+  const projectName = getDockProjectLabel(project)
+  const existingWindow = findWindowByProjectPath(project.path)
+
+  if (existingWindow) {
+    logger.info('[Dock] Focus recent project window', { projectId, projectPath: project.path })
+    existingWindow.focus()
+    return
+  }
+
+  logger.info('[Dock] Open recent project', { projectId, projectPath: project.path })
+  openProjectWindow(projectId, projectName, project.path)
+}
+
+function buildRecentProjectDockSubmenu(projects = []) {
+  const recentProjects = (Array.isArray(projects) ? projects : [])
+    .filter(isDockRecentProject)
+    .sort((a, b) => new Date(b.lastActiveAt) - new Date(a.lastActiveAt))
+    .slice(0, 12)
+
+  if (!recentProjects.length) {
+    return [
+      {
+        label: '暂无最近项目',
+        enabled: false
+      }
+    ]
+  }
+
+  return recentProjects.map(project => ({
+    label: getDockProjectLabel(project),
+    sublabel: project.path,
+    click: () => openDockProject(project)
+  }))
+}
+
+async function setupDockMenu() {
   if (process.platform !== 'darwin') {
     return
   }
@@ -6905,6 +6981,13 @@ function setupDockMenu() {
     logger.error('[Dock] Failed to set dock icon:', error)
   }
 
+  let recentProjects = []
+  try {
+    recentProjects = await projectService.scanProjects()
+  } catch (error) {
+    logger.warn('[Dock] Failed to load recent projects for dock menu', { error: error.message })
+  }
+
   const dockMenuTemplate = [
     {
       label: '打开 CCAgent',
@@ -6919,6 +7002,10 @@ function setupDockMenu() {
         logger.info('[Dock] New Window clicked')
         createNewWindow()
       }
+    },
+    {
+      label: '最近项目',
+      submenu: buildRecentProjectDockSubmenu(recentProjects)
     }
   ]
 
@@ -6989,7 +7076,9 @@ app.whenReady().then(() => {
   registerAssetProtocol()
 
   createWindow()
-  setupDockMenu()
+  setupDockMenu().catch(error => {
+    logger.warn('[Dock] Failed to setup dock menu on startup', { error: error.message })
+  })
   flushPendingDockProjectOpens()
   setTimeout(() => {
     try {

@@ -195,8 +195,28 @@ onMounted(async () => {
       await store.fetchProjects()
       logger.info('Projects loaded', { count: store.projects.length })
 
-      // Find and select the project
-      const project = store.projects.find(p => p.id === projectId)
+      // Find and select the project. Some built-in projects are hidden from
+      // the Welcome list but still need to be openable from direct URLs.
+      let project = store.projects.find(p => p.id === projectId)
+      if (!project) {
+        const configResult = await window.electronAPI?.getProjectConfig?.({ projectId })
+        const config = configResult?.success ? configResult.config : null
+        if (config?.id && config?.path) {
+          project = {
+            id: config.id,
+            name: config.name || '未知项目',
+            path: config.path,
+            sessionCount: config.sessionCount || 0,
+            lastActiveAt: config.updatedAt || config.createdAt || null,
+            settings: config.settings || {},
+            sourceFlags: {
+              ccgui: true,
+              claude: false,
+              codex: false
+            }
+          }
+        }
+      }
       if (project) {
         store.selectProject(project)
         logger.info('Project selected successfully', { projectName: project.name, projectId })

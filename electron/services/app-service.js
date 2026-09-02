@@ -151,6 +151,7 @@ function buildManagedCodexProviderEntries() {
     .filter(model => model?.id && model?.apiUrl)
     .map(model => {
       const providerId = buildCodexModelProviderId(model.id)
+      const credential = getDefaultCredential(model)
       return {
         providerId,
         lines: [
@@ -158,7 +159,7 @@ function buildManagedCodexProviderEntries() {
           `name = ${stringifyTomlString(model.friendlyName || 'ccgui')}`,
           `base_url = ${stringifyTomlString(model.apiUrl || '')}`,
           `wire_api = ${stringifyTomlString('responses')}`,
-          `env_key = ${stringifyTomlString('CCGUI_AUTH_KEY')}`
+          `experimental_bearer_token = ${stringifyTomlString(credential?.token || '')}`
         ]
       }
     })
@@ -232,6 +233,7 @@ function writeCodexConfigFile(updates = {}) {
   const authState = readCodexAuthFile()
   const rawContent = current.rawContent || ''
   const lines = rawContent ? rawContent.split(/\r?\n/) : []
+  const hasLegacyCcguiProviderSection = lines.some(line => line.trim() === '[model_providers.ccgui]')
   const nextAuthMode = updates.authMode === 'chatgpt' || updates.authMode === 'provider'
     ? updates.authMode
     : (
@@ -244,8 +246,13 @@ function writeCodexConfigFile(updates = {}) {
   const nextProvider = nextAuthMode === 'chatgpt' ? '' : (explicitProvider || current.modelProvider || 'ccgui')
   const nextEffort = updates.modelReasoningEffort !== undefined ? updates.modelReasoningEffort : current.modelReasoningEffort
   const nextApiUrl = updates.apiUrl !== undefined ? updates.apiUrl : current.apiUrl
+  const nextBearerToken = updates.authToken !== undefined
+    ? updates.authToken
+    : authState.authToken
   const shouldWriteLegacyCcguiProvider = nextAuthMode !== 'chatgpt' && (
-    explicitProvider === 'ccgui' || (explicitProvider === null && updates.apiUrl !== undefined)
+    hasLegacyCcguiProviderSection ||
+    explicitProvider === 'ccgui' ||
+    (explicitProvider === null && updates.apiUrl !== undefined)
   )
 
   const pendingTopLevel = new Map([
@@ -254,13 +261,15 @@ function writeCodexConfigFile(updates = {}) {
   ])
   if (nextAuthMode !== 'chatgpt') {
     pendingTopLevel.set('model_provider', stringifyTomlString(nextProvider || 'ccgui'))
+    pendingTopLevel.set('preferred_auth_method', stringifyTomlString('apikey'))
+    pendingTopLevel.set('forced_login_method', stringifyTomlString('api'))
   }
 
   const legacyCcguiEntries = [
     `name = ${stringifyTomlString('ccgui')}`,
     `base_url = ${stringifyTomlString(nextApiUrl || '')}`,
     `wire_api = ${stringifyTomlString('responses')}`,
-    `env_key = ${stringifyTomlString('CCGUI_AUTH_KEY')}`
+    `experimental_bearer_token = ${stringifyTomlString(nextBearerToken || '')}`
   ]
 
   let currentSection = null
@@ -310,6 +319,9 @@ function writeCodexConfigFile(updates = {}) {
       if (entryMatch) {
         const [, indent, key, separator, , trailingSpace] = entryMatch
         if (nextAuthMode === 'chatgpt' && key === 'model_provider') {
+          continue
+        }
+        if (nextAuthMode === 'chatgpt' && (key === 'preferred_auth_method' || key === 'forced_login_method')) {
           continue
         }
         if (pendingTopLevel.has(key)) {
@@ -500,8 +512,7 @@ function resolveCodexModelRuntime(modelId = null, modelCardId = null, credential
     credentialName: credential?.name || '',
     authToken: credential?.token || '',
     apiUrl: model.apiUrl || '',
-    providerId: buildCodexModelProviderId(model.id),
-    envKey: 'CCGUI_AUTH_KEY'
+    providerId: buildCodexModelProviderId(model.id)
   }
 }
 

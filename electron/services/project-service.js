@@ -330,6 +330,16 @@ function resolveCurrentSessionTarget(provider, resolvedSettings = {}) {
     }
   }
 
+  if (provider === 'codex') {
+    const sessionMode = resolvedSettings?.meta?.session?.modelMode || null
+    if (sessionMode === 'system') {
+      return buildVirtualTargetId('codex', 'system')
+    }
+    if (sessionMode === 'project') {
+      return buildVirtualTargetId('codex', 'project')
+    }
+  }
+
   if (provider === 'codex' && (!resolvedSettings.modelId || resolvedSettings.targetKind === 'openai')) {
     return buildSessionTargetId({
       provider: 'codex',
@@ -400,17 +410,15 @@ function buildSessionAvailability(appConfig, projectSettings = {}, sessionSettin
     }
   }
 
-  if (provider === 'codex' && initProvider === 'openai') {
-    const systemResolved = resolveProjectSettings(appConfig, {}, 'codex')
-    const systemProvider = resolveInitProvider('codex', systemResolved)
-    if (systemProvider !== 'openai') {
-      return {
-        available: false,
-        provider,
-        currentProvider: systemProvider,
-        initProvider,
-        reason: 'system-openai-mismatch'
-      }
+  // Codex sessions use an isolated app-server and may switch provider at
+  // runtime, so the provider recorded at creation time is informational only.
+  if (provider === 'codex') {
+    return {
+      available: true,
+      provider,
+      currentProvider,
+      initProvider,
+      reason: 'codex-provider-switchable'
     }
   }
 
@@ -423,35 +431,27 @@ function buildSessionAvailability(appConfig, projectSettings = {}, sessionSettin
   }
 }
 
-function applyCodexTargetAvailability(options = [], currentTarget = null) {
-  if (!currentTarget) {
-    return options
-  }
+function buildCodexVirtualTargetOptions({ appConfig, projectSettings = {}, currentTargetId = null } = {}) {
+  const projectResolved = resolveSessionSettings(appConfig, projectSettings, null, 'codex')
+  const systemId = buildVirtualTargetId('codex', 'system')
+  const projectId = buildVirtualTargetId('codex', 'project')
 
-  const currentTargetKind = currentTarget.targetKind || 'provider'
-  const currentProviderId = currentTarget.providerId || null
-
-  if (currentTargetKind === 'openai') {
-    return options
-      .filter(option => option.targetKind === 'openai')
-      .map(option => ({
-        ...option,
-        selectable: true,
-        reasonDisabled: ''
-      }))
-  }
-
-  if (!currentProviderId) {
-    return options
-  }
-
-  return options
-    .filter(option => option.targetKind === 'provider' && option.providerId === currentProviderId)
-    .map(option => ({
-      ...option,
-      selectable: true,
-      reasonDisabled: ''
-    }))
+  return [
+    {
+      id: systemId,
+      label: `系统（${summarizeResolvedTarget(appConfig, 'codex', resolveProjectSettings(appConfig, {}, 'codex'))}）`,
+      menuLabel: '系统', providerId: null, providerLabel: '系统', credentialId: null,
+      credentialLabel: null, authMode: 'system', selectable: true,
+      isCurrent: currentTargetId === systemId, targetKind: 'system', modelId: null
+    },
+    {
+      id: projectId,
+      label: `项目（${summarizeResolvedTarget(appConfig, 'codex', projectResolved)}）`,
+      menuLabel: '项目', providerId: null, providerLabel: '项目', credentialId: null,
+      credentialLabel: null, authMode: 'project', selectable: true,
+      isCurrent: currentTargetId === projectId, targetKind: 'project', modelId: null
+    }
+  ]
 }
 
 async function getAvailableTargets({ projectId = null, provider = null, sessionId = null } = {}) {
@@ -482,11 +482,14 @@ async function getAvailableTargets({ projectId = null, provider = null, sessionI
       ]
     } else if (resolvedProvider === 'codex') {
       options = [
+        ...buildCodexVirtualTargetOptions({
+          appConfig,
+          projectSettings: projectConfig?.settings || {},
+          currentTargetId
+        }),
         buildOpenAiTargetOption(currentTargetId),
         ...options
       ]
-      const currentTarget = options.find(option => option.id === currentTargetId) || null
-      options = applyCodexTargetAvailability(options, currentTarget)
     }
 
     return {

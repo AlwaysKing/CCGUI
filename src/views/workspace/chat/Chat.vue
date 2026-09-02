@@ -376,6 +376,8 @@ const showConversationWave = computed(() => {
 
 const queuedMessagesBySession = ref({})
 const isFlushingQueuedMessage = ref(false)
+const draggedQueuedMessageId = ref('')
+const dragOverQueuedMessageId = ref('')
 const activeQueueSessionId = computed(() => sessionStore.currentSessionId || appStore.currentSession?.id || '__global__')
 const queuePanelVisible = ref(true)
 
@@ -417,7 +419,8 @@ function normalizeQueuedContent(content) {
 
   return {
     text: String(content.text || ''),
-    attachments: Array.isArray(content.attachments) ? content.attachments.map(item => ({ ...item })) : []
+    attachments: Array.isArray(content.attachments) ? content.attachments.map(item => ({ ...item })) : [],
+    ...(content.ccgui ? { ccgui: JSON.parse(JSON.stringify(content.ccgui)) } : {})
   }
 }
 
@@ -485,6 +488,73 @@ function removeQueuedMessage(queueId) {
   }
 }
 
+function reorderQueuedMessage(queueId, targetId) {
+  if (!queueId || !targetId || queueId === targetId) return
+  const sessionId = activeQueueSessionId.value
+  const queue = queuedMessagesBySession.value[sessionId] || []
+  const fromIndex = queue.findIndex(item => item.id === queueId)
+  const toIndex = queue.findIndex(item => item.id === targetId)
+  if (fromIndex < 0 || toIndex < 0) return
+
+  const [movedItem] = queue.splice(fromIndex, 1)
+  queue.splice(toIndex, 0, movedItem)
+  queuedMessagesBySession.value = {
+    ...queuedMessagesBySession.value,
+    [sessionId]: queue
+  }
+}
+
+function handleQueuedMessageDragStart(event, item) {
+  draggedQueuedMessageId.value = item.id
+  dragOverQueuedMessageId.value = ''
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', item.id)
+}
+
+function handleQueuedMessageDragOver(event, item) {
+  if (!draggedQueuedMessageId.value || draggedQueuedMessageId.value === item.id) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'move'
+  dragOverQueuedMessageId.value = item.id
+}
+
+function handleQueuedMessageDrop(event, item) {
+  event.preventDefault()
+  const queueId = draggedQueuedMessageId.value || event.dataTransfer.getData('text/plain')
+  reorderQueuedMessage(queueId, item.id)
+  draggedQueuedMessageId.value = ''
+  dragOverQueuedMessageId.value = ''
+}
+
+function handleQueuedMessageDragEnd() {
+  draggedQueuedMessageId.value = ''
+  dragOverQueuedMessageId.value = ''
+}
+
+function recallQueuedMessage(queueId) {
+  const item = queuedMessages.value.find(candidate => candidate.id === queueId)
+  if (!item) return
+
+  removeQueuedMessage(queueId)
+  const content = normalizeQueuedContent(item.content)
+  if (content?.kind === 'command' && content.command) {
+    const value = String(content.command.value || '').trim()
+    const args = String(content.command.arguments || '').trim()
+    inputMessage.value = args ? `${value} ${args}` : value
+    inputAttachments.value = []
+  } else if (typeof content === 'string') {
+    inputMessage.value = content
+    inputAttachments.value = []
+  } else {
+    inputMessage.value = String(content?.text || '')
+    inputAttachments.value = Array.isArray(content?.attachments)
+      ? content.attachments.map(attachment => ({ ...attachment }))
+      : []
+  }
+
+  nextTick(() => chatInputRef.value?.focus?.())
+}
+
 function buildOutgoingContent(content, attachments = []) {
   if (typeof content === 'string') {
     const normalizedAttachments = Array.isArray(attachments)
@@ -512,7 +582,10 @@ function buildOutgoingContent(content, attachments = []) {
       : []
 
     if (normalizedAttachments.length === 0) {
-      return normalizedText
+      return content.ccgui ? {
+        text: normalizedText,
+        ccgui: JSON.parse(JSON.stringify(content.ccgui))
+      } : normalizedText
     }
 
     return {
@@ -541,7 +614,10 @@ async function flushQueuedMessages() {
       await sessionStore.sendMessage(nextItem.content)
     }
     const queue = queuedMessagesBySession.value[sessionId] || []
-    queue.shift()
+    const sentIndex = queue.findIndex(item => item.id === nextItem.id)
+    if (sentIndex >= 0) {
+      queue.splice(sentIndex, 1)
+    }
     queuedMessagesBySession.value = {
       ...queuedMessagesBySession.value,
       [sessionId]: queue
@@ -550,6 +626,9 @@ async function flushQueuedMessages() {
     logger.warn('[Chat] Failed to flush queued message', { error: error?.message || String(error) })
   } finally {
     isFlushingQueuedMessage.value = false
+    if (queuedMessages.value[0]?.id !== nextItem.id && !isProcessing.value && !pendingPermission.value && !pendingControlRequest.value && queuedMessageCount.value > 0 && runtimeActive.value) {
+      void flushQueuedMessages()
+    }
   }
 }
 
@@ -2901,7 +2980,18 @@ function handleToggleAgentRail() {
           v-for="item in displayedQueuedMessages"
           :key="item.id"
             class="queued-message-item"
+            :class="{
+              'is-dragging': draggedQueuedMessageId === item.id,
+              'is-drag-over': dragOverQueuedMessageId === item.id
+            }"
+            draggable="true"
+            :aria-grabbed="draggedQueuedMessageId === item.id"
+            @dragstart="handleQueuedMessageDragStart($event, item)"
+            @dragover="handleQueuedMessageDragOver($event, item)"
+            @drop="handleQueuedMessageDrop($event, item)"
+            @dragend="handleQueuedMessageDragEnd"
           >
+            <span class="queued-message-drag-handle" title="拖动排序" aria-hidden="true">⋮⋮</span>
             <div class="queued-message-content">
               <span
                 v-for="badge in item.attachmentBadges || []"
@@ -2919,8 +3009,17 @@ function handleToggleAgentRail() {
               </div>
             </div>
             <button
+              class="queued-message-recall"
+              type="button"
+              title="撤回到输入框"
+              @click="recallQueuedMessage(item.id)"
+            >
+              撤回
+            </button>
+            <button
               class="queued-message-remove"
               type="button"
+              title="删除排队消息"
               @click="removeQueuedMessage(item.id)"
             >
               删除
@@ -4130,6 +4229,21 @@ function handleToggleAgentRail() {
   padding: 0 12px;
   background: transparent;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: grab;
+  transition: background 0.18s ease, opacity 0.18s ease;
+}
+
+.queued-message-item:active {
+  cursor: grabbing;
+}
+
+.queued-message-item.is-dragging {
+  opacity: 0.45;
+}
+
+.queued-message-item.is-drag-over {
+  background: rgba(249, 115, 22, 0.1);
+  box-shadow: inset 0 2px 0 #F97316;
 }
 
 .queued-message-item:last-child {
@@ -4143,6 +4257,17 @@ function handleToggleAgentRail() {
   align-items: center;
   gap: 8px;
   overflow: hidden;
+}
+
+.queued-message-drag-handle {
+  flex-shrink: 0;
+  width: 12px;
+  color: #71717A;
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: -3px;
+  cursor: grab;
+  user-select: none;
 }
 
 .queued-message-badge {
@@ -4184,6 +4309,22 @@ function handleToggleAgentRail() {
   padding: 4px 0;
   cursor: pointer;
   transition: color 0.18s ease;
+}
+
+.queued-message-recall {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: #A1A1AA;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 0;
+  cursor: pointer;
+  transition: color 0.18s ease;
+}
+
+.queued-message-recall:hover {
+  color: #F97316;
 }
 
 .queued-message-remove:hover {

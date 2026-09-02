@@ -22,6 +22,7 @@ const {
 const { buildAugmentedEnv } = require('../../services/shell-env')
 
 let HttpsProxyAgent = null
+let cachedCodexPath = null
 try {
   HttpsProxyAgent = require('https-proxy-agent').HttpsProxyAgent
 } catch (error) {
@@ -35,6 +36,10 @@ function pickFirstDefined(...values) {
     }
   }
   return null
+}
+
+function stringifyTomlString(value = '') {
+  return JSON.stringify(String(value ?? ''))
 }
 
 function parseTomlTopLevelValue(rawValue) {
@@ -534,18 +539,23 @@ class CodexClient {
       : settings
   }
 
-  detectCodexPath() {
+  detectCodexPath(environment = process.env) {
+    if (cachedCodexPath) return cachedCodexPath
+
     const possiblePaths = [
+      ...(environment.CODEX_CLI_PATH ? [environment.CODEX_CLI_PATH] : []),
+      '/Applications/ChatGPT.app/Contents/Resources/codex',
       '/Applications/Codex.app/Contents/Resources/codex',
       '/opt/homebrew/bin/codex',
       '/usr/local/bin/codex',
-      path.join(process.env.HOME || '', '.local/bin/codex'),
-      ...(process.env.PATH ? process.env.PATH.split(':').map(dir => path.join(dir, 'codex')) : [])
+      path.join(environment.HOME || process.env.HOME || '', '.local/bin/codex'),
+      ...(environment.PATH ? environment.PATH.split(path.delimiter).map(dir => path.join(dir, 'codex')) : [])
     ]
 
     for (const candidate of possiblePaths) {
       if (candidate && fs.existsSync(candidate)) {
-        return candidate
+        cachedCodexPath = candidate
+        return cachedCodexPath
       }
     }
 
@@ -589,9 +599,10 @@ class CodexClient {
       const result = {
         modelName: targetCard?.modelName || null,
         modelProvider: buildCodexModelProviderId(modelConfig.id),
+        providerName: modelConfig.friendlyName || modelConfig.id || 'CCGUI Provider',
+        baseUrl: modelConfig.apiUrl || '',
         authToken: credential?.token || null,
-        credentialId: credential?.id || null,
-        envKey: 'CCGUI_AUTH_KEY'
+        credentialId: credential?.id || null
       }
 
       logger.info('[CodexClient] Resolved model runtime:', {
@@ -970,10 +981,10 @@ class CodexClient {
       return
     }
 
-    this.codexPath = this.detectCodexPath()
     const appConfig = appConfigManager.loadConfig()
     const proxyUrl = appConfig.settings?.codexProxy || ''
     const modelRuntime = this.resolveModelRuntime()
+    const isSessionCustomModel = this.projectSettings?.meta?.session?.modelMode === 'custom'
     const codexEnvOverrides = {}
 
     if (proxyUrl) {
@@ -982,17 +993,40 @@ class CodexClient {
       codexEnvOverrides.ALL_PROXY = proxyUrl
     }
 
-    if (modelRuntime?.authToken) {
-      codexEnvOverrides[modelRuntime.envKey || 'CCGUI_AUTH_KEY'] = modelRuntime.authToken
-    }
-
     const codexEnv = await buildAugmentedEnv(process.env, codexEnvOverrides)
+
+    // Electron launched from Finder may not inherit the terminal's nvm/npm PATH.
+    // Resolve the login-shell environment before locating the CLI.
+    this.codexPath = this.detectCodexPath(codexEnv)
+    logger.info('[CodexClient] Using Codex executable:', { path: this.codexPath })
 
     logger.info('[CodexClient] PATH entries:', {
       count: String(codexEnv.PATH || '').split(path.delimiter).filter(Boolean).length
     })
 
-    this.process = spawn(this.codexPath, ['app-server', '--listen', 'stdio://'], {
+    const args = ['app-server']
+    if (isSessionCustomModel && modelRuntime) {
+      const providerId = modelRuntime.modelProvider || 'ccgui'
+      args.push(
+        '-c', `model=${stringifyTomlString(modelRuntime.modelName || '')}`,
+        '-c', `model_provider=${stringifyTomlString(providerId)}`,
+        '-c', `model_providers.${providerId}.name=${stringifyTomlString(modelRuntime.providerName)}`,
+        '-c', `model_providers.${providerId}.base_url=${stringifyTomlString(modelRuntime.baseUrl)}`,
+        '-c', `model_providers.${providerId}.wire_api=${stringifyTomlString('responses')}`
+      )
+      if (modelRuntime.authToken) {
+        args.push('-c', `model_providers.${providerId}.experimental_bearer_token=${stringifyTomlString(modelRuntime.authToken)}`)
+      }
+      logger.info('[CodexClient] Applying session provider settings override', {
+        providerId,
+        baseUrl: modelRuntime.baseUrl || null,
+        model: modelRuntime.modelName || null,
+        hasAuthToken: Boolean(modelRuntime.authToken)
+      })
+    }
+    args.push('--listen', 'stdio://')
+
+    this.process = spawn(this.codexPath, args, {
       cwd: this.workingDirectory,
       env: codexEnv
     })

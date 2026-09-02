@@ -686,6 +686,8 @@ watch(() => props.message, () => {
           :is-streaming="isStreaming"
           :num-turns="message.numTurns"
           :usage="message.usage"
+          :thinking-tokens="message.thinkingTokens"
+          :only-thinking-tokens="message.role === 'assistant' && message.subtype === 'thinking'"
           :variant="statusStyle"
         />
       </div>
@@ -993,6 +995,7 @@ watch(() => props.message, () => {
           :is-streaming="isStreaming"
           :num-turns="message.numTurns"
           :usage="message.usage"
+          :thinking-tokens="message.thinkingTokens"
           :variant="statusStyle"
         />
       </div>
@@ -1010,6 +1013,8 @@ watch(() => props.message, () => {
           :is-streaming="isStreaming"
           :num-turns="message.numTurns"
           :usage="message.usage"
+          :thinking-tokens="message.thinkingTokens"
+          :only-thinking-tokens="message.role === 'assistant' && message.subtype === 'thinking'"
           variant="floating"
         />
       </div>

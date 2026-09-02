@@ -41,6 +41,14 @@ const props = defineProps({
   variant: {
     type: String,
     default: 'full'
+  },
+  thinkingTokens: {
+    type: Number,
+    default: null
+  },
+  onlyThinkingTokens: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -78,14 +86,40 @@ const isDurationStreaming = computed(() => {
 })
 
 // 格式化 tokens
-function formatTokens(usage) {
-  if (!usage) return ''
+function formatTokens(usage, streamingThinkingTokens = null, onlyThinkingTokens = false) {
+  const parts = []
+
+  // 如果只显示 thinking tokens（用于 thinking 消息）
+  if (onlyThinkingTokens) {
+    if (streamingThinkingTokens !== null && streamingThinkingTokens > 0) {
+      parts.push(`输出: ${streamingThinkingTokens.toLocaleString()}`)
+    }
+    return parts.join(' ')
+  }
+
+  // 完整的 usage 显示（用于 assistant 文本消息）
+  if (!usage) {
+    // 如果没有 usage 但有 streaming thinking tokens，显示为输出
+    if (streamingThinkingTokens !== null && streamingThinkingTokens > 0) {
+      parts.push(`输出: ${streamingThinkingTokens.toLocaleString()}`)
+    }
+    return parts.join(' ')
+  }
+
   const cache = usage.cache_read_input_tokens || 0
   const input = usage.input_tokens || 0
-  const output = usage.output_tokens || 0
-  if (cache === 0 && input === 0 && output === 0) return ''
+  let output = usage.output_tokens || 0
 
-  const parts = []
+  // thinking tokens 是输出的一部分
+  // 优先使用 usage 中的 thinking_tokens，否则使用实时估算值
+  const thinkingTokens = usage.output_tokens_details?.thinking_tokens
+    ?? (streamingThinkingTokens !== null && streamingThinkingTokens > 0 ? streamingThinkingTokens : 0)
+
+  // 如果 output 为 0 但有 thinking tokens，说明还在 thinking 阶段
+  if (output === 0 && thinkingTokens > 0) {
+    output = thinkingTokens
+  }
+
   if (cache) parts.push(`缓存: ${cache.toLocaleString()}`)
   if (input) parts.push(`输入: ${input.toLocaleString()}`)
   if (output) parts.push(`输出: ${output.toLocaleString()}`)
@@ -95,8 +129,7 @@ function formatTokens(usage) {
 
 // 计算格式化后的 tokens
 const formattedTokens = computed(() => {
-  if (!props.usage) return ''
-  return formatTokens(props.usage)
+  return formatTokens(props.usage, props.thinkingTokens, props.onlyThinkingTokens)
 })
 </script>
 

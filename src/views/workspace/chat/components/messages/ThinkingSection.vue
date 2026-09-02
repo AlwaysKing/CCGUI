@@ -78,6 +78,14 @@ function copyContent() {
           @copy="copyContent"
         />
         <div class="thinking-content-inline ghost-content">{{ thinking }}</div>
+        <div v-if="thinkingTokens !== null" class="thinking-stats">
+          <MessageStats
+            :thinking-tokens="thinkingTokens"
+            :only-thinking-tokens="true"
+            :show-tokens="true"
+            variant="compact"
+          />
+        </div>
       </div>
     </template>
     <template v-else>

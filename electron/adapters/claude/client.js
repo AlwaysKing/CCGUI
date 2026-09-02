@@ -600,7 +600,10 @@ class ClaudeClient {
       const credential = getDefaultCredential(modelConfig, this.projectSettings?.credentialId)
       if (credential?.token) {
         envVars.ANTHROPIC_AUTH_TOKEN = credential.token
-        logger.info(`[ClaudeClient] Setting ANTHROPIC_AUTH_TOKEN: ${credential.token.substring(0, 10)}...`)
+        logger.info('[ClaudeClient] Setting ANTHROPIC_AUTH_TOKEN', {
+          credentialId: credential.id || null,
+          hasToken: true
+        })
       }
 
       // 获取模型卡片列表
@@ -715,8 +718,23 @@ class ClaudeClient {
       args.push('--append-system-prompt', systemPrompt)
     }
 
-    // Get model environment variables
-    const modelEnvVars = this.getModelEnvVars()
+    // Only a session-custom target gets provider overrides. System/project
+    // targets intentionally continue using Claude's configuration files.
+    const isSessionCustomModel = this.projectSettings?.meta?.session?.modelMode === 'custom'
+    const modelEnvVars = isSessionCustomModel ? this.getModelEnvVars() : {}
+
+    // Session-specific provider values must be passed through Claude's CLI
+    // settings layer so they take precedence over env values from settings
+    // files. System/project modes intentionally leave this unset.
+    if (isSessionCustomModel && Object.keys(modelEnvVars).length > 0) {
+      args.push('--settings', JSON.stringify({ env: modelEnvVars }))
+      logger.info('[ClaudeClient] Applying session provider settings override', {
+        variables: Object.keys(modelEnvVars),
+        hasAuthToken: Boolean(modelEnvVars.ANTHROPIC_AUTH_TOKEN),
+        baseUrl: modelEnvVars.ANTHROPIC_BASE_URL || null,
+        model: modelEnvVars.ANTHROPIC_MODEL || null
+      })
+    }
 
     // 构建完整的环境变量
     const fullEnv = await buildAugmentedEnv(process.env, {
@@ -732,8 +750,27 @@ class ClaudeClient {
     logger.info('[ClaudeClient] ========== Claude CLI 启动参数 ==========')
     logger.info(`[ClaudeClient] Claude路径: ${this.claudePath}`)
     logger.info(`[ClaudeClient] 工作目录: ${this.workingDirectory}`)
-    logger.info(`[ClaudeClient] 参数: ${JSON.stringify(args, null, 2)}`)
-    logger.info(`[ClaudeClient] 环境变量(自定义): ${JSON.stringify(modelEnvVars, null, 2)}`)
+    const logArgs = args.map((arg, index) => {
+      if (args[index - 1] !== '--settings') {
+        return arg
+      }
+
+      try {
+        const settings = JSON.parse(arg)
+        if (settings?.env?.ANTHROPIC_AUTH_TOKEN) {
+          settings.env.ANTHROPIC_AUTH_TOKEN = '[REDACTED]'
+        }
+        return JSON.stringify(settings)
+      } catch {
+        return '[REDACTED]'
+      }
+    })
+    logger.info(`[ClaudeClient] 参数: ${JSON.stringify(logArgs, null, 2)}`)
+    const logModelEnvVars = { ...modelEnvVars }
+    if (logModelEnvVars.ANTHROPIC_AUTH_TOKEN) {
+      logModelEnvVars.ANTHROPIC_AUTH_TOKEN = '[REDACTED]'
+    }
+    logger.info(`[ClaudeClient] 环境变量(自定义): ${JSON.stringify(logModelEnvVars, null, 2)}`)
     logger.info(`[ClaudeClient] Agent Teams: ${fullEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS}`)
     logger.info('[ClaudeClient] PATH entries:', {
       count: String(fullEnv.PATH || '').split(path.delimiter).filter(Boolean).length

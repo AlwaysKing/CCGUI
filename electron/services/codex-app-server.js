@@ -11,16 +11,34 @@ const RECOMMENDED_SKILLS_PATHS = [
   ['skills', '.curated'],
   ['skills', '.experimental']
 ]
+let cachedCodexPath = null
 
 function getCodexExecutablePath() {
+  if (cachedCodexPath) return cachedCodexPath
+
+  const nvmBinPaths = []
+  const nvmVersionsPath = path.join(os.homedir(), '.nvm', 'versions', 'node')
+  try {
+    for (const version of fs.readdirSync(nvmVersionsPath)) {
+      nvmBinPaths.push(path.join(nvmVersionsPath, version, 'bin', 'codex'))
+    }
+  } catch (_) {
+    // nvm is optional
+  }
+
   const possiblePaths = [
+    ...(process.env.CODEX_CLI_PATH ? [process.env.CODEX_CLI_PATH] : []),
     '/Applications/Codex.app/Contents/Resources/codex',
+    '/Applications/ChatGPT.app/Contents/Resources/codex',
     '/opt/homebrew/bin/codex',
     '/usr/local/bin/codex',
-    path.join(os.homedir(), '.local', 'bin', 'codex')
+    path.join(os.homedir(), '.local', 'bin', 'codex'),
+    ...nvmBinPaths,
+    ...(process.env.PATH ? process.env.PATH.split(path.delimiter).map(dir => path.join(dir, 'codex')) : [])
   ]
 
-  return possiblePaths.find(candidate => fs.existsSync(candidate)) || null
+  cachedCodexPath = possiblePaths.find(candidate => candidate && fs.existsSync(candidate)) || null
+  return cachedCodexPath
 }
 
 function getCodexResourcesPath() {

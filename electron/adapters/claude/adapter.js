@@ -1265,6 +1265,13 @@ class ClaudeAdapter extends ClaudeClient {
       return
     }
 
+    if (message.type === 'command_lifecycle') {
+      // 命令生命周期事件: 这是系统内部追踪用户命令执行状态的机制
+      // (queued, started, completed, failed 等)
+      // 静默处理,不在界面显示
+      return
+    }
+
     if (message.type === 'system') {
       this.handleSystemMessage(message)
       return
@@ -1679,6 +1686,32 @@ class ClaudeAdapter extends ClaudeClient {
   }
 
   handleSystemMessage(message) {
+    if (message.subtype === 'thinking_tokens') {
+      // thinking token 统计：更新当前正在 streaming 的 thinking 消息
+      // estimated_tokens 是累计值，不需要累加
+      const estimatedTokens = Number.isFinite(message.estimated_tokens) ? message.estimated_tokens : null
+      const estimatedTokensDelta = Number.isFinite(message.estimated_tokens_delta) ? message.estimated_tokens_delta : null
+
+      // 找到当前正在 streaming 的 thinking 消息
+      // thinking 消息的 ID 格式是 thinking-{assistantMessageId}-{blockIndex}
+      const currentThinkingMessageId = this.currentAssistantMessage?.id
+        ? Array.from(this.contentBlockMessageIds.values()).find(id =>
+            id.startsWith('thinking-') && this.assistantSnapshots.has(id)
+          )
+        : null
+
+      if (currentThinkingMessageId && estimatedTokens !== null) {
+        this.emit('message-update', {
+          messageId: currentThinkingMessageId,
+          updates: {
+            thinkingTokens: estimatedTokens,
+            thinkingTokensDelta: estimatedTokensDelta
+          }
+        })
+      }
+      return
+    }
+
     if (message.subtype === 'api_retry') {
       this.emit('system-notification', {
         type: 'api-retry',

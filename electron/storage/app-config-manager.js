@@ -65,6 +65,7 @@ function getDefaultConfig() {
       codexAccounts: [],
       selectedCodexAccountId: null,
       codexProxy: '',
+      proxyPort: 18921,
 
       // 提示词配置
       prompts: []

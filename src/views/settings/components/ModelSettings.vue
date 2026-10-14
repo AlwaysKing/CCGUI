@@ -162,21 +162,26 @@ const codexAuthModeLabel = computed(() => {
   return props.codexConfig?.authMode === 'chatgpt' ? '账号' : '模型供应商'
 })
 
+// 新方案下 modelProvider 存的是供应商 id；旧方案是 ccgui_model_<id>，两种都要能认出来
+const activeCodexModelProvider = computed(() => {
+  const providerId = props.codexConfig?.modelProvider || ''
+  if (!providerId) {
+    return null
+  }
+
+  const models = Array.isArray(props.codexModels) ? props.codexModels : []
+  return models.find(item => item?.id === providerId)
+    || models.find(item => buildCodexProviderId(item?.id) === providerId)
+    || null
+})
+
 const activeCodexModelProviderLabel = computed(() => {
   if (props.codexConfig?.authMode === 'chatgpt') {
     return ''
   }
 
-  const providerId = props.codexConfig?.modelProvider || ''
-  if (!providerId) {
-    return ''
-  }
-
-  const model = (Array.isArray(props.codexModels) ? props.codexModels : []).find(item =>
-    item?.id && `ccgui_model_${String(item.id).trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '')}` === providerId
-  )
-
-  return model?.friendlyName || providerId
+  // 匹配不到就不展示，避免把内部 id 暴露在界面上
+  return activeCodexModelProvider.value?.friendlyName || ''
 })
 
 function isClaudeCredentialActive(model, credential) {
@@ -187,7 +192,9 @@ function isClaudeCredentialActive(model, credential) {
 function isCodexCredentialActive(model, credential) {
   if (!model || !credential) return false
   if (props.codexConfig?.authMode === 'chatgpt') return false
-  return props.codexConfig?.modelProvider === buildCodexProviderId(model.id)
+  const providerMatches = props.codexConfig?.modelProvider === model.id
+    || props.codexConfig?.modelProvider === buildCodexProviderId(model.id)
+  return providerMatches
     && (props.codexConfig?.authToken || '') === (credential.token || '')
 }
 

@@ -160,8 +160,37 @@ function getHistoryRoot() {
   return path.join(os.homedir(), '.ccgui', 'projects')
 }
 
+// 历史遗留：同一项目路径存在过两种 projectId 编码（是否把 . 替换成 -）。
+// 这里登记别名，让已有会话的历史继续读写原目录，避免历史消息“消失”。
+const projectIdAliases = new Map()
+
+function registerProjectIdAlias(projectId, legacyProjectId) {
+  const primary = typeof projectId === 'string' ? projectId.trim() : ''
+  const legacy = typeof legacyProjectId === 'string' ? legacyProjectId.trim() : ''
+  if (!primary || !legacy || primary === legacy) {
+    return
+  }
+
+  projectIdAliases.set(primary, legacy)
+}
+
+function resolveHistoryProjectId(projectId, sessionId) {
+  const legacyProjectId = projectIdAliases.get(projectId)
+  if (!legacyProjectId) {
+    return projectId
+  }
+
+  const legacyIndexPath = path.join(getHistoryRoot(), legacyProjectId, 'sessions', sessionId, 'history', 'index.jsonl')
+  if (!fs.existsSync(legacyIndexPath)) {
+    return projectId
+  }
+
+  const primaryIndexPath = path.join(getHistoryRoot(), projectId, 'sessions', sessionId, 'history', 'index.jsonl')
+  return fs.existsSync(primaryIndexPath) ? projectId : legacyProjectId
+}
+
 function getSessionHistoryDir(projectId, sessionId) {
-  return path.join(getHistoryRoot(), projectId, 'sessions', sessionId, 'history')
+  return path.join(getHistoryRoot(), resolveHistoryProjectId(projectId, sessionId), 'sessions', sessionId, 'history')
 }
 
 function getIndexFilePath(projectId, sessionId) {
@@ -1030,6 +1059,7 @@ function hasHistoryIndex(projectId, sessionId) {
 
 module.exports = {
   getSessionHistoryDir,
+  registerProjectIdAlias,
   getIndexFilePath,
   getMetadataFilePath,
   getTurnsDirPath,

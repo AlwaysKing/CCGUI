@@ -248,6 +248,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateAppConfig: (options) => ipcRenderer.invoke('update-app-config', options),
 
   // ============================================
+  // Local Proxy API
+  // ============================================
+  getLocalProxyStatus: () => ipcRenderer.invoke('get-local-proxy-status'),
+  restartLocalProxy: () => ipcRenderer.invoke('restart-local-proxy'),
+  getCodexCatalogImportCandidates: () => ipcRenderer.invoke('get-codex-catalog-import-candidates'),
+  getCodexCatalogDefaultEntry: () => ipcRenderer.invoke('get-codex-catalog-default-entry'),
+  importCodexCatalogMetadata: (options) => ipcRenderer.invoke('import-codex-catalog-metadata', options),
+
+  // ============================================
   // Claude Settings API (from ~/.claude/settings.json)
   // ============================================
   getClaudeSettings: () => ipcRenderer.invoke('get-claude-settings'),
@@ -255,14 +264,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   manageClaudeHook: (options) => ipcRenderer.invoke('manage-claude-hook', options),
   manageClaudeHookSettings: (options) => ipcRenderer.invoke('manage-claude-hook-settings', options),
   manageClaudeSubagent: (options) => ipcRenderer.invoke('manage-claude-subagent', options),
-  listClaudeModels: (options) => ipcRenderer.invoke('list-claude-models', options),
 
   // ============================================
   // Codex Settings API (from ~/.codex/config.toml)
   // ============================================
   getCodexSettings: () => ipcRenderer.invoke('get-codex-settings'),
   updateCodexSettings: (options) => ipcRenderer.invoke('update-codex-settings', options),
-  syncCodexModelProviders: () => ipcRenderer.invoke('sync-codex-model-providers'),
   inspectProviderSetup: (options) => ipcRenderer.invoke('inspect-provider-setup', options),
   manageClaudePlugin: (options) => ipcRenderer.invoke('manage-claude-plugin', options),
   manageCodexHook: (options) => ipcRenderer.invoke('manage-codex-hook', options),
@@ -273,7 +280,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   applyCodexAccount: (options) => ipcRenderer.invoke('apply-codex-account', options),
   getCodexUsageStatus: (options) => ipcRenderer.invoke('get-codex-usage-status', options),
   getActiveCodexAccountUsageSnapshot: () => ipcRenderer.invoke('get-active-codex-account-usage-snapshot'),
-  listCodexModels: (options) => ipcRenderer.invoke('list-codex-models', options),
   setCodexDefaultModel: (options) => ipcRenderer.invoke('set-codex-default-model', options),
   refreshCodexAuthToken: () => ipcRenderer.invoke('refresh-codex-auth-token'),
   startCodexChatGptLogin: () => ipcRenderer.invoke('start-codex-chatgpt-login'),
@@ -298,6 +304,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   sendNotification: (options) => ipcRenderer.invoke('send-notification', options),
   playSystemSound: (options) => ipcRenderer.invoke('play-system-sound', options),
+  notifyPermissionAttention: (options) => ipcRenderer.invoke('notify-permission-attention', options),
   fetchJSON: (options) => ipcRenderer.invoke('fetch-json', options),
 
   // ============================================
@@ -335,7 +342,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listProjectMcps: (options) => ipcRenderer.invoke('list-project-mcps', options),
   installMcpToProject: (options) => ipcRenderer.invoke('install-mcp-to-project', options),
   uninstallMcpFromProject: (options) => ipcRenderer.invoke('uninstall-mcp-from-project', options),
-  deleteProjectMcp: (options) => ipcRenderer.invoke('delete-project-mcp', options)
+  deleteProjectMcp: (options) => ipcRenderer.invoke('delete-project-mcp', options),
+  getMcpEnableStates: (options) => ipcRenderer.invoke('get-mcp-enable-states', options),
+  setMcpEnabledGlobal: (options) => ipcRenderer.invoke('set-mcp-enabled-global', options),
+  setMcpEnabledProject: (options) => ipcRenderer.invoke('set-mcp-enabled-project', options),
+  syncProjectMcps: (options) => ipcRenderer.invoke('sync-project-mcps', options),
+  getSkillEnableStates: (options) => ipcRenderer.invoke('get-skill-enable-states', options),
+  setSkillEnabledGlobal: (options) => ipcRenderer.invoke('set-skill-enabled-global', options),
+  setSkillEnabledProject: (options) => ipcRenderer.invoke('set-skill-enabled-project', options),
+  syncProjectSkills: (options) => ipcRenderer.invoke('sync-project-skills', options)
 })
 
 contextBridge.exposeInMainWorld('electronEvents', {

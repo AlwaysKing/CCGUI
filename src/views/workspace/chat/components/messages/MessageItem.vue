@@ -90,10 +90,6 @@ const props = defineProps({
   paneWidth: {
     type: Number,
     default: 0
-  },
-  externalizeThinking: {
-    type: Boolean,
-    default: false
   }
 })
 
@@ -335,7 +331,7 @@ const isStreaming = computed(() => {
 
 // 是否显示思考过程
 const showThinking = computed(() => {
-  return !props.externalizeThinking && props.message.hasThinking && props.message.thinking
+  return props.message.hasThinking && props.message.thinking
 })
 
 const showAssistantMessage = computed(() => {

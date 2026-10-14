@@ -75,15 +75,6 @@ function getDefaultCredential(model = null, preferredCredentialId = null) {
   return credentials.find(credential => credential.id === model?.defaultCredentialId) || credentials[0] || null
 }
 
-function buildCodexProviderId(modelId = '') {
-  const suffix = String(modelId || '')
-    .trim()
-    .replace(/[^A-Za-z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-
-  return suffix ? `ccgui_model_${suffix}` : 'ccgui'
-}
-
 export function useSettingsData(emit) {
   const settings = ref({
     theme: 'dark',
@@ -157,6 +148,89 @@ export function useSettingsData(emit) {
     { value: 'high', label: '高' }
   ]
 
+  const CLAUDE_ALIAS_MAPPING_KEYS = [
+    ['ANTHROPIC_DEFAULT_SONNET_MODEL', 'anthropicDefaultSonnetModel'],
+    ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'anthropicDefaultOpusModel'],
+    ['ANTHROPIC_DEFAULT_HAIKU_MODEL', 'anthropicDefaultHaikuModel'],
+    ['ANTHROPIC_SMALL_FAST_MODEL', 'anthropicSmallFastModel']
+  ]
+
+  function findModelById(models, modelId) {
+    return (Array.isArray(models) ? models : []).find(model => model.id === modelId) || null
+  }
+
+  function resolveModelCard(model, cardId) {
+    const cards = Array.isArray(model?.modelCards) ? model.modelCards : []
+    if (cards.length === 0) {
+      return null
+    }
+
+    const targetCardId = cardId || model?.defaultCardId || cards[0].id
+    return cards.find(card => card.id === targetCardId) || cards[0]
+  }
+
+  function findCardIdByName(model, modelName) {
+    if (!modelName) return null
+    const cards = Array.isArray(model?.modelCards) ? model.modelCards : []
+    return cards.find(card => card.modelName === modelName)?.id || null
+  }
+
+  // Claude 默认配置完全来自 CCGUI 内部配置，不再读取 ~/.claude/settings.json
+  function applyClaudeDefaultConfig() {
+    const model = findModelById(claudeModels.value, selectedClaudeModelId.value)
+    if (!model) {
+      defaultConfig.value = {
+        ...defaultConfig.value,
+        apiUrl: '',
+        authToken: '',
+        model: '',
+        anthropicModel: '',
+        anthropicDefaultSonnetModel: '',
+        anthropicDefaultOpusModel: '',
+        anthropicDefaultHaikuModel: '',
+        anthropicSmallFastModel: ''
+      }
+      return
+    }
+
+    const card = resolveModelCard(model, model.defaultCardId)
+    const credential = getDefaultCredential(model, selectedClaudeCredentialId.value)
+    const cardMapping = model.cardMapping && typeof model.cardMapping === 'object' ? model.cardMapping : {}
+
+    const mappedNames = {}
+    for (const [envKey, formKey] of CLAUDE_ALIAS_MAPPING_KEYS) {
+      const mappedCard = resolveModelCard(model, cardMapping[envKey])
+      mappedNames[formKey] = cardMapping[envKey] && mappedCard ? mappedCard.modelName : ''
+    }
+
+    defaultConfig.value = {
+      ...defaultConfig.value,
+      apiUrl: model.apiUrl || '',
+      authToken: credential?.token || '',
+      model: card?.modelName || '',
+      anthropicModel: card?.modelName || '',
+      ...mappedNames
+    }
+  }
+
+  // Codex 默认配置完全来自 CCGUI 内部配置，不再读取 ~/.codex 配置
+  function applyCodexDefaultConfig() {
+    const model = findModelById(codexModels.value, selectedCodexModelId.value)
+    const card = model ? resolveModelCard(model, model.defaultCardId) : null
+    const credential = model ? getDefaultCredential(model, selectedCodexCredentialId.value) : null
+
+    codexConfig.value = {
+      ...codexConfig.value,
+      authMode: 'provider',
+      modelProvider: model?.id || '',
+      apiUrl: model?.apiUrl || '',
+      authToken: credential?.token || '',
+      model: card?.modelName || '',
+      modelReasoningEffort: settings.value.codexReasoningEffort || 'medium',
+      proxyUrl: settings.value.codexProxy || ''
+    }
+  }
+
   async function loadSettings() {
     try {
       const result = await window.electronAPI.getAppConfig()
@@ -204,45 +278,9 @@ export function useSettingsData(emit) {
         }
       }
 
-      // 并行加载 Claude 和 Codex 的 provider 级配置
-      const [claudeResult, codexResult] = await Promise.allSettled([
-        window.electronAPI.getClaudeSettings(),
-        window.electronAPI.getCodexSettings()
-      ])
-
-      if (claudeResult.status === 'fulfilled' && claudeResult.value?.success && claudeResult.value.settings) {
-        const claudeSettings = claudeResult.value.settings
-        const env = claudeSettings.env || {}
-
-        defaultConfig.value.apiUrl = env.ANTHROPIC_BASE_URL || ''
-        defaultConfig.value.authToken = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || ''
-        defaultConfig.value.model = claudeSettings.model || ''
-        defaultConfig.value.effort = claudeSettings.effort || 'default'
-        defaultConfig.value.anthropicModel = env.ANTHROPIC_MODEL || ''
-        defaultConfig.value.anthropicDefaultSonnetModel = env.ANTHROPIC_DEFAULT_SONNET_MODEL || ''
-        defaultConfig.value.anthropicDefaultOpusModel = env.ANTHROPIC_DEFAULT_OPUS_MODEL || ''
-        defaultConfig.value.anthropicDefaultHaikuModel = env.ANTHROPIC_DEFAULT_HAIKU_MODEL || ''
-        defaultConfig.value.anthropicSmallFastModel = env.ANTHROPIC_SMALL_FAST_MODEL || ''
-      }
-
-      if (codexResult.status === 'fulfilled' && codexResult.value?.success && codexResult.value.settings) {
-        codexConfig.value.authMode = codexResult.value.settings.authMode || 'provider'
-        codexConfig.value.modelProvider = codexResult.value.settings.modelProvider || ''
-        codexConfig.value.apiUrl = codexResult.value.settings.apiUrl || ''
-        codexConfig.value.authToken = codexResult.value.settings.authToken || ''
-        codexConfig.value.model = codexResult.value.settings.model || ''
-        codexConfig.value.modelReasoningEffort = codexResult.value.settings.modelReasoningEffort || 'medium'
-        codexConfig.value.proxyUrl = codexResult.value.settings.proxyUrl || ''
-
-        if (codexConfig.value.authMode === 'chatgpt') {
-          selectedCodexModelId.value = null
-          selectedCodexCredentialId.value = null
-        } else {
-          const matchedModel = codexModels.value.find(model => buildCodexProviderId(model.id) === codexConfig.value.modelProvider)
-          selectedCodexModelId.value = matchedModel?.id || null
-          selectedCodexCredentialId.value = getDefaultCredential(matchedModel)?.id || null
-        }
-      }
+      defaultConfig.value.effort = settings.value.claudeEffort || 'default'
+      applyClaudeDefaultConfig()
+      applyCodexDefaultConfig()
     } catch (error) {
       console.error('Failed to load settings:', error)
     }
@@ -255,6 +293,8 @@ export function useSettingsData(emit) {
           ...toDeepPlain(settings.value),
           maxThinkingTokens: defaultConfig.value.maxThinkingTokens,
           thinkingEnabled: defaultConfig.value.thinkingEnabled,
+          claudeEffort: defaultConfig.value.effort || 'default',
+          codexReasoningEffort: codexConfig.value.modelReasoningEffort || 'medium',
           claudeModels: toDeepPlain(claudeModels.value),
           codexModels: toDeepPlain(codexModels.value),
           prompts: toDeepPlain(prompts.value),
@@ -339,7 +379,7 @@ export function useSettingsData(emit) {
       selectedCodexCredentialId.value = getDefaultCredential(codexModels.value[0])?.id || null
     }
     await saveAppConfig()
-    await window.electronAPI.syncCodexModelProviders()
+    applyCodexDefaultConfig()
   }
 
   async function handleSaveModel(formData) {
@@ -400,8 +440,10 @@ export function useSettingsData(emit) {
 
     showModelDialog.value = false
     await saveAppConfig()
-    if (modelType === 'codex') {
-      await window.electronAPI.syncCodexModelProviders()
+    if (modelType === 'claude') {
+      applyClaudeDefaultConfig()
+    } else {
+      applyCodexDefaultConfig()
     }
   }
 
@@ -480,10 +522,8 @@ export function useSettingsData(emit) {
 
     const cardCount = model.modelCards?.length || 0
     if (cardCount <= 1) {
-      const defaultModelName = cardCount === 1 ? model.modelCards[0].modelName : ''
       applyClaudeModelWithMappings(model, {
-        ANTHROPIC_MODEL: defaultModelName,
-        model: defaultModelName
+        ANTHROPIC_MODEL: cardCount === 1 ? model.modelCards[0].modelName : ''
       }, true, credentialId)
       return
     }
@@ -497,31 +537,16 @@ export function useSettingsData(emit) {
     const credentialId = payload?.credentialId || null
     if (!model) return
 
-    try {
-      const credential = getDefaultCredential(model, credentialId || selectedCodexCredentialId.value)
-      const result = await window.electronAPI.updateCodexSettings({
-        updates: {
-          apiUrl: model.apiUrl || '',
-          authToken: credential?.token || '',
-          model: model.modelCards?.[0]?.modelName || model.model || '',
-          modelProvider: buildCodexProviderId(model.id)
-        }
-      })
+    const targetModel = findModelById(codexModels.value, model.id) || model
+    selectedCodexModelId.value = targetModel.id
+    selectedCodexCredentialId.value = getDefaultCredential(
+      targetModel,
+      credentialId || selectedCodexCredentialId.value
+    )?.id || null
 
-      if (!result?.success) {
-        alert('应用 Codex 模型供应商配置失败: ' + (result?.error || '未知错误'))
-        return
-      }
-      selectedCodexModelId.value = model.id
-      selectedCodexCredentialId.value = credential?.id || null
-
-      await saveAppConfig()
-      await loadSettings()
-      alert('Codex 模型供应商配置已应用')
-    } catch (error) {
-      console.error('应用 Codex 模型失败:', error)
-      alert('应用 Codex 模型供应商配置失败: ' + error.message)
-    }
+    await saveAppConfig()
+    applyCodexDefaultConfig()
+    alert('Codex 模型供应商配置已应用')
   }
 
   async function handleMappingConfirm(mappings) {
@@ -536,45 +561,38 @@ export function useSettingsData(emit) {
   }
 
   async function applyClaudeModelWithMappings(model, mappings, clearMappings = false, credentialOverrideId = null) {
-    try {
-      const credential = getDefaultCredential(model, credentialOverrideId || selectedClaudeCredentialId.value)
-      const env = {
-        ANTHROPIC_BASE_URL: model.apiUrl || '',
-        ANTHROPIC_AUTH_TOKEN: credential?.token || ''
-      }
+    const targetModel = findModelById(claudeModels.value, model.id) || model
+    const mainCardId = findCardIdByName(targetModel, mappings.ANTHROPIC_MODEL)
+      || targetModel.defaultCardId
+      || targetModel.modelCards?.[0]?.id
+      || null
 
-      if (mappings.ANTHROPIC_MODEL) {
-        env.ANTHROPIC_MODEL = mappings.ANTHROPIC_MODEL
-        // 同步 ANTHROPIC_REASONING_MODEL，避免切换到新供应商后仍残留旧的推理模型（如 glm-5.1）
-        env.ANTHROPIC_REASONING_MODEL = mappings.ANTHROPIC_MODEL
-      }
-      if (mappings.ANTHROPIC_DEFAULT_SONNET_MODEL) env.ANTHROPIC_DEFAULT_SONNET_MODEL = mappings.ANTHROPIC_DEFAULT_SONNET_MODEL
-      if (mappings.ANTHROPIC_DEFAULT_OPUS_MODEL) env.ANTHROPIC_DEFAULT_OPUS_MODEL = mappings.ANTHROPIC_DEFAULT_OPUS_MODEL
-      if (mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = mappings.ANTHROPIC_DEFAULT_HAIKU_MODEL
-      if (mappings.ANTHROPIC_SMALL_FAST_MODEL) env.ANTHROPIC_SMALL_FAST_MODEL = mappings.ANTHROPIC_SMALL_FAST_MODEL
-
-      const updates = { env }
-      if (mappings.model) {
-        updates.model = mappings.model
-      }
-
-      const result = await window.electronAPI.updateClaudeSettings({ updates, clearMappings })
-
-      if (!result?.success) {
-        alert('应用 Claude 模型供应商配置失败: ' + (result?.error || '未知错误'))
-        return
-      }
-
-      selectedClaudeModelId.value = model.id
-      selectedClaudeCredentialId.value = credential?.id || null
-
-      await saveAppConfig()
-      await loadSettings()
-      alert('Claude 模型供应商配置已应用')
-    } catch (error) {
-      console.error('应用 Claude 模型失败:', error)
-      alert('应用 Claude 模型供应商配置失败: ' + error.message)
+    if (mainCardId) {
+      targetModel.defaultCardId = mainCardId
     }
+
+    if (clearMappings) {
+      delete targetModel.cardMapping
+    } else {
+      const cardMapping = {}
+      for (const [envKey] of CLAUDE_ALIAS_MAPPING_KEYS) {
+        const cardId = findCardIdByName(targetModel, mappings[envKey])
+        if (cardId) {
+          cardMapping[envKey] = cardId
+        }
+      }
+      targetModel.cardMapping = cardMapping
+    }
+
+    selectedClaudeModelId.value = targetModel.id
+    selectedClaudeCredentialId.value = getDefaultCredential(
+      targetModel,
+      credentialOverrideId || selectedClaudeCredentialId.value
+    )?.id || null
+
+    await saveAppConfig()
+    applyClaudeDefaultConfig()
+    alert('Claude 模型供应商配置已应用')
   }
 
   function handleEditDefaultConfig() {
@@ -582,9 +600,41 @@ export function useSettingsData(emit) {
   }
 
   async function handleSaveDefaultConfig(config) {
+    const model = findModelById(claudeModels.value, selectedClaudeModelId.value)
+    if (model) {
+      if (config.apiUrl !== undefined) {
+        model.apiUrl = config.apiUrl
+      }
+      if (config.authToken !== undefined) {
+        const credential = getDefaultCredential(model, selectedClaudeCredentialId.value)
+        if (credential) {
+          credential.token = config.authToken
+        }
+        model.authToken = config.authToken
+      }
+
+      const mainCardId = findCardIdByName(model, config.anthropicModel || config.model)
+      if (mainCardId) {
+        model.defaultCardId = mainCardId
+      }
+
+      const cardMapping = { ...(model.cardMapping || {}) }
+      for (const [envKey, formKey] of CLAUDE_ALIAS_MAPPING_KEYS) {
+        const cardId = findCardIdByName(model, config[formKey])
+        if (cardId) {
+          cardMapping[envKey] = cardId
+        } else {
+          delete cardMapping[envKey]
+        }
+      }
+      model.cardMapping = Object.keys(cardMapping).length > 0 ? cardMapping : undefined
+    }
+
     defaultConfig.value = { ...defaultConfig.value, ...config }
+    settings.value.claudeEffort = config.effort || 'default'
     showDefaultConfigDialog.value = false
     await saveAppConfig()
+    applyClaudeDefaultConfig()
   }
 
   function handleEditCodexConfig() {
@@ -592,52 +642,42 @@ export function useSettingsData(emit) {
   }
 
   async function handleSaveCodexConfig(config) {
-    try {
-      const result = await window.electronAPI.updateCodexSettings({
-        updates: {
-          apiUrl: config.apiUrl,
-          authToken: config.authToken,
-          model: config.model,
-          modelReasoningEffort: config.modelReasoningEffort,
-          proxyUrl: config.proxyUrl,
-          modelProvider: 'ccgui'
+    const model = findModelById(codexModels.value, selectedCodexModelId.value)
+    if (model) {
+      if (config.apiUrl !== undefined) {
+        model.apiUrl = config.apiUrl
+      }
+      if (config.authToken !== undefined) {
+        const credential = getDefaultCredential(model, selectedCodexCredentialId.value)
+        if (credential) {
+          credential.token = config.authToken
         }
-      })
-
-      if (!result?.success) {
-        alert('保存 Codex 配置失败: ' + (result?.error || '未知错误'))
-        return
+        model.authToken = config.authToken
       }
 
-      showCodexConfigDialog.value = false
-      await saveAppConfig()
-      await loadSettings()
-      emit('saved')
-    } catch (error) {
-      console.error('Failed to save Codex config:', error)
-      alert('保存 Codex 配置失败: ' + error.message)
+      const cardId = findCardIdByName(model, config.model)
+      if (cardId) {
+        model.defaultCardId = cardId
+      }
     }
+
+    codexConfig.value = { ...codexConfig.value, ...config, authMode: 'provider' }
+    settings.value.codexProxy = config.proxyUrl || ''
+    showCodexConfigDialog.value = false
+    await saveAppConfig()
+    applyCodexDefaultConfig()
+    emit('saved')
   }
 
   async function handleSaveCodexProxy(proxyUrl) {
-    try {
-      const result = await window.electronAPI.updateCodexSettings({
-        updates: {
-          proxyUrl: proxyUrl || ''
-        }
-      })
-
-      if (!result?.success) {
-        alert('保存 Codex 代理失败: ' + (result?.error || '未知错误'))
-        return
-      }
-
-      await loadSettings()
-      emit('saved')
-    } catch (error) {
-      console.error('Failed to save Codex proxy:', error)
-      alert('保存 Codex 代理失败: ' + error.message)
+    settings.value.codexProxy = proxyUrl || ''
+    const success = await saveAppConfig()
+    if (!success) {
+      alert('保存 Codex 代理失败')
+      return
     }
+    applyCodexDefaultConfig()
+    emit('saved')
   }
 
   async function handleAddCodexAccount() {

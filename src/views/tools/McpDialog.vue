@@ -16,7 +16,7 @@ const activeMarket = ref('installed')
 
 const markets = computed(() => {
   const items = [
-    { id: 'installed', label: '已下载' },
+    { id: 'installed', label: '系统配置' },
     { id: 'registry', label: 'MCP Registry' }
   ]
   if (props.projectPath) {
@@ -27,16 +27,25 @@ const markets = computed(() => {
 
 const downloadedMcps = ref([])
 const installFilter = ref('all') // 'all' | 'claude' | 'codex' | 'none'
-const showExternalMcps = ref(false)
+const showExternalMcps = ref(true)
 const toggleError = ref(null)
 const downloadError = ref(null)
 const mcpToDelete = ref(null)
 
 // 项目级 MCP 状态
-const projectInstalledMap = ref(new Map()) // slug -> Set(['claude', 'codex'])
+const projectMcps = ref([]) // 项目实际接入的 MCP（list-project-mcps 原始条目）
 const projectToggleError = ref(null)
 const projectMcpToDelete = ref(null)
 const projectFilter = ref('all')
+const showProjectExternalMcps = ref(true) // 项目配置中是否显示外部（非 ccgui 管理的）MCP
+
+// MCP 启用/禁用状态（按 target：global = 全局记账，project = 项目级覆盖）
+const enableStates = ref({
+  claude: { global: {}, project: {} },
+  codex: { global: {}, project: {} }
+})
+
+const TARGET_LABELS = { claude: 'Claude', codex: 'Codex' }
 
 function getMcpSourceLabel(mcp) {
   if (mcp.sourceLabel) return mcp.sourceLabel
@@ -60,6 +69,12 @@ function isPluginDisabled(mcp) {
   return Boolean(mcp?.plugin && mcp?.pluginEnabled === false)
 }
 
+// 项目 tab 中，某 target 若已在全局安装则禁用（避免重复安装）
+function isProjectTargetBlocked(mcp, target) {
+  const lib = downloadedMcps.value.find(m => m.slug === mcp.slug)
+  return Boolean(lib?.installedTargets?.includes(target))
+}
+
 // Registry 详情弹窗
 const selectedServer = ref(null)
 
@@ -80,12 +95,18 @@ const filteredDownloadedMcps = computed(() => {
 })
 
 const filteredProjectMcps = computed(() => {
-  const list = downloadedMcps.value.map(m => ({
-    ...m,
-    projectTargets: projectInstalledMap.value.get(m.slug)
-      ? [...projectInstalledMap.value.get(m.slug)]
-      : []
-  }))
+  // 1) 项目实际接入的条目（含项目本地/外部）
+  const merged = new Map()
+  for (const m of projectMcps.value) {
+    merged.set(m.slug, { ...m, projectTargets: [...(m.installedTargets || [])] })
+  }
+  // 2) 库中已下载的条目（未接入项目的补进来，供安装）
+  for (const m of downloadedMcps.value) {
+    if (isStaticMcp(m) || merged.has(m.slug)) continue
+    merged.set(m.slug, { ...m, projectTargets: [] })
+  }
+  let list = [...merged.values()]
+  if (!showProjectExternalMcps.value) list = list.filter(m => !isStaticMcp(m))
   if (projectFilter.value === 'all') return list
   if (projectFilter.value === 'none') {
     return list.filter(m => !m.projectTargets.length)
@@ -121,6 +142,7 @@ async function loadDownloadedMcps() {
       downloadedMcps.value = result.mcps
     }
   } catch (e) { /* ignore */ }
+  await loadEnableStates()
 }
 
 async function loadProjectMcps() {
@@ -128,13 +150,10 @@ async function loadProjectMcps() {
   try {
     const result = await window.electronAPI.listProjectMcps({ projectPath: props.projectPath })
     if (result.success) {
-      const map = new Map()
-      for (const m of result.mcps) {
-        map.set(m.slug, new Set(m.installedTargets || []))
-      }
-      projectInstalledMap.value = map
+      projectMcps.value = result.mcps || []
     }
   } catch (e) { /* ignore */ }
+  await loadEnableStates()
 }
 
 onMounted(() => {
@@ -337,6 +356,65 @@ async function confirmDeleteProjectMcp() {
   } catch (e) { /* ignore */ }
 }
 
+// ===== 启用 / 禁用 =====
+
+async function loadEnableStates() {
+  for (const target of ['claude', 'codex']) {
+    try {
+      const result = await window.electronAPI.getMcpEnableStates({ target, projectPath: props.projectPath })
+      if (result.success) enableStates.value[target] = result.states
+    } catch (_) { /* ignore */ }
+  }
+}
+
+// target 的全局启用值（没有记账 = 默认启用）
+function isGlobalEnabled(slug, target) {
+  const map = enableStates.value[target]?.global || {}
+  return Object.prototype.hasOwnProperty.call(map, slug) ? map[slug] === true : true
+}
+
+// target 的项目级覆盖值：undefined = 跟随全局
+function projectOverride(slug, target) {
+  const map = enableStates.value[target]?.project || {}
+  return Object.prototype.hasOwnProperty.call(map, slug) ? map[slug] === true : undefined
+}
+
+// 系统配置：显示开关的 target（已安装、且非插件）
+function globalStatusTargets(mcp) {
+  if (mcp.plugin) return []
+  return (mcp.installedTargets || []).filter(t => t === 'claude' || t === 'codex')
+}
+
+// 项目配置：显示覆盖控件的 target（项目已装 或 全局已装，且非插件）
+function projectStatusTargets(mcp) {
+  if (mcp.plugin) return []
+  return ['claude', 'codex'].filter(t => mcp.projectTargets?.includes(t) || isProjectTargetBlocked(mcp, t))
+}
+
+async function toggleGlobalEnabled(slug, target, enabled, event) {
+  toggleError.value = null
+  try {
+    const result = await window.electronAPI.setMcpEnabledGlobal({ target, slug, enabled })
+    if (!result.success) toggleError.value = result.error || '操作失败'
+  } catch (e) {
+    toggleError.value = e.message || '操作失败'
+  }
+  await loadEnableStates()
+  // 以真实状态为准回写开关：:checked 值没变时 Vue 不会重绘，失败后能自动拨回
+  if (event?.target) event.target.checked = isGlobalEnabled(slug, target)
+}
+
+async function changeProjectEnabled(slug, target, enabled) {
+  projectToggleError.value = null
+  try {
+    const result = await window.electronAPI.setMcpEnabledProject({ target, slug, enabled, projectPath: props.projectPath })
+    if (!result.success) projectToggleError.value = result.error || '操作失败'
+  } catch (e) {
+    projectToggleError.value = e.message || '操作失败'
+  }
+  await loadEnableStates()
+}
+
 function getTransportLabel(type) {
   const map = {
     'streamable-http': 'HTTP',
@@ -402,7 +480,7 @@ useDialogStack(computed(() => true), handleClose)
           <div v-if="activeMarket === 'installed'" class="tab-panel">
             <div class="panel-header">
               <div class="skills-header-toggle">
-                <span class="skills-header-toggle-label">外部技能</span>
+                <span class="skills-header-toggle-label">外部 MCP</span>
                 <label class="toggle-switch compact">
                   <input v-model="showExternalMcps" type="checkbox">
                   <span class="toggle-slider"></span>
@@ -469,6 +547,22 @@ useDialogStack(computed(() => true), handleClose)
                   <p class="mcp-desc">{{ mcp.description || '暂无描述' }}</p>
                   <div class="mcp-meta">
                     <div class="mcp-meta-spacer"></div>
+                  </div>
+                  <div v-if="globalStatusTargets(mcp).length" class="mcp-status-row">
+                    <div v-for="target in globalStatusTargets(mcp)" :key="target" class="status-item">
+                      <span class="status-name">{{ TARGET_LABELS[target] }}</span>
+                      <label class="toggle-switch compact">
+                        <input
+                          type="checkbox"
+                          :checked="isGlobalEnabled(mcp.slug, target)"
+                          @change="toggleGlobalEnabled(mcp.slug, target, $event.target.checked, $event)"
+                        >
+                        <span class="toggle-slider"></span>
+                      </label>
+                      <span class="status-state" :class="isGlobalEnabled(mcp.slug, target) ? 'on' : 'off'">
+                        {{ isGlobalEnabled(mcp.slug, target) ? '启用' : '禁用' }}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -625,7 +719,13 @@ useDialogStack(computed(() => true), handleClose)
           <!-- 项目配置 -->
           <div v-if="activeMarket === 'project'" class="tab-panel">
             <div class="panel-header">
-              <h3>项目级 MCP 服务</h3>
+              <div class="skills-header-toggle">
+                <span class="skills-header-toggle-label">外部 MCP</span>
+                <label class="toggle-switch compact">
+                  <input v-model="showProjectExternalMcps" type="checkbox">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
               <div class="filter-group">
                 <button class="filter-btn" :class="{ active: projectFilter === 'all' }" @click="projectFilter = 'all'">全部</button>
                 <button class="filter-btn" :class="{ active: projectFilter === 'claude' }" @click="projectFilter = 'claude'">Claude</button>
@@ -645,41 +745,73 @@ useDialogStack(computed(() => true), handleClose)
                   :class="{ disabled: isPluginDisabled(mcp) }"
                 >
                   <div class="mcp-header">
-                    <span class="mcp-name">{{ mcp.title || mcp.name }}</span>
-                    <div class="mcp-badges">
+                    <div class="mcp-header-main">
+                      <span class="mcp-name">{{ mcp.title || mcp.name }}</span>
                       <span
                         v-if="mcp.external || mcp.source === 'registry' || mcp.plugin || mcp.sourceLabel"
-                        class="source-badge"
+                        class="source-badge title-inline-badge"
                         :class="{ external: mcp.external, registry: mcp.source === 'registry', plugin: mcp.plugin }"
                       >
                         {{ getMcpSourceLabel(mcp) }}
                       </span>
-                      <span v-if="isPluginDisabled(mcp)" class="source-badge disabled-state-badge">已禁用</span>
-                      <span v-if="mcp.version" class="version-badge">v{{ mcp.version }}</span>
+                      <span v-if="isPluginDisabled(mcp)" class="source-badge disabled-state-badge title-inline-badge">已禁用</span>
+                      <span v-if="mcp.version" class="version-badge title-inline-badge">v{{ mcp.version }}</span>
+                    </div>
+                    <div class="mcp-badges">
+                      <div class="target-toggles mcp-header-targets">
+                        <button
+                          v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('claude')"
+                          class="target-toggle"
+                          :class="{ active: mcp.projectTargets?.includes('claude') || isProjectTargetBlocked(mcp, 'claude'), static: isStaticMcp(mcp), blocked: isProjectTargetBlocked(mcp, 'claude') }"
+                          :disabled="isProjectTargetBlocked(mcp, 'claude')"
+                          :title="isProjectTargetBlocked(mcp, 'claude') ? '已在全局安装，无需在项目重复安装' : ''"
+                          @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'claude')"
+                        >Claude</button>
+                        <button
+                          v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('codex')"
+                          class="target-toggle"
+                          :class="{ active: mcp.projectTargets?.includes('codex') || isProjectTargetBlocked(mcp, 'codex'), static: isStaticMcp(mcp), blocked: isProjectTargetBlocked(mcp, 'codex') }"
+                          :disabled="isProjectTargetBlocked(mcp, 'codex')"
+                          :title="isProjectTargetBlocked(mcp, 'codex') ? '已在全局安装，无需在项目重复安装' : ''"
+                          @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'codex')"
+                        >Codex</button>
+                      </div>
+                      <button v-if="mcp.projectTargets?.length" class="delete-btn mcp-header-delete-btn" @click.stop="handleDeleteProjectMcp(mcp)" title="从项目移除">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                      </button>
                     </div>
                   </div>
                   <p class="mcp-desc">{{ mcp.description || '暂无描述' }}</p>
                   <div class="mcp-meta">
-                    <div class="target-toggles">
-                      <button
-                        v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('claude')"
-                        class="target-toggle"
-                        :class="{ active: mcp.projectTargets?.includes('claude'), static: isStaticMcp(mcp) }"
-                        @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'claude')"
-                      >Claude</button>
-                      <button
-                        v-if="!isStaticMcp(mcp) || mcp.projectTargets?.includes('codex')"
-                        class="target-toggle"
-                        :class="{ active: mcp.projectTargets?.includes('codex'), static: isStaticMcp(mcp) }"
-                        @click.stop="!isStaticMcp(mcp) && toggleProjectTarget(mcp, 'codex')"
-                      >Codex</button>
+                    <div class="mcp-meta-spacer"></div>
+                  </div>
+                  <div v-if="projectStatusTargets(mcp).length" class="mcp-status-row">
+                    <div v-for="target in projectStatusTargets(mcp)" :key="target" class="status-item">
+                      <span class="status-name">{{ TARGET_LABELS[target] }}</span>
+                      <div class="seg">
+                        <button
+                          class="seg-btn"
+                          :class="{ active: projectOverride(mcp.slug, target) === undefined }"
+                          @click="changeProjectEnabled(mcp.slug, target, null)"
+                        >跟随全局</button>
+                        <button
+                          class="seg-btn"
+                          :class="{ active: projectOverride(mcp.slug, target) === true }"
+                          @click="changeProjectEnabled(mcp.slug, target, true)"
+                        >启用</button>
+                        <button
+                          class="seg-btn"
+                          :class="{ active: projectOverride(mcp.slug, target) === false }"
+                          @click="changeProjectEnabled(mcp.slug, target, false)"
+                        >禁用</button>
+                      </div>
+                      <span v-if="projectOverride(mcp.slug, target) === undefined" class="inherit-hint">
+                        全局：{{ isGlobalEnabled(mcp.slug, target) ? '启用' : '禁用' }}
+                      </span>
                     </div>
-                    <button v-if="mcp.projectTargets?.length" class="delete-btn" @click.stop="handleDeleteProjectMcp(mcp)" title="从项目移除">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="3 6 5 6 21 6"/>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                      </svg>
-                    </button>
                   </div>
                 </div>
               </div>
@@ -1382,6 +1514,12 @@ useDialogStack(computed(() => true), handleClose)
   opacity: 0.7;
 }
 
+/* 已在全局安装：项目 tab 中灰显不可点 */
+.target-toggle.blocked {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 /* 按钮 */
 .action-btn {
   display: inline-flex;
@@ -1506,6 +1644,82 @@ useDialogStack(computed(() => true), handleClose)
 
 .toggle-switch.compact input:checked + .toggle-slider::before {
   transform: translateX(14px);
+}
+
+/* MCP 启用/禁用状态行（卡片底部，虚线分割） */
+.mcp-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.09);
+}
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.status-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: #A1A1AA;
+  letter-spacing: 0.2px;
+}
+
+.status-state {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.status-state.on {
+  color: #F97316;
+}
+
+.status-state.off {
+  color: #71717A;
+}
+
+/* 项目级覆盖：三态分段 */
+.seg {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.seg-btn {
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.02);
+  color: #71717A;
+  border: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.seg-btn:last-child {
+  border-right: none;
+}
+
+.seg-btn:hover {
+  color: #A1A1AA;
+}
+
+.seg-btn.active {
+  background: rgba(249, 115, 22, 0.1);
+  color: #F97316;
+}
+
+.inherit-hint {
+  font-size: 10px;
+  color: #52525B;
+  margin-left: 2px;
 }
 
 /* 加载状态 */

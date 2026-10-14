@@ -158,7 +158,8 @@ function handleApproveAll() {
 
 <style scoped>
 .permission-dialog-overlay {
-  position: absolute;
+  /* 固定在窗口上，不依赖聊天面板布局（面板收起/被预览挤掉时也能显示） */
+  position: fixed;
   bottom: 120px;
   left: 50%;
   transform: translateX(-50%);

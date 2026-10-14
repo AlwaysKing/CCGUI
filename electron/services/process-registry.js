@@ -126,6 +126,78 @@ function killStaleProcess(pid, provider) {
 }
 
 /**
+ * 等待进程退出
+ */
+function waitForExit(pid, timeoutMs) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs
+    const timer = setInterval(() => {
+      if (!isProcessAlive(pid)) {
+        clearInterval(timer)
+        resolve(true)
+        return
+      }
+      if (Date.now() >= deadline) {
+        clearInterval(timer)
+        resolve(false)
+      }
+    }, 100)
+  })
+}
+
+/**
+ * 终止指定会话登记的 provider 进程（异步等待退出，不阻塞主进程）
+ * 用于回收仍持有线程写锁的残留进程
+ * @param {string} sessionId
+ * @param {Set<number>|null} allowedPids 仅当登记的 pid 属于该集合时才终止，避免误杀其它 App 实例的 provider
+ */
+async function terminateRegisteredInstance(sessionId, allowedPids = null) {
+  if (!sessionId) {
+    return false
+  }
+
+  const filePath = instanceFilePath(sessionId)
+  let record = null
+  try {
+    record = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  } catch (error) {
+    return false
+  }
+
+  if (!record?.pid || !isProcessAlive(record.pid, record.exePath)) {
+    unregister(sessionId)
+    return false
+  }
+
+  if (allowedPids && !allowedPids.has(record.pid)) {
+    logger.warn(`[ProcessRegistry] Skip terminating ${record.provider} process (pid=${record.pid}) not owned by this session instance`)
+    return false
+  }
+
+  logger.info(`[ProcessRegistry] Terminating residual ${record.provider} process (pid=${record.pid}, session=${sessionId})`)
+  try {
+    process.kill(record.pid, 'SIGTERM')
+  } catch (error) {
+    unregister(sessionId)
+    return false
+  }
+
+  if (!await waitForExit(record.pid, 2000)) {
+    try {
+      process.kill(record.pid, 'SIGKILL')
+      logger.info(`[ProcessRegistry] Sent SIGKILL to residual ${record.provider} process (pid=${record.pid})`)
+    } catch (error) {
+      // 忽略
+    }
+    await waitForExit(record.pid, 1000)
+  }
+
+  const exited = !isProcessAlive(record.pid)
+  unregister(sessionId)
+  return exited
+}
+
+/**
  * 清理所有残留的 provider 进程实例
  * 在 App 启动时调用
  */
@@ -178,5 +250,6 @@ function cleanupStaleInstances() {
 module.exports = {
   register,
   unregister,
+  terminateRegisteredInstance,
   cleanupStaleInstances
 }

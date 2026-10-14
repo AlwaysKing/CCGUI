@@ -2,11 +2,9 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import MessageItem from './messages/MessageItem.vue'
 import ExecutionAgentCard from './messages/ExecutionAgentCard.vue'
-import ThinkingSection from './messages/ThinkingSection.vue'
 import StickyHeader from './layout/StickyHeader.vue'
 import TaskFloatingWindow from './TaskFloatingWindow.vue'
 import AgentWorkspaceTopRail from './AgentWorkspaceTopRail.vue'
-import { useMessage } from '../composables/useMessage'
 
 const props = defineProps({
   timelineBlocks: {
@@ -107,7 +105,6 @@ const emit = defineEmits([
   'contentScroll'
 ])
 
-const { copiedMessageIndex: copiedThinkingIndex, copyToClipboard } = useMessage()
 const AUTO_SCROLL_NEAR_BOTTOM_PX = 48
 
 function selectAgent(agentId) {
@@ -513,11 +510,6 @@ function getBlockMessage(block) {
   return block.message || null
 }
 
-function isAssistantAnswerBlock(block) {
-  const message = getBlockMessage(block)
-  return message?.role === 'assistant' && message?.subtype !== 'thinking'
-}
-
 function isTurnMessage(message = null) {
   return message?.role === 'user' || message?.role === 'command'
 }
@@ -529,15 +521,6 @@ function isFoldableActivityBlock(block) {
   if (message.role === 'system' || message.role === 'task_complete') return false
   if (message.role === 'system_notification') return false
   return true
-}
-
-function hasExternalThinking(block) {
-  const message = getBlockMessage(block)
-  return Boolean(message?.role === 'assistant' && message?.thinking)
-}
-
-function getFoldableActivityCount(activityBlocks, assistantBlock = null) {
-  return activityBlocks.length + (hasExternalThinking(assistantBlock) ? 1 : 0)
 }
 
 function getActivityGroupToolCallCount(group) {
@@ -560,8 +543,8 @@ function getActivityGroupCollapsedLabel(group) {
   return '已折叠活动内容'
 }
 
-function getActivityGroupKey(activityBlocks, assistantBlock = null) {
-  const firstBlock = activityBlocks?.[0] || assistantBlock || null
+function getActivityGroupKey(activityBlocks) {
+  const firstBlock = activityBlocks?.[0] || null
   const firstMessage = getBlockMessage(firstBlock)
   return `activity-group-${firstMessage?.id || firstBlock?.displayIndex || 'unknown'}`
 }
@@ -582,7 +565,7 @@ function isMessageHiddenByResponseCollapse(messages, messageIndex) {
 }
 
 function isActivityGroupHiddenByResponseCollapse(messages, renderBlock) {
-  const index = renderBlock.assistantBlock?.displayIndex ?? renderBlock.foldableBlocks?.[0]?.displayIndex
+  const index = renderBlock.foldableBlocks?.[0]?.displayIndex
   return isMessageHiddenByResponseCollapse(messages, index)
 }
 
@@ -590,15 +573,14 @@ function buildRenderableTimeline(blocks) {
   const renderBlocks = []
   let pendingActivities = []
 
-  const flushPendingActivities = () => {
+  const flushPendingActivities = (shouldAutoCollapse = false) => {
     if (pendingActivities.length === 0) return
-    if (getFoldableActivityCount(pendingActivities, null) >= 2) {
+    if (pendingActivities.length >= 2) {
       renderBlocks.push({
         type: 'activity-group',
-        key: getActivityGroupKey(pendingActivities, null),
+        key: getActivityGroupKey(pendingActivities),
         foldableBlocks: [...pendingActivities],
-        assistantBlock: null,
-        shouldAutoCollapse: false
+        shouldAutoCollapse
       })
     } else {
       pendingActivities.forEach(block => {
@@ -618,31 +600,9 @@ function buildRenderableTimeline(blocks) {
       return
     }
 
-    // 遇到任何不能归入 foldable 的消息，都可能触发折叠
-    if (getFoldableActivityCount(pendingActivities, null) >= 2) {
-      const isAssistantAnswer = isAssistantAnswerBlock(block)
-      renderBlocks.push({
-        type: 'activity-group',
-        key: getActivityGroupKey(pendingActivities, isAssistantAnswer ? block : null),
-        foldableBlocks: [...pendingActivities],
-        assistantBlock: isAssistantAnswer ? block : null,
-        shouldAutoCollapse: true
-      })
-      pendingActivities = []
+    // 折叠段只装工具调用等活动内容，助手消息始终紧跟折叠段之后单独渲染
+    flushPendingActivities(true)
 
-      // assistant answer 已经作为 assistantBlock 包含在 group 中，不要再重复渲染一次
-      if (!isAssistantAnswer) {
-        // 其他非 foldable 消息也单独渲染
-        renderBlocks.push({
-          type: 'block',
-          key: block.key || `block-${block.displayIndex}`,
-          block
-        })
-      }
-      return
-    }
-
-    flushPendingActivities()
     renderBlocks.push({
       type: 'block',
       key: block.key || `block-${block.displayIndex}`,
@@ -687,11 +647,6 @@ function resolveActivityGroupCollapsed(group) {
 
 function toggleActivityGroup(groupKey) {
   collapsedActivityGroups.value[groupKey] = !collapsedActivityGroups.value[groupKey]
-}
-
-async function copyGroupedThinking(message, index) {
-  if (!message?.thinking) return
-  await copyToClipboard(message.thinking, index)
 }
 
 const railMasterEntry = computed(() => {
@@ -875,15 +830,6 @@ const shouldShowRail = computed(() => {
                       @click="toggleActivityGroup(renderBlock.key)"
                     ><span class="activity-group__rail"></span></button>
                     <div v-if="!resolveActivityGroupCollapsed(renderBlock)" class="activity-group__content">
-                      <ThinkingSection
-                        v-if="hasExternalThinking(renderBlock.assistantBlock)"
-                        :thinking="renderBlock.assistantBlock.message.thinking"
-                        :is-collapsed="false"
-                        :message-index="renderBlock.assistantBlock.displayIndex"
-                        :copied-message-index="copiedThinkingIndex"
-                        :chat-theme="chatTheme"
-                        @copy-content="() => copyGroupedThinking(renderBlock.assistantBlock.message, renderBlock.assistantBlock.displayIndex)"
-                      />
                       <template v-for="nestedBlock in renderBlock.foldableBlocks" :key="nestedBlock.key || `nested-${nestedBlock.displayIndex}`">
                         <MessageItem
                           v-if="nestedBlock.type === 'message'"
@@ -941,27 +887,6 @@ const shouldShowRail = computed(() => {
                       {{ getActivityGroupCollapsedLabel(renderBlock) }}
                     </button>
                   </div>
-
-                  <MessageItem
-                    v-if="renderBlock.assistantBlock"
-                    :message="renderBlock.assistantBlock.message"
-                    :message-index="renderBlock.assistantBlock.displayIndex"
-                    :total-messages="mainStageDisplayMessages.length"
-                    :session-id="sessionId"
-                    :working-directory="workingDirectory"
-                    :current-time="currentTime"
-                    :all-messages="mainStageDisplayMessages"
-                    :chat-theme="chatTheme"
-                    :externalize-thinking="hasExternalThinking(renderBlock.assistantBlock)"
-                    :pane-width="mainStageWidth"
-                    @message-click="forward('messageClick', $event)"
-                    @rewind="forward('rewind', $event)"
-                    @fork="forward('fork', $event)"
-                    @rewind-and-fork="forward('rewindAndFork', $event)"
-                    @jump-to-message="forward('jumpToMessage', $event)"
-                    @copy-content="forward('copyContent', $event)"
-                    @copy-question-content="forward('copyQuestionContent', $event)"
-                  />
                 </div>
                 </template>
               </template>

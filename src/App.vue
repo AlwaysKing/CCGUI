@@ -7,6 +7,7 @@ import { buildRuntimeShortcuts, findMatchingShortcut, getDefaultShortcutBindings
 
 const Welcome = defineAsyncComponent(() => import('./views/welcome/Welcome.vue'))
 const Workspace = defineAsyncComponent(() => import('./views/workspace/Workspace.vue'))
+const CodexModelCatalogImportDialog = defineAsyncComponent(() => import('./views/settings/components/dialogs/CodexModelCatalogImportDialog.vue'))
 
 const store = useAppStore()
 const sessionStore = useSessionStore()
@@ -16,6 +17,42 @@ const runtimeShortcuts = computed(() => buildRuntimeShortcuts(shortcutBindings.v
 // 窗口关闭确认弹窗
 const showCloseConfirm = ref(false)
 const closeConfirmBusy = ref(false)
+
+// Codex 模型元数据导入提示
+const showCatalogImportDialog = ref(false)
+const catalogImportCandidates = ref([])
+
+async function checkCodexCatalogImportCandidates() {
+  try {
+    const result = await window.electronAPI.getCodexCatalogImportCandidates()
+    if (result?.success && Array.isArray(result.candidates) && result.candidates.length > 0) {
+      catalogImportCandidates.value = result.candidates
+      showCatalogImportDialog.value = true
+    }
+  } catch (error) {
+    logger.warn('检查 Codex 模型元数据导入失败', { error: error.message })
+  }
+}
+
+async function handleImportCodexCatalogMetadata(items) {
+  try {
+    const result = await window.electronAPI.importCodexCatalogMetadata({ items })
+    if (!result?.success) {
+      logger.warn('导入 Codex 模型元数据失败', { error: result?.error })
+      return
+    }
+
+    // 导入会改写 app 配置，刷新一次缓存，避免其它界面用旧副本把导入结果覆盖回去
+    const configResult = await window.electronAPI.getAppConfig()
+    if (configResult?.success) {
+      window.dispatchEvent(new CustomEvent('ccgui-app-config-updated', {
+        detail: { settings: configResult.config?.settings || {} }
+      }))
+    }
+  } catch (error) {
+    logger.warn('导入 Codex 模型元数据失败', { error: error.message })
+  }
+}
 
 function isEditableTarget(target) {
   if (!(target instanceof HTMLElement)) {
@@ -256,6 +293,11 @@ onMounted(async () => {
     sinceMountedMs: Math.round(performance.now() - appMountedAt)
   })
 
+  // 主窗口启动时检查一次 Codex 模型元数据导入
+  if (!urlParams.get('projectId')) {
+    checkCodexCatalogImportCandidates()
+  }
+
 })
 
 onUnmounted(() => {
@@ -272,6 +314,13 @@ onUnmounted(() => {
 
     <!-- Workspace - 两栏布局（会话 + 聊天） -->
     <Workspace v-else />
+
+    <!-- Codex 模型元数据导入提示 -->
+    <CodexModelCatalogImportDialog
+      v-model:visible="showCatalogImportDialog"
+      :candidates="catalogImportCandidates"
+      @confirm="handleImportCodexCatalogMetadata"
+    />
 
     <!-- 窗口关闭确认弹窗 -->
     <div v-if="showCloseConfirm" class="close-confirm-overlay">

@@ -1,5 +1,4 @@
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const logger = require('../logger')
 const { encodeProjectPath, decodeProjectPath } = require('../project-paths')
@@ -10,14 +9,8 @@ const {
   getModelCredentials,
   getDefaultCredential
 } = require('../adapters/shared/model-config')
-const {
-  listClaudeModels,
-  listClaudeReasoningCapabilities
-} = require('../adapters/claude/provider-api')
-const {
-  listCodexModels,
-  listCodexReasoningCapabilities
-} = require('../adapters/codex/provider-api')
+const { listClaudeReasoningCapabilities } = require('../adapters/claude/provider-api')
+const { listCodexReasoningCapabilities } = require('../adapters/codex/provider-api')
 const {
   appConfigManager,
   historyManager,
@@ -154,6 +147,17 @@ function buildConfiguredSubModelOptions(model = null, preferredCardId = null) {
       reasoningEffort: 'medium',
       isConfigured: true,
       isDefault: defaultCard?.id === card.id
+    }))
+}
+
+function normalizeReasoningOptions(items = []) {
+  return items
+    .filter(item => item && typeof item.value === 'string' && item.value)
+    .map(item => ({
+      value: item.value,
+      key: item.value,
+      label: item.label || item.value,
+      description: item.description || ''
     }))
 }
 
@@ -377,6 +381,29 @@ function resolveInitProvider(provider, resolvedSettings = {}) {
   return resolvedSettings.modelId || provider || null
 }
 
+/**
+ * 把内部供应商标识（供应商 id / 旧版 ccgui_model_<id>）转成界面可读的名字
+ * 认不出来的语义值（claude / codex / openai / system 等）原样返回
+ */
+function formatProviderLabel(appConfig, providerRef = '') {
+  const value = typeof providerRef === 'string' ? providerRef.trim() : ''
+  if (!value) {
+    return ''
+  }
+
+  const models = [
+    ...getProviderModels(appConfig, 'claude'),
+    ...getProviderModels(appConfig, 'codex')
+  ]
+  const matched = models.find(model => model?.id === value)
+    || models.find(model => value === `ccgui_model_${String(model?.id || '').trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '')}`)
+  if (matched) {
+    return matched.friendlyName || matched.id
+  }
+
+  return value === 'openai' ? 'Codex 账号' : value
+}
+
 function buildSessionAvailability(appConfig, projectSettings = {}, sessionSettings = null) {
   const provider = resolveProvider(projectSettings, sessionSettings)
   const resolvedSettings = resolveSessionSettings(
@@ -389,46 +416,51 @@ function buildSessionAvailability(appConfig, projectSettings = {}, sessionSettin
   const initProvider = typeof sessionSettings?.initProvider === 'string'
     ? sessionSettings.initProvider.trim()
     : ''
+  const withLabels = result => ({
+    ...result,
+    initProviderLabel: formatProviderLabel(appConfig, result.initProvider),
+    currentProviderLabel: formatProviderLabel(appConfig, result.currentProvider)
+  })
 
   if (provider === 'claude') {
-    return {
+    return withLabels({
       available: true,
       provider,
       currentProvider,
       initProvider: initProvider || currentProvider || null,
       reason: 'claude-session-always-available'
-    }
+    })
   }
 
   if (!initProvider) {
-    return {
+    return withLabels({
       available: true,
       provider,
       currentProvider,
       initProvider: null,
       reason: 'missing-init-provider'
-    }
+    })
   }
 
   // Codex sessions use an isolated app-server and may switch provider at
   // runtime, so the provider recorded at creation time is informational only.
   if (provider === 'codex') {
-    return {
+    return withLabels({
       available: true,
       provider,
       currentProvider,
       initProvider,
       reason: 'codex-provider-switchable'
-    }
+    })
   }
 
-  return {
+  return withLabels({
     available: currentProvider === initProvider,
     provider,
     currentProvider,
     initProvider,
     reason: currentProvider === initProvider ? 'provider-matched' : 'provider-mismatch'
-  }
+  })
 }
 
 function buildCodexVirtualTargetOptions({ appConfig, projectSettings = {}, currentTargetId = null } = {}) {
@@ -547,104 +579,6 @@ async function validateSessionTarget(projectId, sessionId, target = {}) {
     valid: true,
     option
   }
-}
-
-function readClaudeRuntimeDefaults() {
-  try {
-    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
-    if (!fs.existsSync(settingsPath)) {
-      return { default: '', sonnet: '', opus: '', haiku: '' }
-    }
-
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
-    const env = settings.env || {}
-    return {
-      default: settings.model || env.ANTHROPIC_MODEL || '',
-      sonnet: env.ANTHROPIC_DEFAULT_SONNET_MODEL || '',
-      opus: env.ANTHROPIC_DEFAULT_OPUS_MODEL || '',
-      haiku: env.ANTHROPIC_DEFAULT_HAIKU_MODEL || env.ANTHROPIC_SMALL_FAST_MODEL || ''
-    }
-  } catch (error) {
-    logger.warn('[ProjectService] Failed to read Claude runtime defaults', { error: error.message })
-    return { default: '', sonnet: '', opus: '', haiku: '' }
-  }
-}
-
-function formatClaudeAliasActualModel(value = '', fallbackDescription = '', defaults = null) {
-  const normalizedValue = String(value || '').trim()
-  if (!normalizedValue) return fallbackDescription || ''
-
-  let actualModel = ''
-  if (normalizedValue === 'default') {
-    actualModel = defaults?.default || defaults?.sonnet || ''
-  } else if (normalizedValue.startsWith('sonnet')) {
-    actualModel = defaults?.sonnet || ''
-  } else if (normalizedValue.startsWith('opus')) {
-    actualModel = defaults?.opus || ''
-  } else if (normalizedValue.startsWith('haiku')) {
-    actualModel = defaults?.haiku || ''
-  }
-
-  if (!actualModel) {
-    return fallbackDescription || ''
-  }
-
-  return fallbackDescription
-    ? `${fallbackDescription} (${actualModel})`
-    : actualModel
-}
-
-function normalizeProviderSubModelOptions(provider, items = [], claudeDefaults = null) {
-  if (provider === 'codex') {
-    return items
-      .filter(item => item && typeof item.model === 'string' && item.model)
-      .map(item => ({
-        key: item.model,
-        value: item.model,
-        label: item.raw?.displayName || item.model,
-        description: item.raw?.description || '',
-        reasoningEffort: item.defaultReasoningEffort || 'medium',
-        isConfigured: false,
-        isDefault: false
-      }))
-  }
-
-  return items
-    .filter(item => item && typeof item.value === 'string' && item.value)
-    .map(item => ({
-      key: item.value,
-      value: item.value,
-      label: item.displayName || item.value,
-      description: formatClaudeAliasActualModel(item.value, item.description || '', claudeDefaults),
-      reasoningEffort: 'medium',
-      isConfigured: false,
-      isDefault: false
-    }))
-}
-
-function mergeSubModelOptions(configuredOptions = [], providerOptions = []) {
-  const merged = []
-  const seen = new Set()
-
-  for (const option of [...configuredOptions, ...providerOptions]) {
-    const value = typeof option?.value === 'string' ? option.value : ''
-    if (!value || seen.has(value)) continue
-    seen.add(value)
-    merged.push(option)
-  }
-
-  return merged
-}
-
-function normalizeReasoningOptions(items = []) {
-  return items
-    .filter(item => item && typeof item.value === 'string' && item.value)
-    .map(item => ({
-      value: item.value,
-      key: item.value,
-      label: item.label || item.value,
-      description: item.description || ''
-    }))
 }
 
 function ensureProjectConfig(project) {
@@ -1693,25 +1627,12 @@ async function listSessionSubmodels(projectId, sessionId, options = {}) {
         : resolveSystemSelectedModel(appConfig, provider))
   const configuredOptions = buildConfiguredSubModelOptions(configuredModel, resolved.modelCardId)
   const defaultCard = resolveConfiguredDefaultCard(configuredModel, resolved.modelCardId)
-  const workingDirectory = options.workingDirectory || decodeProjectPath(projectId)
-
-  let providerOptions = []
-  if (provider === 'claude') {
-    const result = await listClaudeModels({
-      workingDirectory,
-      projectSettings: resolved
-    })
-    providerOptions = normalizeProviderSubModelOptions(provider, result.data || [], readClaudeRuntimeDefaults())
-  } else if (provider === 'codex') {
-    const result = await listCodexModels({ workingDirectory, includeHidden: false, limit: 100 })
-    providerOptions = normalizeProviderSubModelOptions(provider, result.data || [])
-  }
 
   return {
     provider,
     configuredModelId: configuredModel?.id || null,
     defaultValue: defaultCard?.modelName || '',
-    options: mergeSubModelOptions(configuredOptions, providerOptions)
+    options: configuredOptions
   }
 }
 
@@ -1726,7 +1647,6 @@ async function listSessionReasoningCapabilities(projectId, sessionId, options = 
     sessionConfig?.settings || null,
     provider
   )
-  const workingDirectory = options.workingDirectory || decodeProjectPath(projectId)
   const runtimeModel = typeof options.model === 'string' ? options.model.trim() : ''
 
   let configuredModelName = ''
@@ -1740,6 +1660,8 @@ async function listSessionReasoningCapabilities(projectId, sessionId, options = 
     configuredModelName = defaultCard?.modelName || ''
   }
 
+  // 思考等级统一由 provider 返回（claude / codex 行为一致）
+  const workingDirectory = options.workingDirectory || decodeProjectPath(projectId)
   let result = {
     provider,
     model: runtimeModel || configuredModelName,

@@ -132,8 +132,8 @@ export function useWorkspaceDialogs({
         throw new Error(availabilityResult?.error || '获取会话可用性失败')
       }
       if (availabilityResult.available === false) {
-        const initProvider = availabilityResult.initProvider || '未知'
-        const currentProvider = availabilityResult.currentProvider || '未知'
+        const initProvider = availabilityResult.initProviderLabel || availabilityResult.initProvider || '未知'
+        const currentProvider = availabilityResult.currentProviderLabel || availabilityResult.currentProvider || '未知'
         throw new Error(`当前会话不可用：创建时供应商为 ${initProvider}，当前供应商为 ${currentProvider}`)
       }
 

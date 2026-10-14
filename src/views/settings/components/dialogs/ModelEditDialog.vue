@@ -36,6 +36,47 @@ const formData = ref({
 const visibleCredentialIds = ref(new Set())
 const hoveredCardId = ref(null)
 const loading = ref(false)
+const defaultCatalogEntry = ref(null)
+
+function formatCatalogText(catalog) {
+  if (!catalog || typeof catalog !== 'object' || Object.keys(catalog).length === 0) {
+    return ''
+  }
+
+  return JSON.stringify(catalog, null, 2)
+}
+
+function parseCatalogText(catalogText) {
+  const text = String(catalogText || '').trim()
+  if (!text) {
+    return { catalog: null }
+  }
+
+  try {
+    const parsed = JSON.parse(text)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { error: '高级配置必须是 JSON 对象' }
+    }
+    return { catalog: parsed }
+  } catch (error) {
+    return { error: `高级配置不是合法 JSON: ${error.message}` }
+  }
+}
+
+async function fillCatalogTemplate(card) {
+  if (!defaultCatalogEntry.value) {
+    const result = await window.electronAPI.getCodexCatalogDefaultEntry()
+    defaultCatalogEntry.value = result?.success ? result.entry : null
+  }
+
+  if (!defaultCatalogEntry.value) {
+    alert('获取 Codex 模型元数据模板失败')
+    return
+  }
+
+  const { slug, display_name, ...entry } = defaultCatalogEntry.value
+  card.catalogText = JSON.stringify(entry, null, 2)
+}
 
 // 是否编辑模式
 const isEditing = computed(() => !!props.model)
@@ -67,7 +108,8 @@ watch(() => props.model, (model) => {
         modelName: card.modelName || '',
         pricingCache: card.pricingCache || '',
         pricingInput: card.pricingInput || '',
-        pricingOutput: card.pricingOutput || ''
+        pricingOutput: card.pricingOutput || '',
+        catalogText: formatCatalogText(card.catalog)
       }))
     } else if (model.modelName) {
       modelCards = [{
@@ -75,10 +117,11 @@ watch(() => props.model, (model) => {
         modelName: model.modelName,
         pricingCache: model.pricingCache || '',
         pricingInput: model.pricingInput || '',
-        pricingOutput: model.pricingOutput || ''
+        pricingOutput: model.pricingOutput || '',
+        catalogText: formatCatalogText(model.catalog)
       }]
     } else {
-      modelCards = [{ id: generateCardId(), modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '' }]
+      modelCards = [{ id: generateCardId(), modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '', catalogText: '' }]
     }
 
     formData.value = {
@@ -109,7 +152,7 @@ watch(() => props.model, (model) => {
       credentials: [{ id: firstCredentialId, name: '默认', token: '' }],
       defaultCredentialId: firstCredentialId,
       defaultCardId: firstCardId,
-      modelCards: [{ id: firstCardId, modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '' }]
+      modelCards: [{ id: firstCardId, modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '', catalogText: '' }]
     }
   }
   visibleCredentialIds.value = new Set()
@@ -158,7 +201,8 @@ function addCard() {
     modelName: '',
     pricingCache: '',
     pricingInput: '',
-    pricingOutput: ''
+    pricingOutput: '',
+    catalogText: ''
   })
 }
 
@@ -196,8 +240,33 @@ function handleSave() {
     return
   }
 
+  const modelCards = []
+  for (const card of formData.value.modelCards) {
+    const nextCard = {
+      id: card.id,
+      modelName: card.modelName,
+      pricingCache: card.pricingCache,
+      pricingInput: card.pricingInput,
+      pricingOutput: card.pricingOutput
+    }
+
+    if (props.modelType === 'codex') {
+      const parsed = parseCatalogText(card.catalogText)
+      if (parsed.error) {
+        alert(`模型「${card.modelName || '未命名'}」的${parsed.error}`)
+        return
+      }
+      if (parsed.catalog) {
+        nextCard.catalog = parsed.catalog
+      }
+    }
+
+    modelCards.push(nextCard)
+  }
+
   emit('save', {
     ...formData.value,
+    modelCards,
     credentials: validCredentials,
     defaultCredentialId: defaultCredential.id,
     authToken: defaultCredential.token,
@@ -410,6 +479,21 @@ function handleSave() {
                       placeholder="0.00"
                     >
                   </div>
+                </div>
+
+                <div v-if="modelType === 'codex'" class="card-catalog">
+                  <div class="card-catalog-header">
+                    <span class="card-catalog-title">高级配置（Codex 模型元数据）</span>
+                    <div class="card-catalog-actions">
+                      <button type="button" class="btn-catalog-action" @click="fillCatalogTemplate(card)">填充默认模板</button>
+                      <button type="button" class="btn-catalog-action" @click="card.catalogText = ''">清空</button>
+                    </div>
+                  </div>
+                  <textarea
+                    v-model="card.catalogText"
+                    class="form-textarea catalog-textarea"
+                    placeholder="留空则不生成 models.json 条目（Codex 使用兜底元数据）"
+                  ></textarea>
                 </div>
               </div>
             </div>
@@ -706,6 +790,65 @@ function handleSave() {
 .card-pricing .form-input {
   font-size: 13px;
   padding: 8px 10px;
+}
+
+.card-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px dashed #3F3F46;
+  padding-top: 12px;
+}
+
+.card-catalog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.card-catalog-title {
+  font-size: 12px;
+  color: #A1A1AA;
+}
+
+.card-catalog-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-catalog-action {
+  background: transparent;
+  border: 1px solid #3F3F46;
+  border-radius: 4px;
+  color: #A1A1AA;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.btn-catalog-action:hover {
+  border-color: #F97316;
+  color: #F97316;
+}
+
+.catalog-textarea {
+  width: 100%;
+  min-height: 160px;
+  background: #18181B;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  color: #F4F4F5;
+  font-family: Menlo, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px;
+  resize: vertical;
+}
+
+.catalog-textarea:focus {
+  outline: none;
+  border-color: #F97316;
 }
 
 .dialog-footer {

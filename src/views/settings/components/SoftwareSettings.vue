@@ -3,12 +3,13 @@
  * SoftwareSettings - 软件配置区域
  * 包含主题、语言、Bark通知、关于信息
  */
-import { ref } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import SettingsSection from './common/SettingsSection.vue'
 import SettingItem from './common/SettingItem.vue'
 import AppSelect from '@/components/base/AppSelect.vue'
 
 const version = __APP_VERSION__
+const DEFAULT_PROXY_PORT = 18921
 
 const systemSoundGroups = [
   {
@@ -69,6 +70,20 @@ const testingBark = ref(false)
 const savingBark = ref(false)
 const testingSound = ref(false)
 const testingAlertSound = ref(false)
+const proxyPortDraft = ref(String(DEFAULT_PROXY_PORT))
+const savingProxyPort = ref(false)
+const proxyStatus = ref(null)
+
+watch(() => props.settings.proxyPort, (value) => {
+  proxyPortDraft.value = String(value || DEFAULT_PROXY_PORT)
+}, { immediate: true })
+
+onMounted(async () => {
+  const result = await window.electronAPI.getLocalProxyStatus()
+  if (result?.success) {
+    proxyStatus.value = result
+  }
+})
 
 function updateSettings(nextSettings, autoSave = false) {
   emit('update:settings', nextSettings)
@@ -124,6 +139,26 @@ async function handleTestAlertSound() {
     }
   } finally {
     testingAlertSound.value = false
+  }
+}
+
+async function handleSaveProxyPort() {
+  const port = Number(proxyPortDraft.value)
+  if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
+    alert('请输入 1 - 65535 之间的端口号')
+    return
+  }
+
+  savingProxyPort.value = true
+  try {
+    updateSettings({ ...props.settings, proxyPort: port }, true)
+    const result = await window.electronAPI.restartLocalProxy()
+    proxyStatus.value = result
+    if (!result?.success) {
+      alert('本地模型代理启动失败: ' + (result?.error || '未知错误'))
+    }
+  } finally {
+    savingProxyPort.value = false
   }
 }
 </script>
@@ -212,6 +247,28 @@ async function handleTestAlertSound() {
       >
     </SettingItem>
 
+    <SettingItem
+      title="本地模型代理端口"
+      description="claude / codex 的模型请求都经由这个本地端口转发到真实供应商，修改后会自动重启代理"
+    >
+      <div class="sound-setting-control">
+        <input
+          type="number"
+          min="1"
+          max="65535"
+          class="setting-input proxy-port-input"
+          :value="proxyPortDraft"
+          @input="proxyPortDraft = $event.target.value"
+        >
+        <button class="btn-save" @click="handleSaveProxyPort" :disabled="savingProxyPort">
+          {{ savingProxyPort ? '保存中...' : '保存' }}
+        </button>
+        <span v-if="proxyStatus" class="proxy-status">
+          {{ proxyStatus.status === 'running' ? `运行中 :${proxyStatus.port}` : (proxyStatus.error || '未运行') }}
+        </span>
+      </div>
+    </SettingItem>
+
     <!-- 关于信息 -->
     <div class="setting-item about-section">
       <div class="setting-label">
@@ -230,6 +287,15 @@ async function handleTestAlertSound() {
 <style scoped>
 .setting-select {
   min-width: 150px;
+}
+
+.proxy-port-input {
+  width: 120px;
+}
+
+.proxy-status {
+  font-size: 12px;
+  color: #9CA3AF;
 }
 
 .setting-input {

@@ -4,15 +4,10 @@ const path = require('path')
 const logger = require('../logger')
 const { appConfigManager } = require('../storage')
 const {
-  buildCodexModelProviderId,
   findProviderModel,
   getDefaultCredential
 } = require('../adapters/shared/model-config')
 const {
-  listClaudeModels: loadClaudeModels
-} = require('../adapters/claude/provider-api')
-const {
-  listCodexModels: loadCodexModels,
   setCodexDefaultModel: applyCodexDefaultModel,
   getCodexUsageStatus: loadCodexUsageStatus,
   refreshCodexAuthToken: runCodexAuthRefresh,
@@ -141,93 +136,12 @@ function readCodexConfigFile() {
   return result
 }
 
-function buildManagedCodexProviderEntries() {
-  const appConfig = getAppConfig()
-  const models = Array.isArray(appConfig.settings?.codexModels)
-    ? appConfig.settings.codexModels
-    : []
-
-  return models
-    .filter(model => model?.id && model?.apiUrl)
-    .map(model => {
-      const providerId = buildCodexModelProviderId(model.id)
-      const credential = getDefaultCredential(model)
-      return {
-        providerId,
-        lines: [
-          `[model_providers.${providerId}]`,
-          `name = ${stringifyTomlString(model.friendlyName || 'ccgui')}`,
-          `base_url = ${stringifyTomlString(model.apiUrl || '')}`,
-          `wire_api = ${stringifyTomlString('responses')}`,
-          `experimental_bearer_token = ${stringifyTomlString(credential?.token || '')}`
-        ]
-      }
-    })
-}
-
-function stripManagedCodexProviderSections(rawContent = '') {
-  const lines = rawContent ? rawContent.split(/\r?\n/) : []
-  const output = []
-  let currentSection = null
-  let skippingManagedSection = false
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    const sectionMatch = trimmed.match(/^\[(.+)\]$/)
-    if (sectionMatch) {
-      currentSection = sectionMatch[1]
-      if (currentSection.startsWith('model_providers.ccgui_model_')) {
-        skippingManagedSection = true
-        continue
-      }
-
-      skippingManagedSection = false
-      output.push(line)
-      continue
-    }
-
-    if (skippingManagedSection) {
-      continue
-    }
-
-    output.push(line)
-  }
-
-  return output.join('\n')
-}
-
-function syncCodexModelProviders() {
-  const codexConfigPath = getCodexConfigPath()
-  const codexDir = path.dirname(codexConfigPath)
-  if (!fs.existsSync(codexDir)) {
-    fs.mkdirSync(codexDir, { recursive: true })
-  }
-
-  const current = readCodexConfigFile()
-  const managedEntries = buildManagedCodexProviderEntries()
-  const baseContent = stripManagedCodexProviderSections(current.rawContent || '')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/\s+$/g, '')
-  const sectionContent = managedEntries.flatMap(entry => ['', ...entry.lines]).join('\n')
-  const finalContent = `${baseContent}${sectionContent ? `${baseContent ? '\n' : ''}${sectionContent}` : ''}\n`
-    .replace(/\n{3,}/g, '\n\n')
-
-  fs.writeFileSync(codexConfigPath, finalContent, 'utf-8')
-
-  return {
-    providerCount: managedEntries.length,
-    providerIds: managedEntries.map(entry => entry.providerId)
-  }
-}
-
 function writeCodexConfigFile(updates = {}) {
   const codexConfigPath = getCodexConfigPath()
   const codexDir = path.dirname(codexConfigPath)
   if (!fs.existsSync(codexDir)) {
     fs.mkdirSync(codexDir, { recursive: true })
   }
-
-  syncCodexModelProviders()
 
   const current = readCodexConfigFile()
   const authState = readCodexAuthFile()
@@ -482,40 +396,6 @@ function updateAppConfig(updates) {
   return appConfigManager.updateConfig(updates)
 }
 
-function resolveCodexModelRuntime(modelId = null, modelCardId = null, credentialId = null) {
-  if (!modelId) {
-    return null
-  }
-
-  const appConfig = getAppConfig()
-  const model = findProviderModel(appConfig, 'codex', modelId)
-  if (!model) {
-    return null
-  }
-
-  const cards = Array.isArray(model.modelCards) ? model.modelCards : []
-  let targetCard = null
-  if (modelCardId) {
-    targetCard = cards.find(card => card.id === modelCardId)
-  }
-  if (!targetCard) {
-    const defaultCardId = model.defaultCardId || cards[0]?.id
-    targetCard = cards.find(card => card.id === defaultCardId) || cards[0] || null
-  }
-
-  const credential = getDefaultCredential(model, credentialId)
-
-  return {
-    modelId: model.id,
-    modelName: targetCard?.modelName || model.model || '',
-    credentialId: credential?.id || null,
-    credentialName: credential?.name || '',
-    authToken: credential?.token || '',
-    apiUrl: model.apiUrl || '',
-    providerId: buildCodexModelProviderId(model.id)
-  }
-}
-
 function loadCodexAuthTokens() {
   const auth = readCodexAuthFile()
   return auth.tokens || {
@@ -673,14 +553,6 @@ async function getCodexUsageStatus() {
   })
 }
 
-async function listClaudeModels(options = {}) {
-  return loadClaudeModels(options)
-}
-
-async function listCodexModels(options = {}) {
-  return loadCodexModels(options)
-}
-
 async function setCodexDefaultModel(options = {}) {
   const result = await applyCodexDefaultModel(options)
   const settings = writeCodexConfigFile({
@@ -822,10 +694,7 @@ function startCodexAccountUsagePolling() {
 
 module.exports = {
   applyCodexAccount,
-  buildCodexModelProviderId,
   getAppConfig,
-  listClaudeModels,
-  listCodexModels,
   setCodexDefaultModel,
   getCodexConfigPath,
   getActiveCodexAccountUsageSnapshot,
@@ -837,10 +706,8 @@ module.exports = {
   refreshCodexAccountUsage,
   refreshCodexAuthToken,
   startCodexChatGptLogin,
-  resolveCodexModelRuntime,
   saveAppConfig,
   startCodexAccountUsagePolling,
-  syncCodexModelProviders,
   syncCodexAccountsWithAuthConfig,
   updateAppConfig,
   writeCodexAuthFile,

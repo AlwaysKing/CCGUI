@@ -1590,7 +1590,7 @@ watch([showConfigPanel, fileSectionHeight], () => {
             :class="{
               active: currentSession?.id === session.id,
               unavailable: session.sessionAvailable === false,
-              'permission-pending': sessionStatuses[session.id]?.pendingPermission && currentSession?.id !== session.id
+              'permission-pending': Boolean(sessionStatuses[session.id]?.pendingPermission)
             }"
             @click="handleSelect(session)"
             @contextmenu="handleContextMenu($event, session)"

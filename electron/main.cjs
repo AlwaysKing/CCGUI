@@ -15,8 +15,20 @@ const providerInspector = require('./services/provider-inspector')
 const { getClaudePath } = require('./services/claude-path')
 const historyManager = require('./storage/history-manager')
 const projectConfigManager = require('./storage/project-config-manager')
+// MCP 配置的 provider 实现（安装/卸载/启用禁用），上层只按 target 分派
+const MCP_CONFIG = {
+  claude: require('./adapters/claude/mcp-config'),
+  codex: require('./adapters/codex/mcp-config')
+}
+// Skill 配置的 provider 实现（启用禁用，与 MCP 同形），上层只按 target 分派
+const SKILL_CONFIG = {
+  claude: require('./adapters/claude/skill-config'),
+  codex: require('./adapters/codex/skill-config')
+}
 const processRegistry = require('./services/process-registry')
 const { buildAugmentedEnv } = require('./services/shell-env')
+const { localProxy } = require('./services/local-proxy')
+const { DEFAULT_ENTRY: DEFAULT_CODEX_CATALOG_ENTRY, getCatalogPath, normalizeCatalogConfig } = require('./services/local-proxy/model-catalog')
 const Screenshots = require('electron-screenshots')
 
 const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -686,9 +698,9 @@ function createWindow() {
   mainWindow.on('closed', () => {
     disposeTerminalsForWebContents(mainWindowWebContentsId)
     stopProjectFileWatcher(mainWindowWebContentsId)
-    // 安全网：确保窗口销毁后清理所有残留 session
+    // 安全网：只清理属于该窗口的残留 session，避免影响其他窗口
     if (sessionManager) {
-      sessionManager.closeAll()
+      sessionManager.closeSessionsForWebContents(mainWindowWebContentsId)
     }
     mainWindow = null
   })
@@ -2612,6 +2624,10 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
     newWindow.on('closed', () => {
       disposeTerminalsForWebContents(newWindowWebContentsId)
       stopProjectFileWatcher(newWindowWebContentsId)
+      // 安全网：只清理属于该窗口的残留 session
+      if (sessionManager) {
+        sessionManager.closeSessionsForWebContents(newWindowWebContentsId)
+      }
       logger.info('[Window] Closed window', { projectId })
     })
 
@@ -3527,6 +3543,80 @@ ipcMain.handle('update-app-config', async (event, { updates }) => {
   }
 })
 
+// ============================================
+// Local Proxy IPC Handlers
+// ============================================
+
+ipcMain.handle('get-local-proxy-status', async () => {
+  try {
+    return { success: true, ...localProxy.getStatus() }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('restart-local-proxy', async () => {
+  try {
+    const status = await localProxy.restart()
+    return { success: status.status === 'running', ...status }
+  } catch (error) {
+    logger.error('[LocalProxy] 重启失败', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// 检查用户 Codex 模型目录里可以导入的模型元数据
+ipcMain.handle('get-codex-catalog-import-candidates', async () => {
+  try {
+    const candidates = localProxy.listCodexCatalogImportCandidates(appService.getAppConfig())
+    return {
+      success: true,
+      candidates,
+      catalogPath: getCatalogPath()
+    }
+  } catch (error) {
+    logger.error('[LocalProxy] 读取模型目录导入候选失败', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// Codex 模型元数据默认模板
+ipcMain.handle('get-codex-catalog-default-entry', async () => {
+  return { success: true, entry: DEFAULT_CODEX_CATALOG_ENTRY }
+})
+
+// 把用户 Codex 模型目录里的元数据导入到本机模型卡片
+ipcMain.handle('import-codex-catalog-metadata', async (event, { items } = {}) => {
+  try {
+    const config = appService.getAppConfig()
+    const codexModels = Array.isArray(config?.settings?.codexModels) ? config.settings.codexModels : []
+    let imported = 0
+
+    for (const item of Array.isArray(items) ? items : []) {
+      const provider = codexModels.find(model => model?.id === item?.providerId)
+      const card = (Array.isArray(provider?.modelCards) ? provider.modelCards : [])
+        .find(modelCard => modelCard?.id === item?.cardId)
+
+      if (!card || !item?.entry) {
+        continue
+      }
+
+      card.catalog = normalizeCatalogConfig(item.entry)
+      imported += 1
+    }
+
+    if (imported > 0) {
+      appService.saveAppConfig(config)
+      localProxy.writeCodexCatalog(config)
+    }
+
+    return { success: true, imported }
+  } catch (error) {
+    logger.error('[LocalProxy] 导入模型元数据失败', { error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
 // Get Claude settings from ~/.claude/settings.json
 ipcMain.handle('get-claude-settings', async () => {
   try {
@@ -3792,16 +3882,6 @@ ipcMain.handle('manage-claude-subagent', async (event, options = {}) => {
       error: error.message
     })
     return { success: false, error: error.message || 'SubAgent 操作失败' }
-  }
-})
-
-ipcMain.handle('list-claude-models', async (event, options) => {
-  try {
-    const result = await appService.listClaudeModels(options || {})
-    return { success: true, ...result }
-  } catch (error) {
-    logger.error('[ClaudeSettings] Failed to list models', { error: error.message })
-    return { success: false, error: error.message }
   }
 })
 
@@ -4113,14 +4193,6 @@ function getCodexAuthPath() {
   return path.join(os.homedir(), '.codex', 'auth.json')
 }
 
-function parseTopLevelTomlValue(rawValue) {
-  const value = rawValue.trim()
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1)
-  }
-  return value
-}
-
 function stringifyTomlString(value) {
   return `"${String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
@@ -4144,7 +4216,6 @@ function writeCodexAuthFile(updates = {}) {
 // Get Codex settings from ~/.codex/config.toml
 ipcMain.handle('get-codex-settings', async () => {
   try {
-    appService.syncCodexModelProviders()
     const settings = appService.readCodexConfigFile()
     const auth = readCodexAuthFile()
     const appConfig = appService.getAppConfig()
@@ -4232,19 +4303,6 @@ ipcMain.handle('get-active-codex-account-usage-snapshot', async () => {
   }
 })
 
-ipcMain.handle('list-codex-models', async (event, options = {}) => {
-  try {
-    const result = await appService.listCodexModels(options || {})
-    return {
-      success: true,
-      ...result
-    }
-  } catch (error) {
-    logger.error('[CodexSettings] Failed to list codex models', { error: error.message })
-    return { success: false, error: error.message }
-  }
-})
-
 ipcMain.handle('set-codex-default-model', async (event, options = {}) => {
   try {
     const result = await appService.setCodexDefaultModel(options || {})
@@ -4308,19 +4366,6 @@ ipcMain.handle('update-codex-settings', async (event, { updates }) => {
     }
   } catch (error) {
     logger.error('[CodexSettings] Failed to update settings', { error: error.message })
-    return { success: false, error: error.message }
-  }
-})
-
-ipcMain.handle('sync-codex-model-providers', async () => {
-  try {
-    const result = appService.syncCodexModelProviders()
-    return {
-      success: true,
-      ...result
-    }
-  } catch (error) {
-    logger.error('[CodexSettings] Failed to sync model providers', { error: error.message })
     return { success: false, error: error.message }
   }
 })
@@ -5174,6 +5219,12 @@ ipcMain.handle('delete-skill', async (event, { name, source }) => {
     }
 
     fs.rmSync(skillDir, { recursive: true, force: true })
+
+    // 彻底卸载：清掉该 slug 在全局与各项目 settings 里的启用/禁用残留
+    for (const target of ['claude', 'codex']) {
+      try { SKILL_CONFIG[target]?.clearSlugEverywhere(name) } catch (_) {}
+    }
+
     return { success: true }
   } catch (error) {
     return { success: false, error: error.message }
@@ -5320,6 +5371,11 @@ ipcMain.handle('deactivate-skill', async (event, { slug, targets }) => {
       } catch (_) {}
     }
 
+    // 从 provider 移除后清掉该 slug 的启用/禁用残留，避免以后重新启用时被旧记录禁用
+    for (const target of deactivated) {
+      try { SKILL_CONFIG[target]?.clearGlobalOverride(slug) } catch (_) {}
+    }
+
     return { success: true, deactivated }
   } catch (error) {
     return { success: false, error: error.message }
@@ -5334,137 +5390,6 @@ function extractMcpSlug(name) {
   if (!name) return ''
   const parts = name.split('/')
   return parts[parts.length - 1] || name
-}
-
-// 生成 Codex TOML 格式的 MCP 配置行
-function generateMcpTomlLines(config, slug) {
-  const lines = [`[mcp_servers.${slug}]`]
-  if (config.type) {
-    lines.push(`type = ${stringifyTomlString(config.type)}`)
-    if (config.url) lines.push(`url = ${stringifyTomlString(config.url)}`)
-    if (config.headers && Object.keys(config.headers).length > 0) {
-      for (const [hk, hv] of Object.entries(config.headers)) {
-        lines.push(`header_${hk} = ${stringifyTomlString(hv)}`)
-      }
-    }
-  } else if (config.command) {
-    lines.push(`command = ${stringifyTomlString(config.command)}`)
-    if (config.args?.length) {
-      const argsItems = config.args.map(a => stringifyTomlString(a)).join(', ')
-      lines.push(`args = [${argsItems}]`)
-    }
-  }
-  if (config.env && Object.keys(config.env).length > 0) {
-    for (const [ek, ev] of Object.entries(config.env)) {
-      lines.push(`env_${ek} = ${stringifyTomlString(ev)}`)
-    }
-  }
-  return lines
-}
-
-// 从 Codex config.toml 读取 mcp_servers slug 列表
-function readCodexMcpServers() {
-  const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml')
-  const result = {} // { slug: { command, args, type, url, ... } }
-  if (!fs.existsSync(codexConfigPath)) return result
-  const rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
-  let currentSection = null
-  let currentSlug = null
-  let currentConfig = null
-
-  for (const line of rawContent.split(/\r?\n/)) {
-    const trimmed = line.trim()
-    const sectionMatch = trimmed.match(/^\[([^\]]+)\]$/)
-    if (sectionMatch) {
-      // 保存前一个 section
-      if (currentSlug && currentConfig) {
-        result[currentSlug] = currentConfig
-      }
-      const section = sectionMatch[1]
-      const mcpPrefix = 'mcp_servers.'
-      if (section.startsWith(mcpPrefix)) {
-        currentSection = section
-        currentSlug = section.slice(mcpPrefix.length)
-        currentConfig = {}
-      } else {
-        currentSection = null
-        currentSlug = null
-        currentConfig = null
-      }
-      continue
-    }
-    if (!currentSlug || !currentConfig) continue
-    const entryMatch = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/)
-    if (entryMatch) {
-      const key = entryMatch[1]
-      let value = entryMatch[2].trim()
-      // 解析简单值
-      if (value.startsWith('[')) {
-        // TOML 数组
-        try {
-          currentConfig[key] = JSON.parse(value.replace(/'/g, '"'))
-        } catch (_) {
-          currentConfig[key] = value
-        }
-      } else {
-        currentConfig[key] = parseTopLevelTomlValue(value)
-      }
-    }
-  }
-  // 最后一个
-  if (currentSlug && currentConfig) {
-    result[currentSlug] = currentConfig
-  }
-  return result
-}
-
-// 从 Codex config.toml 移除指定 mcp_servers section
-function removeCodexMcpSection(slug) {
-  const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml')
-  if (!fs.existsSync(codexConfigPath)) return
-  const rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
-  const sectionHeader = `[mcp_servers.${slug}]`
-  const lines = rawContent.split(/\r?\n/)
-  const output = []
-  let skipping = false
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed === sectionHeader) {
-      skipping = true
-      continue
-    }
-    if (skipping) {
-      // 遇到新的 section 就停止跳过
-      if (trimmed.match(/^\[([^\]]+)\]$/)) {
-        skipping = false
-        output.push(line)
-      }
-      continue
-    }
-    output.push(line)
-  }
-  const finalContent = output.join('\n').replace(/\n{3,}/g, '\n\n') + '\n'
-  fs.writeFileSync(codexConfigPath, finalContent, 'utf-8')
-}
-
-// 向 Codex config.toml 追加 mcp_servers section
-function addCodexMcpSection(slug, config) {
-  const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml')
-  const codexDir = path.dirname(codexConfigPath)
-  if (!fs.existsSync(codexDir)) {
-    fs.mkdirSync(codexDir, { recursive: true })
-  }
-  // 先移除已有的
-  removeCodexMcpSection(slug)
-  // 重新读取
-  let rawContent = ''
-  if (fs.existsSync(codexConfigPath)) {
-    rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
-  }
-  const tomlLines = generateMcpTomlLines(config, slug)
-  const content = rawContent.replace(/\n+$/, '') + '\n\n' + tomlLines.join('\n') + '\n'
-  fs.writeFileSync(codexConfigPath, content.replace(/\n{3,}/g, '\n\n'), 'utf-8')
 }
 
 function generateMcpConfig(mcpData, envValues) {
@@ -5618,21 +5543,15 @@ ipcMain.handle('list-downloaded-mcps', async () => {
       }
     }
 
-    // 检查安装状态
-    const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
+    // 检查各 provider 的全局安装状态
     let claudeMcpServers = {}
     try {
-      if (fs.existsSync(claudeSettingsPath)) {
-        const content = fs.readFileSync(claudeSettingsPath, 'utf-8')
-        const settings = JSON.parse(content)
-        claudeMcpServers = settings.mcpServers || {}
-      }
+      claudeMcpServers = MCP_CONFIG.claude.readGlobalInstalled()
     } catch (_) {}
 
-    // 检查 Codex 安装状态
     let codexMcpServers = {}
     try {
-      codexMcpServers = readCodexMcpServers()
+      codexMcpServers = MCP_CONFIG.codex.readGlobalInstalled()
     } catch (_) {}
 
     // 标记安装状态
@@ -5738,27 +5657,7 @@ ipcMain.handle('install-mcp', async (event, { slug, target, envValues }) => {
       return { success: false, error: '无法生成 MCP 配置（缺少 remotes 和 packages）' }
     }
 
-    if (target === 'claude') {
-      const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
-      let settings = {}
-      if (fs.existsSync(claudeSettingsPath)) {
-        settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
-      }
-      if (!settings.mcpServers) {
-        settings.mcpServers = {}
-      }
-      settings.mcpServers[slug] = config
-
-      const claudeDir = path.dirname(claudeSettingsPath)
-      if (!fs.existsSync(claudeDir)) {
-        fs.mkdirSync(claudeDir, { recursive: true })
-      }
-      fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
-      logger.info(`[MCP] Installed ${slug} to Claude`)
-    } else if (target === 'codex') {
-      addCodexMcpSection(slug, config)
-      logger.info(`[MCP] Installed ${slug} to Codex`)
-    }
+    MCP_CONFIG[target].installGlobal(slug, config)
 
     return { success: true }
   } catch (error) {
@@ -5773,21 +5672,7 @@ ipcMain.handle('uninstall-mcp', async (event, { slug, target }) => {
     const path = require('path')
     const os = require('os')
 
-    if (target === 'claude') {
-      const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
-      if (!fs.existsSync(claudeSettingsPath)) {
-        return { success: true }
-      }
-      const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
-      if (settings.mcpServers?.[slug]) {
-        delete settings.mcpServers[slug]
-        fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
-        logger.info(`[MCP] Uninstalled ${slug} from Claude`)
-      }
-    } else if (target === 'codex') {
-      removeCodexMcpSection(slug)
-      logger.info(`[MCP] Uninstalled ${slug} from Codex`)
-    }
+    MCP_CONFIG[target].uninstallGlobal(slug)
 
     return { success: true }
   } catch (error) {
@@ -5803,20 +5688,11 @@ ipcMain.handle('delete-mcp', async (event, { slug }) => {
     const os = require('os')
 
     // 先从所有 target 卸载
-    const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
-    try {
-      if (fs.existsSync(claudeSettingsPath)) {
-        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
-        if (settings.mcpServers?.[slug]) {
-          delete settings.mcpServers[slug]
-          fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
-        }
-      }
-    } catch (_) {}
-
-    try {
-      removeCodexMcpSection(slug)
-    } catch (_) {}
+    for (const target of Object.keys(MCP_CONFIG)) {
+      try {
+        MCP_CONFIG[target].uninstallGlobal(slug)
+      } catch (_) {}
+    }
 
     // 删除 JSON 文件
     const mcpFile = path.join(os.homedir(), '.ccgui', 'mcps', `${slug}.json`)
@@ -5938,7 +5814,7 @@ ipcMain.handle('list-project-skills', async (event, { projectPath }) => {
           description: meta.description,
           installedTargets: [target],
           projectLevel: true,
-          external: globalInfo?.external === true,
+          external: !globalInfo || globalInfo.external === true,
           plugin: globalInfo?.plugin === true,
           pluginEnabled: globalInfo?.pluginEnabled,
           pluginScope: globalInfo?.pluginScope || ''
@@ -6028,6 +5904,11 @@ ipcMain.handle('deactivate-skill-from-project', async (event, { slug, targets, p
           // 非符号链接的目录，不删除（用户手动安装的）
         }
       } catch (_) {}
+    }
+
+    // 从项目移除后清掉该项目里该 slug 的启用/禁用残留
+    for (const target of deactivated) {
+      try { SKILL_CONFIG[target]?.clearProjectOverride(projectPath, slug) } catch (_) {}
     }
 
     logger.info(`[Skill] Deactivated ${slug} from project: ${deactivated.join(', ')}`)
@@ -6146,6 +6027,11 @@ ipcMain.handle('delete-project-skill', async (event, { name, projectPath }) => {
       }
     }
 
+    // 从项目彻底删除：清掉该项目里该 slug 的启用/禁用残留
+    for (const target of ['claude', 'codex']) {
+      try { SKILL_CONFIG[target]?.clearProjectOverride(projectPath, name) } catch (_) {}
+    }
+
     logger.info(`[Skill] Deleted from project: ${name}`)
     return { success: true }
   } catch (error) {
@@ -6179,111 +6065,64 @@ ipcMain.handle('list-project-mcps', async (event, { projectPath }) => {
     const mcps = []
     const seenSlugs = new Set()
 
-    // 读取 Claude 项目级 settings.json
-    const claudeSettingsPath = path.join(projectPath, '.claude', 'settings.json')
-    if (fs.existsSync(claudeSettingsPath)) {
-      try {
-        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
-        for (const [key, value] of Object.entries(settings.mcpServers || {})) {
-          seenSlugs.add(key)
-          const globalData = globalMcpsMap.get(key)
-          mcps.push({
-            name: globalData?.name || key,
-            slug: key,
-            title: globalData?.title || globalData?.name || key,
-            description: globalData?.description || (value.type === 'streamable-http' ? `远程服务: ${value.url || ''}` : value.command ? `${value.command} ${(value.args || []).join(' ')}` : ''),
-            version: globalData?.version || '',
-            source: globalData?.source || (globalData ? 'registry' : 'project-local'),
-            sourceLabel: globalData?.sourceLabel || '',
-            installedTargets: ['claude'],
-            projectLevel: true,
-            external: globalData?.external === true,
-            plugin: globalData?.plugin === true,
-            pluginEnabled: globalData?.pluginEnabled,
-            pluginScope: globalData?.pluginScope || ''
-          })
-        }
-      } catch (_) {}
-    }
+    // 读取 Claude 项目级配置（local scope：~/.claude.json → projects["<路径>"].mcpServers）
+    try {
+      const claudeProjectMcpServers = MCP_CONFIG.claude.readProjectInstalled(projectPath)
+      for (const [key, value] of Object.entries(claudeProjectMcpServers)) {
+        seenSlugs.add(key)
+        const globalData = globalMcpsMap.get(key)
+        mcps.push({
+          name: globalData?.name || key,
+          slug: key,
+          title: globalData?.title || globalData?.name || key,
+          description: globalData?.description || (value.type === 'streamable-http' ? `远程服务: ${value.url || ''}` : value.command ? `${value.command} ${(value.args || []).join(' ')}` : ''),
+          version: globalData?.version || '',
+          source: globalData?.source || (globalData ? 'registry' : 'project-local'),
+          sourceLabel: globalData?.sourceLabel || '',
+          installedTargets: ['claude'],
+          projectLevel: true,
+          external: !globalData || globalData.external === true,
+          plugin: globalData?.plugin === true,
+          pluginEnabled: globalData?.pluginEnabled,
+          pluginScope: globalData?.pluginScope || ''
+        })
+      }
+    } catch (_) {}
 
     // 读取 Codex 项目级 config.toml
-    const codexConfigPath = path.join(projectPath, '.codex', 'config.toml')
-    if (fs.existsSync(codexConfigPath)) {
-      try {
-        const projectCodexMcps = readTomlMcpServers(codexConfigPath)
-        for (const [key, value] of Object.entries(projectCodexMcps)) {
-          if (seenSlugs.has(key)) {
-            const existing = mcps.find(m => m.slug === key)
-            if (existing) existing.installedTargets.push('codex')
-            continue
-          }
-          seenSlugs.add(key)
-          const globalData = globalMcpsMap.get(key)
-          mcps.push({
-            name: globalData?.name || key,
-            slug: key,
-            title: globalData?.title || globalData?.name || key,
-            description: globalData?.description || (value.type ? `远程服务: ${value.url || ''}` : value.command ? `${value.command} ${Array.isArray(value.args) ? value.args.join(' ') : ''}` : ''),
-            version: globalData?.version || '',
-            source: globalData?.source || (globalData ? 'registry' : 'project-local'),
-            sourceLabel: globalData?.sourceLabel || '',
-            installedTargets: ['codex'],
-            projectLevel: true,
-            external: globalData?.external === true,
-            plugin: globalData?.plugin === true,
-            pluginEnabled: globalData?.pluginEnabled,
-            pluginScope: globalData?.pluginScope || ''
-          })
+    try {
+      const projectCodexMcps = MCP_CONFIG.codex.readProjectInstalled(projectPath)
+      for (const [key, value] of Object.entries(projectCodexMcps)) {
+        if (seenSlugs.has(key)) {
+          const existing = mcps.find(m => m.slug === key)
+          if (existing) existing.installedTargets.push('codex')
+          continue
         }
-      } catch (_) {}
-    }
+        seenSlugs.add(key)
+        const globalData = globalMcpsMap.get(key)
+        mcps.push({
+          name: globalData?.name || key,
+          slug: key,
+          title: globalData?.title || globalData?.name || key,
+          description: globalData?.description || (value.type ? `远程服务: ${value.url || ''}` : value.command ? `${value.command} ${Array.isArray(value.args) ? value.args.join(' ') : ''}` : ''),
+          version: globalData?.version || '',
+          source: globalData?.source || (globalData ? 'registry' : 'project-local'),
+          sourceLabel: globalData?.sourceLabel || '',
+          installedTargets: ['codex'],
+          projectLevel: true,
+          external: globalData?.external === true,
+          plugin: globalData?.plugin === true,
+          pluginEnabled: globalData?.pluginEnabled,
+          pluginScope: globalData?.pluginScope || ''
+        })
+      }
+    } catch (_) {}
 
     return { success: true, mcps }
   } catch (error) {
     return { success: false, mcps: [], error: error.message }
   }
 })
-
-// 从指定 toml 文件读取 mcp_servers sections（复用全局逻辑但支持自定义路径）
-function readTomlMcpServers(tomlPath) {
-  const fs = require('fs')
-  const result = {}
-  if (!fs.existsSync(tomlPath)) return result
-  const rawContent = fs.readFileSync(tomlPath, 'utf-8')
-  let currentSlug = null
-  let currentConfig = null
-
-  for (const line of rawContent.split(/\r?\n/)) {
-    const trimmed = line.trim()
-    const sectionMatch = trimmed.match(/^\[([^\]]+)\]$/)
-    if (sectionMatch) {
-      if (currentSlug && currentConfig) result[currentSlug] = currentConfig
-      const section = sectionMatch[1]
-      const mcpPrefix = 'mcp_servers.'
-      if (section.startsWith(mcpPrefix)) {
-        currentSlug = section.slice(mcpPrefix.length)
-        currentConfig = {}
-      } else {
-        currentSlug = null
-        currentConfig = null
-      }
-      continue
-    }
-    if (!currentSlug || !currentConfig) continue
-    const entryMatch = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/)
-    if (entryMatch) {
-      const key = entryMatch[1]
-      let value = entryMatch[2].trim()
-      if (value.startsWith('[')) {
-        try { currentConfig[key] = JSON.parse(value.replace(/'/g, '"')) } catch (_) { currentConfig[key] = value }
-      } else {
-        currentConfig[key] = parseTopLevelTomlValue(value)
-      }
-    }
-  }
-  if (currentSlug && currentConfig) result[currentSlug] = currentConfig
-  return result
-}
 
 // 安装 MCP 到项目级配置
 ipcMain.handle('install-mcp-to-project', async (event, { slug, target, envValues, projectPath }) => {
@@ -6306,36 +6145,7 @@ ipcMain.handle('install-mcp-to-project', async (event, { slug, target, envValues
       return { success: false, error: '无法生成 MCP 配置' }
     }
 
-    if (target === 'claude') {
-      const claudeDir = path.join(projectPath, '.claude')
-      const claudeSettingsPath = path.join(claudeDir, 'settings.json')
-      fs.mkdirSync(claudeDir, { recursive: true })
-
-      let settings = {}
-      if (fs.existsSync(claudeSettingsPath)) {
-        settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
-      }
-      if (!settings.mcpServers) settings.mcpServers = {}
-      settings.mcpServers[slug] = config
-      fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
-      logger.info(`[MCP] Installed ${slug} to project Claude settings`)
-    } else if (target === 'codex') {
-      const codexDir = path.join(projectPath, '.codex')
-      const codexConfigPath = path.join(codexDir, 'config.toml')
-      fs.mkdirSync(codexDir, { recursive: true })
-
-      // 先移除已有的 section
-      removeTomlMcpSection(codexConfigPath, slug)
-
-      let rawContent = ''
-      if (fs.existsSync(codexConfigPath)) {
-        rawContent = fs.readFileSync(codexConfigPath, 'utf-8')
-      }
-      const tomlLines = generateMcpTomlLines(config, slug)
-      const content = rawContent.replace(/\n+$/, '') + '\n\n' + tomlLines.join('\n') + '\n'
-      fs.writeFileSync(codexConfigPath, content.replace(/\n{3,}/g, '\n\n'), 'utf-8')
-      logger.info(`[MCP] Installed ${slug} to project Codex config`)
-    }
+    MCP_CONFIG[target].installProject(projectPath, slug, config)
 
     return { success: true }
   } catch (error) {
@@ -6346,26 +6156,9 @@ ipcMain.handle('install-mcp-to-project', async (event, { slug, target, envValues
 // 从项目级配置卸载 MCP
 ipcMain.handle('uninstall-mcp-from-project', async (event, { slug, target, projectPath }) => {
   try {
-    const fs = require('fs')
-    const path = require('path')
-
     if (!projectPath) return { success: false, error: '未指定项目路径' }
 
-    if (target === 'claude') {
-      const claudeSettingsPath = path.join(projectPath, '.claude', 'settings.json')
-      if (fs.existsSync(claudeSettingsPath)) {
-        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
-        if (settings.mcpServers?.[slug]) {
-          delete settings.mcpServers[slug]
-          fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
-          logger.info(`[MCP] Uninstalled ${slug} from project Claude settings`)
-        }
-      }
-    } else if (target === 'codex') {
-      const codexConfigPath = path.join(projectPath, '.codex', 'config.toml')
-      removeTomlMcpSection(codexConfigPath, slug)
-      logger.info(`[MCP] Uninstalled ${slug} from project Codex config`)
-    }
+    MCP_CONFIG[target].uninstallProject(projectPath, slug)
 
     return { success: true }
   } catch (error) {
@@ -6373,61 +6166,107 @@ ipcMain.handle('uninstall-mcp-from-project', async (event, { slug, target, proje
   }
 })
 
-// 从指定 toml 文件移除 mcp_servers section
-function removeTomlMcpSection(tomlPath, slug) {
-  const fs = require('fs')
-  if (!fs.existsSync(tomlPath)) return
-  const rawContent = fs.readFileSync(tomlPath, 'utf-8')
-  const sectionHeader = `[mcp_servers.${slug}]`
-  const lines = rawContent.split(/\r?\n/)
-  const output = []
-  let skipping = false
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed === sectionHeader) {
-      skipping = true
-      continue
-    }
-    if (skipping) {
-      if (trimmed.match(/^\[([^\]]+)\]$/)) {
-        skipping = false
-        output.push(line)
-      }
-      continue
-    }
-    output.push(line)
-  }
-  const finalContent = output.join('\n').replace(/\n{3,}/g, '\n\n') + '\n'
-  fs.writeFileSync(tomlPath, finalContent, 'utf-8')
-}
-
 // 删除项目级 MCP
 ipcMain.handle('delete-project-mcp', async (event, { slug, projectPath }) => {
   try {
     if (!projectPath) return { success: false, error: '未指定项目路径' }
 
-    // 从两个目标中都移除
-    const fs = require('fs')
-    const path = require('path')
-
-    // Claude
-    const claudeSettingsPath = path.join(projectPath, '.claude', 'settings.json')
-    if (fs.existsSync(claudeSettingsPath)) {
+    // 从所有 target 中都移除
+    for (const target of Object.keys(MCP_CONFIG)) {
       try {
-        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'))
-        if (settings.mcpServers?.[slug]) {
-          delete settings.mcpServers[slug]
-          fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), 'utf-8')
-        }
+        MCP_CONFIG[target].uninstallProject(projectPath, slug)
       } catch (_) {}
     }
 
-    // Codex
-    const codexConfigPath = path.join(projectPath, '.codex', 'config.toml')
-    removeTomlMcpSection(codexConfigPath, slug)
-
     logger.info(`[MCP] Deleted from project: ${slug}`)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// ============================================
+// MCP 启用 / 禁用（全局记账 + 项目覆盖 + 打开项目同步）
+// ============================================
+
+// 读取某个目标在全局/项目两层的启用状态
+ipcMain.handle('get-mcp-enable-states', async (event, { target, projectPath }) => {
+  try {
+    const states = MCP_CONFIG[target].readEnableStates(projectPath)
+    return { success: true, states }
+  } catch (error) {
+    return { success: false, states: { global: {}, project: {} }, error: error.message }
+  }
+})
+
+// 切换全局启用状态
+ipcMain.handle('set-mcp-enabled-global', async (event, { target, slug, enabled }) => {
+  try {
+    MCP_CONFIG[target].setGlobalEnabled(slug, enabled)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 切换项目级启用状态（enabled 为 null 表示恢复"跟随全局"）
+ipcMain.handle('set-mcp-enabled-project', async (event, { target, slug, enabled, projectPath }) => {
+  try {
+    MCP_CONFIG[target].setProjectEnabled(projectPath, slug, enabled)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 打开项目时同步（收编外部改动 + 物化有效值）
+ipcMain.handle('sync-project-mcps', async (event, { target, projectPath }) => {
+  try {
+    MCP_CONFIG[target].syncProject(projectPath)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// ============================================
+// Skill 启用 / 禁用（Claude 走 skillOverrides；Codex 底层无机制，空转）
+// ============================================
+
+// 读取某个目标在全局/项目两层的启用状态
+ipcMain.handle('get-skill-enable-states', async (event, { target, projectPath }) => {
+  try {
+    const states = SKILL_CONFIG[target].readEnableStates(projectPath)
+    return { success: true, states }
+  } catch (error) {
+    return { success: false, states: { global: {}, project: {} }, error: error.message }
+  }
+})
+
+// 切换全局启用状态
+ipcMain.handle('set-skill-enabled-global', async (event, { target, slug, enabled }) => {
+  try {
+    SKILL_CONFIG[target].setGlobalEnabled(slug, enabled)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 切换项目级启用状态（enabled 为 null 表示恢复"跟随全局"）
+ipcMain.handle('set-skill-enabled-project', async (event, { target, slug, enabled, projectPath }) => {
+  try {
+    SKILL_CONFIG[target].setProjectEnabled(projectPath, slug, enabled)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 打开项目时同步（Claude 原生层叠，无需物化；Codex 空转）
+ipcMain.handle('sync-project-skills', async (event, { target, projectPath }) => {
+  try {
+    SKILL_CONFIG[target].syncProject(projectPath)
     return { success: true }
   } catch (error) {
     return { success: false, error: error.message }
@@ -6523,6 +6362,26 @@ ipcMain.handle('play-system-sound', async (event, { sound }) => {
     return { success: true }
   } catch (error) {
     logger.error('[SystemSound] Failed to play sound', { sound, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+// 窗口不在前台时提醒有待授权的会话（Dock 图标跳动，用户回到应用后自动停止）
+ipcMain.handle('notify-permission-attention', async (event, { sessionId } = {}) => {
+  logger.info('[Notification] Permission attention requested', { sessionId })
+
+  try {
+    if (process.platform !== 'darwin' || !app.dock || typeof app.dock.bounce !== 'function') {
+      return { success: false, error: '当前平台不支持 Dock 提醒' }
+    }
+
+    app.dock.bounce('informational')
+    return { success: true }
+  } catch (error) {
+    logger.warn('[Notification] Failed to request permission attention', {
+      sessionId,
+      error: error.message
+    })
     return { success: false, error: error.message }
   }
 })
@@ -6755,6 +6614,10 @@ function openProjectWindow(projectId, projectName, projectPath) {
 
   newWindow.on('closed', () => {
     disposeTerminalsForWebContents(newWindowWebContentsId)
+    // 安全网：只清理属于该窗口的残留 session
+    if (sessionManager) {
+      sessionManager.closeSessionsForWebContents(newWindowWebContentsId)
+    }
     logger.info('[Window] Closed window', { projectId })
   })
 
@@ -6806,6 +6669,10 @@ function openWelcomeWithDropPath(folderPath) {
   newWindow.on('closed', () => {
     disposeTerminalsForWebContents(newWindowWebContentsId)
     stopProjectFileWatcher(newWindowWebContentsId)
+    // 安全网：只清理属于该窗口的残留 session
+    if (sessionManager) {
+      sessionManager.closeSessionsForWebContents(newWindowWebContentsId)
+    }
     logger.info('[Window] Closed Welcome window with dockDropPath')
   })
 
@@ -7053,6 +6920,10 @@ function createNewWindow() {
   newWindow.on('closed', () => {
     disposeTerminalsForWebContents(newWindowWebContentsId)
     stopProjectFileWatcher(newWindowWebContentsId)
+    // 安全网：只清理属于该窗口的残留 session
+    if (sessionManager) {
+      sessionManager.closeSessionsForWebContents(newWindowWebContentsId)
+    }
     logger.info('[Window] Closed new window')
   })
 
@@ -7095,6 +6966,14 @@ app.whenReady().then(() => {
     logger.warn('[CodexSettings] Failed to sync codex accounts on startup', { error: error.message })
   })
 
+  localProxy.start().then(status => {
+    if (status.status !== 'running') {
+      logger.warn('[LocalProxy] 本地模型代理未启动', { error: status.error })
+    }
+  }).catch(error => {
+    logger.error('[LocalProxy] 启动异常', { error: error.message })
+  })
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
@@ -7110,6 +6989,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true
+  localProxy.stop().catch(() => {})
   for (const window of BrowserWindow.getAllWindows()) {
     const webContents = window.webContents
     if (webContents && !webContents.isDestroyed()) {

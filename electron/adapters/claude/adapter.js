@@ -4,6 +4,8 @@ const { ClaudeClient } = require('./client')
 const logger = require('../../logger')
 const attachmentService = require('../../services/attachment-service')
 const { McpToolInspector } = require('../../services/mcp-tool-inspector')
+const appConfigManager = require('../../storage/app-config-manager')
+const { buildRuntimeModelName, stripProxyProviderPrefix } = require('../shared/model-config')
 const {
   replaceAttachmentTokens,
   buildClaudeAttachmentReference
@@ -68,6 +70,10 @@ class ClaudeAdapter extends ClaudeClient {
     // dry_run 请求分流：rewind 预获取 / FileChangeSummary 都走 rewind_files + dry_run
     this.pendingDryRunRequests = new Map()
     this.lastMcpServersByName = new Map()
+    // Claude Code 的后台任务状态通过 background_tasks_changed 广播，
+    // 任务的详细生命周期仍由 task_* 事件提供。这里仅保存最新快照，
+    // 避免把集合变更重复转换成聊天消息。
+    this.backgroundTasks = new Map()
   }
 
   normalizeMcpServerEntry(entry = null) {
@@ -877,6 +883,64 @@ class ClaudeAdapter extends ClaudeClient {
     })
   }
 
+  handleBackgroundTasksChanged(message = {}) {
+    const tasks = Array.isArray(message.tasks) ? message.tasks : []
+    const nextTaskIds = new Set()
+
+    for (const task of tasks) {
+      const taskId = typeof task?.task_id === 'string'
+        ? task.task_id.trim()
+        : (typeof task?.taskId === 'string' ? task.taskId.trim() : '')
+      if (!taskId) {
+        continue
+      }
+
+      nextTaskIds.add(taskId)
+      this.backgroundTasks.set(taskId, {
+        ...(this.backgroundTasks.get(taskId) || {}),
+        ...task,
+        task_id: taskId
+      })
+    }
+
+    for (const taskId of this.backgroundTasks.keys()) {
+      if (!nextTaskIds.has(taskId)) {
+        this.backgroundTasks.delete(taskId)
+      }
+    }
+  }
+
+  handleToolProgressMessage(message = {}) {
+    const toolUseId = typeof message.tool_use_id === 'string'
+      ? message.tool_use_id.trim()
+      : ''
+    const parentToolUseId = typeof message.parent_tool_use_id === 'string'
+      ? message.parent_tool_use_id.trim()
+      : toolUseId.replace(/-heartbeat-\d+$/, '')
+
+    if (!parentToolUseId || !this.toolUseMessages.has(parentToolUseId)) {
+      return
+    }
+
+    const elapsedSeconds = Number.isFinite(message.elapsed_time_seconds)
+      ? message.elapsed_time_seconds
+      : null
+    this.emit('message-update', {
+      messageId: parentToolUseId,
+      updates: {
+        toolProgress: {
+          toolUseId: toolUseId || null,
+          parentToolUseId,
+          elapsedSeconds,
+          heartbeat: message.heartbeat === true,
+          timestamp: message.uuid || null
+        },
+        ...(elapsedSeconds !== null ? { elapsedSeconds } : {}),
+        lastProgressAt: Date.now()
+      }
+    })
+  }
+
   normalizeToolUseBlock(contentBlock = {}) {
     const blockType = String(contentBlock?.type || '').toLowerCase()
     if (blockType !== 'tool_use' && blockType !== 'server_tool_use' && blockType !== 'mcp_tool_use') {
@@ -1102,6 +1166,77 @@ class ClaudeAdapter extends ClaudeClient {
     })
   }
 
+  /**
+   * 静默执行一条 CLI 斜杠命令（例如 /effort）：
+   * 期间产生的 assistant / stream / result 都不进入对话时间线，只在完成时回调
+   */
+  runSilentCommand(command, args = '', options = {}) {
+    const normalizedCommand = String(command || '').trim()
+    const normalizedArgs = String(args || '').trim()
+    const text = normalizedArgs ? `${normalizedCommand} ${normalizedArgs}` : normalizedCommand
+
+    return new Promise((resolve, reject) => {
+      const finish = error => {
+        clearTimeout(timeout)
+        if (this.silentCommand?.finish === finish) {
+          this.silentCommand = null
+        }
+
+        if (error) {
+          reject(error)
+        } else {
+          resolve(true)
+        }
+      }
+
+      const timeout = setTimeout(() => {
+        finish(new Error(`Silent command timed out: ${text}`))
+      }, options.timeoutMs || 15000)
+
+      this.silentCommand = {
+        text,
+        finish,
+        onCompleted: options.onCompleted
+      }
+
+      this.sendMessage({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text }]
+        }
+      })
+    })
+  }
+
+  /**
+   * 静默命令进行中：吞掉它产生的消息，收到 result 视为完成
+   * @returns {boolean} 该消息是否已被静默命令消费
+   */
+  handleSilentCommandMessage(message) {
+    const silentCommand = this.silentCommand
+    if (!silentCommand) {
+      return false
+    }
+
+    if (message.type === 'result') {
+      const onCompleted = silentCommand.onCompleted
+      silentCommand.finish(null)
+      if (typeof onCompleted === 'function') {
+        try {
+          onCompleted(message)
+        } catch (error) {
+          logger.warn('[ClaudeAdapter] Silent command completion handler failed', { error: error.message })
+        }
+      }
+      return true
+    }
+
+    return message.type === 'stream_event'
+      || message.type === 'assistant'
+      || message.type === 'user'
+  }
+
   collapseThinkingIfNeeded(messageId, snapshot, hasNewText = false) {
     if (!messageId || !snapshot?.thinking) return
     if (!hasNewText) return
@@ -1117,6 +1252,11 @@ class ClaudeAdapter extends ClaudeClient {
   handleMessage(message) {
     if (this.debugEnabled && this.sessionId) {
       require('../../logger').logReceive(this.sessionId, message)
+    }
+
+    // 静默命令（例如切换思考等级的 /effort）产生的消息不进入对话时间线
+    if (this.silentCommand && this.handleSilentCommandMessage(message)) {
+      return
     }
 
     if (message.type === 'stream_event') {
@@ -1272,6 +1412,13 @@ class ClaudeAdapter extends ClaudeClient {
       return
     }
 
+    // Claude Code 长时间运行工具的 heartbeat/progress 事件。
+    // 它更新已有工具消息，不应被当成新的 provider-message。
+    if (message.type === 'tool_progress') {
+      this.handleToolProgressMessage(message)
+      return
+    }
+
     if (message.type === 'system') {
       this.handleSystemMessage(message)
       return
@@ -1410,9 +1557,14 @@ class ClaudeAdapter extends ClaudeClient {
         model: String(normalizedRequest.model)
       })
 
+      const displayModel = stripProxyProviderPrefix(
+        appConfigManager.loadConfig(),
+        'claude',
+        normalizedRequest.model
+      )
       this.envInfo = {
         ...this.envInfo,
-        model: String(normalizedRequest.model),
+        model: displayModel,
         provider: 'claude',
         providerPid: this.getPid() || null
       }
@@ -1421,7 +1573,7 @@ class ClaudeAdapter extends ClaudeClient {
         this.emit('system-notification', {
           type: 'session-model-changed',
           provider: 'claude',
-          model: String(normalizedRequest.model)
+          model: displayModel
         })
       }
       return
@@ -1449,9 +1601,14 @@ class ClaudeAdapter extends ClaudeClient {
     super.sendControlRequest(normalizedRequest)
 
     if (normalizedRequest?.subtype === 'set_model' && normalizedRequest.model) {
+      const displayModel = stripProxyProviderPrefix(
+        appConfigManager.loadConfig(),
+        'claude',
+        normalizedRequest.model
+      )
       this.envInfo = {
         ...this.envInfo,
-        model: String(normalizedRequest.model),
+        model: displayModel,
         provider: 'claude',
         providerPid: this.getPid() || null
       }
@@ -1460,13 +1617,91 @@ class ClaudeAdapter extends ClaudeClient {
         this.emit('system-notification', {
           type: 'session-model-changed',
           provider: 'claude',
-          model: String(normalizedRequest.model)
+          model: displayModel
         })
       }
     }
   }
 
   // ─── 上下文用量查询 ──────────────────────────────────────
+
+  /**
+   * 统一的运行时配置应用入口（CCGUI 原语）
+   * claude 侧：模型/供应商切换 = set_model 控制请求；思考等级是启动参数，运行时改不了
+   * @param {{ settings?: object, changeType?: 'model'|'submodel'|'effort', modelOverride?: string, effort?: string, silent?: boolean }} selection
+   */
+  async applyRuntimeSelection(selection = {}) {
+    const changeType = selection.changeType || 'model'
+    if (changeType === 'effort') {
+      const effort = typeof selection.effort === 'string' ? selection.effort.trim() : ''
+      if (!effort) {
+        return {
+          appliedLive: false,
+          reason: 'missing-effort'
+        }
+      }
+
+      // claude 没有切换思考等级的控制请求，只能走 CLI 的 /effort 斜杠命令（仅当前会话生效）
+      if (!this.isReady()) {
+        return {
+          appliedLive: false,
+          reason: 'runtime-not-ready'
+        }
+      }
+
+      try {
+        await this.runSilentCommand('/effort', effort, {
+          onCompleted: () => {
+            this.envInfo = {
+              ...this.envInfo,
+              model_reasoning_effort: effort,
+              provider: 'claude',
+              providerPid: this.getPid() || null
+            }
+            this.emit('env-info', this.envInfo)
+          }
+        })
+        return {
+          appliedLive: true,
+          reasoningEffort: effort
+        }
+      } catch (error) {
+        logger.warn('[ClaudeAdapter] Silent effort switch failed', { effort, error: error.message })
+        return {
+          appliedLive: false,
+          reason: 'effort-command-failed'
+        }
+      }
+    }
+
+    const appConfig = appConfigManager.loadConfig()
+    const modelString = buildRuntimeModelName(
+      appConfig,
+      'claude',
+      selection.modelOverride,
+      selection.settings || {}
+    )
+    if (!modelString) {
+      return {
+        appliedLive: false,
+        reason: 'missing-model'
+      }
+    }
+
+    await this.sendControlRequest({
+      subtype: 'set_session_submodel',
+      model: modelString,
+      reasoningEffort: selection.effort || 'medium',
+      silent: selection.silent !== false
+    })
+
+    return {
+      appliedLive: true,
+      model: stripProxyProviderPrefix(appConfig, 'claude', modelString),
+      modelString,
+      reasoningEffort: selection.effort || 'medium'
+    }
+  }
 
   /**
    * 主动请求 Claude 的上下文用量信息
@@ -1738,6 +1973,15 @@ class ClaudeAdapter extends ClaudeClient {
         }
       }
 
+      // 模型名带供应商前缀（<供应商ID>/<模型名>），仅用于代理路由，界面上只展示真实模型名
+      if (filteredMessage.model) {
+        filteredMessage.model = stripProxyProviderPrefix(
+          appConfigManager.loadConfig(),
+          'claude',
+          filteredMessage.model
+        )
+      }
+
       this.envInfo = {
         ...this.envInfo,
         ...filteredMessage,
@@ -1810,6 +2054,11 @@ class ClaudeAdapter extends ClaudeClient {
         source: 'session_state_changed',
         metadata: message
       })
+      return
+    }
+
+    if (message.subtype === 'background_tasks_changed') {
+      this.handleBackgroundTasksChanged(message)
       return
     }
 

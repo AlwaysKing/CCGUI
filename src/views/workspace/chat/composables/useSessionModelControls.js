@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { logger } from '../../../../utils/logger'
 import { findProviderModel, getProviderModels } from '../../../../utils/provider-models'
 
@@ -15,6 +15,27 @@ function normalizeSessionModelSettings(settings = {}) {
     modelMode,
     modelId: modelMode === 'custom' ? settings.modelId || null : null,
     modelCardId: modelMode === 'custom' ? settings.modelCardId || null : null
+  }
+}
+
+/**
+ * 内部路由用的模型名是 <供应商ID>/<模型名>，界面上只展示真实模型名
+ * 仅在确认前缀是已配置的供应商 ID 时剥离，避免误伤真实模型名中的斜杠
+ */
+function createProviderPrefixStripper(getAppConfig) {
+  return function stripProviderPrefix(modelName = '') {
+    const rawValue = typeof modelName === 'string' ? modelName.trim() : ''
+    const separatorIndex = rawValue.indexOf('/')
+    if (separatorIndex <= 0) {
+      return rawValue
+    }
+
+    const settings = getAppConfig()?.settings || {}
+    const providerKey = rawValue.slice(0, separatorIndex)
+    const providers = [...(settings.claudeModels || []), ...(settings.codexModels || [])]
+    return providers.some(provider => provider?.id === providerKey)
+      ? rawValue.slice(separatorIndex + 1)
+      : rawValue
   }
 }
 
@@ -100,6 +121,7 @@ export function useSessionModelControls({
   const appConfig = ref(null)
   const projectConfig = ref(null)
   const sessionConfig = ref(null)
+  const stripProviderPrefix = createProviderPrefixStripper(() => appConfig.value)
   const providerSubModelOptions = ref([])
   const sessionTargetOptions = ref([])
   const currentSessionTargetId = ref('')
@@ -278,10 +300,10 @@ export function useSessionModelControls({
   const currentSubModelValue = computed(() => {
     const runtimeValue = typeof envInfo.value?.model === 'string' ? envInfo.value.model.trim() : ''
     if (runtimeValue) {
-      return runtimeValue
+      return stripProviderPrefix(runtimeValue)
     }
 
-    return providerSubModelDefaultValue.value || ''
+    return stripProviderPrefix(providerSubModelDefaultValue.value || '')
   })
 
   const currentSubModelLabel = computed(() => {
@@ -653,6 +675,21 @@ export function useSessionModelControls({
       lastLoadedEffortKey
     })
   }
+
+  // 配置在别处被改写（例如启动时导入 Codex 模型元数据）时刷新本地缓存，避免用到过期副本
+  function handleAppConfigUpdated() {
+    if (appStore.currentProject?.id && appStore.currentSession?.id) {
+      loadModelConfigContext()
+    }
+  }
+
+  onMounted(() => {
+    window.addEventListener('ccgui-app-config-updated', handleAppConfigUpdated)
+  })
+
+  onUnmounted(() => {
+    window.removeEventListener('ccgui-app-config-updated', handleAppConfigUpdated)
+  })
 
   return {
     appConfig,

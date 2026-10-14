@@ -4,9 +4,10 @@ const fs = require('fs')
 const os = require('os')
 const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
-const { findProviderModel, getDefaultCredential } = require('../shared/model-config')
+const { findProviderModel } = require('../shared/model-config')
 const { buildDeveloperInstructions } = require('../shared/developer-instructions')
 const { buildAugmentedEnv } = require('../../services/shell-env')
+const { localProxy } = require('../../services/local-proxy')
 
 function encodeProjectPathForClaude(projectPath, { replaceNonAscii = false } = {}) {
   let encodedPath = projectPath
@@ -70,6 +71,9 @@ class ClaudeClient {
     this.referenceInventory = { agents: [], skills: [], mcpTools: [] }
     // Fork 来源 session ID（仅首次启动时有效）
     this.forkedFromSessionId = options.forkedFromSessionId || null
+    // 枚举 provider 模型清单等场景不启动真实会话，跳过模型路由校验
+    this.skipModelRouteValidation = options.skipModelRouteValidation === true
+    this.proxySessionToken = null
   }
 
   /**
@@ -81,6 +85,16 @@ class ClaudeClient {
 
   setDebugEnabled(enabled) {
     this.debugEnabled = enabled === true
+  }
+
+  /**
+   * 更新已解析的运行时配置
+   * 模型 / 卡片 / 凭据热切换时由会话调用，代理按这里的值解析真实供应商与凭据
+   */
+  setResolvedSettings(settings = null) {
+    this.projectSettings = settings && typeof settings === 'object'
+      ? { ...settings }
+      : settings
   }
 
   normalizeSlashCommandEntry(entry = null) {
@@ -574,7 +588,8 @@ class ClaudeClient {
   }
 
   /**
-   * Get model environment variables from project settings
+   * 构造指向 CCGUI 本地代理的模型环境变量
+   * 模型名使用 <供应商ID>/<模型名>，由代理解析成真实供应商后转发
    * @returns {object} 环境变量对象
    */
   getModelEnvVars() {
@@ -590,47 +605,59 @@ class ClaudeClient {
         return envVars
       }
 
-      // 设置 API URL (ANTHROPIC_BASE_URL)
-      if (modelConfig.apiUrl) {
-        envVars.ANTHROPIC_BASE_URL = modelConfig.apiUrl
-        logger.info(`[ClaudeClient] Setting ANTHROPIC_BASE_URL: ${modelConfig.apiUrl}`)
-      }
-
-      // 设置 Auth Token (ANTHROPIC_AUTH_TOKEN)
-      const credential = getDefaultCredential(modelConfig, this.projectSettings?.credentialId)
-      if (credential?.token) {
-        envVars.ANTHROPIC_AUTH_TOKEN = credential.token
-        logger.info('[ClaudeClient] Setting ANTHROPIC_AUTH_TOKEN', {
-          credentialId: credential.id || null,
-          hasToken: true
-        })
-      }
-
-      // 获取模型卡片列表
-      const modelCards = modelConfig.modelCards || []
-      if (modelCards.length === 0) {
-        logger.warn(`[ClaudeClient] No model cards found for: ${this.projectSettings.modelId}`)
+      const proxyBaseUrl = localProxy.getClaudeBaseUrl()
+      if (!proxyBaseUrl) {
+        logger.error('[ClaudeClient] 本地模型代理未启动，无法注入模型供应商')
         return envVars
       }
 
-      // 确定使用哪个 modelCard
+      const modelCards = Array.isArray(modelConfig.modelCards) ? modelConfig.modelCards : []
       let targetCard = null
       if (this.projectSettings.modelCardId) {
-        // 使用指定的 modelCardId
-        targetCard = modelCards.find(c => c.id === this.projectSettings.modelCardId)
+        targetCard = modelCards.find(card => card.id === this.projectSettings.modelCardId)
       }
       if (!targetCard) {
-        // 使用默认的 modelCard
         const defaultCardId = modelConfig.defaultCardId || modelCards[0]?.id
-        targetCard = modelCards.find(c => c.id === defaultCardId) || modelCards[0]
+        targetCard = modelCards.find(card => card.id === defaultCardId) || modelCards[0] || null
       }
 
-      if (targetCard && targetCard.modelName) {
-        envVars.ANTHROPIC_MODEL = targetCard.modelName
-        logger.info(`[ClaudeClient] Setting ANTHROPIC_MODEL: ${targetCard.modelName} (from card: ${targetCard.id})`)
-      } else {
-        logger.warn(`[ClaudeClient] No valid modelName found in model card`)
+      if (!targetCard?.modelName) {
+        logger.warn(`[ClaudeClient] No valid modelName found in model card: ${modelConfig.id}`)
+        return envVars
       }
+
+      const modelPrefix = `${modelConfig.id}/`
+      envVars.ANTHROPIC_BASE_URL = proxyBaseUrl
+      envVars.ANTHROPIC_AUTH_TOKEN = this.proxySessionToken || 'ccgui-local-proxy'
+      envVars.ANTHROPIC_MODEL = `${modelPrefix}${targetCard.modelName}`
+
+      // 别名映射（sonnet / opus / haiku / small-fast）同样走代理路由
+      const cardMapping = modelConfig.cardMapping && typeof modelConfig.cardMapping === 'object'
+        ? modelConfig.cardMapping
+        : {}
+      for (const key of ['ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL']) {
+        const mappedCard = cardMapping[key]
+          ? modelCards.find(card => card.id === cardMapping[key])
+          : null
+        envVars[key] = mappedCard?.modelName
+          ? `${modelPrefix}${mappedCard.modelName}`
+          : envVars.ANTHROPIC_MODEL
+      }
+
+      logger.info('[ClaudeClient] 使用 CCGUI 本地代理', {
+        proxyBaseUrl,
+        providerId: modelConfig.id,
+        model: targetCard.modelName,
+        modelString: envVars.ANTHROPIC_MODEL,
+        aliasMappings: {
+          sonnet: envVars.ANTHROPIC_DEFAULT_SONNET_MODEL,
+          opus: envVars.ANTHROPIC_DEFAULT_OPUS_MODEL,
+          haiku: envVars.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+          smallFast: envVars.ANTHROPIC_SMALL_FAST_MODEL
+        },
+        sessionTokenTail: this.proxySessionToken ? this.proxySessionToken.slice(-6) : null,
+        note: '本会话所有模型请求都会经由本地代理转发到真实供应商'
+      })
     } catch (error) {
       logger.error('[ClaudeClient] Failed to get model env vars:', error)
     }
@@ -718,17 +745,38 @@ class ClaudeClient {
       args.push('--append-system-prompt', systemPrompt)
     }
 
-    // Only a session-custom target gets provider overrides. System/project
-    // targets intentionally continue using Claude's configuration files.
-    const isSessionCustomModel = this.projectSettings?.meta?.session?.modelMode === 'custom'
-    const modelEnvVars = isSessionCustomModel ? this.getModelEnvVars() : {}
+    // 所有模式统一走 CCGUI 本地代理，不再依赖 claude 自身的配置文件
+    if (!localProxy.getBaseUrl()) {
+      await localProxy.start()
+    }
 
-    // Session-specific provider values must be passed through Claude's CLI
-    // settings layer so they take precedence over env values from settings
-    // files. System/project modes intentionally leave this unset.
-    if (isSessionCustomModel && Object.keys(modelEnvVars).length > 0) {
+    this.proxySessionToken = localProxy.registerSession({
+      tool: 'claude',
+      sessionId: this.sessionId,
+      workingDirectory: this.workingDirectory,
+      resolveSettings: () => ({
+        modelId: this.projectSettings?.modelId || null,
+        modelCardId: this.projectSettings?.modelCardId || null,
+        credentialId: this.projectSettings?.credentialId || null
+      })
+    })
+
+    const modelEnvVars = this.getModelEnvVars()
+
+    if (!this.skipModelRouteValidation) {
+      if (!this.projectSettings?.modelId) {
+        throw new Error('未配置 Claude 默认模型供应商，请先在设置中应用一个模型')
+      }
+      if (Object.keys(modelEnvVars).length === 0) {
+        throw new Error('未找到 Claude 供应商配置或本地模型代理未就绪，请检查模型设置')
+      }
+    }
+
+    // 必须通过 Claude 的 --settings 注入：settings 里的 env 优先级高于进程环境变量，
+    // 否则用户 ~/.claude/settings.json 里的 ANTHROPIC_BASE_URL 会把代理地址盖掉
+    if (Object.keys(modelEnvVars).length > 0) {
       args.push('--settings', JSON.stringify({ env: modelEnvVars }))
-      logger.info('[ClaudeClient] Applying session provider settings override', {
+      logger.info('[ClaudeClient] 注入本地代理 settings 覆盖', {
         variables: Object.keys(modelEnvVars),
         hasAuthToken: Boolean(modelEnvVars.ANTHROPIC_AUTH_TOKEN),
         baseUrl: modelEnvVars.ANTHROPIC_BASE_URL || null,
@@ -1275,6 +1323,10 @@ class ClaudeClient {
    * Send interrupt request to stop current generation
    */
   sendInterrupt() {
+    if (!this.isReady()) {
+      return
+    }
+
     const interruptMessage = {
       type: 'control_request',
       request: {
@@ -1289,6 +1341,14 @@ class ClaudeClient {
    * Send control request (主动请求，如切换权限模式)
    */
   sendControlRequest(request) {
+    // 会话已停止时仍可能收到迟到的 provider 消息，这类内部回写不应抛错打断主进程
+    if (!this.isReady()) {
+      logger.warn('[ClaudeClient] Skip control request, process not ready', {
+        subtype: request?.subtype || null
+      })
+      return
+    }
+
     const normalizedRequest = { ...(request || {}) }
     const requestId =
       normalizedRequest.__ccguiRequestId ||
@@ -1345,6 +1405,10 @@ class ClaudeClient {
    * Stop Claude CLI process
    */
   stop() {
+    if (this.proxySessionToken) {
+      localProxy.unregisterSession(this.proxySessionToken)
+      this.proxySessionToken = null
+    }
     if (this.process) {
       const pid = this.process.pid
       logger.info(`[ClaudeClient] stop — sending SIGTERM to pid ${pid}`)

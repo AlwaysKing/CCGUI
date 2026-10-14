@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { logger } from '../../../../../utils/logger'
 
 const props = defineProps({
@@ -16,6 +16,11 @@ const answers = ref({})        // 存储选中的 label（含 "Other"）
 const otherTexts = ref({})     // 存储 "Other" 的自定义文本
 const currentTabIndex = ref(0)
 const otherInputRefs = ref({}) // "Other" 输入框的 ref
+const isMinimized = ref(false)
+const minimizedPanelStyle = ref({ right: '96px', bottom: '80px' })
+let positionAnimationFrame = null
+let stageResizeObserver = null
+let taskWindowObserver = null
 
 onMounted(() => {
   let toolInput = props.request.input || props.request.tool_input || props.request.toolInput
@@ -42,6 +47,21 @@ onMounted(() => {
       answers.value[index] = null
     }
   })
+
+  window.addEventListener('resize', scheduleMinimizedPanelPosition)
+  nextTick(() => {
+    observeMainStage()
+    scheduleMinimizedPanelPosition()
+  })
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', scheduleMinimizedPanelPosition)
+  stageResizeObserver?.disconnect()
+  taskWindowObserver?.disconnect()
+  if (positionAnimationFrame !== null) {
+    cancelAnimationFrame(positionAnimationFrame)
+  }
 })
 
 const currentQuestion = computed(() => {
@@ -135,6 +155,79 @@ function handleDismiss() {
   emit('dismiss')
 }
 
+function minimizeDialog() {
+  isMinimized.value = true
+  scheduleMinimizedPanelPosition()
+}
+
+function expandDialog() {
+  isMinimized.value = false
+}
+
+function observeMainStage() {
+  const mainStage = document.querySelector('.agent-workspace__main-stage')
+  if (!(mainStage instanceof HTMLElement)) return
+
+  stageResizeObserver?.disconnect()
+  stageResizeObserver = new ResizeObserver(scheduleMinimizedPanelPosition)
+  stageResizeObserver.observe(mainStage)
+
+  const taskHost = mainStage.querySelector('.task-floating-host')
+  if (!(taskHost instanceof HTMLElement)) return
+
+  taskWindowObserver?.disconnect()
+  taskWindowObserver = new MutationObserver(scheduleMinimizedPanelPosition)
+  taskWindowObserver.observe(taskHost, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['style', 'class']
+  })
+}
+
+function scheduleMinimizedPanelPosition() {
+  if (positionAnimationFrame !== null) {
+    cancelAnimationFrame(positionAnimationFrame)
+  }
+  positionAnimationFrame = requestAnimationFrame(() => {
+    positionAnimationFrame = null
+    updateMinimizedPanelPosition()
+  })
+}
+
+function updateMinimizedPanelPosition() {
+  if (!isMinimized.value) return
+
+  const mainStage = document.querySelector('.agent-workspace__main-stage')
+  if (!(mainStage instanceof HTMLElement)) {
+    minimizedPanelStyle.value = { right: '96px', bottom: '80px' }
+    return
+  }
+
+  const stageRect = mainStage.getBoundingClientRect()
+  if (stageRect.width <= 0 || stageRect.height <= 0) {
+    minimizedPanelStyle.value = { right: '96px', bottom: '80px' }
+    return
+  }
+
+  const taskWindows = Array.from(mainStage.querySelectorAll('.task-floating-window'))
+    .map(element => element.getBoundingClientRect())
+    .filter(rect => rect.width > 0 && rect.height > 0)
+  const topTaskEdge = taskWindows.length
+    ? Math.min(...taskWindows.map(rect => rect.top))
+    : null
+  const baseBottom = Math.max(0, window.innerHeight - stageRect.bottom)
+  const desiredBottom = topTaskEdge === null
+    ? baseBottom
+    : Math.max(baseBottom, window.innerHeight - topTaskEdge + 8)
+  const maxBottom = Math.max(12, window.innerHeight - stageRect.top - 88)
+
+  minimizedPanelStyle.value = {
+    right: `${Math.max(12, window.innerWidth - stageRect.right + 12)}px`,
+    bottom: `${Math.min(desiredBottom, maxBottom)}px`
+  }
+}
+
 function switchTab(index) {
   currentTabIndex.value = index
 }
@@ -153,8 +246,14 @@ const isAllAnswered = computed(() => {
 </script>
 
 <template>
-  <div class="question-dialog-overlay" v-if="questions.length > 0" data-question-dialog>
-    <div class="question-bar" data-question-dialog-inner>
+  <div
+    class="question-dialog-overlay"
+    :class="{ 'is-minimized': isMinimized }"
+    :style="isMinimized ? minimizedPanelStyle : null"
+    v-if="questions.length > 0"
+    data-question-dialog
+  >
+    <div v-if="!isMinimized" class="question-bar" data-question-dialog-inner>
       <!-- Tab Headers -->
       <div class="tab-headers">
         <button
@@ -170,6 +269,7 @@ const isAllAnswered = computed(() => {
           <span v-if="question.multiSelect" class="multi-badge">多选</span>
         </button>
         <div class="tab-spacer"></div>
+        <button class="minimize-button" @click="minimizeDialog" title="最小化" aria-label="最小化问题面板">−</button>
         <button class="close-button" @click="handleDismiss" title="关闭">✕</button>
       </div>
 
@@ -257,12 +357,34 @@ const isAllAnswered = computed(() => {
         </button>
       </div>
     </div>
+
+    <button
+      v-else
+      type="button"
+      class="question-minimized-panel"
+      title="展开问题面板"
+      aria-label="展开问题面板"
+      @click="expandDialog"
+    >
+      <span class="question-minimized-icon">❓</span>
+      <span class="question-minimized-content">
+        <span class="question-minimized-title">待回答问题</span>
+        <span class="question-minimized-text">
+          {{ currentQuestion?.question || '点击展开继续回答' }}
+        </span>
+        <span class="question-minimized-meta">
+          <span>{{ questions.filter((q, i) => isQuestionAnswered(i)).length }} / {{ questions.length }} 已回答</span>
+          <span class="question-minimized-expand">点击展开</span>
+        </span>
+      </span>
+    </button>
   </div>
 </template>
 
 <style scoped>
 .question-dialog-overlay {
-  position: absolute;
+  /* 固定在窗口上，不依赖聊天面板布局（面板收起/被预览挤掉时也能显示） */
+  position: fixed;
   bottom: 80px;
   left: 50%;
   transform: translateX(-50%);
@@ -270,6 +392,14 @@ const isAllAnswered = computed(() => {
   pointer-events: none;
   width: 90%;
   max-width: 900px;
+}
+
+.question-dialog-overlay.is-minimized {
+  left: auto;
+  bottom: auto;
+  transform: none;
+  width: auto;
+  max-width: none;
 }
 
 .question-bar {
@@ -282,6 +412,92 @@ const isAllAnswered = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.question-minimized-panel {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 260px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #1a1a1f 0%, #1E1E1E 100%);
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  border-radius: 12px;
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  color: #E4E4E7;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+  animation: questionMinimizedIn 0.18s ease-out;
+}
+
+.question-minimized-panel:hover {
+  border-color: rgba(249, 115, 22, 0.55);
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.6),
+    0 0 18px rgba(249, 115, 22, 0.12);
+}
+
+.question-minimized-panel:active {
+  transform: scale(0.98);
+}
+
+.question-minimized-icon {
+  flex-shrink: 0;
+  font-size: 20px;
+  line-height: 1;
+  filter: drop-shadow(0 0 4px rgba(249, 115, 22, 0.3));
+}
+
+.question-minimized-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.question-minimized-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: #FB923C;
+}
+
+.question-minimized-text {
+  overflow: hidden;
+  color: #A1A1AA;
+  font-size: var(--font-size-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.question-minimized-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  color: #71717A;
+  font-size: var(--font-size-xs);
+}
+
+.question-minimized-expand {
+  flex-shrink: 0;
+  color: #FB923C;
+}
+
+@keyframes questionMinimizedIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 /* Tab Headers */
@@ -301,7 +517,8 @@ const isAllAnswered = computed(() => {
   flex: 1;
 }
 
-.close-button {
+.close-button,
+.minimize-button {
   background: transparent;
   border: none;
   color: #71717A;
@@ -313,7 +530,8 @@ const isAllAnswered = computed(() => {
   line-height: 1;
 }
 
-.close-button:hover {
+.close-button:hover,
+.minimize-button:hover {
   color: #E4E4E7;
   background: #3F3F46;
 }

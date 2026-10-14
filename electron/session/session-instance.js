@@ -6,10 +6,11 @@ const logger = require('../logger')
 const historyManager = require('../storage/history-manager')
 const projectService = require('../services/project-service')
 const appConfigManager = require('../storage/app-config-manager')
-const { findProviderModel } = require('../adapters/shared/model-config')
+const { findProviderModel, stripProxyProviderPrefix } = require('../adapters/shared/model-config')
 const attachmentService = require('../services/attachment-service')
 const { stripAttachmentTokens } = require('../adapters/shared/ccgui-attachments')
 const processRegistry = require('../services/process-registry')
+const { encodeProjectPath } = require('../project-paths')
 
 function pickFirstDefined(...values) {
   for (const value of values) {
@@ -22,6 +23,11 @@ function pickFirstDefined(...values) {
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isThreadWriterConflictError(error) {
+  const message = error?.message || String(error || '')
+  return message.includes('already has an active writer') || message.includes('thread-store conflict')
 }
 
 function normalizeAgentRegistry(entry = null) {
@@ -655,9 +661,12 @@ class SessionInstance {
     this.id = sessionId
     this.projectPath = projectPath
     this.webContents = webContents // 所属窗口的 webContents，用于向前端发送事件
+    this.webContentsId = webContents?.id ?? null // 所属窗口 ID，用于按窗口关闭会话
 
     // 计算 projectId（编码后的路径，用于历史存储）
     this.projectId = this.calculateProjectId()
+    // 旧版本用“不替换点”的编码，历史目录可能仍留在旧编码下，登记别名以便继续读取
+    historyManager.registerProjectIdAlias(this.projectId, this.calculateLegacyProjectId())
 
     // 会话数据
     this.messages = []        // 消息历史
@@ -683,6 +692,12 @@ class SessionInstance {
     this.pendingToolResults = new Map() // 待处理的工具结果
     // 运行时 provider 实例（懒加载）
     this.runtimeManager = null
+    // 本会话实例自己登记过的 provider 进程 pid，用于安全回收残留进程
+    this.registeredRuntimePids = new Set()
+    // 进行中的运行时启动，用于合并并发启动请求（如启动会话与发送消息几乎同时到达）
+    this.startPromise = null
+    // 运行时启动代次：停止或新的启动会 +1，用于识别已被取代的启动流程
+    this.runtimeStartToken = 0
     this.provider = 'claude'
     this.sessionSettings = {}
     this.pendingLifecycleReason = null
@@ -732,6 +747,7 @@ class SessionInstance {
     }
 
     this.webContents = webContents
+    this.webContentsId = webContents.id ?? null
   }
 
   getMainAgentId() {
@@ -1091,6 +1107,11 @@ class SessionInstance {
    * 计算 projectId（编码后的路径）
    */
   calculateProjectId() {
+    // 必须与 project-service / 渲染进程共用同一套编码，否则会话配置读不到（会退回默认供应商）
+    return encodeProjectPath(this.projectPath)
+  }
+
+  calculateLegacyProjectId() {
     let encodedPath = this.projectPath
     if (process.platform === 'win32') {
       encodedPath = encodedPath.replace(/:/g, '').replace(/\\/g, '-')
@@ -1111,12 +1132,22 @@ class SessionInstance {
     try {
       const storedMetadata = historyManager.loadMetadata(this.projectId, this.id)
       if (storedMetadata?.envInfo) {
+        // 历史 envInfo 可能残留带供应商前缀的路由用模型名（<供应商ID>/<模型名>），恢复时统一还原成展示名
+        const restoredEnvInfo = { ...storedMetadata.envInfo }
+        if (typeof restoredEnvInfo.model === 'string') {
+          restoredEnvInfo.model = stripProxyProviderPrefix(
+            appConfigManager.loadConfig(),
+            restoredEnvInfo.provider || this.provider || 'claude',
+            restoredEnvInfo.model
+          )
+        }
+
         this.envInfo = applySessionEnvInfoPatch({
           ...this.envInfo,
-          ...storedMetadata.envInfo,
-          provider: storedMetadata.envInfo.provider || this.envInfo.provider
+          ...restoredEnvInfo,
+          provider: restoredEnvInfo.provider || this.envInfo.provider
         }, {
-          provider: storedMetadata.envInfo.provider || this.envInfo.provider,
+          provider: restoredEnvInfo.provider || this.envInfo.provider,
           providerPid: null
         })
       }
@@ -1299,12 +1330,12 @@ class SessionInstance {
     return typeof targetCard?.modelName === 'string' ? targetCard.modelName.trim() : ''
   }
 
-  async applyConfiguredClaudeStartupModel(settings = null) {
-    if (this.provider !== 'claude' || typeof this.runtimeManager?.sendControlRequest !== 'function') {
-      return
-    }
-
-    const configuredSubModel = this.resolveConfiguredRuntimeSubModel(settings, 'claude')
+  /**
+   * 启动后对齐配置的模型：某些 CLI 启动时的模型来自配置，需要显式再应用一次
+   * 通过统一的运行时选择接口下发，不区分 provider
+   */
+  async applyConfiguredStartupModel(settings = null) {
+    const configuredSubModel = this.resolveConfiguredRuntimeSubModel(settings, this.provider)
     if (!configuredSubModel) {
       return
     }
@@ -1314,11 +1345,10 @@ class SessionInstance {
       return
     }
 
-    logger.info(`[SessionInstance] Applying configured Claude startup model for session ${this.id}: ${configuredSubModel}`)
-    await this.runtimeManager.sendControlRequest({
-      subtype: 'set_session_submodel',
-      model: configuredSubModel,
-      reasoningEffort: (typeof settings?.effort === 'string' && settings.effort.trim()) || 'medium',
+    logger.info(`[SessionInstance] Applying configured startup model for session ${this.id}: ${configuredSubModel}`)
+    await this.applyRuntimeSelection('model', {
+      settings,
+      effort: (typeof settings?.effort === 'string' && settings.effort.trim()) || 'medium',
       silent: true
     })
   }
@@ -1332,6 +1362,29 @@ class SessionInstance {
       return true
     }
 
+    // 已在启动中：复用同一次启动，避免并发清理/拉起导致 provider 进程互相抢占线程写锁
+    if (this.startPromise) {
+      logger.info(`[SessionInstance] Runtime start already in progress for session ${this.id}, reusing it`)
+      return this.startPromise
+    }
+
+    const token = ++this.runtimeStartToken
+    const startPromise = this.startRuntimeInternal(token)
+    this.startPromise = startPromise
+
+    try {
+      return await startPromise
+    } finally {
+      if (this.startPromise === startPromise) {
+        this.startPromise = null
+      }
+    }
+  }
+
+  /**
+   * 运行时启动的实际流程，由 startRuntime 串行化调用
+   */
+  async startRuntimeInternal(token, options = {}) {
     // 如果存在旧的运行时实例（进程已退出），先清理
     if (this.runtimeManager) {
       logger.info(`[SessionInstance] Cleaning up old runtime manager for session ${this.id}`)
@@ -1355,9 +1408,10 @@ class SessionInstance {
       logger.warn(`[SessionInstance] Failed to load settings:`, e.message)
     }
 
+    let manager = null
     if (this.provider === 'codex') {
       const sessionStoragePath = path.dirname(historyManager.getSessionHistoryDir(this.projectId, this.id))
-      this.runtimeManager = new CodexAdapter(
+      manager = new CodexAdapter(
         this.projectPath,
         this.id,
         isNewSession,
@@ -1373,7 +1427,7 @@ class SessionInstance {
       const nativeClaudeSessionId = this.resolveClaudeRuntimeSessionId()
       // 读取 forkedFrom：仅在首次启动（isNewSession）时传递
       const sessionConfigForFork = isNewSession ? projectService.getSessionConfig(this.projectId, this.id) : null
-      this.runtimeManager = new ClaudeAdapter(
+      manager = new ClaudeAdapter(
         this.projectPath,
         nativeClaudeSessionId,
         isNewSession,
@@ -1386,6 +1440,7 @@ class SessionInstance {
       )
     }
 
+    this.runtimeManager = manager
     this.setupRuntimeHandlers()
 
     try {
@@ -1401,21 +1456,33 @@ class SessionInstance {
         })
       }
 
-      await this.runtimeManager.start()
+      await manager.start()
+
+      // 启动期间可能被停止或被新的启动取代（例如切换配置触发重启），此时丢弃该实例，避免污染当前运行时状态
+      if (manager !== this.runtimeManager || token !== this.runtimeStartToken) {
+        logger.warn(`[SessionInstance] Runtime manager superseded during start for session ${this.id}, discarding it`)
+        const supersededError = new Error(`Runtime start for session ${this.id} was superseded`)
+        supersededError.code = 'RUNTIME_START_SUPERSEDED'
+        throw supersededError
+      }
+
       logger.info(`[SessionInstance] ${this.provider} started for session ${this.id}`)
 
       // 启动成功后立即更新 envInfo 并发送到前端
-      const pid = this.runtimeManager.getPid()
+      const pid = manager.getPid()
       logger.info(`[SessionInstance] Provider PID: ${pid}, current envInfo:`, this.envInfo)
 
       // 注册进程实例，用于异常退出时清理孤儿进程
-      const exePath = this.runtimeManager.claudePath || this.runtimeManager.codexPath || ''
+      const exePath = manager.claudePath || manager.codexPath || ''
       processRegistry.register(this.id, {
         pid,
         provider: this.provider,
         exePath,
         projectPath: this.projectPath
       })
+      if (pid) {
+        this.registeredRuntimePids.add(pid)
+      }
 
       if (this.envInfo) {
         this.envInfo = applySessionEnvInfoPatch({
@@ -1466,7 +1533,7 @@ class SessionInstance {
         this.pendingPostStartNotification = null
       }
 
-      const runtimeSessionIdentifier = this.runtimeManager.getSessionIdentifier?.()
+      const runtimeSessionIdentifier = manager.getSessionIdentifier?.()
       if (runtimeSessionIdentifier && this.envInfo.session_id !== runtimeSessionIdentifier) {
         this.envInfo.session_id = runtimeSessionIdentifier
         historyManager.updateSessionEnvInfo(this.projectId, this.id, this.envInfo)
@@ -1474,7 +1541,7 @@ class SessionInstance {
       }
 
       try {
-        await this.applyConfiguredClaudeStartupModel(settings)
+        await this.applyConfiguredStartupModel(settings)
       } catch (error) {
         logger.warn(`[SessionInstance] Failed to apply configured Claude startup model for session ${this.id}: ${error.message}`)
       }
@@ -1486,10 +1553,53 @@ class SessionInstance {
 
       return true
     } catch (e) {
-      logger.error(`[SessionInstance] Failed to start provider: ${e.message}`)
-      this.pendingLifecycleOperation = null
-      this.runtimeManager = null
+      if (e?.code === 'RUNTIME_START_SUPERSEDED') {
+        logger.info(`[SessionInstance] Runtime start for session ${this.id} was superseded, discarded`)
+      } else {
+        logger.error(`[SessionInstance] Failed to start provider: ${e.message}`)
+      }
+
+      const isCurrentManager = this.runtimeManager === manager
+      if (isCurrentManager) {
+        this.pendingLifecycleOperation = null
+        this.runtimeManager = null
+      } else {
+        logger.info(`[SessionInstance] Ignoring failed start from stale runtime manager for session ${this.id}`)
+      }
+
+      // 启动失败的 provider 可能残留进程（例如 Codex 线程写锁冲突），必须回收，否则会阻塞后续启动
+      try {
+        manager.stop()
+      } catch (stopError) {
+        logger.warn(`[SessionInstance] Failed to recycle provider after start failure: ${stopError.message}`)
+      }
+
+      // Codex 的线程写锁冲突多半是本会话遗留的 provider 进程仍在写同一个 thread：清掉残留进程后重试一次
+      if (isCurrentManager && options.allowRetry !== false && isThreadWriterConflictError(e)) {
+        const released = await this.releaseResidualRuntimeProcess()
+        if (released) {
+          logger.info(`[SessionInstance] Retrying runtime start after releasing residual provider for session ${this.id}`)
+          return this.startRuntimeInternal(token, { allowRetry: false })
+        }
+      }
+
       throw e
+    }
+  }
+
+  /**
+   * 回收本会话残留的 provider 进程（通常是仍持有线程写锁的孤儿进程）
+   */
+  async releaseResidualRuntimeProcess() {
+    try {
+      const released = await processRegistry.terminateRegisteredInstance(this.id, this.registeredRuntimePids)
+      if (released) {
+        logger.info(`[SessionInstance] Released residual provider process for session ${this.id}`)
+      }
+      return released
+    } catch (error) {
+      logger.warn(`[SessionInstance] Failed to release residual provider process for session ${this.id}: ${error.message}`)
+      return false
     }
   }
 
@@ -2360,6 +2470,11 @@ class SessionInstance {
     })
 
     manager.on('exit', ({ code, signal }) => {
+      // 已被替换的旧实例退出时不再改动当前会话状态
+      if (this.runtimeManager !== manager) {
+        logger.info(`[SessionInstance] Ignoring exit from stale runtime manager for session ${this.id}`, { code, signal })
+        return
+      }
       this.handleRuntimeExit({ code, signal })
     })
   }
@@ -3154,6 +3269,33 @@ class SessionInstance {
   }
 
   /**
+   * 统一的运行时配置应用入口（CCGUI 原语）
+   * 模型 / 供应商 / 思考等级都交给适配器按各自协议处理，会话层不判断 provider 能力
+   * @param {'model'|'submodel'|'effort'} changeType
+   * @returns {Promise<{appliedLive: boolean, model?: string, modelString?: string, reasoningEffort?: string, reason?: string}|null>}
+   */
+  async applyRuntimeSelection(changeType, options = {}) {
+    if (!this.runtimeManager || !this.runtimeManager.isReady()) {
+      return null
+    }
+
+    if (typeof this.runtimeManager.applyRuntimeSelection !== 'function') {
+      return {
+        appliedLive: false,
+        reason: 'runtime-does-not-support-selection'
+      }
+    }
+
+    return this.runtimeManager.applyRuntimeSelection({
+      changeType,
+      settings: options.settings || null,
+      modelOverride: options.modelOverride || '',
+      effort: options.effort || '',
+      silent: options.silent !== false
+    })
+  }
+
+  /**
    * 设置权限模式
    */
   async setPermissionMode(mode) {
@@ -3176,6 +3318,8 @@ class SessionInstance {
         name: projectService.getSessionConfig(this.projectId, this.id)?.name || '新会话',
         settings: this.sessionSettings
       })
+      // 同步为项目默认值，新建会话时继承
+      this.persistProjectDefaults({ permissionMode: normalizedMode })
     } catch (error) {
       this.permissionMode = previousMode
       this.sessionSettings = previousSettings
@@ -3227,10 +3371,31 @@ class SessionInstance {
         name: projectService.getSessionConfig(this.projectId, this.id)?.name || '新会话',
         settings: this.sessionSettings
       })
+      // 同步为项目默认值，新建会话时继承
+      this.persistProjectDefaults({ autoApprove: this.autoApprove })
     } catch (error) {
       this.autoApprove = previousAutoApprove
       this.sessionSettings = previousSettings
       throw error
+    }
+  }
+
+  /**
+   * 将会话级设置写入项目默认值，供后续新建会话继承
+   */
+  persistProjectDefaults(updates = {}) {
+    try {
+      const projectConfig = projectService.getProjectConfig(this.projectId) || {}
+      const settings = {
+        ...(projectConfig.settings || {}),
+        ...updates
+      }
+      projectService.updateProjectConfig(this.projectId, { settings })
+    } catch (error) {
+      logger.warn('[SessionInstance] Failed to persist project defaults', {
+        projectId: this.projectId,
+        error: error.message
+      })
     }
   }
 
@@ -3296,16 +3461,18 @@ class SessionInstance {
       }
     }
 
-    if (provider === 'codex') {
-      this.syncRuntimeResolvedSettings(resolvedConfig?.settings || null)
-      if (typeof this.runtimeManager?.setSessionEffort !== 'function') {
-        throw new Error('Codex runtime does not support live effort switching')
-      }
-      const applied = await this.runtimeManager.setSessionEffort(normalizedEffort)
+    // 统一走适配器的运行时选择接口，会话层不判断 provider 能力
+    this.syncRuntimeResolvedSettings(resolvedConfig?.settings || null)
+    const effortApplied = await this.applyRuntimeSelection('effort', {
+      settings: resolvedConfig?.settings || null,
+      effort: normalizedEffort,
+      silent: true
+    })
+    if (effortApplied?.appliedLive) {
       this.emitConfigAppliedNotification('effort', 'live', {
         provider,
-        effort: applied?.reasoningEffort || normalizedEffort,
-        subModel: applied?.model || null
+        effort: effortApplied.reasoningEffort || normalizedEffort,
+        subModel: effortApplied.model || null
       })
 
       return {
@@ -3318,6 +3485,7 @@ class SessionInstance {
       }
     }
 
+    // provider 无法热切换（例如 claude 的 --effort 是启动参数）→ 重启应用
     this.stop('restart-for-config')
     await this.start({
       reason: 'restart-for-config',
@@ -3453,24 +3621,30 @@ class SessionInstance {
       }
     }
 
-    if (this.provider === 'codex') {
-      this.syncRuntimeResolvedSettings(resolvedConfig?.settings || null)
-      if (typeof this.runtimeManager?.setSessionModel !== 'function') {
-        throw new Error('Codex runtime does not support live model switching')
-      }
-      const applied = await this.runtimeManager.setSessionModel()
-      this.emitConfigAppliedNotification('model', 'live', {
-        provider: this.provider,
-        model: applied?.model || null,
-        effort: applied?.reasoningEffort || null
+    // 统一走适配器的运行时选择接口：模型 + 供应商都由适配器按各自协议热切换
+    this.syncRuntimeResolvedSettings(resolvedConfig?.settings || null)
+    try {
+      const applied = await this.applyRuntimeSelection('model', {
+        settings: resolvedConfig?.settings || null,
+        effort: resolvedConfig?.settings?.effort || '',
+        silent: true
       })
-      return {
-        success: true,
-        config: updatedConfig || null,
-        restarted: false,
-        appliedLive: true,
-        provider: this.provider
+      if (applied?.appliedLive) {
+        this.emitConfigAppliedNotification('model', 'live', {
+          provider: this.provider,
+          model: applied.model || null,
+          effort: applied.reasoningEffort || null
+        })
+        return {
+          success: true,
+          config: updatedConfig || null,
+          restarted: false,
+          appliedLive: true,
+          provider: this.provider
+        }
       }
+    } catch (error) {
+      logger.warn(`[SessionInstance] Live model switch failed, fallback to restart: ${error.message}`)
     }
 
     if (this.envInfo) {
@@ -3560,6 +3734,36 @@ class SessionInstance {
       }
     }
 
+    // 供应商 + 模型 + 凭据都由本地代理在请求时解析，除了 Codex 自身账号模式外都能热切换
+    if (nextTargetKind !== 'openai') {
+      const resolvedConfig = this.loadResolvedRuntimeConfig()
+      this.syncRuntimeResolvedSettings(resolvedConfig?.settings || null)
+
+      try {
+        const applied = await this.applyRuntimeSelection('model', {
+          settings: resolvedConfig?.settings || null,
+          effort: resolvedConfig?.settings?.effort || '',
+          silent: true
+        })
+        if (applied?.appliedLive) {
+          this.emitConfigAppliedNotification('target', 'live', {
+            provider: this.provider,
+            model: applied.model || null,
+            effort: applied.reasoningEffort || null
+          })
+          return {
+            success: true,
+            config: updatedConfig || null,
+            restarted: false,
+            appliedLive: true,
+            provider: this.provider
+          }
+        }
+      } catch (error) {
+        logger.warn(`[SessionInstance] Live target switch failed, fallback to restart: ${error.message}`)
+      }
+    }
+
     if (this.envInfo) {
       this.envInfo.model = null
       historyManager.updateSessionEnvInfo(this.projectId, this.id, this.envInfo)
@@ -3600,41 +3804,26 @@ class SessionInstance {
       await this.startRuntime()
     }
 
-    if (this.provider === 'codex' && typeof this.runtimeManager?.setSessionSubmodel === 'function') {
-      const applied = await this.runtimeManager.setSessionSubmodel(
-        normalizedModel,
-        normalizedEffort || 'medium'
-      )
-      this.emitConfigAppliedNotification('submodel', 'live', {
-        provider: this.provider,
-        subModel: applied?.model || normalizedModel,
-        effort: applied?.reasoningEffort || normalizedEffort || 'medium'
-      })
-      return {
-        success: true,
-        model: applied?.model || normalizedModel,
-        reasoningEffort: applied?.reasoningEffort || normalizedEffort || 'medium',
-        provider: this.provider,
-        appliedLive: true
-      }
+    const applied = await this.applyRuntimeSelection('submodel', {
+      settings: this.loadResolvedRuntimeConfig().settings || null,
+      modelOverride: normalizedModel,
+      effort: normalizedEffort || 'medium',
+      silent: false
+    })
+    if (!applied?.appliedLive) {
+      throw new Error(`${this.provider} runtime does not support live submodel switching`)
     }
 
-    if (this.provider === 'codex') {
-      throw new Error('Codex runtime does not support live submodel switching')
-    }
-
-    if (this.runtimeManager?.sendControlRequest) {
-      await this.runtimeManager.sendControlRequest({
-        subtype: 'set_session_submodel',
-        model: normalizedModel,
-        reasoningEffort: normalizedEffort || 'medium'
-      })
-    }
+    this.emitConfigAppliedNotification('submodel', 'live', {
+      provider: this.provider,
+      subModel: applied.model || normalizedModel,
+      effort: applied.reasoningEffort || normalizedEffort || 'medium'
+    })
 
     return {
       success: true,
-      model: normalizedModel,
-      reasoningEffort: normalizedEffort || 'medium',
+      model: applied.model || normalizedModel,
+      reasoningEffort: applied.reasoningEffort || normalizedEffort || 'medium',
       provider: this.provider,
       appliedLive: true
     }
@@ -3642,17 +3831,23 @@ class SessionInstance {
 
   applySessionSettings(settings = null) {
     this.sessionSettings = settings && typeof settings === 'object' ? { ...settings } : {}
+
+    // 项目级默认值：新建会话继承 autoApprove / permissionMode，会话自身设置优先
+    const projectConfig = projectService.getProjectConfig(this.projectId) || {}
+    const projectSettings = projectConfig.settings || {}
+
     const persistedPermissionMode = typeof this.sessionSettings.permissionMode === 'string'
       ? this.sessionSettings.permissionMode.trim()
       : ''
-    this.permissionMode = persistedPermissionMode || 'default'
+    this.permissionMode = persistedPermissionMode || projectSettings.permissionMode || 'default'
 
-    this.autoApprove = this.sessionSettings.autoApprove === true
+    this.autoApprove = typeof this.sessionSettings.autoApprove === 'boolean'
+      ? this.sessionSettings.autoApprove
+      : projectSettings.autoApprove === true
 
     // taskDockHistory 从 projectConfig 读取（project 级别共享）
-    const projectConfig = projectService.getProjectConfig(this.projectId) || {}
-    this.taskDockHistory = Array.isArray(projectConfig.settings?.taskDockHistory)
-      ? projectConfig.settings.taskDockHistory
+    this.taskDockHistory = Array.isArray(projectSettings.taskDockHistory)
+      ? projectSettings.taskDockHistory
       : []
 
     if (this.runtimeManager && typeof this.runtimeManager.setDebugEnabled === 'function') {
@@ -3840,6 +4035,10 @@ class SessionInstance {
    * 停止运行时实例
    */
   stop(reason = 'user-stop', options = {}) {
+    // 作废进行中的启动：启动流程会在检查点发现代次变化，并自行回收 provider 进程
+    this.runtimeStartToken += 1
+    this.startPromise = null
+
     if (this.runtimeManager) {
       const t0 = Date.now()
       logger.info(`[SessionInstance] stop START for session ${this.id}`, { reason })
@@ -3885,6 +4084,10 @@ class SessionInstance {
       // resume with a stale thread binding.
       this.persistRuntimeSessionSettingsPatch()
 
+      const stoppedPid = this.runtimeManager.getPid?.()
+      if (stoppedPid) {
+        this.registeredRuntimePids.delete(stoppedPid)
+      }
       processRegistry.unregister(this.id)
       logger.info(`[SessionInstance] stop sending SIGTERM (pre-stop total ${Date.now() - t0}ms)`, { sessionId: this.id })
 

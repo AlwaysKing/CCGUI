@@ -5,6 +5,8 @@ const { spawn } = require('child_process')
 const { encodeProjectPath } = require('../../project-paths')
 const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
+const { localProxy } = require('../../services/local-proxy')
+const { buildProxyModelString } = require('../shared/model-config')
 let cachedCodexPath = null
 
 function getCodexExecutablePath() {
@@ -43,6 +45,7 @@ async function withCodexAppServer(run, options = {}) {
 
   let child = null
   let rl = null
+  let proxySessionToken = null
   const pending = new Map()
   let requestId = 0
 
@@ -59,7 +62,26 @@ async function withCodexAppServer(run, options = {}) {
       codexEnv.ALL_PROXY = proxyUrl
     }
 
-    child = spawn(codexPath, ['app-server', '--listen', 'stdio://'], {
+    // 会话扫描同样走 CCGUI 供应商，保证不同供应商的会话列表互相独立
+    if (!localProxy.getBaseUrl()) {
+      await localProxy.start()
+    }
+    proxySessionToken = localProxy.registerSession({
+      tool: 'codex',
+      resolveSettings: () => ({
+        modelId: appConfig.settings?.selectedCodexModelId || null,
+        credentialId: appConfig.settings?.selectedCodexCredentialId || null
+      })
+    })
+    const providerArgs = localProxy.buildCodexProviderArgs({
+      appConfig,
+      token: proxySessionToken,
+      model: buildProxyModelString(appConfig, 'codex', {
+        modelId: appConfig.settings?.selectedCodexModelId || null
+      })
+    })
+
+    child = spawn(codexPath, ['app-server', ...providerArgs, '--listen', 'stdio://'], {
       cwd: process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: codexEnv
@@ -117,6 +139,9 @@ async function withCodexAppServer(run, options = {}) {
 
     return await run({ request, send, child })
   } finally {
+    if (proxySessionToken) {
+      localProxy.unregisterSession(proxySessionToken)
+    }
     if (rl) {
       rl.close()
     }

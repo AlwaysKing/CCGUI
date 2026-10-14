@@ -13,6 +13,8 @@ const {
 } = require('./client')
 const logger = require('../../logger')
 const codexAppServer = require('../../services/codex-app-server')
+const appConfigManager = require('../../storage/app-config-manager')
+const { buildRuntimeModelName, stripProxyProviderPrefix } = require('../shared/model-config')
 
 function buildCodexUsageStateError(errorLike = null, fallbackMessage = 'Codex usage refresh failed') {
   if (!errorLike || typeof errorLike !== 'object') {
@@ -158,6 +160,9 @@ class CodexAdapter extends CodexClient {
     this.pendingSpawnItems = new Map()
     this.sessionStoragePath = options.sessionStoragePath || null
     this.pendingUserMessageUuid = null
+    this.turnUserMessageUuids = new Map() // turnId -> 发起该 turn 的用户消息 uuid
+    this.turnPatchSections = new Map() // 用户消息 uuid -> Map<文件路径, diff 段落>
+    this.turnPatchFiles = new Map() // turnId -> 该 turn 最近一次上报涉及的文件
     this._atReferencesCache = null
   }
 
@@ -589,6 +594,23 @@ class CodexAdapter extends CodexClient {
     }
   }
 
+  /**
+   * 只有会话主线程的回合结束才代表"用户这一轮结束"。
+   * 子代理跑在自己的 threadId 上，它的 turn/completed 只说明这个子代理干完了。
+   */
+  isMainThread(threadId) {
+    return !threadId || threadId === this.currentThreadId
+  }
+
+  /**
+   * 一个用户回合可能横跨主线程和多个子代理线程，
+   * 用 turnId 反查发起它的用户消息，避免子代理的 diff 落到别的回合上。
+   */
+  resolveTurnUserMessageUuid(turnId) {
+    const userMessageUuid = turnId ? this.turnUserMessageUuids.get(turnId) : null
+    return userMessageUuid || this.pendingUserMessageUuid
+  }
+
   isSpawnAgentItem(item = {}) {
     const tool = String(item.tool || item.name || '').trim().toLowerCase()
     return item.type === 'collabAgentToolCall' && (tool === 'spawnagent' || tool === 'agent' || tool === 'spawn_agent')
@@ -978,13 +1000,17 @@ class CodexAdapter extends CodexClient {
         this.handleThreadLifecycleEvent(method, params)
         break
 
-      case 'turn/started':
-        this.currentTurnId = params.turn.id
-        this.currentAssistantMessageId = null
+      case 'turn/started': {
+        const isMainTurn = this.isMainThread(params.threadId)
+        this.turnUserMessageUuids.set(params.turn.id, this.pendingUserMessageUuid)
+        if (isMainTurn) {
+          this.currentTurnId = params.turn.id
+          this.currentAssistantMessageId = null
+        }
         this.turnMessageMap.set(params.turn.id, null)
         this.turnAssistantState.delete(params.turn.id)
-        // pendingUserMessageUuid 在 turn 勾结束（turn/completed 或 diff 更新时）前持续保留
-        // 不在这里清除，由 handleTurnDiffUpdated 和 turn/completed 消费
+        // pendingUserMessageUuid 一直保留到用户这一轮真正结束，这里只用 turnId 记住它属于哪个回合，
+        // 让子代理线程的 diff 也能落回发起它的用户回合
         this.turnStats.set(params.turn.id, {
           numTurns: 0,
           usage: createEmptyTurnUsage()
@@ -1006,11 +1032,14 @@ class CodexAdapter extends CodexClient {
           }
         }
         break
+      }
 
       case 'turn/completed': {
-        this.currentTurnId = params.turn.id
-        const completedUserMessageUuid = this.pendingUserMessageUuid
-        this.pendingUserMessageUuid = null
+        const isMainTurn = this.isMainThread(params.threadId)
+        const completedUserMessageUuid = this.resolveTurnUserMessageUuid(params.turn.id)
+        if (isMainTurn) {
+          this.currentTurnId = params.turn.id
+        }
         const turnStats = this.turnStats.get(params.turn.id) || null
         const diffMessageId = this.turnDiffMessageMap.get(params.turn.id)
         if (diffMessageId) {
@@ -1022,14 +1051,23 @@ class CodexAdapter extends CodexClient {
           })
           this.turnDiffMessageMap.delete(params.turn.id)
         }
-        this.emit('result', {
-          duration_ms: null,
-          num_turns: turnStats?.numTurns || this.getTurnSegmentCount(params.turn.id),
-          usage: turnStats?.usage || null,
-          turn: params.turn
-        })
+        // 子代理线程的 turn/completed 只代表该子代理结束，不能收尾用户这一轮，
+        // 否则会提前结束会话状态/统计并提前推送文件变更汇总
+        if (isMainTurn) {
+          if (completedUserMessageUuid && completedUserMessageUuid === this.pendingUserMessageUuid) {
+            this.pendingUserMessageUuid = null
+          }
+          this.emit('result', {
+            duration_ms: null,
+            num_turns: turnStats?.numTurns || this.getTurnSegmentCount(params.turn.id),
+            usage: turnStats?.usage || null,
+            turn: params.turn
+          })
+        }
         this.turnStats.delete(params.turn.id)
         this.turnAssistantState.delete(params.turn.id)
+        this.turnUserMessageUuids.delete(params.turn.id)
+        this.turnPatchFiles.delete(params.turn.id)
         {
           const agentId = this.resolveAgentIdFromThreadId(params.threadId)
           if (agentId) {
@@ -1063,8 +1101,10 @@ class CodexAdapter extends CodexClient {
           })
         }
 
-        // turn 结束后推送文件变更统计
-        this.emitFileChangeSummary(completedUserMessageUuid)
+        // 主线程 turn 结束后才推送本轮文件变更统计
+        if (isMainTurn) {
+          this.emitFileChangeSummary(completedUserMessageUuid)
+        }
         break
       }
 
@@ -1130,6 +1170,10 @@ class CodexAdapter extends CodexClient {
           provider: 'codex',
           providerPid: this.getPid()
         }))
+        break
+
+      case 'thread/settings/updated':
+        this.handleThreadSettingsUpdated(params)
         break
 
       case 'thread/tokenUsage/updated':
@@ -1285,9 +1329,80 @@ class CodexAdapter extends CodexClient {
         break
 
       default:
+        // Codex 的 goal 状态通知（例如线程恢复时清空目标），CCGUI 未集成该功能，识别后静默忽略
+        if (String(method || '').startsWith('thread/goal/')) {
+          logger.debug('[CodexAdapter] Ignored codex goal notification', { method })
+          break
+        }
+
         this.emit('unknown_message', message)
         break
     }
+  }
+
+  /**
+   * 统一的运行时配置应用入口（CCGUI 原语）
+   * codex 侧：模型/供应商/思考等级都通过 thread/settings/update 生效（老版本回退到 resume）
+   * @param {{ settings?: object, changeType?: 'model'|'submodel'|'effort', modelOverride?: string, effort?: string, silent?: boolean }} selection
+   */
+  async applyRuntimeSelection(selection = {}) {
+    const appConfig = appConfigManager.loadConfig()
+    const modelString = buildRuntimeModelName(
+      appConfig,
+      'codex',
+      selection.modelOverride,
+      selection.settings || {}
+    )
+    const effort = typeof selection.effort === 'string' && selection.effort.trim()
+      ? selection.effort.trim()
+      : null
+
+    if (!modelString && !effort) {
+      return {
+        appliedLive: false,
+        reason: 'nothing-to-apply'
+      }
+    }
+
+    const currentSelection = this.getCurrentModelSelection()
+    const applied = await this.applyThreadModelSelection({
+      model: modelString || currentSelection?.model || null,
+      modelProvider: 'ccgui',
+      reasoningEffort: effort || currentSelection?.reasoningEffort || 'medium'
+    })
+    const appliedModelString = applied?.model || modelString || ''
+
+    return {
+      appliedLive: true,
+      model: stripProxyProviderPrefix(appConfig, 'codex', appliedModelString),
+      modelString: appliedModelString,
+      reasoningEffort: applied?.reasoningEffort || effort || 'medium',
+      applyMode: applied?.applyMode || null
+    }
+  }
+
+  /**
+   * thread/settings/updated：codex 回传的线程设置快照，用它刷新 envInfo（模型显示名 + 思考等级）
+   */
+  handleThreadSettingsUpdated(params = {}) {
+    const settings = params?.threadSettings && typeof params.threadSettings === 'object'
+      ? params.threadSettings
+      : {}
+    const model = typeof settings.model === 'string' ? settings.model.trim() : ''
+    const effort = typeof settings.effort === 'string' ? settings.effort.trim() : ''
+
+    this.envInfo = applyCodexEnvInfoPatch({
+      ...this.envInfo,
+      thread_id: params.threadId || this.envInfo?.thread_id || null,
+      model: model
+        ? stripProxyProviderPrefix(appConfigManager.loadConfig(), 'codex', model)
+        : this.envInfo?.model,
+      model_reasoning_effort: effort || this.envInfo?.model_reasoning_effort || null
+    }, {
+      provider: 'codex',
+      providerPid: this.getPid()
+    })
+    this.emit('env-info', this.envInfo)
   }
 
   handleThreadNameUpdated(params = {}) {
@@ -1493,14 +1608,14 @@ class CodexAdapter extends CodexClient {
   }
 
   handleTurnDiffUpdated(params = {}) {
-    const turnId = params.turnId || params.turn?.id || this.currentTurnId
+    const turnId = params.turnId || params.turn?.id || (this.isMainThread(params.threadId) ? this.currentTurnId : null)
     const diffText = typeof params.diff === 'string' ? params.diff : ''
     if (!turnId || !diffText.trim()) {
       return
     }
 
     // 写 patch 文件
-    this.savePatchForTurn(diffText)
+    this.savePatchForTurn(turnId, diffText)
 
     const messageId = this.turnDiffMessageMap.get(turnId)
     const rawMessage = { method: 'turn/diff/updated', params }
@@ -2388,8 +2503,8 @@ class CodexAdapter extends CodexClient {
     return path.join(diffDir, `${userMessageUuid}.patch`)
   }
 
-  savePatchForTurn(diffText) {
-    const userMessageUuid = this.pendingUserMessageUuid
+  savePatchForTurn(turnId, diffText) {
+    const userMessageUuid = this.resolveTurnUserMessageUuid(turnId)
     if (!userMessageUuid || !diffText?.trim()) {
       return
     }
@@ -2398,11 +2513,67 @@ class CodexAdapter extends CodexClient {
       return
     }
     try {
-      fs.writeFileSync(patchFilePath, diffText, 'utf8')
-      logger.debug('[CodexAdapter] Saved patch for turn', { userMessageUuid, size: diffText.length })
+      if (!this.mergeTurnPatchSections(turnId, userMessageUuid, diffText)) {
+        return
+      }
+      fs.writeFileSync(patchFilePath, this.composeTurnPatch(userMessageUuid), 'utf8')
+      logger.debug('[CodexAdapter] Saved patch for turn', { userMessageUuid, turnId, size: diffText.length })
     } catch (error) {
       logger.warn('[CodexAdapter] Failed to save patch', { userMessageUuid, error: error.message })
     }
+  }
+
+  /**
+   * 同一轮用户消息里，主线程和子代理线程各自上报自己那份累计 diff，
+   * 直接覆盖会把先上报的那份改动丢掉，所以按文件路径归并：
+   * 同一文件以最后一次上报为准，某个 turn 自己撤回过的文件从归并结果里移除。
+   */
+  mergeTurnPatchSections(turnId, userMessageUuid, diffText) {
+    const sections = new Map()
+    let currentPath = null
+
+    for (const line of diffText.split('\n')) {
+      const gitMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/)
+      if (gitMatch) {
+        currentPath = gitMatch[2]
+        sections.set(currentPath, [line])
+        continue
+      }
+      if (currentPath) {
+        sections.get(currentPath).push(line)
+      }
+    }
+
+    if (sections.size === 0) {
+      return false
+    }
+
+    let mergedSections = this.turnPatchSections.get(userMessageUuid)
+    if (!mergedSections) {
+      mergedSections = new Map()
+      this.turnPatchSections.set(userMessageUuid, mergedSections)
+    }
+
+    const previousPaths = this.turnPatchFiles.get(turnId) || new Set()
+    for (const previousPath of previousPaths) {
+      if (!sections.has(previousPath)) {
+        mergedSections.delete(previousPath)
+      }
+    }
+    for (const [filePath, lines] of sections) {
+      mergedSections.set(filePath, lines.join('\n'))
+    }
+    this.turnPatchFiles.set(turnId, new Set(sections.keys()))
+
+    return true
+  }
+
+  composeTurnPatch(userMessageUuid) {
+    const mergedSections = this.turnPatchSections.get(userMessageUuid)
+    if (!mergedSections || mergedSections.size === 0) {
+      return ''
+    }
+    return `${Array.from(mergedSections.values()).join('\n')}\n`
   }
 
   readPatchFile(userMessageUuid) {

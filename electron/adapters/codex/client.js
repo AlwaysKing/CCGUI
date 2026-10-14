@@ -6,9 +6,9 @@ const path = require('path')
 const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
 const {
-  buildCodexModelProviderId,
   findProviderModel,
-  getDefaultCredential
+  getDefaultCredential,
+  stripProxyProviderPrefix
 } = require('../shared/model-config')
 const { buildDeveloperInstructions } = require('../shared/developer-instructions')
 const {
@@ -20,6 +20,8 @@ const {
   buildCodexAttachmentReference
 } = require('../shared/ccgui-attachments')
 const { buildAugmentedEnv } = require('../../services/shell-env')
+const { localProxy } = require('../../services/local-proxy')
+const { hasCatalogConfig } = require('../../services/local-proxy/model-catalog')
 
 let HttpsProxyAgent = null
 let cachedCodexPath = null
@@ -202,6 +204,19 @@ function buildCodexUsageStateError(errorLike = null, fallbackMessage = 'Codex us
 function isMissingCodexThreadError(error) {
   const message = typeof error?.message === 'string' ? error.message.toLowerCase() : ''
   return message.includes('thread not found') || message.includes('conversation not found')
+}
+
+// 新建线程还没跑过任何一轮时没有 rollout 文件，resume 会报这个错；
+// 这种情况下不需要 resume：下一轮 turn/start 会带上新的模型参数
+function isMissingCodexRolloutError(error) {
+  const message = typeof error?.message === 'string' ? error.message.toLowerCase() : ''
+  return message.includes('no rollout found')
+}
+
+// 老版本 codex 没有 thread/settings/update，会返回 unknown variant / method not found
+function isUnknownCodexMethodError(error) {
+  const message = typeof error?.message === 'string' ? error.message.toLowerCase() : ''
+  return message.includes('unknown variant') || message.includes('method not found')
 }
 
 function resolveActiveCodexAccountUsage() {
@@ -456,6 +471,7 @@ function requestJson(url, options = {}) {
 class CodexClient {
   constructor(workingDirectory = null, sessionId = null, isNewSession = true, permissionMode = 'default', projectSettings = null, options = {}) {
     this.process = null
+    this.stopped = false
     this.messageHandlers = new Map()
     this.codexPath = null
     this.workingDirectory = workingDirectory || process.cwd()
@@ -597,19 +613,23 @@ class CodexClient {
       const credential = getDefaultCredential(modelConfig, credentialId)
 
       const result = {
-        modelName: targetCard?.modelName || null,
-        modelProvider: buildCodexModelProviderId(modelConfig.id),
-        providerName: modelConfig.friendlyName || modelConfig.id || 'CCGUI Provider',
-        baseUrl: modelConfig.apiUrl || '',
-        authToken: credential?.token || null,
-        credentialId: credential?.id || null
+        // 传给 codex 的模型名是代理路由键：<供应商ID>/<模型名>
+        modelName: targetCard?.modelName ? `${modelConfig.id}/${targetCard.modelName}` : null,
+        catalogModelName: targetCard?.modelName || null,
+        modelProvider: 'ccgui',
+        providerName: 'CCGUI',
+        baseUrl: localProxy.getCodexBaseUrl(),
+        authToken: this.proxySessionToken || null,
+        credentialId: credential?.id || null,
+        hasCatalog: hasCatalogConfig(targetCard)
       }
 
       logger.info('[CodexClient] Resolved model runtime:', {
         modelId,
         modelName: result.modelName,
         modelProvider: result.modelProvider,
-        hasAuthToken: !!result.authToken
+        hasAuthToken: !!result.authToken,
+        hasCatalog: result.hasCatalog
       })
 
       return result
@@ -620,6 +640,10 @@ class CodexClient {
   }
 
   getPreferredDefaultModelProvider() {
+    if (this.projectSettings?.modelId) {
+      return 'ccgui'
+    }
+
     if (this.projectSettings?.targetKind === 'openai') {
       return 'openai'
     }
@@ -671,6 +695,8 @@ class CodexClient {
         ? overrides.modelProvider
         : (currentSelection?.modelProvider || this.getPreferredDefaultModelProvider() || 'openai'),
       persistExtendedHistory: true,
+      // 分页线程不再支持恢复时全量拉取历史，CCGUI 自己存历史，按 codex 建议排除
+      excludeTurns: true,
       developerInstructions: developerInstructions || null
     }
   }
@@ -738,7 +764,8 @@ class CodexClient {
     this.envInfo = applyCodexEnvInfoPatch({
       ...this.envInfo,
       session_id: resolvedThreadId,
-      model: resolvedModel,
+      // 展示用模型名不带供应商前缀，路由用模型名保存在 thread override 里
+      model: stripProxyProviderPrefix(appConfigManager.loadConfig(), 'codex', resolvedModel),
       model_reasoning_effort: resolvedReasoningEffort,
       providerPid: this.getPid(),
       rate_limits: activeCodexAccountUsage?.rateLimits || this.envInfo?.rate_limits || null,
@@ -775,14 +802,60 @@ class CodexClient {
         ? overrides.reasoningEffort
         : null
     }
-    const response = await this.request('thread/resume', await this.buildThreadResumeParams(selection))
+
+    const threadId = this.currentThreadId || this.resumeThreadId
+    if (!threadId) {
+      throw new Error('Codex thread not initialized')
+    }
+
+    let response = null
+    let applyMode = 'thread-settings-update'
+    try {
+      // codex 提供的线程设置更新接口，专门用于切换模型 / 思考等级，不需要 resume 整段历史
+      response = await this.request('thread/settings/update', {
+        threadId,
+        ...(selection.model ? { model: selection.model } : {}),
+        ...(selection.modelProvider ? { modelProvider: selection.modelProvider } : {}),
+        ...(selection.reasoningEffort ? { effort: selection.reasoningEffort } : {})
+      })
+    } catch (error) {
+      if (!isUnknownCodexMethodError(error)) {
+        throw error
+      }
+
+      applyMode = 'thread-resume'
+      logger.info('[CodexClient] thread/settings/update unavailable, falling back to thread/resume', {
+        threadId,
+        error: error.message
+      })
+      response = await this.resumeThreadWithSelection(selection, threadId)
+    }
+
     const applied = this.updateThreadSelectionFromResponse(response, selection, {
       preferFallback: true
     })
 
     return {
       ...applied,
+      applyMode,
       response
+    }
+  }
+
+  async resumeThreadWithSelection(selection = {}, threadId = null) {
+    try {
+      return await this.request('thread/resume', await this.buildThreadResumeParams(selection))
+    } catch (error) {
+      if (!isMissingCodexRolloutError(error)) {
+        throw error
+      }
+
+      // 线程还没跑过任何一轮：不需要 resume，直接更新本地选择，下一轮 turn/start 会带上新模型
+      logger.info('[CodexClient] Thread has no rollout yet, applying model selection without resume', {
+        threadId: threadId || this.currentThreadId,
+        model: selection.model || null
+      })
+      return null
     }
   }
 
@@ -852,6 +925,7 @@ class CodexClient {
   }
 
   async start() {
+    this.stopped = false
     await this.ensureInitialized()
 
     if (this.currentThreadId) {
@@ -865,6 +939,7 @@ class CodexClient {
       modelProvider: this.getPreferredDefaultModelProvider() || 'openai',
       experimentalRawEvents: false,
       persistExtendedHistory: true,
+      excludeTurns: true,
       ephemeral: false
     }
 
@@ -894,6 +969,7 @@ class CodexClient {
           model: threadParams.model || null,
           modelProvider: threadParams.modelProvider,
           persistExtendedHistory: threadParams.persistExtendedHistory,
+          excludeTurns: threadParams.excludeTurns === true,
           developerInstructions: threadParams.developerInstructions || null
         })
       } catch (error) {
@@ -983,8 +1059,6 @@ class CodexClient {
 
     const appConfig = appConfigManager.loadConfig()
     const proxyUrl = appConfig.settings?.codexProxy || ''
-    const modelRuntime = this.resolveModelRuntime()
-    const isSessionCustomModel = this.projectSettings?.meta?.session?.modelMode === 'custom'
     const codexEnvOverrides = {}
 
     if (proxyUrl) {
@@ -1005,23 +1079,55 @@ class CodexClient {
     })
 
     const args = ['app-server']
-    if (isSessionCustomModel && modelRuntime) {
-      const providerId = modelRuntime.modelProvider || 'ccgui'
-      args.push(
-        '-c', `model=${stringifyTomlString(modelRuntime.modelName || '')}`,
-        '-c', `model_provider=${stringifyTomlString(providerId)}`,
-        '-c', `model_providers.${providerId}.name=${stringifyTomlString(modelRuntime.providerName)}`,
-        '-c', `model_providers.${providerId}.base_url=${stringifyTomlString(modelRuntime.baseUrl)}`,
-        '-c', `model_providers.${providerId}.wire_api=${stringifyTomlString('responses')}`
-      )
-      if (modelRuntime.authToken) {
-        args.push('-c', `model_providers.${providerId}.experimental_bearer_token=${stringifyTomlString(modelRuntime.authToken)}`)
-      }
-      logger.info('[CodexClient] Applying session provider settings override', {
-        providerId,
-        baseUrl: modelRuntime.baseUrl || null,
+    if (!localProxy.getBaseUrl()) {
+      await localProxy.start()
+    }
+
+    const catalogPath = localProxy.writeCodexCatalog(appConfig)
+    const proxyBaseUrl = localProxy.getCodexBaseUrl()
+
+    if (this.projectSettings && !this.projectSettings.modelId && this.projectSettings.targetKind !== 'openai') {
+      throw new Error('未配置 Codex 默认模型供应商，请先在设置中应用一个模型')
+    }
+
+    this.proxySessionToken = localProxy.registerSession({
+      tool: 'codex',
+      sessionId: this.currentThreadId || this.resumeThreadId || null,
+      workingDirectory: this.workingDirectory,
+      resolveSettings: () => ({
+        modelId: this.projectSettings?.modelId || null,
+        modelCardId: this.projectSettings?.modelCardId || null,
+        credentialId: this.projectSettings?.credentialId || null
+      })
+    })
+
+    const modelRuntime = this.resolveModelRuntime()
+    if (this.projectSettings?.modelId && !proxyBaseUrl) {
+      throw new Error('本地模型代理未就绪，无法为 Codex 注入模型供应商')
+    }
+    if (this.projectSettings?.modelId && !modelRuntime) {
+      throw new Error('未找到 Codex 供应商配置，请检查当前模型设置')
+    }
+
+    if (modelRuntime && proxyBaseUrl) {
+      args.push(...localProxy.buildCodexProviderArgs({
+        appConfig,
+        token: this.proxySessionToken,
+        model: modelRuntime.modelName || '',
+        catalogPath
+      }))
+      logger.info('[CodexClient] 使用 CCGUI 本地代理', {
+        providerId: 'ccgui',
+        baseUrl: proxyBaseUrl,
         model: modelRuntime.modelName || null,
-        hasAuthToken: Boolean(modelRuntime.authToken)
+        catalogPath: catalogPath || null,
+        hasCatalog: modelRuntime.hasCatalog,
+        hasAuthToken: Boolean(this.proxySessionToken),
+        sessionTokenTail: this.proxySessionToken ? this.proxySessionToken.slice(-6) : null,
+        providerArgs: (args || []).map(arg => String(arg).includes('experimental_bearer_token')
+          ? 'model_providers.ccgui.experimental_bearer_token="[REDACTED]"'
+          : arg),
+        note: '本会话所有模型请求都会经由本地代理转发到真实供应商'
       })
     }
     args.push('--listen', 'stdio://')
@@ -1046,6 +1152,16 @@ class CodexClient {
         reject(new Error(`Codex CLI exited with code ${code}`))
       })
     })
+
+    // 启动期间已被停止：立刻回收进程，避免残留 app-server 继续持有线程写锁
+    if (this.stopped) {
+      logger.info('[CodexClient] Client stopped during startup, recycling process', { sessionId: this.sessionId })
+      if (this.process) {
+        this.process.kill('SIGTERM')
+        this.process = null
+      }
+      throw new Error('Codex client stopped during startup')
+    }
 
     await this.initializeAppServer()
   }
@@ -1545,7 +1661,7 @@ class CodexClient {
     this.process.stdin.write(JSON.stringify(payload) + '\n')
 
     return new Promise((resolve, reject) => {
-      this.pendingRequests.set(id, { resolve, reject })
+      this.pendingRequests.set(id, { resolve, reject, method })
 
       setTimeout(() => {
         if (!this.pendingRequests.has(id)) {
@@ -1555,6 +1671,21 @@ class CodexClient {
         reject(new Error(`Codex request timeout: ${method}`))
       }, 30000)
     })
+  }
+
+  /**
+   * 主动拒绝所有未完成的请求，避免实例停止后要等超时才回流（超时回流会反向污染新的运行时状态）
+   */
+  abortPendingRequests(reason) {
+    if (this.pendingRequests.size === 0) {
+      return
+    }
+
+    const pendingRequests = [...this.pendingRequests.values()]
+    this.pendingRequests.clear()
+    for (const pending of pendingRequests) {
+      pending.reject(new Error(`Codex request aborted: ${pending.method || 'unknown'} (${reason})`))
+    }
   }
 
   sendNotification(method, params = undefined) {
@@ -1578,7 +1709,13 @@ class CodexClient {
   }
 
   stop() {
+    this.stopped = true
+    this.abortPendingRequests('client stopped')
     this.stopAccountUsageRefresh()
+    if (this.proxySessionToken) {
+      localProxy.unregisterSession(this.proxySessionToken)
+      this.proxySessionToken = null
+    }
     if (this.currentThreadId) {
       this.resumeThreadId = this.currentThreadId
     }

@@ -37,6 +37,13 @@ async function playPermissionAlertSound() {
   } catch {}
 }
 
+// 窗口不在前台时用系统级提醒（Dock 图标跳动），避免用户看不到待授权的会话
+async function requestPermissionAttention(sessionId) {
+  try {
+    await window.electronAPI?.notifyPermissionAttention?.({ sessionId })
+  } catch {}
+}
+
 // Helper to load from localStorage
 function loadFromStorage(key, defaultValue) {
   try {
@@ -266,7 +273,11 @@ export const useAppStore = defineStore('app', () => {
 
       case 'control-request': {
         const status = sessionStatuses.value[sessionId]
-        const isAutoApproved = status?.autoApprove
+        // 以会话自身的 autoApprove 为准（appStore 里的状态可能滞后），避免误判为"会自动批准"而吞掉提醒
+        const sessionAutoApprove = useSessionStore().sessions?.get?.(sessionId)?.autoApprove
+        const isAutoApproved = sessionAutoApprove !== undefined && sessionAutoApprove !== null
+          ? Boolean(sessionAutoApprove)
+          : Boolean(status?.autoApprove)
 
         // 判断是否为 AskUserQuestion（即使开启自动批准，仍需用户交互，应通知）
         const requestData = data?.request || data
@@ -294,9 +305,20 @@ export const useAppStore = defineStore('app', () => {
           pendingPermission: true,
           updatedAt: new Date().toISOString()
         })
-        // 后台 session 收到权限请求时播放提示音
-        if (sessionId !== currentSession.value?.id) {
+
+        // 用户可能看不到授权框时提醒：窗口不在前台，或请求不属于当前会话
+        const isCurrentSession = sessionId === currentSession.value?.id
+        const windowFocused = typeof document !== 'undefined' && document.hasFocus()
+        if (!isCurrentSession || !windowFocused) {
+          logger.info('[AppStore] Permission attention', {
+            sessionId,
+            isCurrentSession,
+            windowFocused
+          })
           playPermissionAlertSound()
+          if (!windowFocused) {
+            requestPermissionAttention(sessionId)
+          }
         }
         break
       }
@@ -400,6 +422,14 @@ export const useAppStore = defineStore('app', () => {
   function selectProject(project) {
     currentProject.value = project
     currentSession.value = null
+    // 打开项目时同步 MCP / Skill 的启用状态（MCP 是收编+物化；Skill 交给 provider 原生层叠）
+    const projectPath = project?.path
+    if (projectPath) {
+      for (const target of ['claude', 'codex']) {
+        window.electronAPI?.syncProjectMcps?.({ target, projectPath }).catch(() => {})
+        window.electronAPI?.syncProjectSkills?.({ target, projectPath }).catch(() => {})
+      }
+    }
   }
 
   // Actions - Sessions
@@ -648,8 +678,8 @@ export const useAppStore = defineStore('app', () => {
         throw new Error(availabilityResult?.error || '获取会话可用性失败')
       }
       if (availabilityResult.available === false) {
-        const initProvider = availabilityResult.initProvider || '未知'
-        const currentProvider = availabilityResult.currentProvider || '未知'
+        const initProvider = availabilityResult.initProviderLabel || availabilityResult.initProvider || '未知'
+        const currentProvider = availabilityResult.currentProviderLabel || availabilityResult.currentProvider || '未知'
         throw new Error(`当前会话不可用：创建时供应商为 ${initProvider}，当前供应商为 ${currentProvider}`)
       }
 

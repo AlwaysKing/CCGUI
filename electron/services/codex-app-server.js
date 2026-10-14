@@ -4,6 +4,8 @@ const path = require('path')
 const { spawn, spawnSync } = require('child_process')
 const logger = require('../logger')
 const appConfigManager = require('../storage/app-config-manager')
+const { localProxy } = require('./local-proxy')
+const { buildProxyModelString } = require('../adapters/shared/model-config')
 
 const RECOMMENDED_SKILLS_REPO = 'https://github.com/openai/skills.git'
 const RECOMMENDED_SKILLS_BRANCH = 'main'
@@ -481,6 +483,7 @@ async function withCodexAppServer(run, options = {}) {
 
   let child = null
   let rl = null
+  let proxySessionToken = null
   const pending = new Map()
   let requestId = 0
 
@@ -497,7 +500,26 @@ async function withCodexAppServer(run, options = {}) {
       codexEnv.ALL_PROXY = proxyUrl
     }
 
-    child = spawn(codexPath, ['app-server', '--listen', 'stdio://'], {
+    // 技能 / 插件 / 配置检查同样走 CCGUI 供应商
+    if (!localProxy.getBaseUrl()) {
+      await localProxy.start()
+    }
+    proxySessionToken = localProxy.registerSession({
+      tool: 'codex',
+      resolveSettings: () => ({
+        modelId: appConfig.settings?.selectedCodexModelId || null,
+        credentialId: appConfig.settings?.selectedCodexCredentialId || null
+      })
+    })
+    const providerArgs = localProxy.buildCodexProviderArgs({
+      appConfig,
+      token: proxySessionToken,
+      model: buildProxyModelString(appConfig, 'codex', {
+        modelId: appConfig.settings?.selectedCodexModelId || null
+      })
+    })
+
+    child = spawn(codexPath, ['app-server', ...providerArgs, '--listen', 'stdio://'], {
       cwd: options.cwd || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: codexEnv
@@ -555,6 +577,9 @@ async function withCodexAppServer(run, options = {}) {
 
     return await run({ request, send, child })
   } finally {
+    if (proxySessionToken) {
+      localProxy.unregisterSession(proxySessionToken)
+    }
     if (rl) {
       rl.close()
     }

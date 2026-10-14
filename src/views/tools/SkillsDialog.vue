@@ -36,12 +36,16 @@ const skillLicense = ref(null)
 const skillTree = ref([])
 const isLoadingExtra = ref(false)
 const installFilter = ref('all') // 'all' | 'claude' | 'codex' | 'none'
-const showExternalSkills = ref(false)
+const showExternalSkills = ref(true)
 const openAiSkills = ref([])
 const openAiSkillsError = ref(null)
 const isLoadingOpenAiSkills = ref(false)
 const openAiSearchQuery = ref('')
 const openAiInstallTasks = ref({})
+
+// 启用/禁用状态（全局 + 项目覆盖），按 target 分派；Codex 底层无机制，仅展示
+const enableStates = ref({ claude: { global: {}, project: {} }, codex: { global: {}, project: {} } })
+const TARGET_LABELS = { claude: 'Claude', codex: 'Codex' }
 
 function clearDownloadErrorTimer() {
   if (downloadErrorTimer) {
@@ -87,6 +91,12 @@ function isPluginDisabled(skill) {
   return Boolean(skill?.plugin && skill?.pluginEnabled === false)
 }
 
+// 项目 tab 中，某 target 若已在全局安装则禁用（避免重复安装）
+function isProjectTargetBlocked(skill, target) {
+  const lib = installedSkills.value.find(s => s.slug === skill.slug)
+  return Boolean(lib?.installedTargets?.includes(target))
+}
+
 function isCcguiManagedSkill(skill) {
   return !isStaticSkill(skill)
 }
@@ -123,7 +133,7 @@ const activeMarket = ref('installed')
 
 const markets = computed(() => {
   const items = [
-    { id: 'installed', label: '已下载' },
+    { id: 'installed', label: '系统配置' },
     { id: 'clawhub', label: 'ClawHub' },
     { id: 'openai', label: 'OpenAI' }
   ]
@@ -157,13 +167,14 @@ let marketLoaded = false
 let openAiMarketLoaded = false
 
 // 项目级配置状态
-const projectInstalledMap = ref(new Map()) // slug -> Set(['claude', 'codex'])
+const projectSkills = ref([]) // 项目实际接入的技能（list-project-skills 原始条目）
 const projectInstallSource = ref('')
 const isProjectInstalling = ref(false)
 const projectInstallError = ref(null)
 const projectToggleError = ref(null)
 const projectSkillToDelete = ref(null)
 const projectFilter = ref('all') // 'all' | 'claude' | 'codex' | 'none'
+const showProjectExternalSkills = ref(true) // 项目配置中是否显示外部（非 ccgui 管理的）技能
 const viewingProjectSkill = ref(null)
 const projectSkillReadme = ref('')
 const isProjectLoadingReadme = ref(false)
@@ -172,13 +183,18 @@ const projectSkillLicense = ref(null)
 const projectSkillTree = ref([])
 
 const filteredProjectSkills = computed(() => {
-  // 基于全局已下载列表，叠加项目级安装状态
-  const list = installedSkills.value.map(s => ({
-    ...s,
-    projectTargets: projectInstalledMap.value.get(s.slug)
-      ? [...projectInstalledMap.value.get(s.slug)]
-      : []
-  }))
+  // 1) 项目实际接入的条目（含项目本地/外部）
+  const merged = new Map()
+  for (const s of projectSkills.value) {
+    merged.set(s.slug, { ...s, projectTargets: [...(s.installedTargets || [])] })
+  }
+  // 2) 库中已下载的条目（未接入项目的补进来，供安装）
+  for (const s of installedSkills.value) {
+    if (isStaticSkill(s) || merged.has(s.slug)) continue
+    merged.set(s.slug, { ...s, projectTargets: [] })
+  }
+  let list = [...merged.values()]
+  if (!showProjectExternalSkills.value) list = list.filter(s => !isStaticSkill(s))
   if (projectFilter.value === 'all') return list
   if (projectFilter.value === 'none') {
     return list.filter(s => !s.projectTargets.length)
@@ -224,6 +240,7 @@ async function loadInstalledSkills() {
   finally {
     isLoadingInstalledSkills.value = false
   }
+  await loadEnableStates()
 }
 
 async function loadProjectSkills() {
@@ -231,13 +248,10 @@ async function loadProjectSkills() {
   try {
     const result = await window.electronAPI.listProjectSkills({ projectPath: props.projectPath })
     if (result.success) {
-      const map = new Map()
-      for (const s of result.skills) {
-        map.set(s.slug, new Set(s.installedTargets || []))
-      }
-      projectInstalledMap.value = map
+      projectSkills.value = result.skills || []
     }
   } catch (e) { /* ignore */ }
+  await loadEnableStates()
 }
 
 async function loadOpenAiSkills() {
@@ -598,6 +612,70 @@ const flattenedProjectTree = computed(() => {
 
 const toggleError = ref(null)
 
+// ============================================
+// 启用 / 禁用（Claude 走 skillOverrides；Codex 底层无机制，控件仅展示不可改）
+// ============================================
+
+// 只有 Claude 底层支持 skill 启用/禁用，Codex 的控件置灰仅作展示
+function isSkillTargetControllable(target) {
+  return target === 'claude'
+}
+
+async function loadEnableStates() {
+  for (const target of ['claude', 'codex']) {
+    try {
+      const result = await window.electronAPI.getSkillEnableStates({ target, projectPath: props.projectPath })
+      if (result.success) enableStates.value[target] = result.states
+    } catch (e) { /* ignore */ }
+  }
+}
+
+function isGlobalEnabled(slug, target) {
+  const map = enableStates.value[target]?.global || {}
+  return Object.prototype.hasOwnProperty.call(map, slug) ? map[slug] === true : true
+}
+
+function projectOverride(slug, target) {
+  const map = enableStates.value[target]?.project || {}
+  return Object.prototype.hasOwnProperty.call(map, slug) ? map[slug] === true : undefined
+}
+
+// 系统配置 tab：对已接入的 target 显示启用/禁用（插件不接管）
+function globalSkillTargets(skill) {
+  if (skill.plugin) return []
+  return (skill.installedTargets || []).filter(t => t === 'claude' || t === 'codex')
+}
+
+// 项目配置 tab：项目已接入或已全局安装的 target 都可做项目级覆盖
+function projectSkillTargets(skill) {
+  if (skill.plugin) return []
+  return ['claude', 'codex'].filter(t => skill.projectTargets?.includes(t) || isProjectTargetBlocked(skill, t))
+}
+
+async function toggleGlobalEnabled(slug, target, enabled, event) {
+  toggleError.value = null
+  try {
+    const result = await window.electronAPI.setSkillEnabledGlobal({ target, slug, enabled })
+    if (!result.success) toggleError.value = result.error || '操作失败'
+  } catch (e) {
+    toggleError.value = e.message || '操作失败'
+  }
+  await loadEnableStates()
+  // 以真实状态为准回写开关：:checked 值没变时 Vue 不会重绘，失败后能自动拨回
+  if (event?.target) event.target.checked = isGlobalEnabled(slug, target)
+}
+
+async function changeProjectEnabled(slug, target, enabled) {
+  projectToggleError.value = null
+  try {
+    const result = await window.electronAPI.setSkillEnabledProject({ target, slug, enabled, projectPath: props.projectPath })
+    if (!result.success) projectToggleError.value = result.error || '操作失败'
+  } catch (e) {
+    projectToggleError.value = e.message || '操作失败'
+  }
+  await loadEnableStates()
+}
+
 async function toggleTarget(skill, target) {
   toggleError.value = null
   const isInstalled = skill.installedTargets?.includes(target)
@@ -775,6 +853,27 @@ useDialogStack(computed(() => true), handleClose)
                   <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
                   <div class="skill-meta">
                     <div class="skill-meta-spacer"></div>
+                  </div>
+                  <div v-if="globalSkillTargets(skill).length" class="skill-status-row" @click.stop>
+                    <div v-for="target in globalSkillTargets(skill)" :key="target" class="status-item">
+                      <span class="status-name">{{ TARGET_LABELS[target] }}</span>
+                      <label
+                        class="toggle-switch compact"
+                        :class="{ 'is-disabled': !isSkillTargetControllable(target) }"
+                        :title="isSkillTargetControllable(target) ? '' : 'Codex 不支持技能启用/禁用'"
+                      >
+                        <input
+                          type="checkbox"
+                          :checked="isGlobalEnabled(skill.slug, target)"
+                          :disabled="!isSkillTargetControllable(target)"
+                          @change="toggleGlobalEnabled(skill.slug, target, $event.target.checked, $event)"
+                        >
+                        <span class="toggle-slider"></span>
+                      </label>
+                      <span class="status-state" :class="isGlobalEnabled(skill.slug, target) ? 'on' : 'off'">
+                        {{ isGlobalEnabled(skill.slug, target) ? '启用' : '禁用' }}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1046,7 +1145,13 @@ useDialogStack(computed(() => true), handleClose)
             :class="{ 'drag-over-panel': isDragOver }"
           >
             <div class="panel-header">
-              <h3>项目级技能</h3>
+              <div class="skills-header-toggle">
+                <span class="skills-header-toggle-label">外部技能</span>
+                <label class="toggle-switch compact">
+                  <input v-model="showProjectExternalSkills" type="checkbox">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
               <div class="header-actions">
                 <div class="filter-group">
                   <button class="filter-btn" :class="{ active: projectFilter === 'all' }" @click="projectFilter = 'all'">全部</button>
@@ -1098,7 +1203,7 @@ useDialogStack(computed(() => true), handleClose)
                   <div class="skill-header">
                     <div class="skill-header-main">
                       <span class="skill-name">{{ skill.name }}</span>
-                      <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge">已禁用</span>
+                      <span v-if="isPluginDisabled(skill)" class="installed-source disabled-state-badge title-inline-badge">已禁用</span>
                     </div>
                     <div class="skill-header-badges">
                       <span
@@ -1111,26 +1216,58 @@ useDialogStack(computed(() => true), handleClose)
                       <div v-else class="target-toggles skill-header-targets">
                         <button
                           class="target-toggle"
-                          :class="{ active: skill.projectTargets?.includes('claude') }"
+                          :class="{ active: skill.projectTargets?.includes('claude') || isProjectTargetBlocked(skill, 'claude'), blocked: isProjectTargetBlocked(skill, 'claude') }"
+                          :disabled="isProjectTargetBlocked(skill, 'claude')"
+                          :title="isProjectTargetBlocked(skill, 'claude') ? '已在全局安装，无需在项目重复安装' : ''"
                           @click.stop="toggleProjectTarget(skill, 'claude')"
                         >Claude</button>
                         <button
                           class="target-toggle"
-                          :class="{ active: skill.projectTargets?.includes('codex') }"
+                          :class="{ active: skill.projectTargets?.includes('codex') || isProjectTargetBlocked(skill, 'codex'), blocked: isProjectTargetBlocked(skill, 'codex') }"
+                          :disabled="isProjectTargetBlocked(skill, 'codex')"
+                          :title="isProjectTargetBlocked(skill, 'codex') ? '已在全局安装，无需在项目重复安装' : ''"
                           @click.stop="toggleProjectTarget(skill, 'codex')"
                         >Codex</button>
                       </div>
+                      <button v-if="skill.projectTargets?.length" class="delete-btn skill-header-delete-btn" @click.stop="handleDeleteProjectSkill(skill)" title="从项目移除">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                      </button>
                     </div>
                   </div>
                   <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
                   <div class="skill-meta">
                     <div class="skill-meta-spacer"></div>
-                    <button v-if="skill.projectTargets?.length" class="delete-btn" @click.stop="handleDeleteProjectSkill(skill)" title="从项目移除">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="3 6 5 6 21 6"/>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                      </svg>
-                    </button>
+                  </div>
+                  <div v-if="projectSkillTargets(skill).length" class="skill-status-row" @click.stop>
+                    <div v-for="target in projectSkillTargets(skill)" :key="target" class="status-item">
+                      <span class="status-name">{{ TARGET_LABELS[target] }}</span>
+                      <div class="seg" :title="isSkillTargetControllable(target) ? '' : 'Codex 不支持技能启用/禁用'">
+                        <button
+                          class="seg-btn"
+                          :class="{ active: projectOverride(skill.slug, target) === undefined }"
+                          :disabled="!isSkillTargetControllable(target)"
+                          @click="changeProjectEnabled(skill.slug, target, null)"
+                        >跟随全局</button>
+                        <button
+                          class="seg-btn"
+                          :class="{ active: projectOverride(skill.slug, target) === true }"
+                          :disabled="!isSkillTargetControllable(target)"
+                          @click="changeProjectEnabled(skill.slug, target, true)"
+                        >启用</button>
+                        <button
+                          class="seg-btn"
+                          :class="{ active: projectOverride(skill.slug, target) === false }"
+                          :disabled="!isSkillTargetControllable(target)"
+                          @click="changeProjectEnabled(skill.slug, target, false)"
+                        >禁用</button>
+                      </div>
+                      <span v-if="isSkillTargetControllable(target) && projectOverride(skill.slug, target) === undefined" class="inherit-hint">
+                        全局：{{ isGlobalEnabled(skill.slug, target) ? '启用' : '禁用' }}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2382,6 +2519,97 @@ useDialogStack(computed(() => true), handleClose)
   transform: translateX(14px);
 }
 
+/* 启用/禁用状态行（卡片底部，虚线分割） */
+.skill-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.09);
+}
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.status-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: #A1A1AA;
+  letter-spacing: 0.2px;
+}
+
+.status-state {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.status-state.on {
+  color: #F97316;
+}
+
+.status-state.off {
+  color: #71717A;
+}
+
+/* Codex 无机制：开关/分段置灰不可点 */
+.toggle-switch.is-disabled .toggle-slider {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.toggle-switch.is-disabled input:checked + .toggle-slider {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.seg {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.seg-btn {
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.02);
+  color: #71717A;
+  border: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.seg-btn:last-child {
+  border-right: none;
+}
+
+.seg-btn:hover:not(:disabled) {
+  color: #A1A1AA;
+}
+
+.seg-btn.active {
+  background: rgba(249, 115, 22, 0.1);
+  color: #F97316;
+}
+
+.seg-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.inherit-hint {
+  font-size: 10px;
+  color: #52525B;
+  margin-left: 2px;
+}
+
 .drag-over-panel {
   position: relative;
 }
@@ -2515,6 +2743,12 @@ useDialogStack(computed(() => true), handleClose)
 .target-toggle.static {
   cursor: default;
   opacity: 0.7;
+}
+
+/* 已在全局安装：项目 tab 中灰显不可点 */
+.target-toggle.blocked {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 /* 已安装技能详情弹窗 */

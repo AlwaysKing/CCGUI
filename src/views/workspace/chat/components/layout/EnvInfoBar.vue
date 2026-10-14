@@ -3,7 +3,7 @@
  * EnvInfoBar - 环境信息栏组件
  * 从 ChatWindow.vue 提取的环境信息显示组件
  */
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { useMessage } from '../../composables/useMessage'
 import { logger } from '../../../../../utils/logger'
 import CopyButton from '../ui/CopyButton.vue'
@@ -153,9 +153,29 @@ const permissionModeConfig = computed(() => {
 })
 
 // 处理 PID 点击
+// 点击后立刻给出反馈：该条目可能落在窗口拖拽区，加之会话处理中还会先弹确认框，
+// 没有即时反馈时容易被误判为"点了没反应"
+const pidActionLabel = ref('')
+let pidActionTimer = null
+
 function handlePidClick() {
+  pidActionLabel.value = runtimePid.value ? '正在关闭…' : '正在启动…'
+  if (pidActionTimer) {
+    clearTimeout(pidActionTimer)
+  }
+  pidActionTimer = setTimeout(() => {
+    pidActionLabel.value = ''
+    pidActionTimer = null
+  }, 1500)
   emit('pidClick')
 }
+
+onUnmounted(() => {
+  if (pidActionTimer) {
+    clearTimeout(pidActionTimer)
+    pidActionTimer = null
+  }
+})
 
 function handleUsageClick() {
   showContextDetailDialog.value = true
@@ -593,9 +613,14 @@ async function copySilentMessage(message, reverseIndex) {
     <div v-if="envInfo" class="env-bar" :class="{ 'with-collapse-btn': showCollapseToggle }">
       <div class="env-main">
         <div class="env-left">
-          <span class="env-item env-item-clickable" @click="handlePidClick" :title="runtimePid ? `点击关闭 ${providerLabel}` : `点击启动 ${providerLabel}`">
+          <span
+            class="env-item env-item-clickable env-item-pid"
+            :class="{ 'is-pending': !!pidActionLabel }"
+            @click="handlePidClick"
+            :title="runtimePid ? `点击关闭 ${providerLabel} 进程` : `点击启动 ${providerLabel}`"
+          >
             <span class="env-icon">⚙️</span>
-            <span class="env-label">{{ runtimePid || '未启动' }}</span>
+            <span class="env-label">{{ pidActionLabel || runtimePid || '未启动' }}</span>
           </span>
           <span v-if="envInfo.provider" class="env-item env-item-clickable" @click="toggleDetail" title="点击查看详情">
             <span class="env-icon">🧠</span>
@@ -1016,6 +1041,8 @@ async function copySilentMessage(message, reverseIndex) {
   align-items: center;
   gap: 16px;
   min-width: 0;
+  /* 注意：不要在这里给容器整块设 no-drag——顶栏空白区是窗口拖拽把手，
+     各可点条目已在自身选择器上单独 no-drag */
 }
 
 .env-left {
@@ -1260,6 +1287,34 @@ async function copySilentMessage(message, reverseIndex) {
 
 .env-item-clickable:active {
   background: rgba(255, 255, 255, 0.1);
+}
+
+/* PID 条目是"启动/关闭运行时"的开关，热区要比普通文本条目更大，
+   避免点在标签边缘时被窗口拖拽区吃掉 */
+.env-item-pid {
+  min-height: 26px;
+  padding: 7px 8px;
+  margin: -7px -8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.env-item-pid:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--text-primary, #E4E4E7);
+}
+
+.env-item-pid:active {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.env-item-pid.is-pending {
+  cursor: progress;
+  color: #F97316;
+  border-color: rgba(249, 115, 22, 0.45);
+  background: rgba(249, 115, 22, 0.12);
 }
 
 .silent-detail-dropdown {

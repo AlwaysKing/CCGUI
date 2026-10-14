@@ -6,6 +6,52 @@ const yaml = require('js-yaml')
 const appService = require('./app-service')
 const codexAppServer = require('./codex-app-server')
 const { getClaudePath } = require('./claude-path')
+const { localProxy } = require('./local-proxy')
+const { getDefaultCredential } = require('../adapters/shared/model-config')
+
+/**
+ * CCGUI 自身的运行时快照：模型/供应商/凭据都来自 CCGUI 内部配置，
+ * 不再从 claude / codex 的原始配置文件推断（那些文件只用于 hooks / 插件诊断）
+ */
+function buildCcguiRuntimeSnapshot(provider = 'claude') {
+  const appConfig = appService.getAppConfig()
+  const settings = appConfig?.settings || {}
+  const normalizedProvider = provider === 'codex' ? 'codex' : 'claude'
+  const models = normalizedProvider === 'codex'
+    ? (Array.isArray(settings.codexModels) ? settings.codexModels : [])
+    : (Array.isArray(settings.claudeModels) ? settings.claudeModels : [])
+  const selectedModelId = normalizedProvider === 'codex'
+    ? settings.selectedCodexModelId
+    : settings.selectedClaudeModelId
+  const selectedCredentialId = normalizedProvider === 'codex'
+    ? settings.selectedCodexCredentialId
+    : settings.selectedClaudeCredentialId
+
+  const providerConfig = models.find(model => model?.id === selectedModelId)
+    || models.find(model => model?.isDefault === true)
+    || models.find(model => model?.isActive !== false)
+    || null
+  const cards = Array.isArray(providerConfig?.modelCards) ? providerConfig.modelCards : []
+  const card = cards.find(item => item?.id === providerConfig?.defaultCardId) || cards[0] || null
+  const credential = providerConfig ? getDefaultCredential(providerConfig, selectedCredentialId) : null
+  const proxyStatus = localProxy.getStatus()
+
+  return {
+    source: 'ccgui',
+    provider: normalizedProvider,
+    proxy: {
+      status: proxyStatus.status,
+      port: proxyStatus.port,
+      baseUrl: localProxy.getBaseUrl(),
+      error: proxyStatus.error
+    },
+    providerId: providerConfig?.id || null,
+    providerName: providerConfig?.friendlyName || providerConfig?.id || '',
+    model: card?.modelName || '',
+    apiUrl: providerConfig?.apiUrl || '',
+    credentialName: credential?.name || ''
+  }
+}
 
 function fileExists(targetPath) {
   if (!targetPath) return false
@@ -952,7 +998,9 @@ function inspectClaudeProvider(options = {}) {
       strictKnownMarketplaces: Array.isArray(userSettings.strictKnownMarketplaces)
         ? userSettings.strictKnownMarketplaces
         : []
-    }
+    },
+    // 模型/供应商来自 CCGUI 自身配置；settings.json 只用于 hooks / 插件诊断
+    runtime: buildCcguiRuntimeSnapshot('claude')
   }
 }
 
@@ -1869,13 +1917,8 @@ async function inspectCodexProvider(options = {}) {
     hookSources: uniqueBy(hookSources, source => source.id),
     plugins: buildCodexPluginsFromService(serviceData, codexConfig.rawContent || '', projectRawConfig),
     marketplaces: buildCodexMarketplacesFromService(serviceData, codexConfig.rawContent || '', projectRawConfig),
-    runtime: {
-      authMode: codexAuth.authMode || 'provider',
-      model: codexConfig.model || '',
-      modelProvider: codexConfig.modelProvider || '',
-      modelReasoningEffort: codexConfig.modelReasoningEffort || 'medium',
-      apiUrl: codexConfig.apiUrl || ''
-    }
+    // 模型/供应商来自 CCGUI 自身配置；config.toml 只用于 hooks / 插件诊断
+    runtime: buildCcguiRuntimeSnapshot('codex')
   }
 }
 

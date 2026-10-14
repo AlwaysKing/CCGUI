@@ -290,6 +290,68 @@ function testClaudeCollaborativePendingStateClearsAtTurnBoundary() {
   assert.strictEqual(adapter.pendingAgentToolUses.size, 0)
 }
 
+function testClaudeBackgroundTaskEventsAreModeledWithoutProviderNotifications() {
+  const adapter = new ClaudeAdapter(process.cwd(), 'claude-background-task-test-session')
+  const events = createEventSink(adapter)
+
+  adapter.handleSystemMessage({
+    type: 'system',
+    subtype: 'background_tasks_changed',
+    tasks: [
+      {
+        task_id: 'background-task-1',
+        task_type: 'local_agent',
+        description: 'Inspect the repository'
+      }
+    ]
+  })
+
+  assert.deepStrictEqual(adapter.backgroundTasks.get('background-task-1'), {
+    task_id: 'background-task-1',
+    task_type: 'local_agent',
+    description: 'Inspect the repository'
+  })
+  assert.strictEqual(
+    events.some(event => event.type === 'system-notification'),
+    false,
+    'background task snapshots must not become provider notifications'
+  )
+
+  adapter.handleSystemMessage({
+    type: 'system',
+    subtype: 'background_tasks_changed',
+    tasks: []
+  })
+  assert.strictEqual(adapter.backgroundTasks.size, 0)
+}
+
+function testClaudeToolProgressUpdatesExistingToolMessage() {
+  const adapter = new ClaudeAdapter(process.cwd(), 'claude-tool-progress-test-session')
+  const events = createEventSink(adapter)
+  adapter.toolUseMessages.set('tool-use-1', { toolInputBuffer: '' })
+
+  adapter.handleMessage({
+    type: 'tool_progress',
+    tool_use_id: 'tool-use-1-heartbeat-2',
+    parent_tool_use_id: 'tool-use-1',
+    tool_name: 'Bash',
+    elapsed_time_seconds: 60,
+    heartbeat: true,
+    uuid: 'progress-1'
+  })
+
+  const update = findLastEvent(events, 'message-update')
+  assert(update, 'expected tool progress to update the existing tool message')
+  assert.strictEqual(update.payload.messageId, 'tool-use-1')
+  assert.strictEqual(update.payload.updates.elapsedSeconds, 60)
+  assert.strictEqual(update.payload.updates.toolProgress.heartbeat, true)
+  assert.strictEqual(
+    events.some(event => event.type === 'system-notification'),
+    false,
+    'tool progress must not become a provider notification'
+  )
+}
+
 function testClaudeCollaborativeSpawnWorksWithStreamFirstOrdering() {
   const adapter = new ClaudeAdapter(process.cwd(), 'claude-team-stream-order-test-session')
   const events = createEventSink(adapter)
@@ -506,5 +568,7 @@ testClaudeTeamMemberIdsKeepDistinctNonAsciiNames()
 testClaudeCollaborativePendingStateClearsAtTurnBoundary()
 testClaudeCollaborativeSpawnWorksWithStreamFirstOrdering()
 testClaudeSidechainRequiresExplicitFileBinding()
+testClaudeBackgroundTaskEventsAreModeledWithoutProviderNotifications()
+testClaudeToolProgressUpdatesExistingToolMessage()
 testCodexSpawnAgentSemantics()
 console.log('agent-orchestration-tests: ok')

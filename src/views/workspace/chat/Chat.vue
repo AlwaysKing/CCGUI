@@ -266,8 +266,8 @@ const sessionUnavailableMessage = computed(() => {
     return ''
   }
 
-  const initProvider = sessionAvailability.value.initProvider || '未知'
-  const currentProvider = sessionAvailability.value.currentProvider || '未知'
+  const initProvider = sessionAvailability.value.initProviderLabel || sessionAvailability.value.initProvider || '未知'
+  const currentProvider = sessionAvailability.value.currentProviderLabel || sessionAvailability.value.currentProvider || '未知'
   return `当前会话不可用：创建时供应商为 ${initProvider}，当前供应商为 ${currentProvider}`
 })
 
@@ -892,6 +892,41 @@ watch(
   }
 )
 
+// 授权框浮层诊断：记录弹窗出现/消失时的窗口焦点状态，便于排查"没看到授权框"
+watch(
+  () => pendingControlRequest.value,
+  (request, previous) => {
+    if (request && !previous) {
+      logger.info('[Chat] Permission dialog shown', {
+        sessionId: sessionStore.currentSessionId,
+        requestId: request.request_id,
+        toolName: request.tool_name || request.toolName,
+        windowFocused: document.hasFocus()
+      })
+    } else if (!request && previous) {
+      logger.info('[Chat] Permission dialog cleared', {
+        sessionId: sessionStore.currentSessionId,
+        requestId: previous.request_id,
+        windowFocused: document.hasFocus()
+      })
+    }
+  }
+)
+
+function handleWindowFocus() {
+  logger.info('[Chat] Window focus changed', {
+    sessionId: sessionStore.currentSessionId,
+    focused: true
+  })
+}
+
+function handleWindowBlur() {
+  logger.info('[Chat] Window focus changed', {
+    sessionId: sessionStore.currentSessionId,
+    focused: false
+  })
+}
+
 onMounted(async () => {
   removeAppErrorDialogListener = addAppErrorDialogListener((detail) => {
     openErrorDialog(detail)
@@ -908,6 +943,8 @@ onMounted(async () => {
 
   // 监听窗口大小变化，将高度变化全部作用到 messages 区域
   window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('focus', handleWindowFocus)
+  window.addEventListener('blur', handleWindowBlur)
 
   // 右键菜单：点击空白处关闭
   window.addEventListener('pointerdown', handleGlobalPointerDownForContextMenu, true)
@@ -997,6 +1034,8 @@ onUnmounted(() => {
   document.removeEventListener('click', handleClickOutsidePermissionMenu)
   // 清理窗口大小变化监听器
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('focus', handleWindowFocus)
+  window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('pointerdown', handleGlobalPointerDownForContextMenu, true)
   window.removeEventListener('ccgui-session-complete', handleSessionComplete)
   window.removeEventListener('ccgui-shortcut', handleChatShortcut)
@@ -2719,18 +2758,22 @@ function isCollapseOnSendEnabled() {
 async function toggleCollapseOnSend() {
   const currentSettings = appConfig.value?.settings || {}
   const newValue = currentSettings.collapseOnSend === false ? true : false
-  const nextSettings = { ...currentSettings, collapseOnSend: newValue }
 
   try {
+    // 只更新这一个字段，避免用本地缓存的整份 settings 覆盖掉别处刚写入的配置（例如模型卡片的高级配置）
     const result = await window.electronAPI.updateAppConfig({
-      updates: { settings: nextSettings }
+      updates: { settings: { collapseOnSend: newValue } }
     })
     if (result?.success) {
       if (appConfig.value) {
-        appConfig.value.settings = nextSettings
+        appConfig.value.settings = {
+          ...currentSettings,
+          ...(result.config?.settings || {}),
+          collapseOnSend: newValue
+        }
       }
       window.dispatchEvent(new CustomEvent('ccgui-app-config-updated', {
-        detail: { settings: nextSettings }
+        detail: { settings: appConfig.value?.settings || { ...currentSettings, collapseOnSend: newValue } }
       }))
       closeContextMenu()
       return
@@ -3122,31 +3165,34 @@ function handleToggleAgentRail() {
       </div>
     </BaseDialog>
 
-    <!-- Ask User Question Dialog - 在聊天窗口内部 -->
-    <AskUserQuestionDialog
-      v-if="pendingQuestion"
-      :request="pendingQuestion"
-      @answer="handleQuestionAnswer"
-      @dismiss="handleQuestionDismiss"
-    />
+    <!-- 授权/提问弹窗挂到 body 上，避免被聊天面板布局（width:0 / overflow:hidden / pointer-events:none）裁剪 -->
+    <Teleport to="body">
+      <!-- Ask User Question Dialog -->
+      <AskUserQuestionDialog
+        v-if="pendingQuestion"
+        :request="pendingQuestion"
+        @answer="handleQuestionAnswer"
+        @dismiss="handleQuestionDismiss"
+      />
 
-    <!-- Permission Dialog for tool_use - 在聊天窗口内部 -->
-    <PermissionDialog
-      v-if="pendingPermission"
-      :request="pendingPermission"
-      @approve="handlePermissionApprove"
-      @deny="handlePermissionDeny"
-      @approve-all="handlePermissionApproveAll"
-    />
+      <!-- Permission Dialog for tool_use -->
+      <PermissionDialog
+        v-if="pendingPermission"
+        :request="pendingPermission"
+        @approve="handlePermissionApprove"
+        @deny="handlePermissionDeny"
+        @approve-all="handlePermissionApproveAll"
+      />
 
-    <!-- Permission Dialog for control_request (--permission-prompt-tool stdio) - 在聊天窗口内部 -->
-    <PermissionDialog
-      v-if="pendingControlRequest"
-      :request="pendingControlRequest"
-      @approve="handlePermissionApprove"
-      @deny="handlePermissionDeny"
-      @approve-all="handlePermissionApproveAll"
-    />
+      <!-- Permission Dialog for control_request (--permission-prompt-tool stdio) -->
+      <PermissionDialog
+        v-if="pendingControlRequest"
+        :request="pendingControlRequest"
+        @approve="handlePermissionApprove"
+        @deny="handlePermissionDeny"
+        @approve-all="handlePermissionApproveAll"
+      />
+    </Teleport>
   </div>
 
   <!-- Message Detail Dialog (Cmd+Click to view) -->
@@ -3359,7 +3405,7 @@ function handleToggleAgentRail() {
 
 <style scoped>
 .chat-window {
-  position: relative; /* 为 PermissionDialog 提供定位基准 */
+  position: relative; /* 供聊天窗口内的浮层（如右键菜单）定位；授权弹窗已 Teleport 到 body，不依赖此处 */
   height: 100%;
   width: 100%;
   max-width: 100%;

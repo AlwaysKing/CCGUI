@@ -205,15 +205,76 @@ Codex 原始流更接近 item/thread 通知流：
 - `item/reasoning/*` -> `thinking` 增量
 - `item/*Tool*` / `commandExecution` / `fileChange` -> `tool_use` 片段
 - `thread/tokenUsage/updated` -> `message-update(usage)` + `env-info(session_usage)` + turn usage 聚合
-- `turn/completed` -> `result`
+- `turn/completed` -> `result`（仅会话主线程；子代理线程跑在自己的 threadId 上，它的 `turn/completed` 只代表该子代理结束）
 
 适配重点：
 
 - 原始 usage 是分散的，必须在 adapter 内聚合
 - `num_turns` 不以 provider 原始 turn 数为准，而以 assistant 片段数为准
+- 一个用户回合可能横跨主线程和多个子代理线程：只有主线程的 `turn/completed` 才能收尾用户这一轮（`result` / 回合统计 / 文件变更汇总）
 
 ## 统一设计原则
 
 - 不要求 CCGUI 语义长得像 Claude 或 Codex 任意一边
 - 哪种抽象更利于两个 adapter 实现，就采用哪种
 - `session-instance.js` 只消费统一语义，不再理解 provider 原始协议
+
+## 模型路由名与展示名（CCGUI 原语）
+
+接入本地代理后，模型标识分成两个概念，**任何一层都不允许混用**：
+
+| 名称 | 形式 | 出现位置 |
+| --- | --- | --- |
+| 路由名 | `<供应商ID>/<模型名>`（如 `1778420523330/deepseek-flash`） | provider 进程启动参数、代理内部路由、`session-instance` 与 adapter 之间 |
+| 展示名 | 真实模型名（如 `deepseek-flash`） | `env-info.model`、系统通知、会话列表、所有 UI |
+
+约束：
+
+- 路由名只用于"让代理知道该转发给哪个供应商的哪张卡片"，不进入 UI
+- adapter 在写 `env-info` / 通知前必须用 `stripProxyProviderPrefix()` 还原展示名
+- 构造路由名统一用 `buildRuntimeModelName()`（`adapters/shared/model-config.js`），不要在业务层手写字符串拼接
+- 代理解析不到卡片时：别名（`sonnet`/`opus`/`haiku`/`claude-*`）用当前会话卡片；明确点名但不属于当前供应商的模型**原样透传**，不静默替换
+
+## 思考等级（effort）的语义
+
+- effort 取值是**不透明字符串**：由 provider 返回（codex 为 `none/low/high/xhigh` 等，claude 为 `low/medium/high`），CCGUI 只透传、不解释、不映射
+- 取值来源：
+  - codex：`model/list`（provider API）
+  - claude：CLI 的模型能力（provider API）
+- 切换时传给 provider 的字段名由 adapter 决定（codex 的 `thread/settings/update` 用 `effort`）
+- provider 诊断面板（provider-inspector）展示的模型 / 供应商 / 代理状态同样来自 CCGUI 自身配置，不再从 claude / codex 原始配置文件推断（那些文件只用于 hooks / 插件诊断）
+
+## 运行时选择统一入口
+
+模型 / 供应商 / 思考等级的切换统一走适配器方法：
+
+```js
+runtimeManager.applyRuntimeSelection({
+  changeType: 'model' | 'submodel' | 'effort',
+  settings,        // 已解析的运行时设置（modelId / modelCardId / credentialId / effort）
+  modelOverride,   // 可选：界面显式指定的模型卡片名
+  effort,          // 可选：思考等级
+  silent           // 可选：是否静默（不弹系统通知）
+})
+```
+
+返回：
+
+```js
+{ appliedLive: true, model, modelString, reasoningEffort, applyMode }   // 已热切换
+{ appliedLive: false, reason: 'effort-requires-restart' | ... }         // 需要上层重启
+```
+
+各 provider 的实现：
+
+| provider | 模型切换 | 思考等级 |
+| --- | --- | --- |
+| claude | `set_model` 控制请求（CCGUI 侧原语 `set_session_submodel`） | CLI 的 `/effort <level>` 斜杠命令（静默执行，仅当前会话生效），可热切 |
+| codex | `thread/settings/update`（老版本回退 `thread/resume`） | `thread/settings/update` 的 `effort` 字段，可热切 |
+
+约束：
+
+- `session-instance.js` 只调这**一个**入口，不判断 provider 能力（谁能热切由 adapter 回答）
+- adapter 负责构造路由名、调用 provider 协议、并把 provider 回传的设置刷新回 `env-info`
+- claude 没有切换思考等级的控制请求（实测 `set_effort` / `set_effort_level` 均返回 Unsupported），只能用 `/effort`：adapter 以「静默命令」发送，命令期间产生的 assistant / stream / result 都不进入对话时间线
+- `appliedLive: false` 表示该 provider 无法热切换（或运行时未就绪），由上层重启应用

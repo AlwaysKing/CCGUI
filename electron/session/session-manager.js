@@ -275,6 +275,25 @@ class SessionManager {
   }
 
   /**
+   * 关闭指定窗口下的所有会话（其他窗口的会话不受影响）
+   */
+  closeSessionsForWebContents(webContentsId) {
+    if (!webContentsId) {
+      return
+    }
+
+    for (const [sessionId, session] of this.sessions) {
+      if (session.webContentsId !== webContentsId) {
+        continue
+      }
+
+      logger.info(`[SessionManager] Closing session ${sessionId} for window ${webContentsId}`)
+      session.stop()
+      this.sessions.delete(sessionId)
+    }
+  }
+
+  /**
    * 获取所有活跃会话 ID
    */
   getActiveSessionIds() {

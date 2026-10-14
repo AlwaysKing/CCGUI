@@ -12,7 +12,10 @@ async function withClaudeProviderClient(task, options = {}) {
     true,
     'default',
     options.projectSettings || null,
-    { debug: options.debug === true }
+    {
+      debug: options.debug === true,
+      skipModelRouteValidation: true
+    }
   )
 
   try {

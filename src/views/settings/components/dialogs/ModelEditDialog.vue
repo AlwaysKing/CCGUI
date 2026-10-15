@@ -4,6 +4,7 @@
  */
 import { ref, watch, computed } from 'vue'
 import { useDialogStack } from '../../../../composables/useDialogStack'
+import ProviderModelListDialog from './ProviderModelListDialog.vue'
 
 const props = defineProps({
   visible: {
@@ -37,6 +38,12 @@ const visibleCredentialIds = ref(new Set())
 const hoveredCardId = ref(null)
 const loading = ref(false)
 const defaultCatalogEntry = ref(null)
+const modelListVisible = ref(false)
+const modelListLoading = ref(false)
+const modelListError = ref('')
+const modelListEndpoint = ref('')
+const discoveredModels = ref([])
+const modelListRequest = ref({ apiUrl: '', token: '' })
 
 function formatCatalogText(catalog) {
   if (!catalog || typeof catalog !== 'object' || Object.keys(catalog).length === 0) {
@@ -44,6 +51,33 @@ function formatCatalogText(catalog) {
   }
 
   return JSON.stringify(catalog, null, 2)
+}
+
+// 默认模板去掉 slug / display_name，这两项由后端按供应商和模型名生成
+function getDefaultCatalogTemplate(entry) {
+  const { slug, display_name, ...template } = entry || {}
+  return template
+}
+
+// 高级配置展示"默认模板 + 卡片覆盖字段"，打开时就能看到完整的元数据文本
+function formatCatalogViewText(catalog, entry) {
+  if (!entry) {
+    return formatCatalogText(catalog)
+  }
+
+  const merged = { ...getDefaultCatalogTemplate(entry), ...(catalog || {}) }
+
+  // 卡片只填了 context_window 时，展示文本里的 max 也要跟随它，避免和窗口输入框不一致
+  if (catalog && catalog.context_window !== undefined && catalog.max_context_window === undefined) {
+    merged.max_context_window = catalog.context_window
+  }
+
+  return JSON.stringify(merged, null, 2)
+}
+
+function toPositiveInteger(value) {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : null
 }
 
 function parseCatalogText(catalogText) {
@@ -63,19 +97,65 @@ function parseCatalogText(catalogText) {
   }
 }
 
-async function fillCatalogTemplate(card) {
+async function getDefaultCatalogEntry() {
   if (!defaultCatalogEntry.value) {
-    const result = await window.electronAPI.getCodexCatalogDefaultEntry()
-    defaultCatalogEntry.value = result?.success ? result.entry : null
+    try {
+      const result = await window.electronAPI.getCodexCatalogDefaultEntry()
+      defaultCatalogEntry.value = result?.success ? result.entry : null
+    } catch (error) {
+      // 取不到模板时保持空值，保存时仍由生成阶段补默认元数据
+      defaultCatalogEntry.value = null
+    }
   }
 
-  if (!defaultCatalogEntry.value) {
+  return defaultCatalogEntry.value
+}
+
+function formatDefaultCatalogText(entry) {
+  return JSON.stringify(getDefaultCatalogTemplate(entry), null, 2)
+}
+
+// 卡片上的窗口输入显示当前生效值：高级配置里有就用里面的，没有就用内置默认值
+function resolveCardContextWindow(catalog, entry) {
+  if (catalog && catalog.context_window !== undefined && catalog.context_window !== null) {
+    return String(catalog.context_window)
+  }
+
+  return entry && entry.context_window !== undefined && entry.context_window !== null
+    ? String(entry.context_window)
+    : ''
+}
+
+// 重置为默认模板：高级配置文本与窗口输入一起回到内置默认值
+async function resetCardCatalog(card) {
+  const entry = await getDefaultCatalogEntry()
+  if (!entry) {
     alert('获取 Codex 模型元数据模板失败')
     return
   }
 
-  const { slug, display_name, ...entry } = defaultCatalogEntry.value
-  card.catalogText = JSON.stringify(entry, null, 2)
+  card.catalogText = formatDefaultCatalogText(entry)
+  card.contextWindow = resolveCardContextWindow(null, entry)
+}
+
+// 卡片初始化：高级配置为空时直接生成默认模板，窗口输入与元数据保持一致
+function createCardForm(card = {}) {
+  const catalog = card.catalog && typeof card.catalog === 'object' && Object.keys(card.catalog).length > 0
+    ? card.catalog
+    : null
+  const entry = defaultCatalogEntry.value
+  const contextWindow = resolveCardContextWindow(catalog, entry)
+
+  return {
+    id: card.id || generateCardId(),
+    modelName: card.modelName || '',
+    pricingCache: card.pricingCache || '',
+    pricingInput: card.pricingInput || '',
+    pricingOutput: card.pricingOutput || '',
+    catalogText: entry ? formatCatalogViewText(catalog, entry) : formatCatalogText(catalog),
+    contextWindow,
+    showAdvanced: false
+  }
 }
 
 // 是否编辑模式
@@ -98,30 +178,26 @@ function generateCredentialId() {
 }
 
 // 监听 model 变化，初始化表单
-watch(() => props.model, (model) => {
+watch(() => props.model, async (model) => {
+  if (props.modelType === 'codex') {
+    await getDefaultCatalogEntry()
+  }
+
   if (model) {
     // 编辑模式
     let modelCards = []
     if (model.modelCards && model.modelCards.length > 0) {
-      modelCards = model.modelCards.map(card => ({
-        id: card.id || generateCardId(),
-        modelName: card.modelName || '',
-        pricingCache: card.pricingCache || '',
-        pricingInput: card.pricingInput || '',
-        pricingOutput: card.pricingOutput || '',
-        catalogText: formatCatalogText(card.catalog)
-      }))
+      modelCards = model.modelCards.map(card => createCardForm(card))
     } else if (model.modelName) {
-      modelCards = [{
-        id: generateCardId(),
+      modelCards = [createCardForm({
         modelName: model.modelName,
         pricingCache: model.pricingCache || '',
         pricingInput: model.pricingInput || '',
         pricingOutput: model.pricingOutput || '',
-        catalogText: formatCatalogText(model.catalog)
-      }]
+        catalog: model.catalog
+      })]
     } else {
-      modelCards = [{ id: generateCardId(), modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '', catalogText: '' }]
+      modelCards = [createCardForm()]
     }
 
     formData.value = {
@@ -152,7 +228,7 @@ watch(() => props.model, (model) => {
       credentials: [{ id: firstCredentialId, name: '默认', token: '' }],
       defaultCredentialId: firstCredentialId,
       defaultCardId: firstCardId,
-      modelCards: [{ id: firstCardId, modelName: '', pricingCache: '', pricingInput: '', pricingOutput: '', catalogText: '' }]
+      modelCards: [createCardForm({ id: firstCardId })]
     }
   }
   visibleCredentialIds.value = new Set()
@@ -195,15 +271,7 @@ function toggleCredentialVisibility(credentialId) {
 
 // 添加模型卡片
 function addCard() {
-  const newCardId = generateCardId()
-  formData.value.modelCards.push({
-    id: newCardId,
-    modelName: '',
-    pricingCache: '',
-    pricingInput: '',
-    pricingOutput: '',
-    catalogText: ''
-  })
+  formData.value.modelCards.push(createCardForm({ id: generateCardId() }))
 }
 
 // 删除模型卡片
@@ -218,6 +286,136 @@ function removeCard(cardId) {
 // 设置默认卡片
 function setDefaultCard(cardId) {
   formData.value.defaultCardId = cardId
+}
+
+// 卡片上已填的模型名，用于标记拉取结果里哪些已经存在
+const existingModelNames = computed(() => formData.value.modelCards
+  .map(card => String(card.modelName || '').trim())
+  .filter(Boolean))
+
+function resolveRequestCredential() {
+  const validCredentials = formData.value.credentials.filter(credential =>
+    (credential.name || '').trim() && (credential.token || '').trim()
+  )
+
+  return validCredentials.find(credential => credential.id === formData.value.defaultCredentialId) || validCredentials[0] || null
+}
+
+// 按卡片上方填写的上游地址与默认令牌拉取模型列表
+async function pullProviderModels() {
+  const apiUrl = String(formData.value.apiUrl || '').trim()
+  if (!/^https?:\/\//i.test(apiUrl)) {
+    alert('请先填写以 http:// 或 https:// 开头的API地址')
+    return
+  }
+
+  const credential = resolveRequestCredential()
+  if (!credential) {
+    alert('请先填写至少一个认证令牌')
+    return
+  }
+
+  modelListRequest.value = { apiUrl, token: credential.token }
+  modelListVisible.value = true
+  await loadProviderModels()
+}
+
+async function loadProviderModels() {
+  const { apiUrl, token } = modelListRequest.value
+  if (!apiUrl || !token) {
+    return
+  }
+
+  modelListLoading.value = true
+  modelListError.value = ''
+  modelListEndpoint.value = ''
+  discoveredModels.value = []
+
+  try {
+    const result = await window.electronAPI.discoverProviderModels({
+      tool: props.modelType,
+      apiUrl,
+      token
+    })
+
+    if (!result?.success) {
+      modelListError.value = result?.error || '拉取模型列表失败'
+      modelListEndpoint.value = result?.endpoint || ''
+      return
+    }
+
+    discoveredModels.value = Array.isArray(result.models) ? result.models : []
+    modelListEndpoint.value = result.endpoint || ''
+
+    if (discoveredModels.value.length === 0) {
+      modelListError.value = '上游没有返回任何模型'
+    }
+  } catch (error) {
+    modelListError.value = error.message || '拉取模型列表失败'
+  } finally {
+    modelListLoading.value = false
+  }
+}
+
+// 拉取结果 → 追加成模型卡片：同名卡片跳过，默认卡片保持不变
+function addDiscoveredModels(models) {
+  const existingNames = new Set(existingModelNames.value)
+
+  for (const model of models) {
+    const modelName = String(model?.id || '').trim()
+    if (!modelName || existingNames.has(modelName)) {
+      continue
+    }
+
+    const card = createCardForm({ id: generateCardId(), modelName })
+
+    if (props.modelType === 'codex') {
+      applyCodexModelMetadata(card, model)
+    } else {
+      applyClaudeModelMetadata(card, model)
+    }
+
+    formData.value.modelCards.push(card)
+    existingNames.add(modelName)
+  }
+
+  modelListVisible.value = false
+}
+
+// Codex：把拉取到的窗口、模态等信息并进元数据，其余字段保持默认模板
+function applyCodexModelMetadata(card, model) {
+  const catalog = parseCatalogText(card.catalogText).catalog || {}
+
+  const contextWindow = Number(model.contextWindow)
+  if (Number.isFinite(contextWindow) && contextWindow > 0) {
+    const maxContextWindow = Number(model.maxContextWindow)
+    catalog.context_window = contextWindow
+    catalog.max_context_window = Number.isFinite(maxContextWindow) && maxContextWindow > 0
+      ? maxContextWindow
+      : contextWindow
+    card.contextWindow = String(contextWindow)
+  }
+
+  if (Array.isArray(model.inputModalities) && model.inputModalities.length > 0) {
+    catalog.input_modalities = model.inputModalities
+  }
+
+  if (model.description) {
+    catalog.description = model.description
+  }
+
+  card.catalogText = JSON.stringify(catalog, null, 2)
+}
+
+// Claude：拉取到的价格按每百万 token 填进计费三个格子
+function applyClaudeModelMetadata(card, model) {
+  if (!model.pricing) {
+    return
+  }
+
+  if (model.pricing.cache) card.pricingCache = model.pricing.cache
+  if (model.pricing.input) card.pricingInput = model.pricing.input
+  if (model.pricing.output) card.pricingOutput = model.pricing.output
 }
 
 // 关闭对话框
@@ -256,9 +454,34 @@ function handleSave() {
         alert(`模型「${card.modelName || '未命名'}」的${parsed.error}`)
         return
       }
-      if (parsed.catalog) {
-        nextCard.catalog = parsed.catalog
+
+      // 数据不空：以默认模板为基底，卡片里填过的字段覆盖模板，没填的仍是完整默认值
+      const catalog = {
+        ...getDefaultCatalogTemplate(defaultCatalogEntry.value),
+        ...(parsed.catalog || {})
       }
+
+      // 窗口只认输入框：输入框改了以输入框为准，没改则它显示的就是当前值；清空回落默认值
+      const windowValue = String(card.contextWindow ?? '').trim()
+      const inputWindow = toPositiveInteger(windowValue)
+
+      if (windowValue && !inputWindow) {
+        alert(`模型「${card.modelName || '未命名'}」的上下文窗口必须是正整数`)
+        return
+      }
+
+      const targetWindow = inputWindow
+        || toPositiveInteger(defaultCatalogEntry.value?.context_window)
+        || toPositiveInteger(catalog.context_window)
+
+      if (!targetWindow) {
+        alert(`模型「${card.modelName || '未命名'}」的上下文窗口必须是正整数`)
+        return
+      }
+
+      catalog.context_window = targetWindow
+      catalog.max_context_window = targetWindow
+      nextCard.catalog = catalog
     }
 
     modelCards.push(nextCard)
@@ -393,12 +616,27 @@ function handleSave() {
         <div class="model-cards-section">
           <div class="section-header-inline">
             <label class="form-label">模型名称与计费</label>
-            <button type="button" class="btn-add-card-small" @click="addCard" title="添加模型">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="12" y1="5" x2="12" y2="19"/>
-                <line x1="5" y1="12" x2="19" y2="12"/>
-              </svg>
-            </button>
+            <div class="section-header-actions">
+              <button
+                type="button"
+                class="btn-add-card-small"
+                @click="pullProviderModels"
+                :disabled="modelListLoading"
+                title="按上方填写的API地址和令牌拉取模型列表"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+              </button>
+              <button type="button" class="btn-add-card-small" @click="addCard" title="添加模型">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+              </button>
+            </div>
           </div>
 
           <div class="model-cards-list">
@@ -481,18 +719,41 @@ function handleSave() {
                   </div>
                 </div>
 
-                <div v-if="modelType === 'codex'" class="card-catalog">
+                <div v-if="modelType === 'codex'" class="card-window">
+                  <div class="window-field">
+                    <span class="pricing-label">
+                      上下文窗口
+                      <span class="window-hint">同步 context_window / max_context_window</span>
+                    </span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      v-model="card.contextWindow"
+                      class="form-input"
+                      :placeholder="`默认 ${defaultCatalogEntry?.context_window || 200000}`"
+                    >
+                  </div>
+                  <button
+                    type="button"
+                    class="btn-catalog-action"
+                    @click="card.showAdvanced = !card.showAdvanced"
+                  >
+                    {{ card.showAdvanced ? '收起高级' : '显示高级' }}
+                  </button>
+                </div>
+
+                <div v-if="modelType === 'codex' && card.showAdvanced" class="card-catalog">
                   <div class="card-catalog-header">
                     <span class="card-catalog-title">高级配置（Codex 模型元数据）</span>
                     <div class="card-catalog-actions">
-                      <button type="button" class="btn-catalog-action" @click="fillCatalogTemplate(card)">填充默认模板</button>
-                      <button type="button" class="btn-catalog-action" @click="card.catalogText = ''">清空</button>
+                      <button type="button" class="btn-catalog-action" @click="resetCardCatalog(card)">重置为默认模板</button>
                     </div>
                   </div>
                   <textarea
                     v-model="card.catalogText"
                     class="form-textarea catalog-textarea"
-                    placeholder="留空则不生成 models.json 条目（Codex 使用兜底元数据）"
+                    placeholder="留空则使用默认元数据模板，上下文窗口以上方输入框为准"
                   ></textarea>
                 </div>
               </div>
@@ -508,6 +769,19 @@ function handleSave() {
         </button>
       </div>
     </div>
+
+    <ProviderModelListDialog
+      v-if="modelListVisible"
+      :visible="modelListVisible"
+      :loading="modelListLoading"
+      :error="modelListError"
+      :endpoint="modelListEndpoint"
+      :models="discoveredModels"
+      :existing-names="existingModelNames"
+      @close="modelListVisible = false"
+      @retry="loadProviderModels"
+      @confirm="addDiscoveredModels"
+    />
   </div>
 </template>
 
@@ -647,6 +921,12 @@ function handleSave() {
   margin-bottom: 16px;
 }
 
+.section-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .btn-add-card-small {
   background: transparent;
   border: 1px solid #3F3F46;
@@ -662,6 +942,16 @@ function handleSave() {
 .btn-add-card-small:hover {
   border-color: #F97316;
   color: #F97316;
+}
+
+.btn-add-card-small:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-add-card-small:disabled:hover {
+  border-color: #3F3F46;
+  color: #9CA3AF;
 }
 
 .credential-list {
@@ -790,6 +1080,34 @@ function handleSave() {
 .card-pricing .form-input {
   font-size: 13px;
   padding: 8px 10px;
+}
+
+.card-window {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.window-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.window-hint {
+  margin-left: 4px;
+  font-weight: 400;
+  color: #71717A;
+}
+
+.card-window .form-input {
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.card-window .btn-catalog-action {
+  height: 34px;
 }
 
 .card-catalog {

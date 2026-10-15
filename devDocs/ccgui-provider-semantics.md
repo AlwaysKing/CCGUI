@@ -244,6 +244,27 @@ Codex 原始流更接近 item/thread 通知流：
 - 切换时传给 provider 的字段名由 adapter 决定（codex 的 `thread/settings/update` 用 `effort`）
 - provider 诊断面板（provider-inspector）展示的模型 / 供应商 / 代理状态同样来自 CCGUI 自身配置，不再从 claude / codex 原始配置文件推断（那些文件只用于 hooks / 插件诊断）
 
+## 从供应商拉取模型列表（模型编辑弹窗）
+
+模型编辑弹窗「模型名称与计费」标题右侧的下载按钮，按卡片上方填写的上游地址与默认令牌拉取上游模型列表，勾选后追加成模型卡片。
+
+| 协议 | 模型列表接口 | 认证头 |
+| --- | --- | --- |
+| Claude（Anthropic） | `GET {上游地址}/v1/models` | `x-api-key` + `anthropic-version: 2023-06-01` |
+| Codex（OpenAI） | `GET {上游地址}/v1/models` | `Authorization: Bearer` |
+
+约束：
+
+- 地址与认证方式按协议固定，不做候选地址试错；`/v1` 重复段由 `buildUpstreamUrl()` 去重（上游地址已带 `/v1` 时不会拼成 `/v1/v1/models`）
+- 拉取在主进程完成（`services/provider-model-discovery.js`），绕开渲染进程的 CORS 限制；超时 10 秒，失败不抛异常，统一返回 `{ success, endpoint, models, error }`
+- 拉取结果默认一个都不勾选；卡片里已存在的同名模型标注「已存在」并禁止勾选
+- 勾选后追加为新模型卡片，不改动已有卡片与默认卡片；仍要点保存才落盘
+
+拉取到的信息按协议分别填充：
+
+- Codex：`modelName ← id`；`context_window` / `max_context_window` ← `context_length`、`max_context_length`、`max_input_tokens`、`top_provider.context_length` 等；`input_modalities` ← `architecture.input_modalities`；`description` ← `description`。拿不到的字段继续走默认元数据模板
+- Claude：`modelName ← id`；上游按「每 token 美元」上报的 `pricing`（OpenRouter 风格 `prompt` / `completion` / `input_cache_read`）换算成「每百万 token 美元」写入卡片计费（Cache / Input / Output）
+
 ## 运行时选择统一入口
 
 模型 / 供应商 / 思考等级的切换统一走适配器方法：

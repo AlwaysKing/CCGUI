@@ -29,6 +29,7 @@ const processRegistry = require('./services/process-registry')
 const { buildAugmentedEnv } = require('./services/shell-env')
 const { localProxy } = require('./services/local-proxy')
 const { DEFAULT_ENTRY: DEFAULT_CODEX_CATALOG_ENTRY, getCatalogPath, normalizeCatalogConfig } = require('./services/local-proxy/model-catalog')
+const { fetchProviderModels } = require('./services/provider-model-discovery')
 const Screenshots = require('electron-screenshots')
 
 const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -3536,6 +3537,10 @@ ipcMain.handle('save-app-config', async (event, { config }) => {
 ipcMain.handle('update-app-config', async (event, { updates }) => {
   try {
     const config = appService.updateAppConfig(updates)
+    // 模型卡片保存后立刻刷新 Codex 模型目录，不必等下次启动 codex 进程
+    if (updates?.settings && Object.prototype.hasOwnProperty.call(updates.settings, 'codexModels')) {
+      localProxy.writeCodexCatalog(config)
+    }
     return { success: true, config }
   } catch (error) {
     logger.error('[AppConfig] Failed to update config', { error: error.message })
@@ -3583,6 +3588,21 @@ ipcMain.handle('get-codex-catalog-import-candidates', async () => {
 // Codex 模型元数据默认模板
 ipcMain.handle('get-codex-catalog-default-entry', async () => {
   return { success: true, entry: DEFAULT_CODEX_CATALOG_ENTRY }
+})
+
+// 按模型卡片上填写的上游地址与令牌拉取供应商模型列表
+ipcMain.handle('discover-provider-models', async (event, { tool, apiUrl, token } = {}) => {
+  const result = await fetchProviderModels({ tool, baseUrl: apiUrl, token })
+
+  if (!result.success) {
+    logger.warn('[ProviderModels] 拉取模型列表失败', {
+      tool: tool || 'claude',
+      endpoint: result.endpoint || '',
+      error: result.error
+    })
+  }
+
+  return result
 })
 
 // 把用户 Codex 模型目录里的元数据导入到本机模型卡片

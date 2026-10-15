@@ -172,6 +172,11 @@ function buildCatalogEntry(provider, card) {
     description: catalogConfig.description || `${provider.friendlyName || provider.id} 提供的 ${card.modelName}`
   }
 
+  // 只填了上下文窗口时，最大上下文窗口跟随它，不要落回与它不一致的默认值
+  if (catalogConfig.context_window !== undefined && catalogConfig.max_context_window === undefined) {
+    entry.max_context_window = entry.context_window
+  }
+
   for (const field of REQUIRED_CATALOG_FIELDS) {
     if (entry[field] === undefined || entry[field] === null) {
       entry[field] = DEFAULT_ENTRY[field]
@@ -184,6 +189,7 @@ function buildCatalogEntry(provider, card) {
 function buildCatalog(appConfig) {
   const models = Array.isArray(appConfig?.settings?.codexModels) ? appConfig.settings.codexModels : []
   const entries = []
+  const seenSlugs = new Set()
 
   for (const provider of models) {
     if (!provider?.id) {
@@ -191,10 +197,19 @@ function buildCatalog(appConfig) {
     }
 
     for (const card of Array.isArray(provider.modelCards) ? provider.modelCards : []) {
-      if (!card?.modelName || !hasCatalogConfig(card)) {
+      if (!card?.modelName) {
         continue
       }
-      entries.push(buildCatalogEntry(provider, card))
+
+      const entry = buildCatalogEntry(provider, card)
+
+      // 同一供应商下同名模型只保留第一条，避免目录里出现重复 slug
+      if (seenSlugs.has(entry.slug)) {
+        continue
+      }
+
+      seenSlugs.add(entry.slug)
+      entries.push(entry)
     }
   }
 

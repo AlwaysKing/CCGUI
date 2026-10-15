@@ -255,6 +255,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCodexCatalogImportCandidates: () => ipcRenderer.invoke('get-codex-catalog-import-candidates'),
   getCodexCatalogDefaultEntry: () => ipcRenderer.invoke('get-codex-catalog-default-entry'),
   importCodexCatalogMetadata: (options) => ipcRenderer.invoke('import-codex-catalog-metadata', options),
+  discoverProviderModels: (options) => ipcRenderer.invoke('discover-provider-models', options),
 
   // ============================================
   // Claude Settings API (from ~/.claude/settings.json)

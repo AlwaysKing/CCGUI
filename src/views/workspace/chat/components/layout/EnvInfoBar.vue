@@ -1047,7 +1047,8 @@ async function copySilentMessage(message, reverseIndex) {
 
 .env-left {
   flex: 1;
-  overflow: hidden;
+  overflow: clip;
+  overflow-clip-margin: 8px;
   padding: 4px 0;
 }
 

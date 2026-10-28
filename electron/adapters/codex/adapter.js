@@ -1125,6 +1125,15 @@ class CodexAdapter extends CodexClient {
         this.emitAssistantDelta(params.turnId, params.itemId, 'thinking', params.delta, params.threadId)
         break
 
+      case 'item/reasoning/summaryPartAdded':
+        logger.debug('[CodexAdapter] Reasoning summary part added', {
+          threadId: params.threadId || null,
+          turnId: params.turnId || null,
+          itemId: params.itemId || null,
+          summaryIndex: params.summaryIndex ?? null
+        })
+        break
+
       case 'item/plan/delta':
         this.emitAssistantDelta(params.turnId, params.itemId, 'thinking', `${params.delta}`, params.threadId)
         break

@@ -276,6 +276,7 @@ VS Code 插件 webview 发送层的原始源码可确认：
 - `item/agentMessage/delta`
 - `item/reasoning/textDelta`
 - `item/reasoning/summaryTextDelta`
+- `item/reasoning/summaryPartAdded`
 - `item/plan/delta`
 - `item/commandExecution/outputDelta`
 - `item/fileChange/outputDelta`

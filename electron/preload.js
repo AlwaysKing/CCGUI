@@ -174,6 +174,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleSessionLock: (options) => ipcRenderer.invoke('toggle-session-lock', options),
   getSessionMessages: (options) => ipcRenderer.invoke('get-session-messages', options),
   getRunningSessions: () => ipcRenderer.invoke('get-running-sessions'),
+  getProjectActivity: () => ipcRenderer.invoke('get-project-activity'),
+  markProjectActivitySessionSeen: (options) => ipcRenderer.invoke('mark-project-activity-session-seen', options),
+  syncProjectTaskActivity: (options) => ipcRenderer.send('sync-project-task-activity', options),
+  minimizeProjectToMonitor: () => ipcRenderer.invoke('minimize-project-to-monitor'),
+  restoreProjectWindow: (options) => ipcRenderer.invoke('restore-project-window', options),
+  toggleProjectWindow: (options) => ipcRenderer.invoke('toggle-project-window', options),
+  onProjectSessionRequest: (callback) => {
+    const listener = (event, payload) => callback(payload)
+    ipcRenderer.on('project-session-request', listener)
+    return () => ipcRenderer.removeListener('project-session-request', listener)
+  },
+  notifyProjectSessionSelectionReady: () => ipcRenderer.send('project-session-selection-ready'),
+  onProjectActivityUpdated: (callback) => {
+    const listener = (event, snapshot) => callback(snapshot)
+    ipcRenderer.on('project-activity-updated', listener)
+    return () => ipcRenderer.removeListener('project-activity-updated', listener)
+  },
+  onFloatingMonitorModeChanged: (callback) => {
+    const listener = (event, payload) => callback(payload)
+    ipcRenderer.on('floating-monitor-mode-changed', listener)
+    return () => ipcRenderer.removeListener('floating-monitor-mode-changed', listener)
+  },
   openProjectInNewWindow: (options) => ipcRenderer.invoke('open-project-in-new-window', options),
   focusProjectWindow: (options) => ipcRenderer.invoke('focus-project-window', options),
   checkProjectExists: (options) => ipcRenderer.invoke('check-project-exists', options),

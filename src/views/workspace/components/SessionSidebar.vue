@@ -96,7 +96,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'softDelete', 'restore', 'permanentDelete', 'toggleRecycleBin', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openClaudeDialog', 'openCodexDialog', 'openPromptDialog', 'openTaskTemplatesDialog', 'selectPrimaryView', 'toggleLock'])
+const emit = defineEmits(['select', 'delete', 'softDelete', 'restore', 'permanentDelete', 'toggleRecycleBin', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openClaudeDialog', 'openCodexDialog', 'openPromptDialog', 'openTaskTemplatesDialog', 'selectPrimaryView', 'toggleLock', 'minimizeToMonitor'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -1153,7 +1153,23 @@ watch([showConfigPanel, fileSectionHeight], () => {
   <aside class="session-sidebar">
     <!-- 第一行：红绿灯占位 | Logo | 折叠按钮 -->
     <div class="sidebar-header-row1">
-      <div class="traffic-light-placeholder"></div>
+      <div class="header-leading">
+        <div class="traffic-light-placeholder"></div>
+        <button
+          v-if="appStore.floatingMonitorMode !== 'off'"
+          type="button"
+          class="monitor-window-btn"
+          title="收起到悬浮窗"
+          aria-label="收起到悬浮窗"
+          @click="emit('minimizeToMonitor')"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="5" width="18" height="14" rx="2"/>
+            <path d="M8 9h8"/>
+            <path d="M8 13h5"/>
+          </svg>
+        </button>
+      </div>
       <div class="header-actions">
         <span class="app-logo">CCGUI</span>
       </div>
@@ -1841,6 +1857,34 @@ watch([showConfigPanel, fileSectionHeight], () => {
 .traffic-light-placeholder {
   width: 52px;
   /* 为红绿灯留出空间 */
+}
+
+.header-leading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.monitor-window-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #777781;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.monitor-window-btn:hover {
+  color: #f97316;
+  border-color: rgba(249, 115, 22, 0.25);
+  background: rgba(249, 115, 22, 0.1);
 }
 
 .app-logo {

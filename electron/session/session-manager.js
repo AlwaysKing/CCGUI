@@ -6,8 +6,9 @@ const logger = require('../logger')
  * 管理多个 SessionInstance，每个会话都是独立的
  */
 class SessionManager {
-  constructor() {
+  constructor({ onSessionEvent = null } = {}) {
     this.sessions = new Map() // sessionId -> SessionInstance
+    this.onSessionEvent = typeof onSessionEvent === 'function' ? onSessionEvent : null
   }
 
   /**
@@ -34,7 +35,11 @@ class SessionManager {
     logger.info(`[SessionManager] Creating session ${sessionId} for project ${projectPath}`)
 
     // 创建新的 SessionInstance，传入 webContents
-    const session = new SessionInstance(sessionId, projectPath, webContents)
+    const session = new SessionInstance(sessionId, projectPath, webContents, {
+      onEvent: (event, sessionInstance) => {
+        this.onSessionEvent?.(event, sessionInstance)
+      }
+    })
 
     // 初始化（加载历史）
     await session.initialize()
@@ -233,13 +238,13 @@ class SessionManager {
     return session.setSessionTarget(target)
   }
 
-  async setSessionSubmodel(sessionId, model, reasoningEffort = 'medium') {
+  async setSessionSubmodel(sessionId, model, reasoningEffort = 'medium', options = {}) {
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new Error(`Session ${sessionId} not found`)
     }
 
-    return session.setSessionSubmodel(model, reasoningEffort)
+    return session.setSessionSubmodel(model, reasoningEffort, options)
   }
 
   applySessionSettings(sessionId, settings) {

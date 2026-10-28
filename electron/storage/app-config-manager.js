@@ -27,6 +27,9 @@ function getDefaultConfig() {
       // 软件配置
       theme: 'dark',
       language: 'zh-CN',
+      floatingMonitorMode: 'auto',
+      floatingMonitorPosition: null,
+      projectStageManagerEnabled: false,
       terminalTheme: 'ccgui-dark',
       terminalFontFamily: 'Menlo, Monaco, "Courier New", monospace',
       customTerminalThemeText: '',

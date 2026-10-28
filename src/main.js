@@ -4,6 +4,11 @@ import App from './App.vue'
 import { logger } from './utils/logger'
 import './styles/global.css'
 
+if (new URLSearchParams(window.location.search).get('view') === 'project-monitor') {
+  document.body.classList.add('ccgui-project-monitor-window')
+  document.title = '浮窗'
+}
+
 // 初始化日志系统
 logger.initialize().catch(error => {
   console.error('Failed to initialize logger:', error)

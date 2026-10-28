@@ -65,6 +65,12 @@ const languageOptions = [
   { value: 'en-US', label: 'English (开发中)', disabled: true }
 ]
 
+const floatingMonitorModeOptions = [
+  { value: 'off', label: '不使用' },
+  { value: 'auto', label: '自动' },
+  { value: 'always', label: '始终显示' }
+]
+
 // Bark 测试和保存状态
 const testingBark = ref(false)
 const savingBark = ref(false)
@@ -182,6 +188,15 @@ async function handleSaveProxyPort() {
         class="setting-select"
         :options="languageOptions"
         @update:model-value="updateSettings({ ...settings, language: $event }, true)"
+      />
+    </SettingItem>
+
+    <SettingItem title="悬浮监控窗" description="收起到悬浮窗，统一查看各工程的运行与完成状态">
+      <AppSelect
+        :model-value="settings.floatingMonitorMode || 'auto'"
+        class="setting-select"
+        :options="floatingMonitorModeOptions"
+        @update:model-value="updateSettings({ ...settings, floatingMonitorMode: $event }, true)"
       />
     </SettingItem>
 

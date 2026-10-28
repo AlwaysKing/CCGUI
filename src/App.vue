@@ -7,10 +7,12 @@ import { buildRuntimeShortcuts, findMatchingShortcut, getDefaultShortcutBindings
 
 const Welcome = defineAsyncComponent(() => import('./views/welcome/Welcome.vue'))
 const Workspace = defineAsyncComponent(() => import('./views/workspace/Workspace.vue'))
+const ProjectActivityMonitor = defineAsyncComponent(() => import('./views/monitor/ProjectActivityMonitor.vue'))
 const CodexModelCatalogImportDialog = defineAsyncComponent(() => import('./views/settings/components/dialogs/CodexModelCatalogImportDialog.vue'))
 
 const store = useAppStore()
 const sessionStore = useSessionStore()
+const isProjectMonitorView = new URLSearchParams(window.location.search).get('view') === 'project-monitor'
 const shortcutBindings = ref(getDefaultShortcutBindings())
 const runtimeShortcuts = computed(() => buildRuntimeShortcuts(shortcutBindings.value))
 
@@ -130,6 +132,10 @@ function handleAppConfigUpdated(event) {
   const nextSettings = event?.detail?.settings
   if (!nextSettings) return
 
+  if (nextSettings.floatingMonitorMode !== undefined) {
+    store.setFloatingMonitorMode(nextSettings.floatingMonitorMode)
+  }
+
   shortcutBindings.value = {
     ...getDefaultShortcutBindings(),
     ...normalizeShortcutBindings(nextSettings.shortcutBindings || {})
@@ -189,19 +195,30 @@ async function updateWindowTitle() {
       : store.currentProject?.name || '未知项目'
 
     const projectId = currentView.value === 'welcome' ? null : store.currentProject?.id
-    await window.electronAPI?.updateWindowTitle({ title, projectId })
+    const projectPath = currentView.value === 'welcome' ? '' : store.currentProject?.path
+    await window.electronAPI?.updateWindowTitle({ title, projectId, projectPath })
     logger.info('Window title updated', { title, view: currentView.value, projectId })
   } catch (error) {
     logger.error('Failed to update window title', { error: error.message })
   }
 }
 
-// 监听视图变化更新标题
-watch(currentView, () => {
+// 监听视图和工程切换更新窗口标题与工程窗口映射
+watch([
+  currentView,
+  () => store.currentProject?.id,
+  () => store.currentProject?.name,
+  () => store.currentProject?.path
+], () => {
   updateWindowTitle()
 })
 
 onMounted(async () => {
+  if (isProjectMonitorView) {
+    document.body.classList.add('ccgui-project-monitor-window')
+    return
+  }
+
   const appMountedAt = performance.now()
   logger.info('App mounted', { phase: 'start', sinceMountedMs: 0 })
 
@@ -267,7 +284,11 @@ onMounted(async () => {
 
   // Update window title on mount
   updateWindowTitle()
-  await loadShortcutBindings()
+  store.bindFloatingMonitorModeListener()
+  await Promise.all([
+    loadShortcutBindings(),
+    store.loadFloatingMonitorMode()
+  ])
   logger.info('App mounted', {
     phase: 'after-shortcuts',
     sinceMountedMs: Math.round(performance.now() - appMountedAt)
@@ -301,6 +322,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  document.body.classList.remove('ccgui-project-monitor-window')
   document.removeEventListener('keydown', handleGlobalSelectAll, true)
   document.removeEventListener('keydown', handleGlobalShortcut, true)
   window.removeEventListener('ccgui-app-config-updated', handleAppConfigUpdated)
@@ -308,22 +330,25 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-container">
+  <div class="app-container" :class="{ 'project-monitor-container': isProjectMonitorView }">
+    <ProjectActivityMonitor v-if="isProjectMonitorView" />
+
     <!-- Welcome Page - 显示项目列表 -->
-    <Welcome v-if="currentView === 'welcome'" :dock-drop-path="dockDropPath" @dock-drop-consumed="dockDropPath = null" />
+    <Welcome v-else-if="currentView === 'welcome'" :dock-drop-path="dockDropPath" @dock-drop-consumed="dockDropPath = null" />
 
     <!-- Workspace - 两栏布局（会话 + 聊天） -->
     <Workspace v-else />
 
     <!-- Codex 模型元数据导入提示 -->
     <CodexModelCatalogImportDialog
+      v-if="!isProjectMonitorView"
       v-model:visible="showCatalogImportDialog"
       :candidates="catalogImportCandidates"
       @confirm="handleImportCodexCatalogMetadata"
     />
 
     <!-- 窗口关闭确认弹窗 -->
-    <div v-if="showCloseConfirm" class="close-confirm-overlay">
+    <div v-if="!isProjectMonitorView && showCloseConfirm" class="close-confirm-overlay">
       <div class="close-confirm-dialog">
         <div class="close-confirm-content">
           <div class="close-confirm-icon">
@@ -376,6 +401,10 @@ body {
   flex-direction: column;
   background: #1E1E1E;
   color: #E4E4E7;
+}
+
+.app-container.project-monitor-container {
+  background: transparent;
 }
 
 .close-confirm-overlay {

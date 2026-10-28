@@ -67,6 +67,8 @@ const COLLAPSED_SIDEBAR_SAFE_WIDTH = 200
 const TERMINAL_MIN_HEIGHT = 140
 const TERMINAL_MAX_HEIGHT = 420
 const MAX_TASK_DOCK_ITEMS = 3
+let unsubscribeProjectSessionRequest = null
+let lastSyncedTaskActivityKey = ''
 const {
   sessionSidebarRef,
   chatRef,
@@ -147,9 +149,29 @@ function openTaskTemplatesDialog(section = 'routine') {
   showTaskTemplatesDialog.value = true
 }
 
-async function handleSelectSessionWithView(session) {
+async function handleSelectSessionWithView(sessionId) {
   primaryView.value = 'chat'
-  await handleSelectSession(session)
+  await handleSelectSession(sessionId)
+}
+
+async function selectProjectSessionById(sessionId) {
+  const projectId = store.currentProject?.id
+  if (!projectId || !sessionId) return
+
+  if (store.currentSession?.id === sessionId) {
+    primaryView.value = 'chat'
+    return
+  }
+
+  let session = store.currentProjectSessions.find(item => item.id === sessionId)
+  if (!session) {
+    await store.fetchSessions(projectId)
+    if (store.currentProject?.id !== projectId) return
+    session = store.currentProjectSessions.find(item => item.id === sessionId)
+  }
+  if (!session) return
+
+  await handleSelectSessionWithView(session.id)
 }
 
 const {
@@ -257,12 +279,39 @@ function normalizeTaskDockTask(task) {
 }
 
 function sortTaskDockItems(items) {
+  const orderByLabel = new Map(
+    taskLauncherTasks.value
+      .map(task => String(task?.label || '').trim())
+      .filter(Boolean)
+      .map((label, index) => [label, index])
+  )
+
   // 始终保持 task 在 tasks.json 中的原始定义顺序，不因运行状态变化而重排
-  return items
+  return [...items].sort((left, right) => {
+    const leftIndex = orderByLabel.get(left.label)
+    const rightIndex = orderByLabel.get(right.label)
+
+    if (leftIndex === undefined && rightIndex === undefined) return 0
+    if (leftIndex === undefined) return 1
+    if (rightIndex === undefined) return -1
+    return leftIndex - rightIndex
+  })
 }
 
-function trimTaskDockItems(items) {
-  return sortTaskDockItems(items).slice(0, MAX_TASK_DOCK_ITEMS)
+function limitTaskDockItems(items) {
+  const orderedItems = sortTaskDockItems(items)
+  // 运行中/启动中的任务全部保留，剩余槽位按最近使用时间补齐历史记录。
+  const pinnedItems = orderedItems.filter(item => item.running || item.starting)
+  const historyLimit = Math.max(0, MAX_TASK_DOCK_ITEMS - pinnedItems.length)
+  const historyItems = orderedItems
+    .filter(item => !item.running && !item.starting)
+    .sort((left, right) => Number(right.lastUsedAt || 0) - Number(left.lastUsedAt || 0))
+    .slice(0, historyLimit)
+  const keptLabels = new Set(
+    [...pinnedItems, ...historyItems].map(item => item.label)
+  )
+
+  return orderedItems.filter(item => keptLabels.has(item.label))
 }
 
 function upsertTaskDockItem(task, overrides = {}) {
@@ -286,7 +335,7 @@ function upsertTaskDockItem(task, overrides = {}) {
     ? taskDockItems.value.map((item, index) => (index === existingIndex ? nextItem : item))
     : [...taskDockItems.value, nextItem]
 
-  taskDockItems.value = trimTaskDockItems(nextItems)
+  taskDockItems.value = limitTaskDockItems(nextItems)
 }
 
 function syncTaskDockItems() {
@@ -352,7 +401,7 @@ function syncTaskDockItems() {
     })
   }
 
-  taskDockItems.value = trimTaskDockItems(syncedItems)
+  taskDockItems.value = limitTaskDockItems(syncedItems)
 }
 
 async function handleRunTaskLauncher(task) {
@@ -610,6 +659,29 @@ function handleTerminalRunningChange(nextState) {
   }
   // 同步到 store，供窗口关闭检测和项目切换检测使用
   store.setHasRunningTerminals(terminalRunningState.value.hasRunning)
+  syncProjectTaskActivity()
+}
+
+function syncProjectTaskActivity() {
+  const projectId = store.currentProject?.id
+  if (!projectId) {
+    return
+  }
+
+  const labels = [...new Set(
+    runningTaskLabels.value
+      .map(label => String(label || '').trim())
+      .filter(Boolean)
+  )]
+  const nextKey = `${projectId}\u0000${JSON.stringify(labels)}`
+  if (nextKey === lastSyncedTaskActivityKey) {
+    return
+  }
+  lastSyncedTaskActivityKey = nextKey
+  window.electronAPI?.syncProjectTaskActivity?.({
+    projectId,
+    runningTaskLabels: labels
+  })
 }
 
 const shouldShowChatPanel = computed(() => {
@@ -802,7 +874,7 @@ watch(() => store.currentSession?.id, (nextSessionId, previousSessionId) => {
             lastUsedAt: h.lastUsedAt || Date.now()
           }
         })
-      taskDockItems.value = trimTaskDockItems(restored)
+      taskDockItems.value = limitTaskDockItems(restored)
     }
   }
 
@@ -840,7 +912,7 @@ watch([taskLauncherTasks, () => sessionStore.currentSession?.id], ([tasks]) => {
       lastUsedAt: h.lastUsedAt || Date.now()
     }))
   if (restored.length) {
-    taskDockItems.value = trimTaskDockItems(restored)
+    taskDockItems.value = limitTaskDockItems(restored)
   }
 })
 
@@ -883,11 +955,23 @@ onMounted(async () => {
   // Render the workspace first, then hydrate project data in the background.
   if (store.currentProject) {
     requestAnimationFrame(() => {
-      if (store.currentProject?.id) {
-        void store.fetchSessions(store.currentProject.id)
-      }
+      void (async () => {
+        const projectId = store.currentProject?.id
+        if (!projectId) return
+
+        await store.fetchSessions(projectId)
+        const initialSessionId = new URLSearchParams(window.location.search).get('sessionId')
+        if (initialSessionId) {
+          await selectProjectSessionById(initialSessionId)
+        }
+      })()
     })
   }
+
+  unsubscribeProjectSessionRequest = window.electronAPI?.onProjectSessionRequest?.(({ sessionId }) => {
+    void selectProjectSessionById(sessionId)
+  }) || null
+  window.electronAPI?.notifyProjectSessionSelectionReady?.()
 
   // Add global event listeners
   window.addEventListener('mousemove', handleResize)
@@ -901,6 +985,15 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  const projectId = store.currentProject?.id
+  if (projectId) {
+    window.electronAPI?.syncProjectTaskActivity?.({
+      projectId,
+      runningTaskLabels: []
+    })
+  }
+  unsubscribeProjectSessionRequest?.()
+  unsubscribeProjectSessionRequest = null
   window.removeEventListener('mousemove', handleResize)
   window.removeEventListener('mouseup', stopResize)
   window.removeEventListener('mousemove', handlePreviewResize)
@@ -994,6 +1087,18 @@ async function handleToggleLock(session) {
   }
 }
 
+async function handleMinimizeToMonitor() {
+  try {
+    const result = await window.electronAPI.minimizeProjectToMonitor()
+    if (!result?.success) {
+      throw new Error(result?.error || '收起工程失败')
+    }
+  } catch (error) {
+    console.error('Failed to minimize project to monitor:', error)
+    alert('收起工程失败: ' + error.message)
+  }
+}
+
 watch([showClaudeSessions, showCodexSessions], () => {
   saveSessionFilterState()
 }, { immediate: true })
@@ -1031,6 +1136,21 @@ async function handleDeleteInactiveSessions() {
 
 <template>
   <div class="workspace-layout">
+    <button
+      v-if="sidebarCollapsed && store.floatingMonitorMode !== 'off'"
+      type="button"
+      class="monitor-window-titlebar-btn"
+      title="收起到悬浮窗"
+      aria-label="收起到悬浮窗"
+      @click="handleMinimizeToMonitor"
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="3" y="5" width="18" height="14" rx="2"/>
+        <path d="M8 9h8"/>
+        <path d="M8 13h5"/>
+      </svg>
+    </button>
+
     <div class="workspace-body">
       <!-- Session Sidebar -->
       <SessionSidebar
@@ -1067,6 +1187,7 @@ async function handleDeleteInactiveSessions() {
         @toggleRecycleBin="store.showRecycleBin = !store.showRecycleBin"
         @start="handleStartSession"
         @close="handleCloseSession"
+        @minimizeToMonitor="handleMinimizeToMonitor"
         @newSession="handleNewSession"
         @toggle="toggleSidebar"
         @rename="handleRenameSession"
@@ -1363,6 +1484,31 @@ async function handleDeleteInactiveSessions() {
   position: relative;
 }
 
+.monitor-window-titlebar-btn {
+  position: absolute;
+  top: 9px;
+  left: 78px;
+  z-index: 500;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #777781;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+}
+
+.monitor-window-titlebar-btn:hover {
+  color: #f97316;
+  border-color: rgba(249, 115, 22, 0.25);
+  background: rgba(249, 115, 22, 0.1);
+}
+
 .workspace-body {
   flex: 1;
   display: flex;
@@ -1514,7 +1660,7 @@ async function handleDeleteInactiveSessions() {
   min-width: 0;
   display: flex;
   align-items: center;
-  padding: 0 4px 0 76px;
+  padding: 0 4px 0 108px;
   font-size: 18px;
   font-weight: 600;
   color: rgba(228, 228, 231, 0.5);

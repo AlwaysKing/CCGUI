@@ -192,6 +192,32 @@ export function useSessionModelControls({
     })
   }
 
+  async function setSubModelForSession({
+    projectId,
+    sessionId,
+    workingDirectory,
+    model,
+    modelCardId,
+    reasoningEffort
+  }) {
+    const options = {
+      projectId,
+      workingDirectory,
+      model,
+      modelCardId,
+      reasoningEffort
+    }
+
+    if (hasActiveSessionBinding(sessionId)) {
+      return sessionStore.setSessionSubmodel(options)
+    }
+
+    return window.electronAPI.setSessionSubmodel({
+      ...options,
+      sessionId
+    })
+  }
+
   function persistSessionDerivedState(sessionId = getCurrentSessionId()) {
     if (!sessionId) {
       return
@@ -298,7 +324,9 @@ export function useSessionModelControls({
   })
 
   const currentSubModelValue = computed(() => {
-    const runtimeValue = typeof envInfo.value?.model === 'string' ? envInfo.value.model.trim() : ''
+    const runtimeValue = isSessionRuntimeStarted.value && typeof envInfo.value?.model === 'string'
+      ? envInfo.value.model.trim()
+      : ''
     if (runtimeValue) {
       return stripProviderPrefix(runtimeValue)
     }
@@ -320,7 +348,7 @@ export function useSessionModelControls({
   })
 
   const currentEffortValue = computed(() => {
-    const runtimeValue = typeof envInfo.value?.model_reasoning_effort === 'string'
+    const runtimeValue = isSessionRuntimeStarted.value && typeof envInfo.value?.model_reasoning_effort === 'string'
       ? envInfo.value.model_reasoning_effort.trim()
       : ''
     if (runtimeValue) {
@@ -557,30 +585,32 @@ export function useSessionModelControls({
   }
 
   async function handleQuickSubModelChange(option) {
-    if (!appStore.currentSession?.id) return
+    if (!appStore.currentProject?.id || !appStore.currentSession?.id) return
 
-    const selectedValue = option?.value || ''
-    const wasRuntimeStarted = isSessionRuntimeStarted.value
+    const plainOption = toPlainObject(option)
+    const selectedValue = plainOption?.value || ''
     if (!selectedValue || selectedValue === currentSubModelValue.value) {
-      return
-    }
-
-    if (!wasRuntimeStarted) {
       return
     }
 
     subModelSwitching.value = true
     try {
-      const result = await sessionStore.setSessionSubmodel({
+      const result = await setSubModelForSession({
+        projectId: appStore.currentProject.id,
+        sessionId: appStore.currentSession.id,
+        workingDirectory: appStore.currentProject.path || workingDirectory.value || '',
         model: selectedValue,
-        reasoningEffort: option.reasoningEffort || 'medium'
+        modelCardId: plainOption.modelCardId || null,
+        reasoningEffort: plainOption.reasoningEffort || 'medium'
       })
       if (!result?.success) {
         throw new Error(result?.error || '设置子模型失败')
       }
 
-      await loadProviderSubModels()
+      await loadModelConfigContext()
+      await loadProviderSubModels({ force: true })
       await loadSessionEffortCapabilities({ force: true })
+      await appStore.fetchSessions(appStore.currentProject.id)
     } catch (error) {
       logger.error('[Chat] Failed to quick switch sub model', {
         model: selectedValue,

@@ -657,11 +657,12 @@ function extractChangedFilesFromControlResponse(message = {}) {
  * 每个会话的独立实例，包含该会话的所有数据和状态
  */
 class SessionInstance {
-  constructor(sessionId, projectPath, webContents) {
+  constructor(sessionId, projectPath, webContents, { onEvent = null } = {}) {
     this.id = sessionId
     this.projectPath = projectPath
     this.webContents = webContents // 所属窗口的 webContents，用于向前端发送事件
     this.webContentsId = webContents?.id ?? null // 所属窗口 ID，用于按窗口关闭会话
+    this.eventObserver = typeof onEvent === 'function' ? onEvent : null
 
     // 计算 projectId（编码后的路径，用于历史存储）
     this.projectId = this.calculateProjectId()
@@ -3793,20 +3794,69 @@ class SessionInstance {
     }
   }
 
-  async setSessionSubmodel(model, reasoningEffort = 'medium') {
+  async setSessionSubmodel(model, reasoningEffort = 'medium', options = {}) {
     const normalizedModel = typeof model === 'string' ? model.trim() : ''
     const normalizedEffort = typeof reasoningEffort === 'string' ? reasoningEffort.trim() : ''
     if (!normalizedModel) {
       throw new Error('Missing model')
     }
 
-    if (!this.runtimeManager || !this.runtimeManager.isReady()) {
-      await this.startRuntime()
+    const appConfig = appConfigManager.loadConfig()
+    const resolvedConfig = this.loadResolvedRuntimeConfig()
+    const resolvedSettings = resolvedConfig.settings || {}
+    const sessionConfig = resolvedConfig.sessionConfig || null
+    const currentSettings = isPlainObject(sessionConfig?.settings) ? sessionConfig.settings : {}
+    const selectedSystemModelId = this.provider === 'codex'
+      ? ((resolvedSettings.targetKind === 'openai') ? null : (appConfig?.settings?.selectedCodexModelId || null))
+      : (appConfig?.settings?.selectedClaudeModelId || null)
+    const effectiveModelId = resolvedSettings.modelId || selectedSystemModelId || null
+    const configuredModel = effectiveModelId
+      ? findProviderModel(appConfig, this.provider, effectiveModelId)
+      : null
+    if (!configuredModel) {
+      throw new Error('找不到当前模型配置')
     }
 
+    const cards = Array.isArray(configuredModel.modelCards) ? configuredModel.modelCards : []
+    const modelCardId = typeof options?.modelCardId === 'string' ? options.modelCardId.trim() : ''
+    const targetCard = (modelCardId ? cards.find(card => card.id === modelCardId) : null)
+      || cards.find(card => card.modelName === normalizedModel)
+    if (!targetCard) {
+      throw new Error(`模型 ${normalizedModel} 不属于当前供应商配置`)
+    }
+
+    const nextSettings = {
+      ...currentSettings,
+      modelMode: 'custom',
+      modelId: configuredModel.id,
+      modelCardId: targetCard.id || null,
+      credentialId: resolvedSettings.credentialId || null,
+      targetKind: resolvedSettings.targetKind && !['system', 'project'].includes(resolvedSettings.targetKind)
+        ? resolvedSettings.targetKind
+        : 'provider'
+    }
+    const updatedConfig = await projectService.updateSessionConfig(this.projectId, this.id, {
+      name: sessionConfig?.name || '新会话',
+      settings: nextSettings
+    })
+    if (updatedConfig?.settings) {
+      this.applySessionSettings(updatedConfig.settings)
+    }
+
+    if (!this.runtimeManager || !this.runtimeManager.isReady()) {
+      this.emitConfigAppliedNotification('submodel', 'saved')
+      return {
+        success: true,
+        config: updatedConfig || null,
+        appliedLive: false
+      }
+    }
+
+    const nextResolvedConfig = this.loadResolvedRuntimeConfig()
+    this.syncRuntimeResolvedSettings(nextResolvedConfig.settings || null)
     const applied = await this.applyRuntimeSelection('submodel', {
-      settings: this.loadResolvedRuntimeConfig().settings || null,
-      modelOverride: normalizedModel,
+      settings: nextResolvedConfig.settings || null,
+      modelOverride: targetCard.modelName || normalizedModel,
       effort: normalizedEffort || 'medium',
       silent: false
     })
@@ -3822,6 +3872,7 @@ class SessionInstance {
 
     return {
       success: true,
+      config: updatedConfig || null,
       model: applied.model || normalizedModel,
       reasoningEffort: applied.reasoningEffort || normalizedEffort || 'medium',
       provider: this.provider,
@@ -3868,6 +3919,12 @@ class SessionInstance {
     }
     this.eventLog.push(event)
     this.appendEventToTurnHistory(event)
+
+    try {
+      this.eventObserver?.(event, this)
+    } catch (error) {
+      logger.warn(`[SessionInstance] Event observer failed for ${eventType}:`, error.message)
+    }
 
     if (this.webContents && !this.webContents.isDestroyed()) {
       this.webContents.send('session-event', event)

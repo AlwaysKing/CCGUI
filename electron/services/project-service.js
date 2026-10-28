@@ -142,6 +142,7 @@ function buildConfiguredSubModelOptions(model = null, preferredCardId = null) {
     .map(card => ({
       key: card.modelName,
       value: card.modelName,
+      modelCardId: card.id || null,
       label: card.modelName,
       description: configName ? `来自 ${configName}` : '',
       reasoningEffort: 'medium',

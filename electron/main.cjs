@@ -15,6 +15,10 @@ const providerInspector = require('./services/provider-inspector')
 const { getClaudePath } = require('./services/claude-path')
 const historyManager = require('./storage/history-manager')
 const projectConfigManager = require('./storage/project-config-manager')
+const {
+  ProjectActivityService,
+  normalizeFloatingMonitorMode
+} = require('./services/project-activity-service')
 // MCP 配置的 provider 实现（安装/卸载/启用禁用），上层只按 target 分派
 const MCP_CONFIG = {
   claude: require('./adapters/claude/mcp-config'),
@@ -36,6 +40,7 @@ const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
 const DEV_SERVER_URL = 'http://127.0.0.1:5183'
 const DEV_SERVER_WS_URL = 'ws://127.0.0.1:5183'
 const MAC_SCREEN_CAPTURE_PRIVACY_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+const PROJECT_MONITOR_WINDOW_TITLE = '浮窗'
 const RECENT_PROJECT_WINDOW_MS = 10 * 24 * 60 * 60 * 1000
 
 if (isDevRuntime) {
@@ -51,6 +56,13 @@ let isDev = isDevRuntime
 
 let mainWindow
 let sessionManager
+let projectActivityService
+let projectMonitorWindow
+let lastFocusedProjectWindow = null
+let projectMonitorReady = false
+let projectMonitorPositioned = false
+let projectMonitorPositionSaveTimer = null
+const trackedProjectWindows = new WeakSet()
 const projectFileWatchers = new Map()
 let terminalSequence = 0
 const terminalSessions = new Map()
@@ -637,6 +649,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js')
     }
   })
+  trackProjectWindow(mainWindow)
 
   // Set CSP for development
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -711,8 +724,562 @@ function createWindow() {
  * Initialize Session Manager
  */
 function initSessionManager() {
+  if (sessionManager) {
+    return
+  }
+
   // Create SessionManager instance (webContents will be passed per-session)
-  sessionManager = new SessionManager()
+  sessionManager = new SessionManager({
+    onSessionEvent: (event, session) => {
+      projectActivityService?.handleSessionEvent(event, session)
+    }
+  })
+}
+
+function initProjectActivityService() {
+  if (projectActivityService) {
+    return
+  }
+
+  const settings = appService.getAppConfig()?.settings || {}
+  projectActivityService = new ProjectActivityService()
+  projectActivityService.setMode(settings.floatingMonitorMode)
+  projectActivityService.setStageManagerEnabled(settings.projectStageManagerEnabled)
+  projectActivityService.on('updated', () => {
+    broadcastProjectActivitySnapshot()
+    syncProjectMonitorWindow()
+  })
+}
+
+function trackProjectWindow(win) {
+  if (!win || trackedProjectWindows.has(win)) {
+    return
+  }
+
+  trackedProjectWindows.add(win)
+  win._ccguiWebContentsId = win.webContents.id
+  win.webContents.on('did-start-loading', () => {
+    win._projectSessionSelectionReady = false
+  })
+  win.on('focus', () => {
+    if (win.projectId) {
+      win._stageManagerHidden = false
+      lastFocusedProjectWindow = win
+      syncProjectWindowVisibility(win)
+      projectActivityService?.setProjectFocused(win.projectId, true)
+      if (projectActivityService?.isStageManagerEnabled()) {
+        setImmediate(() => {
+          if (!win.isDestroyed() && win.isVisible()) {
+            enforceProjectStageManager(win)
+          }
+        })
+      }
+    }
+  })
+  win.on('blur', () => {
+    if (win.projectId) {
+      projectActivityService?.setProjectFocused(win.projectId, false)
+    }
+  })
+  for (const eventName of ['show', 'hide', 'minimize', 'restore']) {
+    win.on(eventName, () => {
+      syncProjectWindowVisibility(win)
+    })
+  }
+  win.on('closed', () => {
+    if (lastFocusedProjectWindow === win) {
+      lastFocusedProjectWindow = null
+    }
+    projectActivityService?.unregisterProjectWindow(win._ccguiWebContentsId)
+    setImmediate(() => {
+      if (process.platform !== 'darwin' && !hasRegularWindows()) {
+        app.quit()
+      }
+    })
+  })
+}
+
+function hasRegularWindows() {
+  return BrowserWindow.getAllWindows().some(win => win !== projectMonitorWindow)
+}
+
+function getProjectWindows() {
+  return BrowserWindow.getAllWindows().filter(win => win !== projectMonitorWindow && win.projectId)
+}
+
+function isProjectWindowVisible(win) {
+  return Boolean(
+    win &&
+    !win.isDestroyed() &&
+    win.projectId &&
+    win.isVisible() &&
+    !win.isMinimized()
+  )
+}
+
+function syncProjectWindowVisibility(win) {
+  if (!win || win.isDestroyed() || !win.projectId || !projectActivityService) {
+    return
+  }
+  const visible = isProjectWindowVisible(win)
+  projectActivityService.setProjectWindowVisible(win.projectId, visible)
+}
+
+function getProjectStageManagerTargetWindow(preferredProjectId = null) {
+  const projectWindows = getProjectWindows()
+  const candidates = [
+    preferredProjectId
+      ? projectWindows.find(win => win.projectId === preferredProjectId)
+      : null,
+    lastFocusedProjectWindow,
+    BrowserWindow.getFocusedWindow(),
+    ...projectWindows
+  ]
+
+  return candidates.find(win => (
+    win &&
+    !win.isDestroyed() &&
+    win !== projectMonitorWindow &&
+    win.projectId &&
+    win.isVisible() &&
+    !win.isMinimized()
+  )) || null
+}
+
+function enforceProjectStageManager(activeWindow) {
+  if (!projectActivityService?.isStageManagerEnabled() || !activeWindow || activeWindow.isDestroyed()) {
+    return
+  }
+  if (!activeWindow.projectId) {
+    return
+  }
+
+  activeWindow._stageManagerHidden = false
+  projectActivityService.restoreProject(activeWindow.projectId)
+
+  for (const window of getProjectWindows()) {
+    if (window === activeWindow || window.isDestroyed() || !window.isVisible()) {
+      continue
+    }
+    window._stageManagerHidden = true
+    window.setSkipTaskbar(true)
+    window.hide()
+    projectActivityService.setProjectWindowVisible(window.projectId, false)
+    projectActivityService.hideProject(window.projectId)
+  }
+}
+
+function applyProjectStageManagerMode(enabled) {
+  if (!projectActivityService) {
+    return
+  }
+
+  projectActivityService.setStageManagerEnabled(enabled)
+  if (!enabled) {
+    return
+  }
+
+  const activeWindow = getProjectStageManagerTargetWindow()
+  if (activeWindow) {
+    enforceProjectStageManager(activeWindow)
+  }
+}
+
+function registerProjectWindowActivity(win, { projectId, projectName = '', projectPath = '' }) {
+  if (!win || !projectId || !projectActivityService) {
+    return
+  }
+  trackProjectWindow(win)
+  projectActivityService.registerProjectWindow({
+    projectId,
+    projectName,
+    projectPath,
+    webContentsId: win._ccguiWebContentsId || win.webContents.id
+  })
+  syncProjectWindowVisibility(win)
+  if (win.isFocused()) {
+    lastFocusedProjectWindow = win
+    projectActivityService.setProjectFocused(projectId, true)
+  }
+}
+
+function getProjectMonitorDimensions() {
+  const projectCount = projectActivityService?.getSnapshot().projects.length || 0
+  return {
+    width: 264,
+    height: Math.min(440, Math.max(88, 50 + projectCount * 38))
+  }
+}
+
+function shouldShowProjectMonitor() {
+  if (!projectActivityService) {
+    return false
+  }
+  const mode = projectActivityService.getMode()
+  return mode === 'always' || (mode === 'auto' && projectActivityService.hasHiddenProjects())
+}
+
+function getProjectMonitorAnchorWindow() {
+  const focusedWindow = BrowserWindow.getFocusedWindow()
+  if (focusedWindow && focusedWindow !== projectMonitorWindow) {
+    return focusedWindow
+  }
+  const projectWindow = BrowserWindow.getAllWindows().find(win => win.projectId && win !== projectMonitorWindow)
+  return projectWindow || mainWindow || null
+}
+
+function normalizeProjectMonitorPosition(position) {
+  const x = Number(position?.x)
+  const y = Number(position?.y)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return null
+  }
+  return {
+    x: Math.round(x),
+    y: Math.round(y)
+  }
+}
+
+function getStoredProjectMonitorPosition() {
+  return normalizeProjectMonitorPosition(
+    appService.getAppConfig()?.settings?.floatingMonitorPosition
+  )
+}
+
+function clampProjectMonitorPosition(position, size, workArea) {
+  const maxX = Math.max(workArea.x, workArea.x + workArea.width - size.width)
+  const maxY = Math.max(workArea.y, workArea.y + workArea.height - size.height)
+  return {
+    x: Math.min(Math.max(position.x, workArea.x), maxX),
+    y: Math.min(Math.max(position.y, workArea.y), maxY)
+  }
+}
+
+function saveProjectMonitorPositionNow() {
+  if (!projectMonitorWindow || projectMonitorWindow.isDestroyed()) {
+    return
+  }
+
+  if (projectMonitorPositionSaveTimer) {
+    clearTimeout(projectMonitorPositionSaveTimer)
+    projectMonitorPositionSaveTimer = null
+  }
+
+  const [x, y] = projectMonitorWindow.getPosition()
+  const storedPosition = getStoredProjectMonitorPosition()
+  if (storedPosition?.x === x && storedPosition?.y === y) {
+    return
+  }
+
+  try {
+    appService.updateAppConfig({
+      settings: {
+        floatingMonitorPosition: { x, y }
+      }
+    })
+  } catch (error) {
+    logger.warn('[ProjectMonitor] Failed to save window position', { error: error.message })
+  }
+}
+
+function scheduleProjectMonitorPositionSave() {
+  if (projectMonitorPositionSaveTimer) {
+    clearTimeout(projectMonitorPositionSaveTimer)
+  }
+  projectMonitorPositionSaveTimer = setTimeout(() => {
+    projectMonitorPositionSaveTimer = null
+    saveProjectMonitorPositionNow()
+  }, 250)
+}
+
+function positionProjectMonitorWindow(preferredPosition = null) {
+  if (!projectMonitorWindow || projectMonitorWindow.isDestroyed()) {
+    return
+  }
+
+  const [width, height] = projectMonitorWindow.getContentSize()
+  const size = { width, height }
+  const savedPosition = normalizeProjectMonitorPosition(preferredPosition) || getStoredProjectMonitorPosition()
+
+  if (savedPosition) {
+    const display = electronScreen.getDisplayMatching({
+      x: savedPosition.x,
+      y: savedPosition.y,
+      width,
+      height
+    })
+    const clampedPosition = clampProjectMonitorPosition(savedPosition, size, display.workArea)
+    projectMonitorWindow.setPosition(clampedPosition.x, clampedPosition.y, false)
+    return
+  }
+
+  const anchorWindow = getProjectMonitorAnchorWindow()
+  const display = anchorWindow
+    ? electronScreen.getDisplayMatching(anchorWindow.getBounds())
+    : electronScreen.getPrimaryDisplay()
+  const { x, y, width: workWidth, height: workHeight } = display.workArea
+  projectMonitorWindow.setPosition(
+    Math.round(x + workWidth - width - 16),
+    Math.round(y + Math.min(16, Math.max(8, workHeight - height - 16))),
+    false
+  )
+}
+
+function handleProjectMonitorDisplayChange() {
+  if (!projectMonitorWindow || projectMonitorWindow.isDestroyed()) {
+    return
+  }
+  positionProjectMonitorWindow(normalizeProjectMonitorPosition(projectMonitorWindow.getPosition()))
+}
+
+function setProjectMonitorWindowTitle() {
+  if (projectMonitorWindow && !projectMonitorWindow.isDestroyed()) {
+    projectMonitorWindow.setTitle(PROJECT_MONITOR_WINDOW_TITLE)
+  }
+}
+
+function ensureProjectMonitorWindow() {
+  if (projectMonitorWindow && !projectMonitorWindow.isDestroyed()) {
+    return projectMonitorWindow
+  }
+
+  const dimensions = getProjectMonitorDimensions()
+  projectMonitorReady = false
+  projectMonitorPositioned = false
+  projectMonitorWindow = new BrowserWindow({
+    width: dimensions.width,
+    height: dimensions.height,
+    useContentSize: true,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    acceptFirstMouse: true,
+    // 浮窗永不获得焦点：点击它不会激活 App、也不会改变工程窗口的 key window 状态，
+    // 这样 toggle 时的 window.isFocused() 反映的才是点击之前的真实状态
+    focusable: false,
+    // macOS 下用 panel（NSPanel）实现非激活点击，避免点击浮窗时把 App 拉到前台
+    ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    title: PROJECT_MONITOR_WINDOW_TITLE,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  if (process.platform === 'darwin') {
+    projectMonitorWindow.setAlwaysOnTop(true, 'floating')
+    projectMonitorWindow.setVisibleOnAllWorkspaces(true, {
+      visibleOnFullScreen: true,
+      skipTransformProcessType: true
+    })
+  }
+
+  projectMonitorWindow.setTitle(PROJECT_MONITOR_WINDOW_TITLE)
+  projectMonitorWindow.on('page-title-updated', (event) => {
+    event.preventDefault()
+    setProjectMonitorWindowTitle()
+  })
+
+  if (isDev) {
+    projectMonitorWindow.loadURL(`${DEV_SERVER_URL}/?view=project-monitor`)
+  } else {
+    const indexPath = path.join(__dirname, '../dist/index.html')
+    projectMonitorWindow.loadURL(`file://${indexPath}?view=project-monitor`)
+  }
+
+  projectMonitorWindow.webContents.once('did-finish-load', () => {
+    projectMonitorReady = true
+    setProjectMonitorWindowTitle()
+    broadcastProjectActivitySnapshot()
+    if (shouldShowProjectMonitor()) {
+      if (!projectMonitorPositioned) {
+        positionProjectMonitorWindow()
+        projectMonitorPositioned = true
+      }
+      projectMonitorWindow.showInactive()
+    }
+  })
+
+  projectMonitorWindow.on('show', setProjectMonitorWindowTitle)
+  projectMonitorWindow.on('focus', setProjectMonitorWindowTitle)
+  projectMonitorWindow.on('move', scheduleProjectMonitorPositionSave)
+
+  projectMonitorWindow.on('close', (event) => {
+    saveProjectMonitorPositionNow()
+    if (!isAppQuitting) {
+      event.preventDefault()
+      if (!shouldShowProjectMonitor()) {
+        projectMonitorWindow.hide()
+      }
+    }
+  })
+
+  projectMonitorWindow.on('closed', () => {
+    if (projectMonitorPositionSaveTimer) {
+      clearTimeout(projectMonitorPositionSaveTimer)
+      projectMonitorPositionSaveTimer = null
+    }
+    projectMonitorWindow = null
+    projectMonitorReady = false
+    projectMonitorPositioned = false
+  })
+
+  return projectMonitorWindow
+}
+
+function syncProjectMonitorWindow() {
+  if (!projectActivityService) {
+    return
+  }
+
+  if (!shouldShowProjectMonitor()) {
+    if (projectMonitorWindow && !projectMonitorWindow.isDestroyed()) {
+      projectMonitorWindow.hide()
+    }
+    return
+  }
+
+  const monitorWindow = ensureProjectMonitorWindow()
+  if (!monitorWindow || monitorWindow.isDestroyed()) {
+    return
+  }
+
+  const dimensions = getProjectMonitorDimensions()
+  const [currentWidth, currentHeight] = monitorWindow.getContentSize()
+  if (currentWidth !== dimensions.width || currentHeight !== dimensions.height) {
+    monitorWindow.setContentSize(dimensions.width, dimensions.height)
+    if (projectMonitorPositioned) {
+      positionProjectMonitorWindow(normalizeProjectMonitorPosition(monitorWindow.getPosition()))
+    }
+  }
+  if (!projectMonitorPositioned) {
+    positionProjectMonitorWindow()
+    projectMonitorPositioned = true
+  }
+
+  if (projectMonitorReady && !monitorWindow.isVisible()) {
+    setProjectMonitorWindowTitle()
+    monitorWindow.showInactive()
+  }
+}
+
+function broadcastProjectActivitySnapshot() {
+  if (!projectActivityService || !projectMonitorWindow || projectMonitorWindow.isDestroyed()) {
+    return
+  }
+  projectMonitorWindow.webContents.send('project-activity-updated', projectActivityService.getSnapshot())
+}
+
+function broadcastFloatingMonitorMode(mode) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win === projectMonitorWindow) {
+      continue
+    }
+    const webContents = win.webContents
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('floating-monitor-mode-changed', { mode })
+    }
+  }
+}
+
+function requestProjectSessionSelection(projectWindow, sessionId) {
+  if (!projectWindow || projectWindow.isDestroyed() || !sessionId) {
+    return
+  }
+
+  projectWindow._pendingSessionId = sessionId
+  const sendRequest = () => {
+    if (projectWindow.isDestroyed() || projectWindow.webContents.isDestroyed()) {
+      return
+    }
+    const pendingSessionId = projectWindow._pendingSessionId
+    if (!pendingSessionId) {
+      return
+    }
+    projectWindow._pendingSessionId = null
+    projectWindow.webContents.send('project-session-request', {
+      sessionId: pendingSessionId
+    })
+  }
+
+  if (projectWindow._projectSessionSelectionReady) {
+    sendRequest()
+  }
+}
+
+async function restoreProjectWindowById(projectId, { focus = true, sessionId = null } = {}) {
+  if (!projectId) {
+    return null
+  }
+
+  projectActivityService?.restoreProject(projectId)
+  let projectWindow = BrowserWindow.getAllWindows().find(win => (
+    win !== projectMonitorWindow && win.projectId === projectId
+  ))
+
+  const createdProjectWindow = !projectWindow
+  if (createdProjectWindow) {
+    const projects = await projectService.scanProjects()
+    const project = projects.find(item => item.id === projectId)
+    if (project) {
+      projectWindow = openProjectWindow(project.id, project.name, project.path, sessionId)
+    }
+  }
+
+  if (projectWindow && !projectWindow.isDestroyed()) {
+    projectWindow.setSkipTaskbar(false)
+    if (projectWindow.isMinimized()) {
+      projectWindow.restore()
+    }
+    if (focus) {
+      projectWindow.show()
+      projectWindow.focus()
+    } else {
+      projectWindow._stageManagerHidden = false
+      projectWindow.showInactive()
+    }
+    syncProjectWindowVisibility(projectWindow)
+    if (projectActivityService?.isStageManagerEnabled()) {
+      enforceProjectStageManager(projectWindow)
+    }
+    if (!createdProjectWindow) {
+      requestProjectSessionSelection(projectWindow, sessionId)
+    }
+  }
+
+  syncProjectMonitorWindow()
+  return projectWindow
+}
+
+async function applyFloatingMonitorMode(mode) {
+  if (!projectActivityService) {
+    return
+  }
+
+  const normalizedMode = normalizeFloatingMonitorMode(mode)
+  projectActivityService.setMode(normalizedMode)
+
+  if (normalizedMode === 'off') {
+    const hiddenProjectIds = projectActivityService.getHiddenProjectIds()
+    for (const projectId of hiddenProjectIds) {
+      await restoreProjectWindowById(projectId, { focus: false })
+    }
+    if (projectMonitorWindow && !projectMonitorWindow.isDestroyed()) {
+      projectMonitorWindow.hide()
+    }
+  }
+
+  syncProjectMonitorWindow()
+  broadcastFloatingMonitorMode(normalizedMode)
 }
 
 const PROJECT_HIDDEN_RULES_RELATIVE_PATH = '.ccgui/hidden'
@@ -1472,6 +2039,10 @@ async function getOrCreateHydratedSession({
     createIfNotExists
   )
 
+  if (session) {
+    projectActivityService?.registerSession(session)
+  }
+
   if (sessionExisted && hasPersistedHistory && typeof session?.refreshStoredHistoryIfEmpty === 'function') {
     await session.refreshStoredHistoryIfEmpty()
   }
@@ -2171,7 +2742,14 @@ ipcMain.handle('list-session-effort-options', async (event, { projectId, session
   }
 })
 
-ipcMain.handle('set-session-submodel', async (event, { sessionId, model, reasoningEffort }) => {
+ipcMain.handle('set-session-submodel', async (event, {
+  projectId,
+  sessionId,
+  workingDirectory,
+  model,
+  modelCardId,
+  reasoningEffort
+}) => {
   try {
     const normalizedModel = typeof model === 'string' ? model.trim() : ''
     if (!sessionId) {
@@ -2181,12 +2759,24 @@ ipcMain.handle('set-session-submodel', async (event, { sessionId, model, reasoni
       throw new Error('Missing model')
     }
 
-    const result = await sessionManager.setSessionSubmodel(
+    const session = await getOrCreateHydratedSession({
       sessionId,
+      projectId,
+      projectPath: workingDirectory || (projectId ? decodeProjectPath(projectId) : null),
+      webContents: event.sender,
+      createIfNotExists: true
+    })
+
+    const result = await session.setSessionSubmodel(
       normalizedModel,
       typeof reasoningEffort === 'string' && reasoningEffort.trim()
         ? reasoningEffort.trim()
-        : 'medium'
+        : 'medium',
+      {
+        modelCardId: typeof modelCardId === 'string' && modelCardId.trim()
+          ? modelCardId.trim()
+          : null
+      }
     )
 
     return {
@@ -2567,10 +3157,13 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
     const existingWindow = allWindows.find(win => win.projectId === projectId)
     if (existingWindow) {
       // Focus the existing window instead of creating a new one
+      projectActivityService?.restoreProject(projectId)
       if (existingWindow.isMinimized()) {
         existingWindow.restore()
       }
+      existingWindow.show()
       existingWindow.focus()
+      enforceProjectStageManager(existingWindow)
       logger.info('[Window] Project already open, focused existing window', { projectId, windowId: existingWindow.id })
       return { success: true, windowId: existingWindow.id, reused: true }
     }
@@ -2602,6 +3195,14 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
 
     // Store window-project mapping
     newWindow.projectId = projectId
+    newWindow.projectPath = project.path
+    newWindow.projectName = project.name
+    registerProjectWindowActivity(newWindow, {
+      projectId,
+      projectName: project.name,
+      projectPath: project.path
+    })
+    enforceProjectStageManager(newWindow)
     const newWindowWebContentsId = newWindow.webContents.id
 
     // Load app with project ID
@@ -2661,9 +3262,11 @@ ipcMain.handle('focus-project-window', async (event, { projectId }) => {
 
     if (existingWindow) {
       // Focus the existing window
+      projectActivityService?.restoreProject(projectId)
       if (existingWindow.isMinimized()) {
         existingWindow.restore()
       }
+      existingWindow.show()
       existingWindow.focus()
       logger.info('[Window] Project already open in another window, focused it', { projectId, windowId: existingWindow.id })
       return { focused: true, windowId: existingWindow.id }
@@ -2675,6 +3278,146 @@ ipcMain.handle('focus-project-window', async (event, { projectId }) => {
     logger.error('[Window] Failed to focus project window', { error: error.message })
     return { focused: false }
   }
+})
+
+ipcMain.handle('minimize-project-to-monitor', async (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window || !window.projectId) {
+    return { success: false, error: '当前窗口没有关联工程' }
+  }
+  if (projectActivityService?.getMode() === 'off') {
+    return { success: false, error: '悬浮监控窗已关闭' }
+  }
+  if (!projectActivityService?.hideProject(window.projectId)) {
+    return { success: false, error: '工程活动状态尚未就绪' }
+  }
+  window._stageManagerHidden = false
+  window.setSkipTaskbar(true)
+  window.hide()
+  projectActivityService.setProjectWindowVisible(window.projectId, false)
+  syncProjectMonitorWindow()
+  return { success: true }
+})
+
+ipcMain.handle('restore-project-window', async (event, { projectId, sessionId = null }) => {
+  try {
+    const targetSessionId = sessionId || projectActivityService?.getNextProjectTargetSessionId(projectId) || null
+    const window = await restoreProjectWindowById(projectId, { sessionId: targetSessionId })
+    return { success: Boolean(window), windowId: window?.id || null }
+  } catch (error) {
+    logger.error('[ProjectMonitor] Failed to restore project window', {
+      projectId,
+      error: error.message
+    })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('toggle-project-window', async (event, { projectId }) => {
+  try {
+    if (!projectId || !projectActivityService) {
+      return { success: false, error: '缺少工程信息' }
+    }
+
+    const project = projectActivityService.getSnapshot().projects
+      .find(item => item.projectId === projectId)
+    if (!project) {
+      return { success: false, error: '工程活动状态尚未就绪' }
+    }
+
+    const window = getProjectWindows().find(item => item.projectId === projectId)
+    const windowVisible = isProjectWindowVisible(window)
+    // 点击时现场查询该工程窗口是否在最前：
+    // 1. getFocusedWindow() 有值 => App 处于激活状态（App 失活时返回 null）
+    // 2. window.isFocused() => 该窗口是 App 内的 key window
+    const windowForeground = Boolean(
+      window &&
+      windowVisible &&
+      BrowserWindow.getFocusedWindow() &&
+      window.isFocused()
+    )
+    const action = projectActivityService.getProjectToggleAction(projectId, {
+      windowVisible,
+      windowForeground
+    })
+    projectActivityService.setProjectWindowVisible(projectId, windowVisible)
+
+    if (action !== 'hide') {
+      const targetSessionId = projectActivityService.getNextProjectTargetSessionId(projectId, {
+        advance: action === 'activate-session'
+      }) || null
+      const restoredWindow = await restoreProjectWindowById(projectId, { sessionId: targetSessionId })
+      return {
+        success: Boolean(restoredWindow),
+        windowId: restoredWindow?.id || null,
+        action
+      }
+    }
+
+    if (!window || window.isDestroyed()) {
+      return { success: false, error: '工程窗口不存在' }
+    }
+
+    window._stageManagerHidden = false
+    window.setSkipTaskbar(true)
+    window.hide()
+    projectActivityService.setProjectWindowVisible(projectId, false)
+    projectActivityService.hideProject(projectId)
+    syncProjectMonitorWindow()
+    return { success: true, windowId: window.id, action: 'hide' }
+  } catch (error) {
+    logger.error('[ProjectMonitor] Failed to toggle project window', {
+      projectId,
+      error: error.message
+    })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.on('project-session-selection-ready', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window) {
+    return
+  }
+  window._projectSessionSelectionReady = true
+  const sessionId = window._pendingSessionId
+  if (sessionId) {
+    window._pendingSessionId = null
+    window.webContents.send('project-session-request', { sessionId })
+  }
+})
+
+ipcMain.handle('get-project-activity', async () => {
+  if (!projectActivityService) {
+    return { mode: 'auto', projects: [] }
+  }
+  return projectActivityService.getSnapshot()
+})
+
+ipcMain.handle('mark-project-activity-session-seen', async (event, { projectId, sessionId }) => {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window || !projectId || !sessionId) {
+    return { success: false, error: '缺少工程活动查看信息' }
+  }
+  if (window.projectId && window.projectId !== projectId) {
+    return { success: false, error: '会话不属于当前工程窗口' }
+  }
+
+  projectActivityService?.markSessionSeen(projectId, sessionId)
+  return { success: true }
+})
+
+ipcMain.on('sync-project-task-activity', (event, { projectId, runningTaskLabels } = {}) => {
+  if (!projectId) {
+    return
+  }
+
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window || (window.projectId && window.projectId !== projectId)) {
+    return
+  }
+
+  projectActivityService?.setProjectRunningTasks(projectId, runningTaskLabels)
 })
 
 // Check if project folder exists
@@ -2737,13 +3480,26 @@ ipcMain.handle('window-close-response', async (event, { canClose }) => {
 })
 
 // Update window title and projectId
-ipcMain.handle('update-window-title', async (event, { title, projectId }) => {
+ipcMain.handle('update-window-title', async (event, { title, projectId, projectPath = '' }) => {
   const window = BrowserWindow.fromWebContents(event.sender)
   if (window) {
     window.setTitle(title)
+    if (projectPath) {
+      window.projectPath = projectPath
+    }
     // Update projectId for tracking which project is open in this window
     if (projectId !== undefined) {
       window.projectId = projectId || null
+      window.projectPath = projectPath || ''
+      if (projectId) {
+        registerProjectWindowActivity(window, {
+          projectId,
+          projectName: title,
+          projectPath: projectPath || window.projectPath || ''
+        })
+      } else {
+        projectActivityService?.unregisterProjectWindow(window._ccguiWebContentsId)
+      }
     }
     logger.info('[Window] Updated window title:', title, { projectId })
     return { success: true }
@@ -3540,6 +4296,12 @@ ipcMain.handle('update-app-config', async (event, { updates }) => {
     // 模型卡片保存后立刻刷新 Codex 模型目录，不必等下次启动 codex 进程
     if (updates?.settings && Object.prototype.hasOwnProperty.call(updates.settings, 'codexModels')) {
       localProxy.writeCodexCatalog(config)
+    }
+    if (updates?.settings && Object.prototype.hasOwnProperty.call(updates.settings, 'floatingMonitorMode')) {
+      await applyFloatingMonitorMode(updates.settings.floatingMonitorMode)
+    }
+    if (updates?.settings && Object.prototype.hasOwnProperty.call(updates.settings, 'projectStageManagerEnabled')) {
+      applyProjectStageManagerMode(updates.settings.projectStageManagerEnabled)
     }
     return { success: true, config }
   } catch (error) {
@@ -6525,6 +7287,8 @@ app.on('open-file', (event, filePath) => {
     const existingWindow = findWindowByProjectPath(filePath)
     if (existingWindow) {
       logger.info('[Dock] Found existing window for project, focusing it')
+      projectActivityService?.restoreProject(existingWindow.projectId)
+      existingWindow.show()
       existingWindow.focus()
       return
     }
@@ -6578,16 +7342,21 @@ function findWindowByProjectPath(projectPath) {
  * @param {string} projectId - Encoded project ID (for URL parameter)
  * @param {string} projectName - Project name (for window title)
  * @param {string} projectPath - Original project path (for window lookup)
+ * @param {string|null} sessionId - Session to select after the project opens
  */
-function openProjectWindow(projectId, projectName, projectPath) {
+function openProjectWindow(projectId, projectName, projectPath, sessionId = null) {
   // Check if project is already open in another window
   const existingWindow = BrowserWindow.getAllWindows().find(win => win.projectId === projectId)
   if (existingWindow) {
     // Focus the existing window instead of creating a new one
+    projectActivityService?.restoreProject(projectId)
     if (existingWindow.isMinimized()) {
       existingWindow.restore()
     }
+    existingWindow.show()
     existingWindow.focus()
+    enforceProjectStageManager(existingWindow)
+    requestProjectSessionSelection(existingWindow, sessionId)
     logger.info('[Window] Project already open, focused existing window', { projectId, windowId: existingWindow.id })
     return existingWindow
   }
@@ -6614,15 +7383,22 @@ function openProjectWindow(projectId, projectName, projectPath) {
   newWindow.projectId = projectId
   newWindow.projectName = projectName
   newWindow.projectPath = projectPath
+  registerProjectWindowActivity(newWindow, {
+    projectId,
+    projectName,
+    projectPath
+  })
+  enforceProjectStageManager(newWindow)
 
   // Load app with project ID
+  const sessionQuery = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ''
   if (isDev) {
-    const url = `${DEV_SERVER_URL}/?projectId=${encodeURIComponent(projectId)}`
+    const url = `${DEV_SERVER_URL}/?projectId=${encodeURIComponent(projectId)}${sessionQuery}`
     logger.info('[Window] Loading URL in new window', { url })
     newWindow.loadURL(url)
   } else {
     const indexPath = path.join(__dirname, '../dist/index.html')
-    newWindow.loadURL(`file://${indexPath}?projectId=${encodeURIComponent(projectId)}`)
+    newWindow.loadURL(`file://${indexPath}?projectId=${encodeURIComponent(projectId)}${sessionQuery}`)
   }
 
   // 拦截窗口关闭以检测运行中的任务
@@ -6668,6 +7444,7 @@ function openWelcomeWithDropPath(folderPath) {
       nodeIntegration: false
     }
   })
+  trackProjectWindow(newWindow)
   const newWindowWebContentsId = newWindow.webContents.id
 
   if (isDev) {
@@ -6803,23 +7580,14 @@ function getDockProjectLabel(project) {
   return String(name).replace(/\s+/g, ' ').trim() || '未命名项目'
 }
 
-function openDockProject(project) {
+async function openDockProject(project) {
   if (!project?.path) {
     return
   }
 
   const projectId = project.id || encodeProjectPath(project.path)
-  const projectName = getDockProjectLabel(project)
-  const existingWindow = findWindowByProjectPath(project.path)
-
-  if (existingWindow) {
-    logger.info('[Dock] Focus recent project window', { projectId, projectPath: project.path })
-    existingWindow.focus()
-    return
-  }
-
-  logger.info('[Dock] Open recent project', { projectId, projectPath: project.path })
-  openProjectWindow(projectId, projectName, project.path)
+  logger.info('[Dock] Restore recent project', { projectId, projectPath: project.path })
+  await restoreProjectWindowById(projectId)
 }
 
 function buildRecentProjectDockSubmenu(projects = []) {
@@ -6840,7 +7608,15 @@ function buildRecentProjectDockSubmenu(projects = []) {
   return recentProjects.map(project => ({
     label: getDockProjectLabel(project),
     sublabel: project.path,
-    click: () => openDockProject(project)
+    click: () => {
+      openDockProject(project).catch(error => {
+        logger.error('[Dock] Failed to restore recent project', {
+          projectId: project.id,
+          projectPath: project.path,
+          error: error.message
+        })
+      })
+    }
   }))
 }
 
@@ -6921,6 +7697,7 @@ function createNewWindow() {
       nodeIntegration: false
     }
   })
+  trackProjectWindow(newWindow)
   const newWindowWebContentsId = newWindow.webContents.id
 
   // Load app without project ID (shows hello page)
@@ -6965,8 +7742,13 @@ app.whenReady().then(() => {
   logger.info('[App] userData path', { userData: app.getPath('userData') })
   logger.info('[Startup] whenReady', { sinceAppStartMs: 0 })
   registerAssetProtocol()
+  initProjectActivityService()
 
   createWindow()
+  syncProjectMonitorWindow()
+  electronScreen.on('display-added', handleProjectMonitorDisplayChange)
+  electronScreen.on('display-removed', handleProjectMonitorDisplayChange)
+  electronScreen.on('display-metrics-changed', handleProjectMonitorDisplayChange)
   setupDockMenu().catch(error => {
     logger.warn('[Dock] Failed to setup dock menu on startup', { error: error.message })
   })
@@ -6995,7 +7777,12 @@ app.whenReady().then(() => {
   })
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    const hiddenProjectIds = projectActivityService?.getHiddenProjectIds() || []
+    if (hiddenProjectIds.length > 0) {
+      void restoreProjectWindowById(hiddenProjectIds[0])
+      return
+    }
+    if (!hasRegularWindows()) {
       createWindow()
     }
   })
@@ -7008,6 +7795,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  saveProjectMonitorPositionNow()
   isAppQuitting = true
   localProxy.stop().catch(() => {})
   for (const window of BrowserWindow.getAllWindows()) {

@@ -999,7 +999,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="task-workspace">
-    <header class="task-topbar">
+    <header class="task-topbar" :class="{ 'sidebar-collapsed': showSidebarToggle }">
       <div class="task-topbar-left">
         <button
           v-if="showSidebarToggle"
@@ -1485,6 +1485,10 @@ onBeforeUnmount(() => {
   padding: 20px 24px 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   -webkit-app-region: drag;
+}
+
+.task-topbar.sidebar-collapsed {
+  padding-left: 108px;
 }
 
 .task-topbar-left {

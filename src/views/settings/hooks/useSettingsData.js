@@ -79,6 +79,7 @@ export function useSettingsData(emit) {
   const settings = ref({
     theme: 'dark',
     language: 'zh-CN',
+    floatingMonitorMode: 'auto',
     terminalTheme: 'ccgui-dark',
     terminalFontFamily: 'Menlo, Monaco, "Courier New", monospace',
     customTerminalThemeText: '',
@@ -238,6 +239,9 @@ export function useSettingsData(emit) {
         const config = result.config
         if (config.settings) {
           settings.value = { ...settings.value, ...config.settings }
+          if (!['off', 'auto', 'always'].includes(settings.value.floatingMonitorMode)) {
+            settings.value.floatingMonitorMode = 'auto'
+          }
           claudeModels.value = (config.settings.claudeModels || []).map(normalizeModelEntry)
           codexModels.value = (config.settings.codexModels || []).map(normalizeModelEntry)
           prompts.value = config.settings.prompts || []

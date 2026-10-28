@@ -3542,7 +3542,7 @@ function handleToggleAgentRail() {
 
 .top-bar.sidebar-collapsed {
   /* 折叠时为红绿灯留出空间 */
-  padding-left: 80px;
+  padding-left: 108px;
 }
 
 /* Expand Button in Top Bar */

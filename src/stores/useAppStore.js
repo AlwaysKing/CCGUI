@@ -25,6 +25,7 @@ const STORAGE_KEYS = {
 
 let hasBoundSessionCompletionListener = false
 let hasBoundSessionStatusListener = false
+let hasBoundFloatingMonitorModeListener = false
 
 // 播放后台权限请求提示音
 async function playPermissionAlertSound() {
@@ -67,6 +68,7 @@ export const useAppStore = defineStore('app', () => {
   // State
   const projects = ref([])
   const sessions = ref([])
+  const floatingMonitorMode = ref('auto')
   const currentProject = ref(null)
   const currentSession = ref(null) // 会话元信息（从文件系统扫描）
   const sessionStatuses = ref({}) // session 状态对象：{ ready, processing, streaming, unseenCompleted }
@@ -142,6 +144,35 @@ export const useAppStore = defineStore('app', () => {
 
   function setHasRunningTerminals(value) {
     hasRunningTerminals.value = Boolean(value)
+  }
+
+  function normalizeFloatingMonitorMode(value) {
+    return ['off', 'auto', 'always'].includes(value) ? value : 'auto'
+  }
+
+  function setFloatingMonitorMode(value) {
+    floatingMonitorMode.value = normalizeFloatingMonitorMode(value)
+  }
+
+  async function loadFloatingMonitorMode() {
+    try {
+      const result = await window.electronAPI.getAppConfig()
+      if (result?.success) {
+        setFloatingMonitorMode(result.config?.settings?.floatingMonitorMode)
+      }
+    } catch (e) {
+      logger.warn('[AppStore] Failed to load floating monitor mode', { error: e.message })
+    }
+  }
+
+  function bindFloatingMonitorModeListener() {
+    if (hasBoundFloatingMonitorModeListener || typeof window === 'undefined') {
+      return
+    }
+    window.electronAPI.onFloatingMonitorModeChanged(({ mode }) => {
+      setFloatingMonitorMode(mode)
+    })
+    hasBoundFloatingMonitorModeListener = true
   }
 
   function ensureSessionStatus(sessionId) {
@@ -683,15 +714,26 @@ export const useAppStore = defineStore('app', () => {
         throw new Error(`当前会话不可用：创建时供应商为 ${initProvider}，当前供应商为 ${currentProvider}`)
       }
 
-      clearSessionUnseenCompleted(session.id)
-      patchSessionStatus(session.id, { pendingPermission: false })
-
-      // 更新当前会话元信息
-      currentSession.value = session
-
       // 委托给 SessionStore 初始化会话
       const sessionStore = useSessionStore()
       await sessionStore.switchToSession(session.id, currentProject.value.path)
+
+      try {
+        await window.electronAPI?.markProjectActivitySessionSeen?.({
+          projectId: currentProject.value.id,
+          sessionId: session.id
+        })
+      } catch (activityError) {
+        logger.warn('Failed to mark project activity session as seen', {
+          error: activityError.message,
+          sessionId: session.id
+        })
+      }
+
+      // 仅在会话切换成功后更新当前会话和已查看状态，避免失败时丢失待查看目标。
+      currentSession.value = session
+      clearSessionUnseenCompleted(session.id)
+      patchSessionStatus(session.id, { pendingPermission: false })
 
       return session
     } catch (e) {
@@ -804,6 +846,7 @@ export const useAppStore = defineStore('app', () => {
     // State
     projects,
     sessions,
+    floatingMonitorMode,
     currentProject,
     currentSession,
     sessionStatuses,
@@ -829,6 +872,9 @@ export const useAppStore = defineStore('app', () => {
     fetchSessions,
     fetchRunningSessions,
     setHasRunningTerminals,
+    setFloatingMonitorMode,
+    loadFloatingMonitorMode,
+    bindFloatingMonitorModeListener,
     markSessionCompletedUnseen,
     clearSessionUnseenCompleted,
     createSession,

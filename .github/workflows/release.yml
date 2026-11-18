@@ -23,8 +23,8 @@ concurrency:
 
 jobs:
   build-release:
-    # macos-14 是 GitHub 托管的 Apple Silicon（arm64）机器，构建 arm64 产物是原生的
-    runs-on: macos-14
+    # macos-15 是 GitHub 托管的 Apple Silicon（arm64）机器，构建 arm64 产物是原生的
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 

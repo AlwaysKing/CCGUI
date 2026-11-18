@@ -36,6 +36,8 @@ assert.match(script, /\/usr\/bin\/ditto "\$SOURCE" "\$TARGET"/)
 assert.match(script, /\/usr\/bin\/open "\$TARGET"/)
 assert.match(script, /CCGUI'\\''s\.app/)
 assert.match(script, /\/Applications\/CCGUI\.app\.backup-4321/)
+assert.doesNotMatch(script, /CCGUI_UPDATE_DAEMON/)
+assert.match(script, /\/usr\/bin\/nohup \/bin\/sh "\$0" --daemon/)
 
 async function run() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccgui-app-updater-test-'))
@@ -75,7 +77,10 @@ async function run() {
     fs.writeFileSync(replaceScriptPath, replaceScript, { mode: 0o755 })
 
     await new Promise(resolve => setTimeout(resolve, 100))
-    const helperProcess = spawn('/bin/sh', [replaceScriptPath], { stdio: 'ignore' })
+    const helperProcess = spawn('/bin/sh', [replaceScriptPath], {
+      stdio: 'ignore',
+      env: { ...process.env, CCGUI_UPDATE_DAEMON: '1' }
+    })
     const helperExitCode = await new Promise((resolve, reject) => {
       helperProcess.once('error', reject)
       helperProcess.once('exit', resolve)
@@ -125,7 +130,7 @@ async function run() {
       .replaceAll('/usr/bin/open', '/usr/bin/true')
       .replaceAll('/usr/bin/osascript', '/usr/bin/true')
     fs.writeFileSync(failedScriptPath, failedScript, { mode: 0o755 })
-    const failedHelperProcess = spawn('/bin/sh', [failedScriptPath], {
+    const failedHelperProcess = spawn('/bin/sh', [failedScriptPath, '--daemon'], {
       stdio: 'ignore',
       env: { ...process.env, CCGUI_UPDATE_DAEMON: '1' }
     })

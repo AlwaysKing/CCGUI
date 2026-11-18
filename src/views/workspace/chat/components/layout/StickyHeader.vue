@@ -179,24 +179,26 @@ onBeforeUnmount(() => {
             <span>我的提问</span>
             <span class="question-list-count">{{ questionCount }}</span>
           </div>
-          <button
-            class="question-nav-btn active"
-            @click.stop="toggleQuestionList"
-            title="返回消息预览"
-            aria-label="返回消息预览"
-            :aria-expanded="true"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="7 9 12 4 17 9"></polyline>
-              <polyline points="7 15 12 20 17 15"></polyline>
-            </svg>
-          </button>
-          <button class="scroll-up-btn" @click="scrollToUserMessage" title="滚动到当前提问">
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="12" y1="19" x2="12" y2="5"></line>
-              <polyline points="5 12 12 5 19 12"></polyline>
-            </svg>
-          </button>
+          <div class="sticky-actions">
+            <button
+              class="question-nav-btn active"
+              @click.stop="toggleQuestionList"
+              title="返回消息预览"
+              aria-label="返回消息预览"
+              :aria-expanded="true"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="7 9 12 4 17 9"></polyline>
+                <polyline points="7 15 12 20 17 15"></polyline>
+              </svg>
+            </button>
+            <button class="scroll-up-btn" @click="scrollToUserMessage" title="滚动到当前提问">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="19" x2="12" y2="5"></line>
+                <polyline points="5 12 12 5 19 12"></polyline>
+              </svg>
+            </button>
+          </div>
         </div>
         <div ref="questionListRef" class="question-list-scroll">
           <button
@@ -232,25 +234,27 @@ onBeforeUnmount(() => {
             <span class="sticky-info-icon">⚡</span>
             {{ formattedTokens }}
           </span>
-          <button
-            class="question-nav-btn"
-            :class="{ active: showQuestionList }"
-            @click.stop="toggleQuestionList"
-            title="展示所有我的提问"
-            aria-label="展示所有我的提问"
-            :aria-expanded="showQuestionList"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="7 9 12 4 17 9"></polyline>
-              <polyline points="7 15 12 20 17 15"></polyline>
-            </svg>
-          </button>
-          <button class="scroll-up-btn" @click="scrollToUserMessage" title="滚动到提问">
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="12" y1="19" x2="12" y2="5"></line>
-              <polyline points="5 12 12 5 19 12"></polyline>
-            </svg>
-          </button>
+          <div class="sticky-actions">
+            <button
+              class="question-nav-btn"
+              :class="{ active: showQuestionList }"
+              @click.stop="toggleQuestionList"
+              title="展示所有我的提问"
+              aria-label="展示所有我的提问"
+              :aria-expanded="showQuestionList"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="7 9 12 4 17 9"></polyline>
+                <polyline points="7 15 12 20 17 15"></polyline>
+              </svg>
+            </button>
+            <button class="scroll-up-btn" @click="scrollToUserMessage" title="滚动到提问">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="19" x2="12" y2="5"></line>
+                <polyline points="5 12 12 5 19 12"></polyline>
+              </svg>
+            </button>
+          </div>
         </div>
         <div class="sticky-text">{{ message.content }}</div>
       </div>
@@ -274,25 +278,27 @@ onBeforeUnmount(() => {
             <span class="sticky-info-icon">⚡</span>
             {{ formattedTokens }}
           </span>
-          <button
-            class="question-nav-btn"
-            :class="{ active: showQuestionList }"
-            @click.stop="toggleQuestionList"
-            title="展示所有我的提问"
-            aria-label="展示所有我的提问"
-            :aria-expanded="showQuestionList"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="7 9 12 4 17 9"></polyline>
-              <polyline points="7 15 12 20 17 15"></polyline>
-            </svg>
-          </button>
-          <button class="scroll-up-btn" @click="scrollToUserMessage" title="滚动到提问">
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="12" y1="19" x2="12" y2="5"></line>
-              <polyline points="5 12 12 5 19 12"></polyline>
-            </svg>
-          </button>
+          <div class="sticky-actions">
+            <button
+              class="question-nav-btn"
+              :class="{ active: showQuestionList }"
+              @click.stop="toggleQuestionList"
+              title="展示所有我的提问"
+              aria-label="展示所有我的提问"
+              :aria-expanded="showQuestionList"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="7 9 12 4 17 9"></polyline>
+                <polyline points="7 15 12 20 17 15"></polyline>
+              </svg>
+            </button>
+            <button class="scroll-up-btn" @click="scrollToUserMessage" title="滚动到提问">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="19" x2="12" y2="5"></line>
+                <polyline points="5 12 12 5 19 12"></polyline>
+              </svg>
+            </button>
+          </div>
         </div>
         <div class="sticky-text-md">
           <CopyButton
@@ -401,6 +407,14 @@ onBeforeUnmount(() => {
   color: #A78BFA;
 }
 
+.sticky-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
 /* 顶部操作按钮 */
 .scroll-up-btn,
 .question-nav-btn {
@@ -416,7 +430,6 @@ onBeforeUnmount(() => {
   color: #71717A;
   cursor: pointer;
   transition: all 0.15s;
-  margin-left: 4px;
 }
 
 .scroll-up-btn:hover,

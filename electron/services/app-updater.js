@@ -55,8 +55,8 @@ function buildInstallScript({
   return `#!/bin/sh
 set -u
 
-if [ "\${CCGUI_UPDATE_DAEMON:-0}" != "1" ]; then
-  CCGUI_UPDATE_DAEMON=1 /usr/bin/nohup /bin/sh "$0" >/dev/null 2>&1 &
+if [ "\${1:-}" != "--daemon" ]; then
+  /usr/bin/nohup /bin/sh "$0" --daemon >/dev/null 2>&1 &
   exit 0
 fi
 

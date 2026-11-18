@@ -141,7 +141,9 @@ protocol.registerSchemesAsPrivileged([
  * Get app icon path
  */
 function getIconPath() {
-  return path.join(__dirname, '../build/icons/icon.icns')
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.icns')
+    : path.join(__dirname, '../resource/icon.icns')
 }
 
 function getCcgGuiHistoryRoot() {
@@ -8231,9 +8233,7 @@ async function setupDockMenu() {
   const { Menu, nativeImage } = require('electron')
 
   // Set dock icon
-  const iconPath = isDev
-    ? path.join(__dirname, '../build/icons/icon.icns')
-    : path.join(__dirname, '../build/icons/icon.icns')
+  const iconPath = getIconPath()
 
   try {
     if (fs.existsSync(iconPath)) {

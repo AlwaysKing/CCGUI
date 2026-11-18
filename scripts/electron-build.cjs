@@ -1,3 +1,4 @@
+const fs = require('fs')
 const path = require('path')
 const { spawnSync } = require('child_process')
 const {
@@ -20,6 +21,7 @@ const electronBuilder = path.join(
   '.bin',
   process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder'
 )
+const appIconPath = path.join(__dirname, '..', 'resource', 'icon.icns')
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -36,6 +38,10 @@ function run(command, args) {
 }
 
 console.log(`[build] version=${buildVersion} bundleVersion=${bundleVersion}`)
+if (!fs.existsSync(appIconPath)) {
+  console.error(`[build] Missing app icon: ${appIconPath}`)
+  process.exit(1)
+}
 run(npmCommand, ['run', 'build'])
 run(electronBuilder, [
   `--config.extraMetadata.version=${bundleVersion}`,

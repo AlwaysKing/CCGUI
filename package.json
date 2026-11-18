@@ -41,7 +41,7 @@
       "output": "output"
     },
     "mac": {
-      "icon": "build/icons/icon.icns",
+      "icon": "resource/icon.icns",
       "category": "public.app-category.developer-tools",
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "extendInfo": {

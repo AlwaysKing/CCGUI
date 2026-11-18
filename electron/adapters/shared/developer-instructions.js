@@ -1,7 +1,7 @@
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const appConfigManager = require('../../storage/app-config-manager')
+const { getCcguiPath } = require('../../runtime-paths')
 
 function getProviderDisplayName(provider = '') {
   switch (String(provider || '').trim().toLowerCase()) {
@@ -39,25 +39,31 @@ function buildOverviewSection(provider = '') {
 
 function isCCAgentProjectPath(projectPath) {
   if (!projectPath || typeof projectPath !== 'string') return false
-  const normalized = projectPath.replace(/\\/g, '/')
-  return normalized.endsWith('/.ccgui/ccagent')
+  return path.resolve(projectPath) === path.resolve(getCcguiPath('ccagent'))
 }
 
 function buildDeveloperInstructions(projectSettings = null, options = {}) {
-  if (!projectSettings || typeof projectSettings !== 'object') {
+  const agentIdentity = options?.agentIdentity && typeof options.agentIdentity === 'object'
+    ? options.agentIdentity
+    : null
+  const agentCommunicationEnabled = options?.agentCommunicationEnabled === undefined
+    ? Boolean(agentIdentity)
+    : options.agentCommunicationEnabled === true
+
+  if ((!projectSettings || typeof projectSettings !== 'object') && !agentIdentity) {
     return null
   }
 
   const appConfig = appConfigManager.loadConfig()
   const provider = typeof options?.provider === 'string' ? options.provider : ''
 
-  const promptIds = Array.isArray(projectSettings.promptIds)
+  const promptIds = Array.isArray(projectSettings?.promptIds)
     ? projectSettings.promptIds
     : []
   const promptSections = []
 
   // 项目说明：作为附加要求的第一项
-  const projectPrompt = typeof projectSettings.projectPrompt === 'string' && projectSettings.projectPrompt.trim()
+  const projectPrompt = typeof projectSettings?.projectPrompt === 'string' && projectSettings.projectPrompt.trim()
     ? projectSettings.projectPrompt.trim()
     : null
   if (projectPrompt) {
@@ -77,13 +83,13 @@ function buildDeveloperInstructions(projectSettings = null, options = {}) {
     }
   }
 
-  const documentIds = Array.isArray(projectSettings.documentIds)
+  const documentIds = Array.isArray(projectSettings?.documentIds)
     ? projectSettings.documentIds
     : []
   const docPaths = []
 
   if (documentIds.length > 0) {
-    const docsDir = path.join(os.homedir(), '.ccgui', 'docs')
+    const docsDir = getCcguiPath('docs')
 
     for (const docId of documentIds) {
       const filePath = path.join(docsDir, `${docId}.md`)
@@ -115,6 +121,46 @@ function buildDeveloperInstructions(projectSettings = null, options = {}) {
       '在每次对话开始时，请先读取设定文件了解你的设定，并在需要时读取记忆文件获取历史记忆。',
       '当用户要求更新设定或记忆时，请将内容写入对应的文件。'
     ].join('\n'))
+  }
+
+  if (agentIdentity) {
+    const identityLines = [
+      '# CCGUI Agent 通讯身份',
+      '',
+      `- session_id: \`${agentIdentity.sessionId || ''}\``,
+      `- project_id: \`${agentIdentity.projectId || ''}\``,
+      `- name: ${agentIdentity.name || agentIdentity.sessionId || 'Agent'}`
+    ]
+
+    if (agentCommunicationEnabled) {
+      identityLines.push(
+        '',
+        '你的当前 team_id 和 role 可能动态变化，请通过 `info` 获取实时身份。',
+        '',
+        '你可以使用 `ccgui_internal` MCP：',
+        '- `info`：获取当前 session_id / project_id / team_id / role。',
+        '- `list_sessions`：查看当前允许访问的在线 Session 及其 `is_processing` 状态。',
+        '- `send_message`：只用于派发任务或提醒目标查看收件箱；不要用它发送完整回复。',
+        '- `send_inbox_message`：向目标 `session_id` 发送非打断式收件箱消息。',
+        '- `list_inbox_messages`：查看自己的未读收件箱消息。',
+        '- `ack_inbox_messages`：标记收件箱消息为已读。',
+        '- 回复 leader 或其他 Session 时，默认把完整回复写入收件箱；先通过 `list_sessions` 查看目标是否 `is_processing`，若目标空闲，再发送一条简短的直接提醒。',
+        '- `interrupt_session`：仅当 role 为 `leader` 且目标属于同一个非空 team 时可用。',
+        '- `create_team`：仅当当前没有 team 时可创建 team，创建后当前 Session 成为 leader。',
+        '- `join_team`：仅当当前没有 team 时可加入已有 team，并以 member 身份加入。',
+        '- `create_session`：仅 leader 可用，创建的新 Session 自动加入当前 leader team，角色为 member。',
+        '',
+        '通讯权限：',
+        '- 只能与同项目的 Agent Session 通讯。',
+        '- 有 team_id 时只能与相同 team_id 的 Session 通讯。',
+        '- 没有 team_id 时只能与同项目中同样没有 team_id 的 Session 通讯。',
+        '- 发送方身份由 CCGUI 自动附加，不要尝试伪造 project_id、team_id、role 或 sender。'
+      )
+    } else {
+      identityLines.push('', '当前 Session 的内部通讯 MCP 不可用。')
+    }
+
+    sections.push(identityLines.join('\n'))
   }
 
   return sections.join('\n\n')

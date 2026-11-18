@@ -52,6 +52,15 @@
 - `Claude agent team` 和 `Codex subagent` 更接近“协作型代理任务”
 - UI 不应只展示“工具调用归属标签”，而应把它们抽象成 `Agent Task`
 
+### 固定术语
+
+- **任务型 Subagent**：`agentKind = execution`，显示为主对话任务卡
+- **协作型 Subagent**：`agentKind = collaborative`，显示在 Agent Rail / 右侧边栏，可继续交互
+
+Claude 普通 `subagent` 对应任务型；Claude `agent team` member 和 Codex `spawn_agent` / `SubAgentActivity` 对应协作型。
+
+Codex `collabAgentToolCall` 中的 `wait`、`followup_task`、`send_message` 是主 Agent 的控制工具卡，不是第三种 Subagent 实体。
+
 ## 研究样本
 
 本轮研究主要基于以下原始数据：

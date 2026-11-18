@@ -12,6 +12,80 @@ function isTurnMessage(message = null) {
   return message?.role === 'user' || message?.role === 'command'
 }
 
+export function isDialogOnlyTurnError(message) {
+  if (message?.role !== 'system_notification' || message?.notificationType !== 'turn-error') {
+    return false
+  }
+
+  const errorText = typeof message?.data?.message === 'string' ? message.data.message : ''
+  if (!errorText) {
+    return false
+  }
+
+  return [
+    '撤销本次修改失败',
+    '重做本次修改失败',
+    '重置文件失败',
+    '撤销本次修改并创建分支失败',
+    '重置文件并创建分支失败',
+    '创建分支失败',
+    '获取预览失败',
+    '发送消息失败'
+  ].some(keyword => errorText.includes(keyword))
+}
+
+export function isMessageVisibleWhenTurnCollapsed(message) {
+  if (!message || isTurnMessage(message)) return true
+  if (message.role === 'system' && message.subtype === 'rewind-notice') return true
+  if (message.role === 'status' || message.role === 'file_change_summary') return true
+  return message.role === 'system_notification' && message.scope === 'session'
+}
+
+export function isMessageHiddenByCollapsedTurn(messages, messageIndex) {
+  if (!Array.isArray(messages) || messageIndex < 0) return false
+
+  const message = messages[messageIndex]
+  if (isMessageVisibleWhenTurnCollapsed(message)) return false
+
+  for (let index = messageIndex - 1; index >= 0; index -= 1) {
+    const previousMessage = messages[index]
+    if (isTurnMessage(previousMessage)) {
+      return Boolean(previousMessage.responseCollapsed)
+    }
+  }
+
+  return false
+}
+
+export function buildRenderableMessageEntries(messages = []) {
+  const entries = []
+  let currentTurnCollapsed = false
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+    if (isTurnMessage(message)) {
+      currentTurnCollapsed = Boolean(message.responseCollapsed)
+    }
+
+    if (message?.mergedIntoTaskComplete) {
+      continue
+    }
+
+    if (
+      !currentTurnCollapsed ||
+      isMessageVisibleWhenTurnCollapsed(message) ||
+      isDialogOnlyTurnError(message)
+    ) {
+      entries.push({
+        message,
+        index
+      })
+    }
+  }
+
+  return entries
+}
+
 export function useMessageList() {
   /**
    * 判断用户消息是否有回答

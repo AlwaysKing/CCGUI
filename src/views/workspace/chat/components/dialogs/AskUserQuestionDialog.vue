@@ -306,11 +306,17 @@ const isAllAnswered = computed(() => {
             </div>
           </button>
 
-          <!-- Other 自定义选项（始终显示） -->
-          <button
+          <!-- Other 自定义选项（始终显示）
+               用 div 而非 button：原生 button 内嵌 input 时，空格/回车会激活父 button 合成 click，
+               把 Other 的选中状态反复 toggle 掉；div 没有这个原生激活语义。 -->
+          <div
             @click="handleSelect(currentTabIndex, 'Other')"
+            @keydown.enter.prevent="handleSelect(currentTabIndex, 'Other')"
+            @keydown.space.prevent="handleSelect(currentTabIndex, 'Other')"
             class="option-item"
             :class="{ selected: isOptionSelected(currentTabIndex, 'Other') }"
+            role="button"
+            tabindex="0"
           >
             <span class="option-marker">
               <template v-if="currentQuestion.multiSelect">
@@ -340,7 +346,7 @@ const isAllAnswered = computed(() => {
                 />
               </div>
             </div>
-          </button>
+          </div>
         </div>
       </div>
 
@@ -643,11 +649,13 @@ const isAllAnswered = computed(() => {
   border: 1px solid #27272A;
   border-radius: 8px;
   font-size: 13px;
+  font-family: inherit;
   color: #E4E4E7;
   cursor: pointer;
   transition: all 0.15s ease;
   text-align: left;
   width: 100%;
+  user-select: none;
 }
 
 .option-item:hover {
@@ -722,6 +730,7 @@ const isAllAnswered = computed(() => {
   border-radius: 6px;
   color: #E4E4E7;
   font-size: 13px;
+  font-family: inherit;
   outline: none;
   transition: border-color 0.15s ease;
 }

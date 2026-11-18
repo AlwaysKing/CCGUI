@@ -157,13 +157,120 @@ class CodexAdapter extends CodexClient {
     this.turnDiffMessageMap = new Map()
     this.agentRegistry = new Map()
     this.threadIdToAgentId = new Map()
+    this.loadedThreadIds = new Set()
+    this.activeTurnByThreadId = new Map()
+    this.interruptRequested = false
+    this.interruptingTurnKeys = new Set()
     this.pendingSpawnItems = new Map()
     this.sessionStoragePath = options.sessionStoragePath || null
     this.pendingUserMessageUuid = null
     this.turnUserMessageUuids = new Map() // turnId -> 发起该 turn 的用户消息 uuid
+    this.itemTurnIds = new Map() // itemId -> turnId
     this.turnPatchSections = new Map() // 用户消息 uuid -> Map<文件路径, diff 段落>
     this.turnPatchFiles = new Map() // turnId -> 该 turn 最近一次上报涉及的文件
     this._atReferencesCache = null
+  }
+
+  finalizeTurnCaches(turnId, userMessageUuid = null) {
+    if (!turnId) {
+      return
+    }
+
+    const resolvedUserMessageUuid = userMessageUuid || this.turnUserMessageUuids.get(turnId) || null
+    const removedMessageIds = new Set()
+    const itemIds = []
+
+    for (const [itemId, itemTurnId] of this.itemTurnIds.entries()) {
+      if (itemTurnId === turnId) {
+        itemIds.push(itemId)
+      }
+    }
+
+    const assistantState = this.turnAssistantState.get(turnId)
+    if (assistantState?.messageId) {
+      removedMessageIds.add(assistantState.messageId)
+    }
+    const turnMessageId = this.turnMessageMap.get(turnId)
+    if (turnMessageId) {
+      removedMessageIds.add(turnMessageId)
+    }
+    const diffMessageId = this.turnDiffMessageMap.get(turnId)
+    if (diffMessageId) {
+      removedMessageIds.add(diffMessageId)
+    }
+
+    for (const [itemId, messageId] of this.itemToMessageMap.entries()) {
+      if (removedMessageIds.has(messageId) && !itemIds.includes(itemId)) {
+        itemIds.push(itemId)
+      }
+    }
+
+    for (const itemId of itemIds) {
+      const messageId = this.itemToMessageMap.get(itemId)
+      if (messageId) {
+        removedMessageIds.add(messageId)
+      }
+      this.itemToMessageMap.delete(itemId)
+      this.itemState.delete(itemId)
+      this.itemTurnIds.delete(itemId)
+      this.pendingSpawnItems.delete(itemId)
+    }
+
+    for (const [threadId, activeTurnId] of this.activeTurnByThreadId.entries()) {
+      if (activeTurnId === turnId) {
+        this.activeTurnByThreadId.delete(threadId)
+      }
+    }
+
+    this.turnStats.delete(turnId)
+    this.turnAssistantState.delete(turnId)
+    this.turnDiffMessageMap.delete(turnId)
+    this.turnMessageMap.delete(turnId)
+    this.turnPatchFiles.delete(turnId)
+    this.turnUserMessageUuids.delete(turnId)
+
+    for (const key of [...this.interruptingTurnKeys]) {
+      if (key.includes(turnId)) {
+        this.interruptingTurnKeys.delete(key)
+      }
+    }
+
+    if (removedMessageIds.has(this.currentAssistantMessageId)) {
+      this.currentAssistantMessageId = null
+    }
+
+    const hasOtherTurnForUserMessage = resolvedUserMessageUuid
+      && [...this.turnUserMessageUuids.values()].some(value => value === resolvedUserMessageUuid)
+    if (resolvedUserMessageUuid && !hasOtherTurnForUserMessage) {
+      this.turnPatchSections.delete(resolvedUserMessageUuid)
+    }
+  }
+
+  releaseTurnCaches({ turnIds = [], userMessageUuids = [] } = {}) {
+    const normalizedTurnIds = Array.from(new Set(
+      (Array.isArray(turnIds) ? turnIds : [])
+        .map(value => String(value || '').trim())
+        .filter(Boolean)
+    ))
+    const normalizedUserMessageUuids = new Set(
+      (Array.isArray(userMessageUuids) ? userMessageUuids : [])
+        .map(value => String(value || '').trim())
+        .filter(Boolean)
+    )
+
+    for (const turnId of normalizedTurnIds) {
+      this.finalizeTurnCaches(turnId)
+    }
+
+    for (const [turnId, userMessageUuid] of [...this.turnUserMessageUuids.entries()]) {
+      if (normalizedUserMessageUuids.has(userMessageUuid)) {
+        this.finalizeTurnCaches(turnId, userMessageUuid)
+      }
+    }
+
+    for (const userMessageUuid of normalizedUserMessageUuids) {
+      this.turnPatchSections.delete(userMessageUuid)
+    }
   }
 
   async sendMessage(message) {
@@ -171,7 +278,77 @@ class CodexAdapter extends CodexClient {
     if (uuid) {
       this.pendingUserMessageUuid = uuid
     }
-    return super.sendMessage(message)
+    const wasInterruptRequested = this.interruptRequested
+    this.interruptRequested = false
+    try {
+      const targetAgentId = message?.ccgui?.attribution?.agentId || null
+      const targetThreadId = this.resolveThreadIdFromAgentId(targetAgentId)
+      if (targetAgentId && targetAgentId !== 'master' && !targetThreadId) {
+        throw new Error(`找不到子代理线程: ${targetAgentId}`)
+      }
+
+      if (targetThreadId && targetThreadId !== this.currentThreadId) {
+        this.threadIdToAgentId.set(targetThreadId, targetAgentId)
+        await this.ensureSubagentThreadLoaded(targetThreadId)
+      }
+
+      const result = await super.sendMessage(message, {
+        threadId: targetThreadId || this.currentThreadId
+      })
+      if (uuid && result?.turn?.id) {
+        this.turnUserMessageUuids.set(result.turn.id, uuid)
+      }
+      return result
+    } catch (error) {
+      this.interruptRequested = wasInterruptRequested
+      throw error
+    }
+  }
+
+  async sendInterrupt() {
+    await this.ensureInitialized()
+
+    // 用户停止后，Codex 仍可能派生出迟到的子代理 turn。
+    // 保持取消态到下一次用户消息，确保这些 turn 也会被立即中断。
+    this.interruptRequested = true
+    const targets = new Map(this.activeTurnByThreadId)
+    if (targets.size === 0 && this.currentThreadId && this.currentTurnId) {
+      targets.set(this.currentThreadId, this.currentTurnId)
+    }
+    if (targets.size === 0) {
+      return
+    }
+
+    const targetEntries = Array.from(targets.entries())
+    const results = await Promise.allSettled(
+      targetEntries.map(([threadId, turnId]) => this.interruptTurn(threadId, turnId))
+    )
+    const failures = results
+      .map((result, index) => {
+        if (result.status !== 'rejected') {
+          return null
+        }
+        return {
+          threadId: targetEntries[index][0],
+          turnId: targetEntries[index][1],
+          error: result.reason
+        }
+      })
+      .filter(Boolean)
+
+    failures.forEach(failure => {
+      logger.warn('[CodexAdapter] Failed to interrupt Codex turn', {
+        threadId: failure.threadId,
+        turnId: failure.turnId,
+        error: failure.error?.message || String(failure.error)
+      })
+    })
+
+    if (failures.length === results.length && failures.length > 0) {
+      throw failures[0].error
+    }
+
+    return results
   }
 
   async queryAtReferences(forceRefresh = true) {
@@ -582,6 +759,45 @@ class CodexAdapter extends CodexClient {
     return this.threadIdToAgentId.get(threadId) || null
   }
 
+  resolveThreadIdFromAgentId(agentId) {
+    if (!agentId || agentId === 'master') {
+      return this.currentThreadId
+    }
+
+    for (const [threadId, candidateAgentId] of this.threadIdToAgentId.entries()) {
+      if (candidateAgentId === agentId) {
+        return threadId
+      }
+    }
+
+    const prefix = 'codex-agent:'
+    const normalizedAgentId = String(agentId).trim()
+    if (!normalizedAgentId.startsWith(prefix)) {
+      return null
+    }
+
+    const threadId = normalizedAgentId.slice(prefix.length)
+    if (!threadId) {
+      return null
+    }
+
+    this.threadIdToAgentId.set(threadId, normalizedAgentId)
+    return threadId
+  }
+
+  async ensureSubagentThreadLoaded(threadId) {
+    if (!threadId || threadId === this.currentThreadId || this.loadedThreadIds.has(threadId)) {
+      return
+    }
+
+    try {
+      await this.request('thread/resume', await this.buildThreadResumeParams({}, threadId))
+      this.loadedThreadIds.add(threadId)
+    } catch (error) {
+      throw new Error(`子代理线程不可恢复: ${error?.message || String(error)}`)
+    }
+  }
+
   resolveAttributionFromThreadId(threadId) {
     const agentId = this.resolveAgentIdFromThreadId(threadId)
     if (!agentId) {
@@ -592,6 +808,16 @@ class CodexAdapter extends CodexClient {
       agentId,
       actorId: agentId
     }
+  }
+
+  resolveAgentStatusFromThreadStatus(status = {}) {
+    if (status?.type === 'active') {
+      return 'running'
+    }
+    if (status?.type === 'systemError') {
+      return 'failed'
+    }
+    return 'ended'
   }
 
   /**
@@ -661,6 +887,7 @@ class CodexAdapter extends CodexClient {
     for (const receiverThreadId of receiverThreadIds) {
       const agentId = `codex-agent:${this.sanitizeSemanticId(receiverThreadId)}`
       this.threadIdToAgentId.set(receiverThreadId, agentId)
+      this.loadedThreadIds.add(receiverThreadId)
       const ccgui = this.buildLifecycleCcgui({
         agentId,
         agentKind: 'collaborative',
@@ -685,6 +912,186 @@ class CodexAdapter extends CodexClient {
       })
       this.emitAgentSilent(ccgui, { item, params })
     }
+  }
+
+  ensureSubAgentRegistration(threadId, options = {}) {
+    if (!threadId || threadId === this.currentThreadId) {
+      return null
+    }
+
+    const existingAgentId = this.threadIdToAgentId.get(threadId) || null
+    const agentId = existingAgentId || `codex-agent:${this.sanitizeSemanticId(threadId)}`
+    const existing = this.agentRegistry.get(agentId) || null
+    const agentPath = typeof options.agentPath === 'string' ? options.agentPath.trim() : ''
+    const fallbackName = agentPath ? path.basename(agentPath) : 'Codex Agent'
+
+    this.threadIdToAgentId.set(threadId, agentId)
+    return this.mergeRegistry({
+      ...(existing || {}),
+      agentId,
+      agentKind: options.agentKind || existing?.agentKind || 'collaborative',
+      agentType: options.agentType || existing?.agentType || 'subagent',
+      name: options.name || existing?.name || fallbackName,
+      parentAgentId: options.parentAgentId !== undefined
+        ? options.parentAgentId
+        : (existing?.parentAgentId || null),
+      status: options.status || existing?.status || 'running'
+    })
+  }
+
+  handleSubAgentThreadStarted(thread = {}) {
+    const threadId = thread.id || null
+    if (!threadId) {
+      return null
+    }
+    this.loadedThreadIds.add(threadId)
+
+    const parentThreadId = thread.parentThreadId || null
+    const parentAgentId = parentThreadId === this.currentThreadId
+      ? 'master'
+      : this.resolveAgentIdFromThreadId(parentThreadId)
+    const status = this.resolveAgentStatusFromThreadStatus(thread.status)
+    const registry = this.ensureSubAgentRegistration(threadId, {
+      agentType: thread.agentRole || 'subagent',
+      name: thread.agentNickname || thread.name || null,
+      parentAgentId,
+      status
+    })
+    if (!registry) {
+      return null
+    }
+
+    const isTerminal = status !== 'running'
+    const ccgui = this.buildCcguiPatch({
+      registry,
+      orchestration: {
+        eventType: isTerminal ? 'end' : 'start',
+        agentId: registry.agentId,
+        agentKind: registry.agentKind,
+        agentType: registry.agentType,
+        name: registry.name,
+        parentAgentId: registry.parentAgentId || null,
+        source: 'thread_started',
+        status,
+        timestamp: new Date().toISOString(),
+        ...(isTerminal ? { reason: status } : {})
+      }
+    })
+    this.emitAgentSilent(ccgui, { method: 'thread/started', params: { thread } })
+    return registry
+  }
+
+  handleSubAgentActivity(item = {}, params = {}) {
+    const threadId = item.agent_thread_id || item.agentThreadId || null
+    if (!threadId) {
+      logger.warn('[CodexAdapter] SubAgentActivity missing agent_thread_id', {
+        itemId: item.id || null,
+        turnId: params.turnId || null
+      })
+      return
+    }
+    this.loadedThreadIds.add(threadId)
+
+    const kind = String(item.kind || '').trim().toLowerCase()
+    const isInterrupted = kind === 'interrupted'
+    const isFailed = kind === 'failed'
+    const isCompleted = kind === 'completed'
+    const isTerminal = isCompleted || isFailed || isInterrupted
+    const agentPath = item.agent_path || item.agentPath || ''
+    const existingAgentId = this.threadIdToAgentId.get(threadId) || null
+    const previousStatus = existingAgentId
+      ? this.agentRegistry.get(existingAgentId)?.status || null
+      : null
+    const status = isFailed
+      ? 'failed'
+      : (isInterrupted ? 'interrupted' : (isCompleted ? 'ended' : 'running'))
+    const registry = this.ensureSubAgentRegistration(threadId, {
+      agentPath,
+      name: agentPath ? path.basename(agentPath) : null,
+      parentAgentId: this.resolveAgentIdFromThreadId(params.threadId),
+      status
+    })
+    if (!registry) {
+      return
+    }
+
+    if (kind === 'interacted' && previousStatus === 'running') {
+      this.emitAgentSilent(this.buildCcguiPatch({ registry }), { item, params })
+      return
+    }
+
+    if (isTerminal) {
+      this.activeTurnByThreadId.delete(threadId)
+    }
+
+    if (isTerminal && previousStatus === status) {
+      this.emitAgentSilent(this.buildCcguiPatch({ registry }), { item, params })
+      return
+    }
+
+    const ccgui = this.buildCcguiPatch({
+      registry,
+      orchestration: {
+        eventType: isTerminal ? 'end' : 'start',
+        agentId: registry.agentId,
+        agentKind: registry.agentKind,
+        agentType: registry.agentType,
+        name: registry.name,
+        parentAgentId: registry.parentAgentId || null,
+        source: 'subagent_activity',
+        status,
+        timestamp: new Date().toISOString(),
+        ...(isTerminal ? { reason: kind || 'completed', result: null } : {})
+      }
+    })
+    this.emitAgentSilent(ccgui, { item, params })
+  }
+
+  async interruptTurn(threadId, turnId) {
+    if (!threadId || !turnId) {
+      return null
+    }
+
+    const interruptKey = `${threadId}:${turnId}`
+    if (this.interruptingTurnKeys.has(interruptKey)) {
+      return null
+    }
+
+    this.interruptingTurnKeys.add(interruptKey)
+    try {
+      return await this.request('turn/interrupt', { threadId, turnId })
+    } finally {
+      this.interruptingTurnKeys.delete(interruptKey)
+    }
+  }
+
+  async closeSubagentAgent(agentId) {
+    await this.ensureInitialized()
+
+    const threadId = this.resolveThreadIdFromAgentId(agentId)
+    if (!threadId || threadId === this.currentThreadId) {
+      throw new Error('找不到可关闭的子代理线程')
+    }
+
+    const activeTurnId = this.activeTurnByThreadId.get(threadId) || null
+    if (activeTurnId) {
+      await this.interruptTurn(threadId, activeTurnId)
+    }
+
+    let lastError = null
+    for (const method of ['thread/archive', 'conversation/archive']) {
+      try {
+        await this.request(method, method === 'thread/archive'
+          ? { threadId }
+          : { conversationId: threadId })
+        this.handleThreadLifecycleEvent('thread/archived', { threadId })
+        return { threadId, method }
+      } catch (error) {
+        lastError = error
+      }
+    }
+
+    throw lastError || new Error('关闭子代理失败')
   }
 
   emitCodexSystemNotification(type, payload = {}) {
@@ -974,12 +1381,30 @@ class CodexAdapter extends CodexClient {
     const { method, params } = message
 
     switch (method) {
-      case 'thread/started':
-        this.currentThreadId = params.thread.id
+      case 'thread/started': {
+        const thread = params.thread || {}
+        const threadId = thread.id || null
+        if (thread.parentThreadId) {
+          this.handleSubAgentThreadStarted(thread)
+          break
+        }
+        if (
+          !this.currentThreadId ||
+          threadId === this.currentThreadId ||
+          threadId === this.resumeThreadId
+        ) {
+          this.currentThreadId = threadId
+        } else {
+          logger.warn('[CodexAdapter] Ignoring unrelated thread/started notification', {
+            threadId,
+            currentThreadId: this.currentThreadId
+          })
+          break
+        }
         this._atReferencesCache = null
         this.envInfo = applyCodexEnvInfoPatch({
           ...this.envInfo,
-          session_id: params.thread.id,
+          session_id: threadId,
           providerPid: this.getPid()
         }, {
           provider: 'codex',
@@ -990,6 +1415,7 @@ class CodexAdapter extends CodexClient {
           logger.warn('[CodexAdapter] syncInventoryEnvInfo failed on thread/started', { error: err.message })
         })
         break
+      }
 
       case 'thread/name/updated':
         this.handleThreadNameUpdated(params)
@@ -997,33 +1423,45 @@ class CodexAdapter extends CodexClient {
 
       case 'thread/archived':
       case 'thread/unarchived':
+      case 'thread/closed':
+      case 'thread/deleted':
         this.handleThreadLifecycleEvent(method, params)
         break
 
       case 'turn/started': {
-        const isMainTurn = this.isMainThread(params.threadId)
-        this.turnUserMessageUuids.set(params.turn.id, this.pendingUserMessageUuid)
-        if (isMainTurn) {
-          this.currentTurnId = params.turn.id
-          this.currentAssistantMessageId = null
+        const threadId = params.threadId || this.currentThreadId
+        const turnId = params.turn.id
+        const isMainTurn = this.isMainThread(threadId)
+        if (threadId && turnId) {
+          this.activeTurnByThreadId.set(threadId, turnId)
         }
-        this.turnMessageMap.set(params.turn.id, null)
-        this.turnAssistantState.delete(params.turn.id)
-        // pendingUserMessageUuid 一直保留到用户这一轮真正结束，这里只用 turnId 记住它属于哪个回合，
-        // 让子代理线程的 diff 也能落回发起它的用户回合
-        this.turnStats.set(params.turn.id, {
-          numTurns: 0,
-          usage: createEmptyTurnUsage()
-        })
-        {
-          const agentId = this.resolveAgentIdFromThreadId(params.threadId)
-          if (agentId && this.agentRegistry.get(agentId)?.status !== 'running') {
+        this.turnUserMessageUuids.set(turnId, this.pendingUserMessageUuid)
+        if (isMainTurn) {
+          this.currentTurnId = turnId
+          this.currentAssistantMessageId = null
+        } else {
+          this.loadedThreadIds.add(threadId)
+          const previousAgentId = this.resolveAgentIdFromThreadId(threadId)
+          const previousStatus = previousAgentId
+            ? this.agentRegistry.get(previousAgentId)?.status || null
+            : null
+          this.ensureSubAgentRegistration(threadId, { status: 'running' })
+          if (this.interruptRequested) {
+            this.interruptTurn(threadId, turnId).catch(error => {
+              logger.warn('[CodexAdapter] Failed to interrupt late subagent turn', {
+                threadId,
+                turnId,
+                error: error.message
+              })
+            })
+          }
+          if (previousAgentId && previousStatus !== 'running') {
             const ccgui = this.buildLifecycleCcgui({
-              agentId,
+              agentId: previousAgentId,
               status: 'running'
             }, {
               eventType: 'start',
-              agentId,
+              agentId: previousAgentId,
               agentKind: 'collaborative',
               source: 'spawned_thread',
               status: 'running'
@@ -1031,17 +1469,30 @@ class CodexAdapter extends CodexClient {
             this.emitAgentSilent(ccgui, { method, params })
           }
         }
+        this.turnMessageMap.set(turnId, null)
+        this.turnAssistantState.delete(turnId)
+        // pendingUserMessageUuid 一直保留到用户这一轮真正结束，这里只用 turnId 记住它属于哪个回合，
+        // 让子代理线程的 diff 也能落回发起它的用户回合
+        this.turnStats.set(turnId, {
+          numTurns: 0,
+          usage: createEmptyTurnUsage()
+        })
         break
       }
 
       case 'turn/completed': {
-        const isMainTurn = this.isMainThread(params.threadId)
-        const completedUserMessageUuid = this.resolveTurnUserMessageUuid(params.turn.id)
-        if (isMainTurn) {
-          this.currentTurnId = params.turn.id
+        const threadId = params.threadId || this.currentThreadId
+        const turnId = params.turn.id
+        const isMainTurn = this.isMainThread(threadId)
+        if (this.activeTurnByThreadId.get(threadId) === turnId) {
+          this.activeTurnByThreadId.delete(threadId)
         }
-        const turnStats = this.turnStats.get(params.turn.id) || null
-        const diffMessageId = this.turnDiffMessageMap.get(params.turn.id)
+        const completedUserMessageUuid = this.resolveTurnUserMessageUuid(turnId)
+        if (isMainTurn) {
+          this.currentTurnId = turnId
+        }
+        const turnStats = this.turnStats.get(turnId) || null
+        const diffMessageId = this.turnDiffMessageMap.get(turnId)
         if (diffMessageId) {
           this.emit('message-update', {
             messageId: diffMessageId,
@@ -1049,13 +1500,19 @@ class CodexAdapter extends CodexClient {
               isExecuting: false
             }
           })
-          this.turnDiffMessageMap.delete(params.turn.id)
+          this.turnDiffMessageMap.delete(turnId)
         }
         // 子代理线程的 turn/completed 只代表该子代理结束，不能收尾用户这一轮，
         // 否则会提前结束会话状态/统计并提前推送文件变更汇总
         if (isMainTurn) {
           if (completedUserMessageUuid && completedUserMessageUuid === this.pendingUserMessageUuid) {
             this.pendingUserMessageUuid = null
+          }
+          if (params.turn?.status === 'interrupted') {
+            this.emitCodexSystemNotification('turn-interrupted', {
+              message: '已中断响应',
+              turnId
+            })
           }
           this.emit('result', {
             duration_ms: null,
@@ -1064,22 +1521,24 @@ class CodexAdapter extends CodexClient {
             turn: params.turn
           })
         }
-        this.turnStats.delete(params.turn.id)
-        this.turnAssistantState.delete(params.turn.id)
-        this.turnUserMessageUuids.delete(params.turn.id)
-        this.turnPatchFiles.delete(params.turn.id)
         {
-          const agentId = this.resolveAgentIdFromThreadId(params.threadId)
+          const agentId = this.resolveAgentIdFromThreadId(threadId)
           if (agentId) {
+            const turnStatus = params.turn?.status
+            const agentStatus = turnStatus === 'failed'
+              ? 'failed'
+              : (turnStatus === 'interrupted' ? 'interrupted' : 'ended')
             const ccgui = this.buildLifecycleCcgui({
               agentId,
-              status: 'ended'
+              status: agentStatus
             }, {
               eventType: 'end',
               agentId,
-              reason: params.turn?.status === 'failed' ? 'failed' : 'completed',
+              reason: turnStatus === 'failed'
+                ? 'failed'
+                : (turnStatus === 'interrupted' ? 'interrupted' : 'completed'),
               result: params.turn?.result || null,
-              status: 'ended'
+              status: agentStatus
             })
             this.emitAgentSilent(ccgui, { method, params })
           }
@@ -1105,6 +1564,7 @@ class CodexAdapter extends CodexClient {
         if (isMainTurn) {
           this.emitFileChangeSummary(completedUserMessageUuid)
         }
+        this.finalizeTurnCaches(turnId, completedUserMessageUuid)
         break
       }
 
@@ -1171,15 +1631,44 @@ class CodexAdapter extends CodexClient {
         this.handleMcpToolProgress(params)
         break
 
-      case 'thread/status/changed':
-        this.emit('env-info', applyCodexEnvInfoPatch({
-          ...this.envInfo,
-          thread_status: params.status
-        }, {
-          provider: 'codex',
-          providerPid: this.getPid()
-        }))
+      case 'thread/status/changed': {
+        const threadId = params.threadId || this.currentThreadId
+        const status = this.resolveAgentStatusFromThreadStatus(params.status)
+        const agentId = this.resolveAgentIdFromThreadId(threadId)
+        if (agentId) {
+          if (status !== 'running') {
+            this.activeTurnByThreadId.delete(threadId)
+          }
+          const registry = this.ensureSubAgentRegistration(threadId, { status })
+          const isTerminal = status !== 'running'
+          const ccgui = this.buildCcguiPatch({
+            registry,
+            orchestration: {
+              eventType: isTerminal ? 'end' : 'start',
+              agentId,
+              agentKind: registry?.agentKind,
+              agentType: registry?.agentType,
+              name: registry?.name,
+              parentAgentId: registry?.parentAgentId || null,
+              source: 'thread_status',
+              status,
+              timestamp: new Date().toISOString(),
+              ...(isTerminal ? { reason: status } : {})
+            }
+          })
+          this.emitAgentSilent(ccgui, { method, params })
+        }
+        if (this.isMainThread(threadId)) {
+          this.emit('env-info', applyCodexEnvInfoPatch({
+            ...this.envInfo,
+            thread_status: params.status
+          }, {
+            provider: 'codex',
+            providerPid: this.getPid()
+          }))
+        }
         break
+      }
 
       case 'thread/settings/updated':
         this.handleThreadSettingsUpdated(params)
@@ -1337,6 +1826,10 @@ class CodexAdapter extends CodexClient {
         // CCGUI 不集成此功能，静默忽略
         break
 
+      case 'thread/readState/changed':
+        // CCGUI 暂不维护线程未读状态，识别该 Codex 通知后静默忽略
+        break
+
       default:
         // Codex 的 goal 状态通知（例如线程恢复时清空目标），CCGUI 未集成该功能，识别后静默忽略
         if (String(method || '').startsWith('thread/goal/')) {
@@ -1344,7 +1837,24 @@ class CodexAdapter extends CodexClient {
           break
         }
 
-        this.emit('unknown_message', message)
+        {
+          const threadId = message?.params?.threadId || null
+          const attribution = this.resolveAttributionFromThreadId(threadId) || (
+            threadId && threadId !== this.currentThreadId
+              ? {
+                  agentId: `codex-agent:${this.sanitizeSemanticId(threadId)}`,
+                  actorId: `codex-agent:${this.sanitizeSemanticId(threadId)}`
+                }
+              : null
+          )
+          const normalizedMessage = attribution && !message.ccgui
+            ? {
+                ...message,
+                ccgui: this.buildCcguiPatch({ attribution })
+              }
+            : message
+          this.emit('unknown_message', normalizedMessage)
+        }
         break
     }
   }
@@ -1438,8 +1948,34 @@ class CodexAdapter extends CodexClient {
 
   handleThreadLifecycleEvent(method, params = {}) {
     const threadId = params.threadId || params.thread?.id || this.currentThreadId || null
-    const event = method === 'thread/archived' ? 'archived' : 'unarchived'
-    const threadStatus = event === 'archived' ? 'archived' : 'active'
+    const agentId = this.resolveAgentIdFromThreadId(threadId)
+    if (agentId) {
+      this.activeTurnByThreadId.delete(threadId)
+      if (method === 'thread/archived' || method === 'thread/deleted' || method === 'thread/closed') {
+        this.loadedThreadIds.delete(threadId)
+      }
+      const event = method.replace(/^thread\//, '')
+      const isDeleted = event === 'archived' || event === 'deleted'
+      const status = isDeleted ? 'deleted' : 'ended'
+      const eventType = isDeleted ? 'delete' : 'end'
+      const ccgui = this.buildLifecycleCcgui({
+        agentId,
+        status
+      }, {
+        eventType,
+        agentId,
+        source: 'thread_lifecycle',
+        reason: event,
+        status
+      })
+      this.emitAgentSilent(ccgui, { method, params })
+      return
+    }
+
+    const event = method.replace(/^thread\//, '')
+    const threadStatus = event === 'unarchived'
+      ? 'active'
+      : (event === 'archived' ? 'archived' : { type: 'notLoaded' })
 
     this.envInfo = applyCodexEnvInfoPatch({
       ...this.envInfo,
@@ -1654,6 +2190,9 @@ class CodexAdapter extends CodexClient {
       collapsed: false,
       timestamp: new Date(),
       startTime: Date.now(),
+      ccgui: this.buildCcguiPatch({
+        attribution: this.resolveAttributionFromThreadId(params.threadId)
+      }),
       rawMessages: [rawMessage]
     })
   }
@@ -1664,8 +2203,14 @@ class CodexAdapter extends CodexClient {
       return
     }
 
+    this.itemTurnIds.set(item.id, params.turnId || this.currentTurnId || null)
     this.itemState.set(item.id, item)
     this.rememberSpawnItem(item, params)
+
+    if (item.type === 'SubAgentActivity') {
+      this.handleSubAgentActivity(item, params)
+      return
+    }
 
     if (item.type === 'fileChange') {
       return
@@ -1741,7 +2286,13 @@ class CodexAdapter extends CodexClient {
       return
     }
 
+    this.itemTurnIds.set(item.id, params.turnId || this.currentTurnId || null)
     this.itemState.set(item.id, item)
+
+    if (item.type === 'SubAgentActivity') {
+      this.handleSubAgentActivity(item, params)
+      return
+    }
 
     if (item.type === 'fileChange') {
       this.emit('silent-message', {
@@ -1947,11 +2498,15 @@ class CodexAdapter extends CodexClient {
     }
 
     if (item.type === 'collabAgentToolCall') {
+      const agentAction = item.tool || item.name || null
       return {
         id: item.id,
         role: 'tool_use',
         toolName: normalizeToolName('agent'),
-        toolInput: item.arguments || item.input || {},
+        toolInput: {
+          ...(item.arguments || item.input || {}),
+          ...(agentAction ? { agentAction } : {})
+        },
         result: item.result ? JSON.stringify(item.result, null, 2) : '',
         isError: false,
         isExecuting: item.status === 'inProgress',

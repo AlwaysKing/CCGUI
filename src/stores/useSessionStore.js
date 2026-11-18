@@ -1,6 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch, reactive } from 'vue'
 import { QueueManager } from './AgentQueue'
+import {
+  findMcpNotificationByOperationId,
+  isMcpLifecycleNotificationType,
+  isMcpNotificationType,
+  shouldIgnoreMcpNotificationUpdate
+} from './systemNotificationOperation'
 import { logger } from '../utils/logger'
 import { stripAttachmentTokens } from '../utils/chatAttachments'
 import { useAppStore } from './useAppStore'
@@ -41,6 +47,27 @@ function isCcGuiFileRequest(requestData) {
 
   const normalized = filePath.replace(/\\/g, '/')
   return normalized.includes('/.ccgui/') || normalized.endsWith('/.ccgui')
+}
+
+function isCcGuiInternalMcpRequest(requestData) {
+  if (!requestData || typeof requestData !== 'object') return false
+
+  const toolName = requestData.tool_name || requestData.toolName
+  if (typeof toolName === 'string' && toolName.startsWith('mcp__ccgui_internal__')) {
+    return true
+  }
+
+  const serverNames = [
+    requestData.serverName,
+    requestData.mcp_server?.name,
+    requestData.mcpServer?.name,
+    requestData.permissions?.serverName,
+    requestData.tool_input?.permissions?.serverName,
+    requestData.toolInput?.permissions?.serverName,
+    requestData.input?.permissions?.serverName
+  ]
+
+  return serverNames.some(serverName => String(serverName || '').trim() === 'ccgui_internal')
 }
 
 function isTurnInitiatorMessage(message = null) {
@@ -117,6 +144,7 @@ class SessionData {
     this.silentMessages = []
     this.taskEvents = []
     this.subagentHistories = []
+    this.activeAgentIds = new Set()
 
     // Runtime 状态
     this.runtimeReady = false
@@ -619,6 +647,90 @@ function buildSubagentHistoryAnchor(turn = {}, agentId, registry = null) {
   }
 }
 
+function resolveSubagentHistoryStatus(subagentHistory = null, session = null) {
+  const entries = Array.isArray(subagentHistory?.entries) ? subagentHistory.entries : []
+  const latestEntry = [...entries].reverse().find(entry => entry && typeof entry === 'object') || null
+  const status = latestEntry?.registry?.status || subagentHistory?.registry?.status || null
+  const terminalStatuses = new Set(['ended', 'failed', 'interrupted', 'deleted'])
+  const agentId = subagentHistory?.agentId || latestEntry?.agentId || null
+  const isActive = Boolean(agentId && session?.activeAgentIds?.has?.(agentId))
+
+  if (terminalStatuses.has(status)) {
+    return status
+  }
+  if (status === 'running' || status === 'starting') {
+    return isActive ? status : 'interrupted'
+  }
+
+  switch (latestEntry?.status) {
+    case 'completed':
+      return 'ended'
+    case 'failed':
+    case 'error':
+      return 'failed'
+    case 'interrupted':
+    case 'deleted':
+      return latestEntry.status
+    case 'streaming':
+    case 'pending':
+      return isActive ? 'running' : 'interrupted'
+    default:
+      return null
+  }
+}
+
+function reconcileSubagentHistoryStatuses(session) {
+  if (!session?.agentRegistry || !Array.isArray(session.subagentHistories)) {
+    return
+  }
+
+  for (const subagentHistory of session.subagentHistories) {
+    const agentId = subagentHistory?.agentId
+    if (!agentId) {
+      continue
+    }
+
+    const currentEntry = session.agentRegistry.get(agentId)
+    if (!currentEntry) {
+      continue
+    }
+
+    const historyStatus = resolveSubagentHistoryStatus(subagentHistory, session)
+    if (!historyStatus) {
+      continue
+    }
+
+    session.agentRegistry.set(agentId, mergeAgentRegistryEntry(currentEntry, {
+      ...(subagentHistory.registry || {}),
+      agentId,
+      agentKind: currentEntry.agentKind || subagentHistory.registry?.agentKind || 'collaborative',
+      status: historyStatus
+    }))
+  }
+}
+
+function reconcileAgentRuntimeStatuses(session) {
+  if (!session?.agentRegistry) {
+    return
+  }
+
+  const mainAgentId = session.mainAgentId || 'master'
+  const activeAgentIds = session.activeAgentIds?.has ? session.activeAgentIds : new Set()
+
+  for (const [agentId, entry] of session.agentRegistry) {
+    if (agentId === mainAgentId || activeAgentIds.has(agentId)) {
+      continue
+    }
+    if (entry?.status !== 'running' && entry?.status !== 'starting') {
+      continue
+    }
+
+    entry.status = entry.agentKind === 'collaborative' && (entry.agentType === 'team' || entry.teamId)
+      ? 'deleted'
+      : 'interrupted'
+  }
+}
+
 function getMessageTimestamp(message) {
   if (!message || typeof message !== 'object') {
     return null
@@ -846,9 +958,18 @@ export const useSessionStore = defineStore('session', () => {
     'account-login-completed'
   ])
 
-  function resolveNotificationScope(notificationType, data = {}) {
+  function resolveNotificationScope(notificationType, data = {}, session = currentSession.value) {
     const type = notificationType || data?.type || ''
-    if (SESSION_SCOPED_NOTIFICATION_TYPES.has(type)) {
+    const agentId = getMessageAgentId({ ccgui: data?.ccgui || null }, session)
+    if (
+      agentId &&
+      agentId !== getMainAgentId(session) &&
+      isMcpNotificationType(type)
+    ) {
+      return 'turn'
+    }
+
+    if (SESSION_SCOPED_NOTIFICATION_TYPES.has(type) || isMcpNotificationType(type)) {
       return 'session'
     }
 
@@ -947,42 +1068,148 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 释放被折叠的旧问答——从主队列中移除响应消息，
-   * 并以普通对象缓存到 userMessage._releasedResponses 上，节省 Vue reactivity 开销。
-   * 只在问答完成（非 streaming）后调用。
+   * 释放超过保留数量的折叠问答。
+   * 真正的消息与事件缓存由 unloadCollapsedTurns 统一跨进程卸载。
    */
   function releaseOldCollapsedTurns(session, keepRecentCount = 5) {
-    // 在主 agent 队列中操作
-    const mainQueue = session.queueManager?.getQueue(session.mainAgentId)
-    if (!mainQueue?.length) return
+    void unloadCollapsedTurns(session, { keepRecentCount }).catch(error => {
+      log('[SessionStore] Failed to release old collapsed turns:', error?.message || String(error))
+    })
+  }
 
+  /**
+   * 从主进程和渲染进程同时卸载已完成且已折叠的回答。
+   * 用户消息保留为未加载的历史锚点，展开时通过 loadHistoryTurn 从磁盘恢复。
+   */
+  async function unloadCollapsedTurns(session, options = {}) {
+    const mainQueue = session?.queueManager?.getQueue(session.mainAgentId)
+    if (!mainQueue?.length) {
+      return { unloadedCount: 0, skippedCount: 0 }
+    }
+
+    const keepRecentCount = Math.max(0, Number(options.keepRecentCount || 0))
     const entries = mainQueue.entries
+    const userIndexes = []
 
-    // 反向扫描，从后往前统计 user message 数量，找到超过 keepRecentCount 的折叠老问答
-    let userCount = 0
-    const toRelease = []
-
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (isTurnInitiatorMessage(entries[i])) {
-        userCount++
-        if (userCount > keepRecentCount && entries[i].responseCollapsed) {
-          toRelease.push(i)
-        }
+    for (let index = 0; index < entries.length; index++) {
+      if (isTurnInitiatorMessage(entries[index])) {
+        userIndexes.push(index)
       }
     }
 
-    // toRelease 是降序排列（反向扫描的结果），
-    // 正向迭代即先释放较后面的索引，前面索引不受影响，防止索引漂移
-    for (let r = 0; r < toRelease.length; r++) {
-      const userIdx = toRelease[r]
-      const range = getTurnResponseRange(entries, userIdx)
-      if (!range) continue
+    const maxIndexToUnload = keepRecentCount > 0
+      ? Math.max(0, userIndexes.length - keepRecentCount)
+      : userIndexes.length
+    const candidates = []
 
-      const userMsg = entries[userIdx]
-      const responseEntries = mainQueue.splice(range.responseStart, range.responseEnd - range.responseStart)
+    for (let userIndex = 0; userIndex < maxIndexToUnload; userIndex++) {
+      const messageIndex = userIndexes[userIndex]
+      const userMessage = entries[messageIndex]
+      if (!userMessage?.responseCollapsed) {
+        continue
+      }
 
-      // 以 JSON 序列化缓存（释放 Vue reactive 追踪开销）
-      userMsg._releasedResponses = JSON.parse(JSON.stringify(responseEntries))
+      const range = getTurnResponseRange(entries, messageIndex)
+      const hasCachedResponses = Boolean(userMessage._releasedResponses?.length)
+      if (!range && !hasCachedResponses) {
+        continue
+      }
+
+      if (range) {
+        const responseEntries = entries.slice(range.responseStart, range.responseEnd)
+        if (responseEntries.some(message => message?.isStreaming || message?.isExecuting)) {
+          continue
+        }
+      }
+
+      const turnId = userMessage.historyTurn?.turnId || userMessage.id
+      if (turnId) {
+        candidates.push({ turnId, userMessage })
+      }
+    }
+
+    if (candidates.length === 0) {
+      return { unloadedCount: 0, skippedCount: 0 }
+    }
+
+    if (!session.id || typeof window.electronAPI?.unloadSessionHistoryTurns !== 'function') {
+      return { unloadedCount: 0, skippedCount: candidates.length, error: '历史卸载接口不可用' }
+    }
+
+    const result = await window.electronAPI.unloadSessionHistoryTurns({
+      sessionId: session.id,
+      turnIds: candidates.map(item => item.turnId)
+    })
+    if (!result?.success) {
+      return {
+        unloadedCount: 0,
+        skippedCount: candidates.length,
+        error: result?.error || '主进程卸载历史失败'
+      }
+    }
+
+    const unloadedTurnIds = new Set(result.unloadedTurnIds || [])
+    const releasedSubagentTurnIds = new Set(result.subagentTurnIds || [])
+    const unloadedCandidates = candidates.filter(item => unloadedTurnIds.has(item.turnId))
+
+    for (let index = unloadedCandidates.length - 1; index >= 0; index--) {
+      const { turnId } = unloadedCandidates[index]
+      const currentEntries = mainQueue.entries
+      const anchorIndex = currentEntries.findIndex(message => message?.id === turnId)
+      if (anchorIndex === -1) {
+        continue
+      }
+
+      const range = getTurnResponseRange(currentEntries, anchorIndex)
+      if (range) {
+        mainQueue.splice(range.responseStart, range.responseEnd - range.responseStart)
+      }
+
+      const userMessage = mainQueue.entries[anchorIndex]
+      if (!userMessage) {
+        continue
+      }
+      userMessage._releasedResponses = null
+      userMessage.historyTurn = {
+        ...(userMessage.historyTurn || {}),
+        turnId,
+        status: userMessage.historyTurn?.status || 'completed',
+        hasResponse: true,
+        loaded: false,
+        loading: false,
+        error: null
+      }
+      userMessage.responseCollapsed = true
+    }
+
+    for (const history of session.subagentHistories || []) {
+      for (const entry of history.entries || []) {
+        if (!releasedSubagentTurnIds.has(entry.turnId)) {
+          continue
+        }
+        entry.loaded = false
+        delete entry.loadedEvents
+      }
+    }
+
+    const sourceTurnIds = new Set(unloadedCandidates.map(item => item.turnId))
+    const sourceFilter = message => {
+      const sourceTurnId = message?.ccgui?.history?.sourceUserTurnId
+        || (isTurnInitiatorMessage(message) ? message?.id : null)
+      return !sourceTurnId || !sourceTurnIds.has(sourceTurnId)
+    }
+    session.silentMessages = (session.silentMessages || []).filter(sourceFilter)
+    session.taskEvents = (session.taskEvents || []).filter(sourceFilter)
+    for (const toolUseId of [...session.agentToolUseBindings.keys()]) {
+      if (!session.queueManager.findEntryGlobal(toolUseId)) {
+        session.agentToolUseBindings.delete(toolUseId)
+      }
+    }
+    rebuildAgentSemanticState(session)
+
+    return {
+      unloadedCount: unloadedCandidates.length,
+      skippedCount: candidates.length - unloadedCandidates.length + Number((result.skippedTurnIds || []).length || 0)
     }
   }
 
@@ -1163,17 +1390,20 @@ export const useSessionStore = defineStore('session', () => {
       }
 
       session.queueManager.getOrCreateQueue(agentId)
+      const historyStatus = resolveSubagentHistoryStatus(subagentHistory, session)
       nextRegistry.set(agentId, mergeAgentRegistryEntry(nextRegistry.get(agentId), {
         ...(subagentHistory?.registry || {}),
         agentId,
         agentKind: 'collaborative',
-        status: 'interrupted'
+        ...(historyStatus ? { status: historyStatus } : {})
       }))
 
       for (const turn of subagentHistory.entries || []) {
         const anchorMessage = buildSubagentHistoryAnchor(turn, agentId, subagentHistory.registry || null)
         const queue = session.queueManager.getOrCreateQueue(agentId)
-        queue.append(anchorMessage)
+        if (!queue.findById(anchorMessage.id)) {
+          queue.append(anchorMessage)
+        }
 
         if (Array.isArray(turn.loadedEvents)) {
           for (const event of turn.loadedEvents) {
@@ -1308,6 +1538,11 @@ export const useSessionStore = defineStore('session', () => {
       registryEntry?.agentKind,
       session.agentRegistry.get(semanticAgentId || '')?.agentKind
     )
+    const semanticAgentType = pickFirstDefined(
+      orchestrationEntry?.agentType,
+      registryEntry?.agentType,
+      session.agentRegistry.get(semanticAgentId || '')?.agentType
+    )
     const toolUseId = getToolUseIdFromPayload(payload)
     if (toolUseId && semanticAgentId && semanticAgentKind === 'execution') {
       session.agentToolUseBindings.set(toolUseId, semanticAgentId)
@@ -1320,6 +1555,24 @@ export const useSessionStore = defineStore('session', () => {
     // 导致它被归类到主 agent 的队列中。这里通过定位来解决。
     if (semanticAgentId && semanticAgentKind === 'execution') {
       ensureParentAgentToolUseBinding(session, semanticAgentId)
+    }
+
+    if (semanticAgentId && semanticAgentId !== getMainAgentId(session) && semanticAgentType !== 'team') {
+      const status = pickFirstDefined(orchestrationEntry?.status, registryEntry?.status)
+      const eventType = orchestrationEntry?.eventType
+      if (
+        eventType === 'end' ||
+        eventType === 'delete' ||
+        ['ended', 'failed', 'interrupted', 'deleted'].includes(status)
+      ) {
+        session.activeAgentIds.delete(semanticAgentId)
+      } else if (
+        eventType === 'start' ||
+        status === 'starting' ||
+        status === 'running'
+      ) {
+        session.activeAgentIds.add(semanticAgentId)
+      }
     }
 
     syncAgentWorkspaceState(session)
@@ -1402,7 +1655,7 @@ export const useSessionStore = defineStore('session', () => {
           message?.toolName !== 'Agent'
         )
         const activeTimelineItems = timelineItems.filter(message => message?.isExecuting)
-        const rawStatus = entry.status || 'running'
+        const rawStatus = entry.status || 'ended'
         const isTerminalRawStatus = rawStatus === 'ended' || rawStatus === 'failed' || rawStatus === 'deleted'
         // 优先级：注册表已有终态 → 保留；task_complete 消息存在 → 已结束；无 runtime 且无活跃工具 → 中断；否则取注册表状态
         const resolvedStatus = isTerminalRawStatus
@@ -1480,7 +1733,9 @@ export const useSessionStore = defineStore('session', () => {
           title: display.title,
           subtitle: display.subtitle,
           color: entry.color || null,
-          status: entry.status || 'running',
+          status: entry.agentId === mainAgentId
+            ? (currentSession.value?.isProcessing ? 'running' : 'ended')
+            : (entry.status || 'ended'),
           canInput: entry.status !== 'deleted' && entry.canWrite !== false && entry.interactionMode !== 'read-only',
           canWrite: entry.canWrite !== false,
           interactionMode: entry.interactionMode || null,
@@ -1512,6 +1767,9 @@ export const useSessionStore = defineStore('session', () => {
         const isCollaborative = entry.agentKind === 'collaborative'
         const display = inferCollaborativeDisplay(entry, mainAgentId)
         const displayAgentType = display.effectiveAgentType
+        const resolvedStatus = isMain
+          ? (currentSession.value?.isProcessing ? 'running' : 'ended')
+          : (entry.status || 'ended')
 
         return {
           agentId: entry.agentId,
@@ -1526,7 +1784,7 @@ export const useSessionStore = defineStore('session', () => {
             : (entry.agentKind === 'execution'
                 ? (displayAgentType || '执行型代理')
                 : (display.subtitle || '协作型代理')),
-          status: entry.status || 'running',
+          status: resolvedStatus,
           isMain,
           isCollaborative,
           canActivate: isCollaborative,
@@ -1702,72 +1960,61 @@ export const useSessionStore = defineStore('session', () => {
       // 创建前端 SessionData，使用 reactive 包装以支持响应式更新
       const sessionData = reactive(new SessionData(sessionId, projectPath))
       const eventLog = Array.isArray(result.state?.eventLog) ? result.state.eventLog : []
+      sessionData.subagentHistories = Array.isArray(result.state?.subagentHistories)
+        ? result.state.subagentHistories
+        : []
+      sessionData.activeAgentIds = new Set(
+        Array.isArray(result.state?.activeAgentIds) ? result.state.activeAgentIds : []
+      )
 
-      // 从后端状态恢复数据
-      if (result.state && eventLog.length === 0) {
-        // 使用 reactive 包装每个消息对象以确保响应式，并路由到各队列
-        const restoredMessages = (result.state.messages || []).map(msg => reactive(msg))
-        sessionData.queueManager.resetAll()
-        for (const msg of restoredMessages) {
-          const queue = sessionData.queueManager.routeToQueue(sessionData, msg)
-          queue.append(msg)
-        }
-        sessionData.inputAttachments = result.state.inputAttachments || []
-        sessionData.inputHistory = result.state.inputHistory || []
-        sessionData.envInfo = result.state.envInfo || null
-        sessionData.silentMessages = (result.state.silentMessages || []).map(msg => reactive(msg))
-        sessionData.taskEvents = (result.state.taskEvents || []).map(event => reactive(event))
-        sessionData.subagentHistories = result.state.subagentHistories || []
-        sessionData.runtimeReady = result.state.runtimeReady || false
-        // 恢复权限模式
-        if (result.state.permissionMode) {
-          sessionData.permissionMode = result.state.permissionMode
-          console.log('[SessionStore] Restored permission mode:', result.state.permissionMode, 'for session:', sessionId)
-          console.log('[SessionStore] Full result state for permission mode:', {
-            sessionId,
-            hasPermissionMode: !!result.state.permissionMode,
-            permissionMode: result.state.permissionMode,
-            previousSessionPermissionMode: sessionData.permissionMode
-          })
-        } else {
-          console.log('[SessionStore] No permission mode in result.state for session:', sessionId)
-          console.log('[SessionStore] Session state keys:', Object.keys(result.state))
-        }
-        // 恢复自动批准开关
-        if (result.state.autoApprove !== undefined) {
-          sessionData.autoApprove = result.state.autoApprove
-          console.log('[SessionStore] Restored autoApprove:', result.state.autoApprove, 'for session:', sessionId)
-          // 同步到 useAppStore，以便后台权限请求时判断是否播放通知
-          try {
-            const appStore = useAppStore()
-            appStore.patchSessionStatus(sessionId, { autoApprove: result.state.autoApprove })
-          } catch (_) { /* ignore */ }
-        }
-        if (Array.isArray(result.state.taskDockHistory)) {
-          sessionData.taskDockHistory = result.state.taskDockHistory
-        }
-        if (result.state.pendingPermission) {
-          sessionData.pendingPermissions = [reactive(result.state.pendingPermission)]
-        }
-
-      } else {
-        console.log('[SessionStore] No result.state for session:', sessionId, 'result:', result)
+      // 先用后端快照恢复当前内存状态，eventLog 仅作为增量事件补放。
+      const restoredState = result.state || {}
+      const restoredMessages = (restoredState.messages || []).map(msg => reactive(msg))
+      sessionData.queueManager.resetAll()
+      for (const msg of restoredMessages) {
+        const queue = sessionData.queueManager.routeToQueue(sessionData, msg)
+        queue.append(msg)
+      }
+      sessionData.inputAttachments = restoredState.inputAttachments || []
+      sessionData.inputHistory = restoredState.inputHistory || []
+      sessionData.envInfo = restoredState.envInfo || null
+      sessionData.silentMessages = (restoredState.silentMessages || []).map(msg => reactive(msg))
+      sessionData.taskEvents = (restoredState.taskEvents || []).map(event => reactive(event))
+      sessionData.runtimeReady = restoredState.runtimeReady || false
+      if (restoredState.permissionMode) {
+        sessionData.permissionMode = restoredState.permissionMode
+      }
+      if (restoredState.autoApprove !== undefined) {
+        sessionData.autoApprove = restoredState.autoApprove
+        try {
+          const appStore = useAppStore()
+          appStore.patchSessionStatus(sessionId, { autoApprove: restoredState.autoApprove })
+        } catch (_) { /* ignore */ }
+      }
+      if (Array.isArray(restoredState.taskDockHistory)) {
+        sessionData.taskDockHistory = restoredState.taskDockHistory
+      }
+      if (restoredState.pendingPermission) {
+        sessionData.pendingPermissions = [reactive(restoredState.pendingPermission)]
       }
 
       // 先放进 Map，方便事件重放直接走统一 reducer
       sessions.value.set(sessionId, sessionData)
 
       if (eventLog.length > 0) {
-        sessionData.envInfo = result.state?.envInfo || null
-        sessionData.runtimeReady = result.state?.runtimeReady || false
-        sessionData.permissionMode = result.state?.permissionMode || sessionData.permissionMode
-        sessionData.autoApprove = result.state?.autoApprove ?? sessionData.autoApprove
-        sessionData.inputAttachments = result.state?.inputAttachments || []
-        sessionData.inputHistory = result.state?.inputHistory || []
-
         for (const event of eventLog) {
           handleSessionEvent(event)
         }
+        sessionData.activeAgentIds = new Set(
+          Array.isArray(restoredState.activeAgentIds) ? restoredState.activeAgentIds : []
+        )
+        sessionData.silentMessages = Array.from(new Map(
+          sessionData.silentMessages.map(message => [message?.id || `${message?.messageType}:${message?.timestamp}`, message])
+        ).values())
+        sessionData.taskEvents = Array.from(new Map(
+          sessionData.taskEvents.map(event => [event?.id || `${event?.type}:${event?.timestamp}`, event])
+        ).values())
+        rebuildAgentSemanticState(sessionData)
       } else {
         for (const silentMessage of sessionData.silentMessages) {
           recordAgentSemantics(sessionData, silentMessage)
@@ -1788,18 +2035,8 @@ export const useSessionStore = defineStore('session', () => {
         }
       }
 
-      // 清理历史重放后仍处于 running 状态的协作 agent（会话中断时未收到结束事件）
-      const mainId = sessionData.mainAgentId
-      for (const [agentId, entry] of sessionData.agentRegistry) {
-        if (agentId !== mainId && entry?.status === 'running') {
-          // team 相关的协作 agent 标记为 deleted（session 中断后 team 已不存在）
-          if (entry.agentKind === 'collaborative' && (entry.agentType === 'team' || entry.teamId)) {
-            entry.status = 'deleted'
-          } else {
-            entry.status = 'stopped'
-          }
-        }
-      }
+      // 历史重放后，没有实时活跃证据的代理不能继续保持运行态。
+      reconcileAgentRuntimeStatuses(sessionData)
 
       // 设置为当前会话
       currentSessionId.value = sessionId
@@ -1828,6 +2065,8 @@ export const useSessionStore = defineStore('session', () => {
 
     // 如果会话已存在，直接切换
     if (existingSession) {
+      reconcileSubagentHistoryStatuses(existingSession)
+      reconcileAgentRuntimeStatuses(existingSession)
       currentSessionId.value = sessionId
       hydrateSessionEnvInfo(sessionId)
       console.log('[SessionStore] Switched to existing session with permission mode:', existingSession.permissionMode)
@@ -2069,7 +2308,10 @@ export const useSessionStore = defineStore('session', () => {
     }
     session.historyIndex = -1
 
-    session.isProcessing = true
+    const wasProcessing = session.isProcessing
+    if (!shouldAttachAgentAttribution) {
+      session.isProcessing = true
+    }
     session.currentTurnUsageSources = {}
 
     // 清理悬浮框中的任务（发起新提问时清理上一轮的任务）
@@ -2090,7 +2332,7 @@ export const useSessionStore = defineStore('session', () => {
         throw new Error(result?.error || '发送消息失败')
       }
     } catch (error) {
-      session.isProcessing = false
+      session.isProcessing = wasProcessing
       throw error
     }
   }
@@ -2209,7 +2451,23 @@ export const useSessionStore = defineStore('session', () => {
     const session = currentSession.value
     if (!session) return
 
-    await window.electronAPI.sendInterrupt({ sessionId: session.id })
+    const result = await window.electronAPI.sendInterrupt({ sessionId: session.id })
+    if (!result?.success) {
+      throw new Error(result?.error || '中断请求失败')
+    }
+  }
+
+  async function closeSubagentAgent(agentId) {
+    const session = currentSession.value
+    if (!session || !agentId) return
+
+    const result = await window.electronAPI.closeSubagentAgent({
+      sessionId: session.id,
+      agentId
+    })
+    if (!result?.success) {
+      throw new Error(result?.error || '关闭子代理失败')
+    }
   }
 
   /**
@@ -2683,6 +2941,18 @@ export const useSessionStore = defineStore('session', () => {
         handleMessageReplace(session, data)
         break
 
+      case 'message-snapshot':
+        recordAgentSemantics(session, data?.message || data)
+        handleMessageSnapshot(session, data)
+        break
+
+      case 'message-remove':
+        if (data?.messageId) {
+          const queue = session.queueManager.findQueueForEntry(data.messageId)
+          queue?.removeById(data.messageId)
+        }
+        break
+
       case 'message-complete':
         // 后端发送的消息完成事件
         recordAgentSemantics(session, data?.updates || data)
@@ -2943,9 +3213,9 @@ export const useSessionStore = defineStore('session', () => {
     session.pendingPermissions = []
     session.pendingControlRequests = []
 
-    // 强制收尾残留的流式/执行态，遍历所有队列
-    for (const queue of session.queueManager.queues.values()) {
-      for (const msg of queue.entries) {
+    // 主代理 result 只收尾主代理消息；子代理可能仍在独立线程中运行
+    if (mainQueue) {
+      for (const msg of mainQueue.entries) {
         if (msg.isStreaming) {
           msg.isStreaming = false
           if (!msg.duration && msg.startTime) {
@@ -2962,11 +3232,12 @@ export const useSessionStore = defineStore('session', () => {
       }
     }
 
-    // 提取统一 result 语义（跨队列搜索最新的 user/assistant）
-    const latestUserMessage = session.queueManager.findLatestGlobal(msg => isTurnInitiatorMessage(msg))
-    const latestAssistantMessage = session.queueManager.findLatestGlobal(msg =>
+    // result 只描述主代理本轮，统计不能取到子代理的消息
+    const mainEntries = mainQueue?.entries || []
+    const latestUserMessage = [...mainEntries].reverse().find(msg => isTurnInitiatorMessage(msg)) || null
+    const latestAssistantMessage = [...mainEntries].reverse().find(msg =>
       msg.role === 'assistant' && ((msg.content && msg.content.trim()) || (msg.thinking && msg.thinking.trim()))
-    ) || session.queueManager.findLatestGlobal(msg => msg.role === 'assistant') || null
+    ) || [...mainEntries].reverse().find(msg => msg.role === 'assistant') || null
 
     const durationMs =
       result.duration_ms ??
@@ -3144,6 +3415,7 @@ export const useSessionStore = defineStore('session', () => {
 
     // 直接使用原始 message 对象
     const nextMessage = message
+    const isMainAgentMessage = getMessageAgentId(nextMessage, session) === getMainAgentId(session)
 
     if ((nextMessage.role === 'tool_use' || nextMessage.role === 'diff') && !nextMessage.manuallyExpanded) {
       nextMessage.collapsed = true
@@ -3167,8 +3439,10 @@ export const useSessionStore = defineStore('session', () => {
         hasThinking: existing.hasThinking || nextMessage.hasThinking || false
       })
 
-      session.currentStreamingAssistantId = nextMessage.id
-      if (nextMessage.role === 'assistant') {
+      if (isMainAgentMessage) {
+        session.currentStreamingAssistantId = nextMessage.id
+      }
+      if (nextMessage.role === 'assistant' && isMainAgentMessage) {
         syncUserRealtimeStats(session, {
           turnNumber: nextMessage.turnNumber,
           usage: nextMessage.usage,
@@ -3181,7 +3455,9 @@ export const useSessionStore = defineStore('session', () => {
 
     // 所有角色都直接添加
     queue.append(nextMessage)
-    session.currentStreamingAssistantId = nextMessage.id
+    if (isMainAgentMessage) {
+      session.currentStreamingAssistantId = nextMessage.id
+    }
 
     if (nextMessage.role === 'tool_use' || nextMessage.role === 'diff') {
       if (typeof nextMessage.request_id === 'number') {
@@ -3239,6 +3515,51 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] handleMessageReplace:', messageId, 'fields:', Object.keys(nextReplacement))
   }
 
+  function handleMessageSnapshot(session, data) {
+    const snapshot = data?.message
+    if (!snapshot?.id) {
+      return
+    }
+
+    const existing = session.queueManager.findEntryGlobal(snapshot.id)
+    if (!existing) {
+      handleMessageStart(session, snapshot)
+      return
+    }
+
+    const uiState = {}
+    for (const field of [
+      '_releasedResponses',
+      'collapsed',
+      'historyTurn',
+      'manuallyExpanded',
+      'responseCollapsed',
+      'thinkingCollapsed'
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(existing, field)) {
+        uiState[field] = existing[field]
+      }
+    }
+
+    const nextSnapshot = {
+      ...snapshot,
+      ...(existing.ccgui || snapshot.ccgui
+        ? {
+            ccgui: {
+              ...(existing.ccgui || {}),
+              ...(snapshot.ccgui || {}),
+              history: snapshot.ccgui?.history || existing.ccgui?.history
+            }
+          }
+        : {})
+    }
+    Object.assign(existing, nextSnapshot, uiState)
+    if (existing.isStreaming === false && session.currentStreamingAssistantId === existing.id) {
+      session.currentStreamingAssistantId = null
+    }
+    log('[SessionStore] handleMessageSnapshot:', snapshot.id, data?.reason || '')
+  }
+
   /**
    * 处理消息完成事件（来自后端）
    */
@@ -3258,8 +3579,10 @@ export const useSessionStore = defineStore('session', () => {
       msg.duration = Date.now() - msg.startTime
     }
 
-    // 清除流式标记
-    session.currentStreamingAssistantId = null
+    // 只清除主代理的流式标记，避免子代理完成事件覆盖主代理状态
+    if (session.currentStreamingAssistantId === messageId) {
+      session.currentStreamingAssistantId = null
+    }
 
     log('[SessionStore] handleMessageComplete:', messageId)
   }
@@ -3282,7 +3605,9 @@ export const useSessionStore = defineStore('session', () => {
    * 处理消息字段更新（来自后端）
    */
   function handleMessageUpdate(session, data) {
-    const { messageId, updates } = data
+    const messageId = data?.messageId
+    const updates = data?.updates || {}
+    const canonical = data?.canonical === true
 
 
     // 查找对应的消息（跨队列）
@@ -3292,41 +3617,52 @@ export const useSessionStore = defineStore('session', () => {
       return
     }
 
-    // 应用更新
-    const mergedUpdates = {
-      ...updates
+    // 后端已完成权威状态合并，前端只应用对应 messageId 的规范更新。
+    const normalizedUpdates = {
+      ...updates,
+      ...(!canonical && updates.toolInput && typeof updates.toolInput === 'object'
+        ? {
+            toolInput: {
+              ...(msg.toolInput || {}),
+              ...updates.toolInput
+            }
+          }
+        : {}),
+      ...(msg.ccgui || updates.ccgui
+        ? {
+            ccgui: {
+              ...(msg.ccgui || {}),
+              ...(updates.ccgui || {}),
+              history: updates.ccgui?.history || msg.ccgui?.history
+            }
+          }
+        : {})
     }
-    if (mergedUpdates.toolInput == null) {
-      delete mergedUpdates.toolInput
-    }
-    if (updates.toolInput && typeof updates.toolInput === 'object') {
-      mergedUpdates.toolInput = {
-        ...(msg.toolInput || {}),
-        ...updates.toolInput
-      }
-    }
-    Object.assign(msg, mergedUpdates)
-    if ((mergedUpdates.isStreaming === false || mergedUpdates.isExecuting === false) && !msg.duration && msg.startTime) {
+    Object.assign(msg, normalizedUpdates)
+    if ((updates.isStreaming === false || updates.isExecuting === false) && !msg.duration && msg.startTime) {
       msg.duration = Date.now() - msg.startTime
     }
 
     if (msg.role === 'assistant') {
       syncUserRealtimeStats(session, {
-        turnNumber: mergedUpdates.turnNumber ?? msg.turnNumber,
-        usage: mergedUpdates.usage ?? msg.usage,
+        turnNumber: updates.turnNumber ?? msg.turnNumber,
+        usage: updates.usage ?? msg.usage,
         usageSourceKey: `main:${msg.id}`
       })
     }
+    if (msg.role === 'tool_use' && msg.toolName === 'Agent' && normalizedUpdates.usage) {
+      setUserUsageSource(session, `execution:${msg.id}`, normalizedUpdates.usage)
+    }
 
-    log('[SessionStore] handleMessageUpdate:', messageId, 'updates:', Object.keys(mergedUpdates))
+    log('[SessionStore] handleMessageUpdate:', messageId, 'updates:', Object.keys(normalizedUpdates))
 
     // 处理 TodoWrite 工具：显示在悬浮窗中
-    if (msg.role === 'tool_use' && msg.toolName === 'TodoWrite' && mergedUpdates.toolInput?.todos) {
+    if (msg.role === 'tool_use' && msg.toolName === 'TodoWrite' && normalizedUpdates.toolInput?.todos) {
       log('[SessionStore] TodoWrite detected in handleMessageUpdate:', {
         toolUseId: messageId,
-        todosCount: mergedUpdates.toolInput.todos.length
+        todosCount: normalizedUpdates.toolInput.todos.length
       })
-      handleTodoWrite(session, messageId, mergedUpdates.toolInput.todos)
+      handleTodoWrite(session, messageId, normalizedUpdates.toolInput.todos)
     }
   }
 
@@ -3365,8 +3701,8 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 处理 message-result 事件（来自 adapter 的 tool_result）
-   * 替代旧的 tool-result + message-update 双事件
+   * 兼容旧历史中的 message-result 事件。
+   * 新事件由后端归一成 message-update / message-snapshot。
    */
   function handleMessageResult(session, data) {
     const messageId = data?.messageId
@@ -3459,6 +3795,7 @@ export const useSessionStore = defineStore('session', () => {
     log('[SessionStore] mergedRequestData:', JSON.stringify(mergedRequestData, null, 2))
 
     const hasQuestions = toolInput?.questions || requestData.questions
+    const isInternalMcpRequest = isCcGuiInternalMcpRequest(mergedRequestData)
 
     // ~/.ccgui 目录下的文件请求自动批准（不弹窗、不播放音效）
     if (isCcGuiFileRequest(mergedRequestData)) {
@@ -3470,9 +3807,9 @@ export const useSessionStore = defineStore('session', () => {
     if (toolName === 'AskUserQuestion' || hasQuestions) {
       log('[SessionStore] Setting pendingQuestion, request_id:', mergedRequestData.request_id)
       session.pendingQuestion = mergedRequestData
-    } else if (session.autoApprove) {
-      // 自动批准开关开启时，不弹窗直接批准
-      log('[SessionStore] Auto-approving (autoApprove enabled), toolName:', toolName, 'request_id:', mergedRequestData.request_id)
+    } else if (session.autoApprove || isInternalMcpRequest) {
+      // 自动批准开关开启，或请求来自 ccgui_internal MCP 时，不弹窗直接批准
+      log('[SessionStore] Auto-approving (autoApprove enabled or ccgui_internal), toolName:', toolName, 'request_id:', mergedRequestData.request_id)
       autoApproveControlRequest(session, mergedRequestData)
     } else {
       // 添加到队列而不是覆盖
@@ -3482,7 +3819,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /**
-   * 自动批准开关开启时自动批准权限请求（不弹窗，直接回复）
+   * 自动批准权限请求（自动批准开关开启或 ccgui_internal MCP 请求）
    */
   function autoApproveControlRequest(session, requestData) {
     const requestId = requestData.request_id
@@ -3599,6 +3936,10 @@ export const useSessionStore = defineStore('session', () => {
   function handleStateUpdate(session, data) {
     if (data.isProcessing !== undefined) {
       session.isProcessing = data.isProcessing
+    }
+    if (Array.isArray(data.activeAgentIds)) {
+      session.activeAgentIds = new Set(data.activeAgentIds)
+      reconcileAgentRuntimeStatuses(session)
     }
     if (data.inputMessage !== undefined) {
       session.inputMessage = data.inputMessage
@@ -3777,6 +4118,10 @@ export const useSessionStore = defineStore('session', () => {
       return
     }
 
+    const notificationAgentId = getMessageAgentId({ ccgui: data?.ccgui || null }, session)
+    const notificationQueue = session.queueManager.getOrCreateQueue(notificationAgentId)
+    const operationId = typeof data?.operationId === 'string' ? data.operationId : ''
+
     if (data?.type === 'session-runtime-starting' || data?.type === 'session-runtime-restarting') {
       session.runtimeReady = false
     } else if (data?.type === 'session-runtime-ready') {
@@ -3791,7 +4136,74 @@ export const useSessionStore = defineStore('session', () => {
       session.runtimeReady = false
     }
 
-    const operationId = typeof data?.operationId === 'string' ? data.operationId : ''
+    const existingMcpNotification = operationId && isMcpLifecycleNotificationType(data?.type)
+      ? findMcpNotificationByOperationId(session.queueManager.queues.values(), operationId)
+      : null
+
+    if (existingMcpNotification) {
+      const { message: existingMessage } = existingMcpNotification
+      const resolveExistingScope = () => resolveNotificationScope(data.type, {
+        ...data,
+        ccgui: data?.ccgui || existingMessage.ccgui || null
+      }, session)
+
+      if (data.type === 'mcp-server-starting') {
+        if (existingMessage.notificationType === 'mcp-server-starting') {
+          existingMessage.data = {
+            ...existingMessage.data,
+            ...data,
+            startedAt: existingMessage.data?.startedAt || data.startedAt || Date.now()
+          }
+          existingMessage.scope = resolveExistingScope()
+          existingMessage.ccgui = data?.ccgui || existingMessage.ccgui || null
+        }
+        return
+      }
+
+      if (shouldIgnoreMcpNotificationUpdate(existingMessage.notificationType, data.type)) {
+        return
+      }
+
+      const applyMcpUpdate = () => {
+        if (shouldIgnoreMcpNotificationUpdate(existingMessage.notificationType, data.type)) {
+          return
+        }
+
+        const startedAt = existingMessage.data?.startedAt || existingMessage.timestamp?.getTime?.() || Date.now()
+        const resolvedDurationMs = Number.isFinite(data.durationMs)
+          ? data.durationMs
+          : Number.isFinite(existingMessage.data?.durationMs)
+            ? existingMessage.data.durationMs
+            : Math.max(0, Date.now() - startedAt)
+
+        existingMessage.notificationType = data.type
+        existingMessage.scope = resolveExistingScope()
+        existingMessage.data = {
+          ...existingMessage.data,
+          ...data,
+          startedAt,
+          completedAt: Date.now(),
+          durationMs: resolvedDurationMs
+        }
+        existingMessage.ccgui = data?.ccgui || existingMessage.ccgui || null
+        existingMessage.timestamp = new Date()
+      }
+
+      if (existingMessage.notificationType === 'mcp-server-starting') {
+        const startedAt = existingMessage.data?.startedAt || existingMessage.timestamp?.getTime?.() || Date.now()
+        const elapsed = Math.max(0, Date.now() - startedAt)
+        const minDisplayMs = 700
+        if (elapsed < minDisplayMs) {
+          setTimeout(applyMcpUpdate, minDisplayMs - elapsed)
+        } else {
+          applyMcpUpdate()
+        }
+      } else {
+        applyMcpUpdate()
+      }
+      return
+    }
+
     if (
       operationId && (
         data.type === 'session-runtime-ready' ||
@@ -3802,8 +4214,7 @@ export const useSessionStore = defineStore('session', () => {
         data.type === 'hook-event'
       )
     ) {
-      const mainQueue = getMainQueue(session)
-      const pendingMessage = mainQueue ? [...mainQueue.entries].reverse().find(message =>
+      const pendingMessage = [...notificationQueue.entries].reverse().find(message =>
         message.role === 'system_notification' &&
         (
           message.notificationType === 'session-runtime-starting' ||
@@ -3812,7 +4223,7 @@ export const useSessionStore = defineStore('session', () => {
           message.notificationType === 'hook-event'
         ) &&
         message.data?.operationId === operationId
-      ) : null
+      )
 
       if (pendingMessage) {
         const applyUpdate = () => {
@@ -3824,7 +4235,7 @@ export const useSessionStore = defineStore('session', () => {
               : Math.max(0, Date.now() - startedAt)
 
           pendingMessage.notificationType = data.type
-          pendingMessage.scope = resolveNotificationScope(data.type, data)
+          pendingMessage.scope = resolveNotificationScope(data.type, data, session)
           pendingMessage.data = {
             ...pendingMessage.data,
             ...data,
@@ -3863,16 +4274,18 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     // 创建系统通知消息
+    const canonicalMessageId = typeof data?.messageId === 'string' ? data.messageId.trim() : ''
     const notificationMsg = {
-      id: `system-notification-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: canonicalMessageId || `system-notification-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: 'system_notification',
       notificationType: data.type,
-      scope: resolveNotificationScope(data.type, data),
+      scope: resolveNotificationScope(data.type, data, session),
       data: data,
+      ccgui: data?.ccgui || null,
       timestamp: new Date()
     }
 
-    getMainQueue(session).append(notificationMsg)
+    notificationQueue.append(notificationMsg)
   }
 
   function finalizeSessionRuntimeActivity(session, options = {}) {
@@ -3882,6 +4295,9 @@ export const useSessionStore = defineStore('session', () => {
 
     const markInterruptedTools = options.markInterruptedTools !== false
     const now = Date.now()
+
+    session.activeAgentIds.clear()
+    reconcileAgentRuntimeStatuses(session)
 
     // 遍历所有队列
     for (const queue of session.queueManager.queues.values()) {
@@ -4422,6 +4838,7 @@ export const useSessionStore = defineStore('session', () => {
     sendControlResponse,
     sendRuntimeToolResult,
     sendInterrupt,
+    closeSubagentAgent,
     sendControlRequest,
     executeMcpAction,
     currentMcpCapabilities,
@@ -4447,6 +4864,7 @@ export const useSessionStore = defineStore('session', () => {
     clearPendingPermissions,
     clearPendingQuestion,
     releaseOldCollapsedTurns,
+    unloadCollapsedTurns,
     restoreReleasedTurn
   }
 })

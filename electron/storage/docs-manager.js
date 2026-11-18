@@ -5,14 +5,14 @@
 
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
 const logger = require('../logger')
+const { getCcguiPath } = require('../runtime-paths')
 
 /**
  * 获取文档目录路径
  */
 function getDocsDir() {
-  return path.join(os.homedir(), '.ccgui', 'docs')
+  return getCcguiPath('docs')
 }
 
 /**

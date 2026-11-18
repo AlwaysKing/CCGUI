@@ -19,6 +19,7 @@ const {
 } = require('../storage')
 const { readCodexAuthFile, readCodexConfigFile } = require('./app-service')
 const { resolveProjectSettings, resolveSessionSettings } = require('../config-resolution')
+const { loadTeams } = require('../agent-communication/team-store')
 const pendingHistoryImports = new Map()
 const pendingHistoryRetries = new Map()
 const HISTORY_RETRY_DELAY_MS = 5000
@@ -685,6 +686,35 @@ function getCodexSessionNativeIds(session = null) {
   return Array.from(nativeIds)
 }
 
+function getProviderBindingIdsByProvider(sessions = []) {
+  const idsByProvider = new Map()
+
+  for (const session of sessions) {
+    const binding = resolveToolBinding(session?.settings || {}, session?.id || null)
+    if (!binding?.tool || !binding.nativeSessionId) {
+      continue
+    }
+
+    const nativeIds = binding.tool === 'codex'
+      ? getCodexSessionNativeIds(session)
+      : [binding.nativeSessionId]
+    const current = idsByProvider.get(binding.tool) || new Set()
+    for (const nativeId of nativeIds) {
+      if (nativeId) {
+        current.add(nativeId)
+      }
+    }
+    idsByProvider.set(binding.tool, current)
+  }
+
+  return new Map(
+    Array.from(idsByProvider.entries()).map(([provider, nativeIds]) => [
+      provider,
+      Array.from(nativeIds)
+    ])
+  )
+}
+
 function isProviderPlaceholderSession(session = null) {
   const provider = resolveLinkedSessionProvider(session)
   if (provider === 'codex') {
@@ -698,7 +728,7 @@ function isProviderPlaceholderSession(session = null) {
   return false
 }
 
-function resolveSessionBindingMeta(session = null, providerData = null) {
+function resolveSessionBindingMeta(session = null, providerData = null, providerScanSucceeded = true) {
   const binding = resolveToolBinding(session?.settings || {}, session?.id || null)
   if (!binding?.tool) {
     return {
@@ -719,9 +749,20 @@ function resolveSessionBindingMeta(session = null, providerData = null) {
   }
 
   if (!binding.nativeSessionId) {
+    const pendingLabel = provider === 'codex'
+      ? '待启动 Codex'
+      : `待绑定 ${providerName}`
     return {
       bindingState: 'pending',
-      bindingLabel: `待绑定 ${providerName}`,
+      bindingLabel: pendingLabel,
+      bindingMissing: false
+    }
+  }
+
+  if (!providerScanSucceeded) {
+    return {
+      bindingState: 'unknown',
+      bindingLabel: '',
       bindingMissing: false
     }
   }
@@ -857,7 +898,7 @@ async function importProviderSessionHistory(projectId, providerSession, targetSe
 
   const messages = await Promise.resolve(source.loadSessionHistory({
     projectId,
-    projectPath: decodeProjectPath(projectId),
+    projectPath: getProjectPath(projectId),
     sessionId: historySessionId,
     session: providerSession
   }))
@@ -1058,9 +1099,15 @@ async function scanProjects() {
 
 async function getProjectSessions(projectId) {
   const appConfig = appConfigManager.loadConfig()
-  const projectPath = decodeProjectPath(projectId)
+  const projectPath = getProjectPath(projectId)
   const projectConfig = projectConfigManager.loadProjectConfig(projectId)
   const projectSettings = projectConfig?.settings || {}
+  const hadSessionOrder = projectConfigManager.getProjectSessionOrder(projectId).length > 0
+  const teamsById = new Map(
+    loadTeams(projectId)
+      .filter(team => team?.id)
+      .map(team => [team.id, team])
+  )
 
   let ccguiSessions = []
   try {
@@ -1084,15 +1131,39 @@ async function getProjectSessions(projectId) {
     }
   }
 
+  const providerBindingIds = getProviderBindingIdsByProvider(ccguiSessions)
   const providerSessionResults = await Promise.all(
-    providerSessionSources.map(async (source) => ({
-      provider: source.provider,
-      sessions: await Promise.resolve(source.listProjectSessions({ projectId, projectPath }))
-    }))
+    providerSessionSources.map(async (source) => {
+      try {
+        const sessions = await Promise.resolve(source.listProjectSessions({
+          projectId,
+          projectPath,
+          nativeSessionIds: providerBindingIds.get(source.provider) || []
+        }))
+        return {
+          provider: source.provider,
+          sessions: Array.isArray(sessions) ? sessions : [],
+          scanSucceeded: true
+        }
+      } catch (error) {
+        logger.warn('[ProjectService] Failed to scan provider sessions', {
+          projectId,
+          provider: source.provider,
+          error: error.message
+        })
+        return {
+          provider: source.provider,
+          sessions: [],
+          scanSucceeded: false
+        }
+      }
+    })
   )
 
   const providerSessions = new Map()
+  const providerScanSucceededByProvider = new Map()
   for (const entry of providerSessionResults) {
+    providerScanSucceededByProvider.set(entry.provider, entry.scanSucceeded)
     for (const session of entry.sessions) {
       providerSessions.set(session.id, session)
     }
@@ -1117,8 +1188,13 @@ async function getProjectSessions(projectId) {
     const providerData = providerCandidateIds
       .map(candidateId => providerSessions.get(candidateId))
       .find(Boolean) || null
+    const binderProvider = providerIdentity?.provider ||
+      resolveLinkedSessionProvider(ccguiSession) ||
+      resolveToolBinding(ccguiSession.settings || {}, ccguiSession.id || null)?.tool ||
+      null
+    const providerScanSucceeded = providerScanSucceededByProvider.get(binderProvider) !== false
 
-    if (isProviderPlaceholderSession(ccguiSession) && !providerData) {
+    if (isProviderPlaceholderSession(ccguiSession) && !providerData && providerScanSucceeded) {
       logger.info('[ProjectService] Hiding stale provider placeholder session', {
         projectId,
         sessionId: ccguiSession.id,
@@ -1138,18 +1214,22 @@ async function getProjectSessions(projectId) {
       }
     }
 
-    const bindingMeta = resolveSessionBindingMeta(ccguiSession, providerData)
+    const bindingMeta = resolveSessionBindingMeta(ccguiSession, providerData, providerScanSucceeded)
     const mergedSettings = {
       ...(providerData?.settings || {}),
       ...(ccguiSession.settings || {})
     }
     const availability = buildSessionAvailability(appConfig, projectSettings, mergedSettings)
+    const aiSummary = historyManager.loadSessionAiSummary(projectId, ccguiSession.id)
 
     mergedSessions.push({
       id: ccguiSession.id,
       projectId,
       name: ccguiSession.name || '会话',
-      preview: providerData?.preview || '',
+      teamId: ccguiSession.teamId || null,
+      teamName: teamsById.get(ccguiSession.teamId)?.name || ccguiSession.teamName || null,
+      role: ccguiSession.role || null,
+      preview: aiSummary?.text || providerData?.preview || '',
       createdAt: ccguiSession.createdAt || providerData?.createdAt,
       updatedAt: ccguiSession.updatedAt || providerData?.updatedAt,
       messageCount: providerData?.messageCount || ccguiSession.messageCount || 0,
@@ -1176,6 +1256,9 @@ async function getProjectSessions(projectId) {
         id: providerSession.id,
         projectId,
         name: providerSession.name || '会话',
+        teamId: providerSession.teamId || null,
+        teamName: teamsById.get(providerSession.teamId)?.name || providerSession.teamName || null,
+        role: providerSession.role || null,
         preview: providerSession.preview,
         createdAt: providerSession.createdAt,
         updatedAt: providerSession.updatedAt,
@@ -1193,8 +1276,9 @@ async function getProjectSessions(projectId) {
     }
   }
 
-  mergedSessions.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
-  return mergedSessions
+  return orderProjectSessions(projectId, mergedSessions, {
+    initializeLegacyOrder: !hadSessionOrder
+  })
 }
 
 function addProject(projectPath, settings) {
@@ -1223,6 +1307,57 @@ function addProject(projectPath, settings) {
 
 function getProjectConfig(projectId) {
   return projectConfigManager.loadProjectConfig(projectId)
+}
+
+function getProjectPath(projectId) {
+  return projectConfigManager.loadProjectConfig(projectId)?.path || decodeProjectPath(projectId)
+}
+
+function orderProjectSessions(projectId, sessions = [], options = {}) {
+  const configuredOrder = projectConfigManager.getProjectSessionOrder(projectId)
+  if (configuredOrder.length === 0 || options.initializeLegacyOrder === true) {
+    const initialSessions = [...sessions].sort((left, right) => {
+      const leftTime = Date.parse(left?.updatedAt || left?.createdAt || '')
+      const rightTime = Date.parse(right?.updatedAt || right?.createdAt || '')
+      const timeDifference = (Number.isFinite(rightTime) ? rightTime : 0) -
+        (Number.isFinite(leftTime) ? leftTime : 0)
+      return timeDifference || String(left?.id || '').localeCompare(String(right?.id || ''))
+    })
+    if (initialSessions.length > 0) {
+      projectConfigManager.setProjectSessionOrder(
+        projectId,
+        initialSessions.map(session => session.id)
+      )
+    }
+    return initialSessions
+  }
+
+  const knownIds = new Set(sessions.map(session => session?.id).filter(Boolean))
+  const configuredIdSet = new Set(configuredOrder)
+  const missingSessionIds = sessions
+    .map(session => session?.id)
+    .filter(sessionId => sessionId && !configuredIdSet.has(sessionId))
+  const nextOrder = missingSessionIds.length > 0
+    ? [...missingSessionIds, ...configuredOrder]
+    : configuredOrder
+
+  if (missingSessionIds.length > 0) {
+    projectConfigManager.setProjectSessionOrder(projectId, nextOrder)
+  }
+
+  const orderIndex = new Map(
+    nextOrder
+      .filter(sessionId => knownIds.has(sessionId))
+      .map((sessionId, index) => [sessionId, index])
+  )
+  return [...sessions].sort((left, right) => {
+    const leftIndex = orderIndex.get(left?.id)
+    const rightIndex = orderIndex.get(right?.id)
+    if (leftIndex === undefined && rightIndex === undefined) return 0
+    if (leftIndex === undefined) return 1
+    if (rightIndex === undefined) return -1
+    return leftIndex - rightIndex
+  })
 }
 
 function updateProjectConfig(projectId, updates) {
@@ -1285,6 +1420,8 @@ function copySession(projectId, sessionId) {
   // 创建新 session，带 forkedFrom 标记
   const newSession = sessionConfigManager.createSession(projectId, {
     name: `会话${maxNum + 1}`,
+    teamId: sourceConfig?.teamId || null,
+    role: sourceConfig?.role || null,
     settings: hasSettings ? { ...sourceConfig.settings } : {},
     forkedFrom: sessionId
   })
@@ -1327,7 +1464,257 @@ function copyDirRecursive(source, target) {
   }
 }
 
-async function createSession(projectId, name, settings) {
+const SESSION_MODEL_SETTING_KEYS = [
+  'modelMode',
+  'modelId',
+  'modelCardId',
+  'credentialId',
+  'targetKind',
+  'effort',
+  'thinkingMode',
+  'thinkingEnabled',
+  'maxThinkingTokens'
+]
+
+function normalizeSessionCreationProvider(provider = null) {
+  const normalized = typeof provider === 'string' ? provider.trim().toLowerCase() : ''
+  if (!normalized || normalized === 'default' || normalized === 'inherit') {
+    return null
+  }
+  if (normalized !== 'codex' && normalized !== 'claude') {
+    throw Object.assign(new Error('provider must be "codex" or "claude"'), {
+      status: 'invalid_provider'
+    })
+  }
+  return normalized
+}
+
+function pickSessionModelSettings(settings = {}) {
+  return SESSION_MODEL_SETTING_KEYS.reduce((result, key) => {
+    if (Object.prototype.hasOwnProperty.call(settings, key) && settings[key] !== undefined) {
+      result[key] = settings[key]
+    }
+    return result
+  }, {})
+}
+
+function isConfiguredModel(model = null) {
+  return Boolean(model && model.isActive !== false)
+}
+
+function getModelSelectionCards(model = null) {
+  return Array.isArray(model?.modelCards) ? model.modelCards.filter(card => card?.id || card?.modelName) : []
+}
+
+function buildModelCardSelection(model, card = null, provider = null) {
+  const resolvedCard = card || resolveConfiguredDefaultCard(model)
+  return {
+    provider,
+    model,
+    card: resolvedCard || null
+  }
+}
+
+function matchesModelValue(candidate = '', query = '') {
+  const normalizedCandidate = String(candidate || '').trim().toLowerCase()
+  const normalizedQuery = String(query || '').trim().toLowerCase()
+  return Boolean(normalizedCandidate && normalizedQuery && normalizedCandidate === normalizedQuery)
+}
+
+function dedupeModelSelections(selections = []) {
+  const seen = new Set()
+  return selections.filter(selection => {
+    const key = [
+      selection?.model?.id || '',
+      selection?.card?.id || '',
+      selection?.card?.modelName || ''
+    ].join('\0')
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function findProviderModelSelections(appConfig, provider, query) {
+  const models = getProviderModels(appConfig, provider).filter(isConfiguredModel)
+  const normalizedQuery = String(query || '').trim()
+  if (!normalizedQuery) {
+    return []
+  }
+
+  const slashIndex = normalizedQuery.indexOf('/')
+  if (slashIndex > 0) {
+    const modelQuery = normalizedQuery.slice(0, slashIndex).trim()
+    const cardQuery = normalizedQuery.slice(slashIndex + 1).trim()
+    const matchedModels = models.filter(model =>
+      matchesModelValue(model.id, modelQuery) ||
+      matchesModelValue(model.friendlyName, modelQuery)
+    )
+    if (matchedModels.length > 1) {
+      throw Object.assign(new Error(`Ambiguous model: ${normalizedQuery}`), {
+        status: 'ambiguous_model'
+      })
+    }
+    if (matchedModels.length === 1) {
+      const model = matchedModels[0]
+      const matchedCards = getModelSelectionCards(model).filter(card =>
+        matchesModelValue(card.id, cardQuery) ||
+        matchesModelValue(card.modelName, cardQuery)
+      )
+      if (!cardQuery) {
+        return [buildModelCardSelection(model, null, provider)]
+      }
+      if (matchedCards.length === 0) {
+        throw Object.assign(new Error(`Model card not found: ${normalizedQuery}`), {
+          status: 'model_not_found'
+        })
+      }
+      if (matchedCards.length > 1) {
+        throw Object.assign(new Error(`Ambiguous model card: ${normalizedQuery}`), {
+          status: 'ambiguous_model'
+        })
+      }
+      return [buildModelCardSelection(model, matchedCards[0], provider)]
+    }
+  }
+
+  const modelMatches = models.filter(model =>
+    matchesModelValue(model.id, normalizedQuery) ||
+    matchesModelValue(model.friendlyName, normalizedQuery)
+  )
+  if (modelMatches.length > 0) {
+    return modelMatches.map(model => buildModelCardSelection(model, null, provider))
+  }
+
+  const cardMatches = []
+  for (const model of models) {
+    for (const card of getModelSelectionCards(model)) {
+      if (
+        matchesModelValue(card.id, normalizedQuery) ||
+        matchesModelValue(card.modelName, normalizedQuery)
+      ) {
+        cardMatches.push(buildModelCardSelection(model, card, provider))
+      }
+    }
+  }
+  return dedupeModelSelections(cardMatches)
+}
+
+function resolveRequestedModelSelection(appConfig, leaderProvider, provider, modelQuery) {
+  if (provider) {
+    const matches = findProviderModelSelections(appConfig, provider, modelQuery)
+    if (matches.length === 1) return matches[0]
+    if (matches.length > 1) {
+      throw Object.assign(new Error(`Ambiguous model: ${modelQuery}`), {
+        status: 'ambiguous_model'
+      })
+    }
+    throw Object.assign(new Error(`Model not found for ${provider}: ${modelQuery}`), {
+      status: 'model_not_found'
+    })
+  }
+
+  const leaderMatches = findProviderModelSelections(appConfig, leaderProvider, modelQuery)
+  if (leaderMatches.length === 1) return leaderMatches[0]
+  if (leaderMatches.length > 1) {
+    throw Object.assign(new Error(`Ambiguous model: ${modelQuery}`), {
+      status: 'ambiguous_model'
+    })
+  }
+
+  const otherProvider = leaderProvider === 'codex' ? 'claude' : 'codex'
+  const otherMatches = findProviderModelSelections(appConfig, otherProvider, modelQuery)
+  if (otherMatches.length === 1) return otherMatches[0]
+  if (otherMatches.length > 1) {
+    throw Object.assign(new Error(`Ambiguous model: ${modelQuery}`), {
+      status: 'ambiguous_model'
+    })
+  }
+
+  throw Object.assign(new Error(`Model not found: ${modelQuery}`), {
+    status: 'model_not_found'
+  })
+}
+
+function summarizeSessionCreationModel(appConfig, projectSettings, provider, settings) {
+  const resolved = resolveSessionSettings(appConfig, projectSettings, settings, provider)
+  const model = resolved?.targetKind === 'openai'
+    ? null
+    : findProviderModel(appConfig, provider, resolved?.modelId || null)
+  const card = model ? resolveConfiguredDefaultCard(model, resolved?.modelCardId || null) : null
+
+  return {
+    modelId: resolved?.modelId || null,
+    modelCardId: card?.id || resolved?.modelCardId || null,
+    model: card?.modelName || model?.friendlyName || model?.id || null,
+    modelMode: settings?.modelMode || null,
+    targetKind: resolved?.targetKind || settings?.targetKind || null
+  }
+}
+
+function resolveSessionCreationSettings({
+  projectId,
+  leaderSessionId,
+  provider = null,
+  model = null
+} = {}) {
+  const appConfig = appConfigManager.loadConfig()
+  const projectConfig = projectConfigManager.loadProjectConfig(projectId)
+  const projectSettings = projectConfig?.settings || {}
+  const leaderConfig = leaderSessionId
+    ? sessionConfigManager.getSession(projectId, leaderSessionId)
+    : null
+
+  if (!leaderConfig) {
+    throw Object.assign(new Error('Leader session config not found'), {
+      status: 'leader_session_not_found'
+    })
+  }
+
+  const leaderSettings = leaderConfig.settings || {}
+  const leaderProvider = resolveProvider(projectSettings, leaderSettings)
+  const requestedProvider = normalizeSessionCreationProvider(provider)
+  const resolvedProvider = requestedProvider || leaderProvider
+  const inherited = !requestedProvider || requestedProvider === leaderProvider
+  const settings = {
+    tool: resolvedProvider,
+    ...(inherited ? pickSessionModelSettings(leaderSettings) : { modelMode: 'project' })
+  }
+  const modelQuery = typeof model === 'string' ? model.trim() : ''
+
+  if (modelQuery) {
+    const selection = resolveRequestedModelSelection(
+      appConfig,
+      leaderProvider,
+      requestedProvider,
+      modelQuery
+    )
+    settings.tool = selection.provider
+    settings.modelMode = 'custom'
+    settings.modelId = selection.model.id
+    settings.modelCardId = selection.card?.id || null
+    settings.credentialId = getDefaultCredential(selection.model)?.id || null
+    settings.targetKind = 'provider'
+  }
+
+  const resolvedProviderForSelection = modelQuery && settings.tool
+    ? settings.tool
+    : resolvedProvider
+  const summary = summarizeSessionCreationModel(
+    appConfig,
+    projectSettings,
+    resolvedProviderForSelection,
+    settings
+  )
+
+  return {
+    provider: resolvedProviderForSelection,
+    settings,
+    ...summary
+  }
+}
+
+async function createSession(projectId, name, settings, identityOptions = {}) {
   const appConfig = appConfigManager.loadConfig()
   const projectConfig = projectConfigManager.loadProjectConfig(projectId)
   const tool = resolveProvider(projectConfig?.settings || {}, settings || {})
@@ -1344,7 +1731,9 @@ async function createSession(projectId, name, settings) {
 
   const sessionConfig = sessionConfigManager.createSession(projectId, {
     name: name || '新会话',
-    settings: nextSettings
+    settings: nextSettings,
+    teamId: identityOptions.teamId,
+    role: identityOptions.role
   })
 
   const source = providerSessionSourcesById[tool]
@@ -1355,7 +1744,7 @@ async function createSession(projectId, name, settings) {
   try {
     const created = await Promise.resolve(source.createSession({
       projectId,
-      projectPath: decodeProjectPath(projectId),
+      projectPath: getProjectPath(projectId),
       sessionId: sessionConfig.id,
       settings: sessionConfig.settings || {}
     }))
@@ -1388,41 +1777,190 @@ async function createSession(projectId, name, settings) {
   }
 }
 
-async function deleteSession(projectId, sessionId) {
-  const existingSessions = await getProjectSessions(projectId)
-  const existingSession = existingSessions.find(session => session.id === sessionId) || null
-  const provider = resolveLinkedSessionProvider(existingSession)
-  let providerDeleteError = null
+async function deleteProviderSessions(source, projectId, sessions = []) {
+  const failuresBySessionId = new Map()
+  if (!source) {
+    return failuresBySessionId
+  }
 
-  if (provider) {
-    const source = providerSessionSourcesById[provider]
-    if (source?.deleteSession) {
-      try {
-        await source.deleteSession({
-          projectId,
-          sessionId,
-          session: existingSession
-        })
-      } catch (error) {
-        providerDeleteError = error
-        logger.warn('[ProjectService] Failed to delete provider-native session', {
-          projectId,
-          sessionId,
-          provider,
+  if (typeof source.deleteSessions === 'function') {
+    try {
+      const result = await Promise.resolve(source.deleteSessions({
+        projectId,
+        sessions
+      }))
+      for (const failure of result?.failures || []) {
+        if (failure?.sessionId) {
+          failuresBySessionId.set(failure.sessionId, failure)
+        }
+      }
+    } catch (error) {
+      for (const session of sessions) {
+        failuresBySessionId.set(session.id, {
+          sessionId: session.id,
           error: error.message
         })
       }
+      logger.warn('[ProjectService] Failed to batch delete provider-native sessions', {
+        projectId,
+        provider: source.provider,
+        sessionCount: sessions.length,
+        error: error.message
+      })
+    }
+    return failuresBySessionId
+  }
+
+  for (const session of sessions) {
+    try {
+      await source.deleteSession({
+        projectId,
+        sessionId: session.id,
+        session
+      })
+    } catch (error) {
+      failuresBySessionId.set(session.id, {
+        sessionId: session.id,
+        error: error.message
+      })
+      logger.warn('[ProjectService] Failed to delete provider-native session', {
+        projectId,
+        sessionId: session.id,
+        provider: source.provider,
+        error: error.message
+      })
     }
   }
 
-  sessionConfigManager.deleteSession(projectId, sessionId)
-  historyManager.deleteHistory(projectId, sessionId)
+  return failuresBySessionId
+}
+
+async function deleteSessions(projectId, sessionIds = []) {
+  const uniqueSessionIds = [...new Set(
+    (Array.isArray(sessionIds) ? sessionIds : []).filter(Boolean)
+  )]
+  if (uniqueSessionIds.length === 0) {
+    return {
+      success: true,
+      deletedSessionIds: [],
+      failures: [],
+      warnings: [],
+      sessionResults: []
+    }
+  }
+
+  const entries = uniqueSessionIds.map(sessionId => {
+    let session = null
+    try {
+      session = sessionConfigManager.getSession(projectId, sessionId)
+    } catch (error) {
+      logger.warn('[ProjectService] Failed to read session before deletion', {
+        projectId,
+        sessionId,
+        error: error.message
+      })
+    }
+    return { sessionId, session }
+  })
+
+  const sessionsByProvider = new Map()
+  for (const entry of entries) {
+    const provider = resolveLinkedSessionProvider(entry.session)
+    const source = provider ? providerSessionSourcesById[provider] : null
+    if (!provider || !source) continue
+
+    const providerSessions = sessionsByProvider.get(provider) || []
+    providerSessions.push(entry.session)
+    sessionsByProvider.set(provider, providerSessions)
+  }
+
+  const providerFailuresBySessionId = new Map()
+  await Promise.all(
+    [...sessionsByProvider.entries()].map(async ([provider, providerSessions]) => {
+      const failures = await deleteProviderSessions(
+        providerSessionSourcesById[provider],
+        projectId,
+        providerSessions
+      )
+      for (const [sessionId, failure] of failures.entries()) {
+        providerFailuresBySessionId.set(sessionId, {
+          ...failure,
+          provider
+        })
+      }
+    })
+  )
+
+  const deletedSessionIds = []
+  const failures = []
+  const warnings = []
+  const sessionResults = []
+
+  for (const entry of entries) {
+    const providerFailure = providerFailuresBySessionId.get(entry.sessionId) || null
+    try {
+      sessionConfigManager.deleteSession(projectId, entry.sessionId)
+      historyManager.deleteHistory(projectId, entry.sessionId)
+      deletedSessionIds.push(entry.sessionId)
+      sessionResults.push({
+        sessionId: entry.sessionId,
+        session: entry.session,
+        providerDeleted: !providerFailure,
+        providerDeleteError: providerFailure?.error || null
+      })
+      if (providerFailure) {
+        warnings.push({
+          sessionId: entry.sessionId,
+          provider: providerFailure.provider,
+          error: providerFailure.error,
+          type: 'provider-delete-failed'
+        })
+      }
+    } catch (error) {
+      failures.push({
+        sessionId: entry.sessionId,
+        error: error.message
+      })
+      logger.error('[ProjectService] Failed to delete session files', {
+        projectId,
+        sessionId: entry.sessionId,
+        error: error.message
+      })
+    }
+  }
+
+  logger.info('[ProjectService] Deleted sessions batch', {
+    projectId,
+    requestedCount: uniqueSessionIds.length,
+    deletedCount: deletedSessionIds.length,
+    failureCount: failures.length,
+    warningCount: warnings.length,
+    providerFailureCount: providerFailuresBySessionId.size
+  })
+
+  return {
+    success: failures.length === 0,
+    deletedSessionIds,
+    failures,
+    warnings,
+    sessionResults
+  }
+}
+
+async function deleteSession(projectId, sessionId) {
+  const result = await deleteSessions(projectId, [sessionId])
+  const sessionResult = result.sessionResults.find(item => item.sessionId === sessionId) || null
+  if (!result.deletedSessionIds.includes(sessionId)) {
+    const failure = result.failures.find(item => item.sessionId === sessionId)
+    throw new Error(failure?.error || 'Failed to delete session')
+  }
 
   return {
     success: true,
-    session: existingSession,
-    providerDeleted: !providerDeleteError,
-    providerDeleteError: providerDeleteError?.message || null
+    session: sessionResult?.session || null,
+    providerDeleted: sessionResult?.providerDeleted !== false,
+    providerDeleteError: sessionResult?.providerDeleteError || null,
+    warnings: result.warnings.filter(item => item.sessionId === sessionId)
   }
 }
 
@@ -1455,6 +1993,9 @@ async function openSession(sessionId) {
       projectId: project.id,
       projectPath: project.path,
       name: session.name || '会话',
+      teamId: session.teamId || null,
+      teamName: session.teamName || null,
+      role: session.role || null,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       status: 'idle',
@@ -1662,7 +2203,7 @@ async function listSessionReasoningCapabilities(projectId, sessionId, options = 
   }
 
   // 思考等级统一由 provider 返回（claude / codex 行为一致）
-  const workingDirectory = options.workingDirectory || decodeProjectPath(projectId)
+  const workingDirectory = options.workingDirectory || getProjectPath(projectId)
   let result = {
     provider,
     model: runtimeModel || configuredModelName,
@@ -1697,11 +2238,14 @@ module.exports = {
   copySession,
   createSession,
   deleteSession,
+  deleteSessions,
   softDeleteSession,
   restoreSession,
   toggleSessionLock,
   getProjectConfig,
+  getProjectPath,
   getProjectSessions,
+  orderProjectSessions,
   getSessionConfig,
   getSessionAvailable,
   getSessionMessages,
@@ -1713,10 +2257,12 @@ module.exports = {
   removeProject,
   renameSession,
   resolveRuntimeConfig,
+  resolveSessionCreationSettings,
   resetSessionConfig,
   scanProjects,
   listSessionSubmodels,
   listSessionReasoningCapabilities,
+  resolveSessionBindingMeta,
   updateProjectConfig,
   updateSessionConfig,
   updateSessionSettings

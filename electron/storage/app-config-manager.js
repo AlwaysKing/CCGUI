@@ -5,14 +5,59 @@
 
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
 const logger = require('../logger')
+const { getCcguiPath, getDefaultProxyPort } = require('../runtime-paths')
+
+const AI_ASSIST_SESSION_SUMMARY_DEFAULT_LIMIT = 20
+const AI_ASSIST_SESSION_SUMMARY_MIN_LIMIT = 5
+const AI_ASSIST_SESSION_SUMMARY_MAX_LIMIT = 100
+
+function normalizeAiAssistSessionSummaryLimit(value) {
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) {
+    return AI_ASSIST_SESSION_SUMMARY_DEFAULT_LIMIT
+  }
+  return Math.min(
+    AI_ASSIST_SESSION_SUMMARY_MAX_LIMIT,
+    Math.max(AI_ASSIST_SESSION_SUMMARY_MIN_LIMIT, parsed)
+  )
+}
+
+function normalizeAiAssistSettings(source = {}) {
+  const input = source && typeof source === 'object' && !Array.isArray(source) ? source : {}
+  const features = input.features && typeof input.features === 'object' && !Array.isArray(input.features)
+    ? input.features
+    : {}
+  const sessionSummary = features.sessionSummary && typeof features.sessionSummary === 'object' && !Array.isArray(features.sessionSummary)
+    ? features.sessionSummary
+    : {}
+
+  return {
+    ...input,
+    enabled: input.enabled === true,
+    provider: input.provider === 'codex' ? 'codex' : 'claude',
+    modelId: typeof input.modelId === 'string' && input.modelId.trim()
+      ? input.modelId.trim()
+      : null,
+    modelCardId: typeof input.modelCardId === 'string' && input.modelCardId.trim()
+      ? input.modelCardId.trim()
+      : null,
+    features: {
+      ...features,
+      sessionSummary: {
+        ...sessionSummary,
+        enabled: sessionSummary.enabled === true,
+        userMessageLimit: normalizeAiAssistSessionSummaryLimit(sessionSummary.userMessageLimit)
+      }
+    }
+  }
+}
 
 /**
  * 应用配置文件路径
  */
 function getConfigPath() {
-  return path.join(os.homedir(), '.ccgui', 'app.json')
+  return getCcguiPath('app.json')
 }
 
 /**
@@ -68,7 +113,10 @@ function getDefaultConfig() {
       codexAccounts: [],
       selectedCodexAccountId: null,
       codexProxy: '',
-      proxyPort: 18921,
+      proxyPort: getDefaultProxyPort(),
+
+      // AI 辅助
+      aiAssist: normalizeAiAssistSettings(),
 
       // 提示词配置
       prompts: []
@@ -184,6 +232,7 @@ function migrateModelSettings(config) {
   settings.codexModels = Array.isArray(settings.codexModels)
     ? settings.codexModels.map(normalizeModelEntry)
     : []
+  settings.aiAssist = normalizeAiAssistSettings(settings.aiAssist)
 
   return config
 }
@@ -361,6 +410,9 @@ function resetConfig() {
 
 // 导出模块
 module.exports = {
+  AI_ASSIST_SESSION_SUMMARY_DEFAULT_LIMIT,
+  AI_ASSIST_SESSION_SUMMARY_MIN_LIMIT,
+  AI_ASSIST_SESSION_SUMMARY_MAX_LIMIT,
   getConfigPath,
   getDefaultConfig,
   loadConfig,
@@ -368,5 +420,7 @@ module.exports = {
   updateConfig,
   getConfigValue,
   setConfigValue,
-  resetConfig
+  resetConfig,
+  normalizeAiAssistSettings,
+  normalizeAiAssistSessionSummaryLimit
 }

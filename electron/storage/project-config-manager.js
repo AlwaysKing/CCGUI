@@ -5,14 +5,14 @@
 
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
 const logger = require('../logger')
+const { getCcguiPath } = require('../runtime-paths')
 
 /**
  * 获取项目配置根目录
  */
 function getProjectsRoot() {
-  return path.join(os.homedir(), '.ccgui', 'projects')
+  return getCcguiPath('projects')
 }
 
 /**
@@ -35,6 +35,24 @@ function ensureProjectDir(projectId) {
   }
 }
 
+function normalizeSessionOrder(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const seen = new Set()
+  const order = []
+  for (const item of value) {
+    const sessionId = typeof item === 'string' ? item.trim() : ''
+    if (!sessionId || seen.has(sessionId)) {
+      continue
+    }
+    seen.add(sessionId)
+    order.push(sessionId)
+  }
+  return order
+}
+
 /**
  * 创建默认项目配置
  * @param {string} projectId - 项目ID
@@ -49,6 +67,7 @@ function createDefaultProjectConfig(projectId, projectPath, name) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     sessionCount: 0,
+    sessionOrder: [],
     settings: {}
   }
 }
@@ -140,8 +159,13 @@ function updateProjectConfig(projectId, updates) {
       return null
     }
 
+    const normalizedUpdates = { ...(updates || {}) }
+    if (Object.prototype.hasOwnProperty.call(normalizedUpdates, 'sessionOrder')) {
+      normalizedUpdates.sessionOrder = normalizeSessionOrder(normalizedUpdates.sessionOrder)
+    }
+
     // 合并更新
-    const updatedConfig = { ...config, ...updates }
+    const updatedConfig = { ...config, ...normalizedUpdates }
 
     if (saveProjectConfig(projectId, updatedConfig)) {
       logger.info('[ProjectConfigManager] Updated project config', { projectId })
@@ -156,6 +180,56 @@ function updateProjectConfig(projectId, updates) {
     })
     return null
   }
+}
+
+function getProjectSessionOrder(projectId) {
+  const config = loadProjectConfig(projectId)
+  return normalizeSessionOrder(config?.sessionOrder)
+}
+
+function setProjectSessionOrder(projectId, order = []) {
+  const config = loadProjectConfig(projectId)
+  if (!config) {
+    return null
+  }
+
+  const updatedConfig = {
+    ...config,
+    sessionOrder: normalizeSessionOrder(order)
+  }
+  return saveProjectConfig(projectId, updatedConfig) ? updatedConfig : null
+}
+
+function prependProjectSessionOrder(projectId, sessionId, existingSessionIds = []) {
+  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
+  if (!normalizedSessionId) {
+    return null
+  }
+
+  const order = getProjectSessionOrder(projectId)
+  const baseOrder = order.length > 0
+    ? order
+    : normalizeSessionOrder(existingSessionIds)
+  return setProjectSessionOrder(projectId, [
+    normalizedSessionId,
+    ...baseOrder.filter(item => item !== normalizedSessionId)
+  ])
+}
+
+function removeProjectSessionOrder(projectId, sessionId) {
+  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
+  if (!normalizedSessionId) {
+    return null
+  }
+
+  const order = getProjectSessionOrder(projectId)
+  if (!order.includes(normalizedSessionId)) {
+    return loadProjectConfig(projectId)
+  }
+  return setProjectSessionOrder(
+    projectId,
+    order.filter(item => item !== normalizedSessionId)
+  )
 }
 
 /**
@@ -235,6 +309,11 @@ module.exports = {
   saveProjectConfig,
   createProjectConfig,
   updateProjectConfig,
+  normalizeSessionOrder,
+  getProjectSessionOrder,
+  setProjectSessionOrder,
+  prependProjectSessionOrder,
+  removeProjectSessionOrder,
   deleteProjectConfig,
   getAllProjects,
   projectExists

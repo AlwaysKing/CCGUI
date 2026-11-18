@@ -3,6 +3,7 @@ const os = require('os')
 const path = require('path')
 const { decodeProjectPath, encodeProjectPath } = require('../../project-paths')
 const logger = require('../../logger')
+const { getCcguiPath } = require('../../runtime-paths')
 
 function getClaudeProjectsDir() {
   return path.join(os.homedir(), '.claude', 'projects')
@@ -75,7 +76,7 @@ function scanClaudeProjects() {
   // 从 CCGUI 项目配置中获取 id → path 映射，不使用 decodeProjectPath
   const ccguiPathMap = new Map()
   try {
-    const ccguiProjectsDir = path.join(os.homedir(), '.ccgui', 'projects')
+    const ccguiProjectsDir = getCcguiPath('projects')
     if (fs.existsSync(ccguiProjectsDir)) {
       for (const dir of fs.readdirSync(ccguiProjectsDir, { withFileTypes: true })) {
         if (!dir.isDirectory()) continue
@@ -391,6 +392,23 @@ function deleteClaudeSession({ projectId, sessionId }) {
   logger.info('[Sessions] Deleted Claude session artifacts', { sessionId, projectId })
 }
 
+function deleteClaudeSessions({ projectId, sessions = [] }) {
+  const deletedSessionIds = []
+  const failures = []
+
+  for (const session of sessions) {
+    if (!session?.id) continue
+    try {
+      deleteClaudeSession({ projectId, sessionId: session.id })
+      deletedSessionIds.push(session.id)
+    } catch (error) {
+      failures.push({ sessionId: session.id, error: error.message })
+    }
+  }
+
+  return { deletedSessionIds, failures }
+}
+
 function deleteClaudeProject({ projectId }) {
   const { sourceProjectDir, sanitizedProjectDir } = resolveClaudeProjectPaths(projectId)
   const targets = new Set([sourceProjectDir, sanitizedProjectDir])
@@ -412,6 +430,7 @@ const claudeSessionSource = {
   createSession: createClaudeSession,
   loadSessionHistory: loadClaudeSessionHistory,
   deleteSession: deleteClaudeSession,
+  deleteSessions: deleteClaudeSessions,
   deleteProject: deleteClaudeProject
 }
 

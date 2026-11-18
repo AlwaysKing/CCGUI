@@ -68,6 +68,15 @@ const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'startSession', 'cl
 
 // 使用 SessionStore 的状态（只读 computed）
 const messages = computed(() => sessionStore.currentMessages)
+const messageById = computed(() => {
+  const byId = new Map()
+  for (const message of messages.value) {
+    if (message?.id) {
+      byId.set(message.id, message)
+    }
+  }
+  return byId
+})
 const mainAgentId = computed(() => sessionStore.currentMainAgentId)
 const executionAgentCards = computed(() => sessionStore.executionAgentCards)
 const collaborativeAgentSessions = computed(() => sessionStore.collaborativeAgentSessions)
@@ -722,25 +731,62 @@ const collapsibleStats = computed(() => {
   }
 })
 
+const unloadableCollapsedCount = computed(() => {
+  let count = 0
+
+  for (let index = 0; index < messages.value.length; index += 1) {
+    const message = messages.value[index]
+    if (!isTurnMessage(message) || !message.responseCollapsed) continue
+
+    const response = findAssistantResponse(messages.value, index)
+    if (response && !response.unloaded) {
+      count += 1
+    }
+  }
+
+  return count
+})
+
 function toPlainObject(value) {
   return value ? JSON.parse(JSON.stringify(value)) : {}
 }
 
-function toggleAllMessageCollapse() {
+function getCollapsibleTurnMessages() {
+  return messages.value.filter((message, index) => {
+    return isTurnMessage(message) && Boolean(findAssistantResponse(messages.value, index))
+  })
+}
+
+async function expandTurnResponse(session, message) {
+  if (message?.historyTurn?.hasResponse && message.historyTurn.turnId && !message.historyTurn.loaded) {
+    if (!session?.id) return false
+    const result = await sessionStore.loadHistoryTurn(
+      session.id,
+      message.historyTurn.turnId,
+      message.historyTurn
+    )
+    return Boolean(result?.success)
+  }
+
+  if (message?._releasedResponses && session) {
+    sessionStore.restoreReleasedTurn(session, message)
+  }
+  return true
+}
+
+async function toggleAllMessageCollapse() {
   const shouldCollapse = !collapsibleStats.value.allCollapsed
   const session = sessionStore.currentSession
+  const turnMessages = getCollapsibleTurnMessages()
 
-  for (let index = 0; index < messages.value.length; index += 1) {
-    const message = messages.value[index]
-    if (!message) continue
-
-    if (isTurnMessage(message)) {
-      if (findAssistantResponse(messages.value, index)) {
-        // 展开时，如果该问答已被释放，先恢复
-        if (!shouldCollapse && message._releasedResponses && session) {
-          sessionStore.restoreReleasedTurn(session, message)
-        }
-        message.responseCollapsed = shouldCollapse
+  if (shouldCollapse) {
+    for (const message of turnMessages) {
+      message.responseCollapsed = true
+    }
+  } else {
+    for (const message of turnMessages) {
+      if (await expandTurnResponse(session, message)) {
+        message.responseCollapsed = false
       }
     }
   }
@@ -1028,6 +1074,14 @@ onUnmounted(() => {
     clearInterval(durationTimer)
     durationTimer = null
   }
+  if (stickyMessageUpdateRAF !== null) {
+    cancelAnimationFrame(stickyMessageUpdateRAF)
+    stickyMessageUpdateRAF = null
+  }
+  if (pendingScrollRAF !== null) {
+    cancelAnimationFrame(pendingScrollRAF)
+    pendingScrollRAF = null
+  }
   // Stop SessionStore event listener
   sessionStore.stopEventListener()
   // 清理点击外部监听器
@@ -1259,19 +1313,28 @@ watch(() => {
   const list = messages.value || []
   const lastMessage = list[list.length - 1]
   if (!lastMessage) return ''
+  const isStatusLike = (
+    lastMessage.role === 'system_notification' ||
+    lastMessage.role === 'status'
+  )
 
-  return JSON.stringify({
+  return {
     id: lastMessage.id || '',
     role: lastMessage.role || '',
     notificationType: lastMessage.notificationType || '',
     timestamp: lastMessage.timestamp || '',
     duration: lastMessage.duration ?? null,
-    content: typeof lastMessage.content === 'string' ? lastMessage.content : '',
-    scope: lastMessage.scope || '',
-    data: lastMessage.role === 'system_notification' ? (lastMessage.data || null) : null
-  })
-}, async (newSignature, oldSignature) => {
-  if (!newSignature || newSignature === oldSignature) return
+    content: isStatusLike && typeof lastMessage.content === 'string' ? lastMessage.content : '',
+    scope: isStatusLike ? (lastMessage.scope || '') : '',
+    data: isStatusLike && lastMessage.role === 'system_notification' ? (lastMessage.data || null) : null
+  }
+}, async (newSignature) => {
+  if (
+    !newSignature ||
+    (newSignature.role !== 'system_notification' && newSignature.role !== 'status')
+  ) {
+    return
+  }
 
   const container = getScrollContainer()
   if (!container) return
@@ -1290,7 +1353,7 @@ watch(() => {
 
   await nextTick()
   scrollToBottom(true)
-}, { deep: false })
+}, { deep: true })
 
 // 监听 session 切换，同步权限模式
 watch(() => sessionStore.currentSessionId, async (newSessionId, oldSessionId) => {
@@ -1816,6 +1879,11 @@ function scrollToStickyMessage() {
   scrollToMessage(stickyMessage.value.id)
 }
 
+function scrollToUserQuestion(messageId) {
+  if (!messageId) return
+  scrollToMessage(messageId)
+}
+
 // 关闭消息详情弹窗
 function closeMessageDetail() {
   selectedMessage.value = null
@@ -2007,6 +2075,7 @@ function syncMainScrollContentResizeObserver() {
 
 // 滚动到底部
 let pendingScrollRAF = null
+let stickyMessageUpdateRAF = null
 function scrollToBottom(forceScroll = false) {
   const container = getScrollContainer()
   if (!container) return
@@ -2045,7 +2114,7 @@ function scrollToBottom(forceScroll = false) {
       pendingScrollRAF = null
       doScroll()
       // 程序化滚动完成后更新 sticky 消息
-      updateStickyMessage()
+      scheduleStickyMessageUpdate()
     })
   })
 }
@@ -2070,7 +2139,15 @@ function handleUserScroll() {
   autoScrollActive = isContainerAtBottom(container)
 
   // 计算当前粘性显示的用户消息
-  updateStickyMessage()
+  scheduleStickyMessageUpdate()
+}
+
+function scheduleStickyMessageUpdate() {
+  if (stickyMessageUpdateRAF !== null) return
+  stickyMessageUpdateRAF = requestAnimationFrame(() => {
+    stickyMessageUpdateRAF = null
+    updateStickyMessage()
+  })
 }
 
 // 更新粘性头部显示的用户消息
@@ -2078,43 +2155,23 @@ function updateStickyMessage() {
   const container = getScrollContainer()
   if (!container) return
 
-  // 获取所有消息元素
   const messageElements = container.querySelectorAll('.message')
-
+  const containerRect = container.getBoundingClientRect()
   let lastScrolledPastUserId = null
-
-  // 从上往下遍历，找到最后一个已经滚过顶部的用户消息
-  messageElements.forEach((el) => {
-    const rect = el.getBoundingClientRect()
-    const containerRect = container.getBoundingClientRect()
-
-    // 消息顶部已滚过容器顶部（放宽阈值到 40px）
-    if (rect.top <= containerRect.top + 40) {
-      const msgId = el.getAttribute('data-message-id')
-      if (!msgId) return
-
-      const msg = messages.value.find(m => m.id === msgId)
-      if (msg && isTurnMessage(msg)) {
-        lastScrolledPastUserId = msgId
-      }
-    }
-  })
-
-  // 检查可见区域内是否有用户消息
   let hasVisibleUserMessage = false
+
+  // 单次遍历同时计算滚过顶部的用户消息和当前可见用户消息。
   messageElements.forEach((el) => {
     const rect = el.getBoundingClientRect()
-    const containerRect = container.getBoundingClientRect()
+    const msgId = el.getAttribute('data-message-id')
+    const message = msgId ? messageById.value.get(msgId) : null
+    if (!message || !isTurnMessage(message)) return
 
-    // 消息在可见区域内
+    if (rect.top <= containerRect.top + 40) {
+      lastScrolledPastUserId = msgId
+    }
     if (rect.bottom > containerRect.top && rect.top < containerRect.bottom) {
-      const msgId = el.getAttribute('data-message-id')
-      if (!msgId) return
-
-      const msg = messages.value.find(m => m.id === msgId)
-      if (msg && isTurnMessage(msg)) {
-        hasVisibleUserMessage = true
-      }
+      hasVisibleUserMessage = true
     }
   })
 
@@ -2131,7 +2188,7 @@ function updateStickyMessage() {
 // 通过 ID 获取粘性消息（确保响应式更新）
 const stickyMessage = computed(() => {
   if (!stickyMessageId.value) return null
-  return messages.value.find(m => m.id === stickyMessageId.value) || null
+  return messageById.value.get(stickyMessageId.value) || null
 })
 
 // 判断粘性消息是否正在被回答（基于消息是否有 duration）
@@ -2237,7 +2294,15 @@ async function handleInterrupt() {
   try {
     await sessionStore.sendInterrupt()
   } catch (error) {
-    console.error('发送打断请求失败:', error)
+    notifyTurnError(`发送打断请求失败: ${error?.message || error}`)
+  }
+}
+
+async function handleCloseAgent(agentId) {
+  try {
+    await sessionStore.closeSubagentAgent(agentId)
+  } catch (error) {
+    notifyTurnError(`关闭子代理失败: ${error?.message || error}`)
   }
 }
 
@@ -2784,19 +2849,26 @@ async function toggleCollapseOnSend() {
   }
 }
 
-function expandAllResponses() {
+async function expandAllResponses() {
+  closeContextMenu()
   const session = sessionStore.currentSession
-  for (let i = 0; i < messages.value.length; i += 1) {
-    const msg = messages.value[i]
-    if (msg && isTurnMessage(msg)) {
-      // 如果有被释放的响应消息，先恢复
-      if (msg._releasedResponses && session) {
-        sessionStore.restoreReleasedTurn(session, msg)
-      }
-      msg.responseCollapsed = false
+  const turnMessages = getCollapsibleTurnMessages()
+  for (const message of turnMessages) {
+    if (await expandTurnResponse(session, message)) {
+      message.responseCollapsed = false
     }
   }
+}
+
+async function cleanupCollapsedResponses() {
   closeContextMenu()
+  const session = sessionStore.currentSession
+  if (session) {
+    const result = await sessionStore.unloadCollapsedTurns(session)
+    if (result?.error) {
+      notifyTurnError(`清理已折叠回答失败: ${result.error}`)
+    }
+  }
 }
 
 function collapseAllResponses() {
@@ -2964,17 +3036,20 @@ function handleToggleAgentRail() {
         :chat-theme="resolvedChatMessageTheme"
         :rail-visible="isAgentRailVisible"
         :rail-placement="collaborativeRailPlacement"
+        :can-close-agents="envInfo?.provider === 'codex'"
         @select-agent="handleSelectAgent"
         @focus-agent="handleFocusAgent"
         @toggle-view-mode="handleToggleAgentViewMode"
         @message-click="handleMessageClick"
         @copy-sticky="copyStickyMessage"
         @scroll-to-sticky="scrollToStickyMessage"
+        @jump-to-question="scrollToUserQuestion"
         @content-scroll="handleUserScroll"
         @rewind="handleRewind"
         @fork="handleFork"
         @rewind-and-fork="handleRewindAndFork"
         @jump-to-message="handleRewindNoticeClick"
+        @close-agent="handleCloseAgent"
       />
     </div>
 
@@ -3375,6 +3450,15 @@ function handleToggleAgentRail() {
           </button>
         </div>
       </div>
+      <button
+        class="chat-context-menu-item"
+        type="button"
+        :disabled="unloadableCollapsedCount === 0"
+        :title="unloadableCollapsedCount > 0 ? '释放主进程和界面缓存，展开时从历史重新加载' : '已折叠回答均已卸载'"
+        @click="cleanupCollapsedResponses"
+      >
+        清理已折叠回答（{{ unloadableCollapsedCount }} 轮）
+      </button>
     </div>
   </Teleport>
 
@@ -4990,6 +5074,16 @@ function handleToggleAgentRail() {
 .chat-context-menu-item:hover {
   background: #F97316;
   color: #FFFFFF;
+}
+
+.chat-context-menu-item:disabled {
+  color: #71717A;
+  cursor: default;
+}
+
+.chat-context-menu-item:disabled:hover {
+  background: transparent;
+  color: #71717A;
 }
 
 .chat-context-menu-item--submenu,

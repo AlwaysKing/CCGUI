@@ -75,6 +75,21 @@ function getDefaultCredential(model = null, preferredCredentialId = null) {
   return credentials.find(credential => credential.id === model?.defaultCredentialId) || credentials[0] || null
 }
 
+function createDefaultAiAssistSettings() {
+  return {
+    enabled: false,
+    provider: 'claude',
+    modelId: null,
+    modelCardId: null,
+    features: {
+      sessionSummary: {
+        enabled: false,
+        userMessageLimit: 20
+      }
+    }
+  }
+}
+
 export function useSettingsData(emit) {
   const settings = ref({
     theme: 'dark',
@@ -88,7 +103,8 @@ export function useSettingsData(emit) {
     collapseOnSend: true,
     barkUrl: '',
     chatMessageThemePreset: 'classic',
-    chatMessageTheme: buildChatMessageThemeFromPreset('classic')
+    chatMessageTheme: buildChatMessageThemeFromPreset('classic'),
+    aiAssist: createDefaultAiAssistSettings()
   })
 
   const defaultConfig = ref({

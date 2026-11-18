@@ -72,7 +72,7 @@ function handleCopyQuestionContent({ index, content }) {
 <template>
   <MessageItem
     v-for="(message, index) in messages"
-    :key="index"
+    :key="message.id || `message-preview-${index}`"
     :message="message"
     :message-index="index"
     :total-messages="messages.length"

@@ -20,7 +20,11 @@ export function useWorkspaceDialogs({
   const confirmDialogConfig = ref({
     title: '',
     message: '',
-    onConfirm: () => {}
+    confirmText: '确认',
+    secondaryText: '',
+    danger: false,
+    onConfirm: () => {},
+    onSecondary: () => {}
   })
   const renameDialogConfig = ref({
     title: '',
@@ -28,6 +32,28 @@ export function useWorkspaceDialogs({
     type: '',
     item: null
   })
+
+  function runSessionDeletionInBackground(task, operationLabel) {
+    void Promise.resolve(task)
+      .then(result => {
+        const failures = Array.isArray(result?.failures) ? result.failures : []
+        const warnings = Array.isArray(result?.warnings) ? result.warnings : []
+        if (failures.length > 0) {
+          const deletedCount = Array.isArray(result?.deletedSessionIds)
+            ? result.deletedSessionIds.length
+            : 0
+          alert(`${operationLabel}失败：已删除 ${deletedCount} 个会话，另有 ${failures.length} 个删除失败。`)
+          return
+        }
+        if (warnings.length > 0) {
+          alert(`${operationLabel}已完成，但有 ${warnings.length} 个会话的供应商原生数据未清理干净。`)
+        }
+      })
+      .catch(error => {
+        logger.error(`${operationLabel}失败`, { error: error.message })
+        alert(`${operationLabel}失败：${error.message || '未知错误'}`)
+      })
+  }
 
   function handleNewSession() {
     if (!store.currentProject) {
@@ -37,14 +63,54 @@ export function useWorkspaceDialogs({
     showNewSessionDialog.value = true
   }
 
-  async function handleDeleteSession(session) {
+  function handleDeleteSession(session) {
+    if (session?.role === 'leader' && session?.teamId) {
+      confirmDialogConfig.value = {
+        title: '删除 leader 会话',
+        message: `会话 "${session.name || session.id.slice(0, 8)}" 是当前 team 的 leader。\n删除 leader 前，请选择如何处理 team。`,
+        confirmText: '解散 team',
+        secondaryText: '销毁 team',
+        danger: true,
+        onConfirm: () => {
+          showConfirmDialog.value = false
+          const projectId = store.currentProject?.id
+          void store.softDeleteSession(session.id, { optimistic: true })
+            .then(() => store.dissolveTeam(projectId, session.teamId))
+            .catch(error => {
+              logger.error('处理 leader 会话失败', { error: error.message })
+              alert(`处理 leader 会话失败：${error.message || '未知错误'}`)
+            })
+        },
+        onSecondary: () => {
+          showConfirmDialog.value = false
+          runSessionDeletionInBackground(
+            store.destroyTeam(
+              store.currentProject.id,
+              session.teamId,
+              { optimistic: true }
+            ),
+            '销毁 team'
+          )
+        }
+      }
+      showConfirmDialog.value = true
+      return
+    }
+
     confirmDialogConfig.value = {
       title: '删除会话',
       message: `确定要删除会话 "${session.name || session.id.slice(0, 8)}" 吗？\n会话将移入回收站，可随时还原。`,
-      onConfirm: async () => {
-        await store.softDeleteSession(session.id)
+      confirmText: '删除',
+      secondaryText: '',
+      danger: true,
+      onConfirm: () => {
         showConfirmDialog.value = false
-      }
+        runSessionDeletionInBackground(
+          store.softDeleteSession(session.id, { optimistic: true }),
+          '删除会话'
+        )
+      },
+      onSecondary: () => {}
     }
     showConfirmDialog.value = true
   }
@@ -57,10 +123,104 @@ export function useWorkspaceDialogs({
     confirmDialogConfig.value = {
       title: '永久删除会话',
       message: `确定要永久删除会话 "${session.name || session.id.slice(0, 8)}" 吗？\n此操作不可撤销，会话数据将被彻底清除。`,
-      onConfirm: async () => {
-        await store.deleteSession(session.id)
+      confirmText: '永久删除',
+      secondaryText: '',
+      danger: true,
+      onConfirm: () => {
         showConfirmDialog.value = false
-      }
+        runSessionDeletionInBackground(
+          store.deleteSessions([session.id], { optimistic: true }),
+          '永久删除会话'
+        )
+      },
+      onSecondary: () => {}
+    }
+    showConfirmDialog.value = true
+  }
+
+  function handleEmptyRecycleBin() {
+    if (!store.showRecycleBin) return
+
+    const sessions = [...store.currentProjectSessions]
+    if (sessions.length === 0) return
+
+    confirmDialogConfig.value = {
+      title: '清空回收站',
+      message: `确定要永久删除当前项目回收站中的全部 ${sessions.length} 个会话吗？\n此操作不可撤销，会话数据将被彻底清除。`,
+      confirmText: '清空回收站',
+      secondaryText: '',
+      danger: true,
+      onConfirm: () => {
+        showConfirmDialog.value = false
+        runSessionDeletionInBackground(
+          store.deleteSessions(sessions.map(session => session.id), { optimistic: true }),
+          '清空回收站'
+        )
+      },
+      onSecondary: () => {}
+    }
+    showConfirmDialog.value = true
+  }
+
+  function handleDeleteSelectedSessions(sessionIds = []) {
+    if (!store.showRecycleBin) return
+
+    const targetIds = new Set(sessionIds)
+    const sessions = store.currentProjectSessions.filter(session => targetIds.has(session.id))
+    if (sessions.length === 0) return
+
+    confirmDialogConfig.value = {
+      title: '删除选中的会话',
+      message: `确定要永久删除选中的 ${sessions.length} 个会话吗？\n此操作不可撤销，会话数据将被彻底清除。`,
+      confirmText: '永久删除',
+      secondaryText: '',
+      danger: true,
+      onConfirm: () => {
+        showConfirmDialog.value = false
+        runSessionDeletionInBackground(
+          store.deleteSessions(sessions.map(session => session.id), { optimistic: true }),
+          '删除选中的会话'
+        )
+      },
+      onSecondary: () => {}
+    }
+    showConfirmDialog.value = true
+  }
+
+  async function handleDissolveTeam(teamId) {
+    confirmDialogConfig.value = {
+      title: '解散 team',
+      message: '确定要解散这个 team 吗？\n所有成员 Session 将保留，但会清空 team 和 role。',
+      confirmText: '解散',
+      secondaryText: '',
+      onConfirm: async () => {
+        await store.dissolveTeam(store.currentProject.id, teamId)
+        showConfirmDialog.value = false
+      },
+      onSecondary: () => {}
+    }
+    showConfirmDialog.value = true
+  }
+
+  function handleDestroyTeam(teamId) {
+    confirmDialogConfig.value = {
+      title: '销毁 team',
+      message: '确定要销毁这个 team 吗？\n所有成员 Session 将被移入回收站。',
+      confirmText: '销毁',
+      secondaryText: '',
+      danger: true,
+      onConfirm: () => {
+        showConfirmDialog.value = false
+        runSessionDeletionInBackground(
+          store.destroyTeam(
+            store.currentProject.id,
+            teamId,
+            { optimistic: true }
+          ),
+          '销毁 team'
+        )
+      },
+      onSecondary: () => {}
     }
     showConfirmDialog.value = true
   }
@@ -184,6 +344,8 @@ export function useWorkspaceDialogs({
     confirmDialogConfig.value = {
       title: '删除独立配置',
       message: `确定要删除会话 "${session.name || session.id.slice(0, 8)}" 的独立配置吗？\n删除后将使用项目配置。`,
+      confirmText: '删除',
+      danger: true,
       onConfirm: async () => {
         try {
           await window.electronAPI.deleteSessionConfig({
@@ -324,10 +486,15 @@ export function useWorkspaceDialogs({
     selectedProject,
     confirmDialogConfig,
     renameDialogConfig,
+    runSessionDeletionInBackground,
     handleNewSession,
     handleDeleteSession,
+    handleDissolveTeam,
+    handleDestroyTeam,
     handleRestoreSession,
     handlePermanentDeleteSession,
+    handleEmptyRecycleBin,
+    handleDeleteSelectedSessions,
     handleRenameSession,
     handleRenameConfirm,
     handleCloseSession,

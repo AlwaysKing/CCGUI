@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://127.0.0.1:5183 && npx electron .\" --kill-others",
+    "electron:dev": "node scripts/electron-dev.cjs",
     "electron": "npx electron .",
     "electron:build": "npm run build && electron-builder",
     "rebuild": "./scripts/rebuild.sh",
@@ -26,6 +26,12 @@
     "asarUnpack": [
       "**/node_modules/node-pty/**/*",
       "**/node_modules/node-screenshots*/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "electron/agent-communication/internal-mcp-bridge.cjs",
+        "to": "agent-communication/internal-mcp-bridge.cjs"
+      }
     ],
     "directories": {
       "output": "output"

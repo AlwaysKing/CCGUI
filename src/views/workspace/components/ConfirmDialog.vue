@@ -15,6 +15,10 @@ defineProps({
     type: String,
     default: '确认'
   },
+  secondaryText: {
+    type: String,
+    default: ''
+  },
   cancelText: {
     type: String,
     default: '取消'
@@ -25,7 +29,7 @@ defineProps({
   }
 })
 
-const emit = defineEmits(['confirm', 'cancel'])
+const emit = defineEmits(['confirm', 'secondary', 'cancel'])
 
 useDialogStack(computed(() => true), () => emit('cancel'))
 </script>
@@ -44,6 +48,13 @@ useDialogStack(computed(() => true), () => emit('cancel'))
       <div class="dialog-footer">
         <button class="btn btn-cancel" @click="emit('cancel')">
           {{ cancelText }}
+        </button>
+        <button
+          v-if="secondaryText"
+          class="btn btn-danger"
+          @click="emit('secondary')"
+        >
+          {{ secondaryText }}
         </button>
         <button
           class="btn"

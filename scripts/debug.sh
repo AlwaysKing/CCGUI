@@ -49,22 +49,31 @@ if [ ! -d "node_modules" ]; then
     echo ""
 fi
 
-# 清理日志文件
-LOG_FILE="/tmp/ccgui/app.log"
+# 使用独立 debug profile，避免与正式应用争用代理端口、PID 注册表和运行数据
+export NODE_ENV=development
+export CCGUI_DEBUG_STARTUP=1
+export CCGUI_PROFILE=debug
+
+PROFILE_HOME="${CCGUI_HOME:-$HOME/.ccgui}"
+PROXY_PORT=18921
+VITE_PORT=5183
+LOG_FILE="/tmp/ccgui-dev/app.log"
+
+# 清理当前 profile 的旧日志文件
 if [ -f "$LOG_FILE" ]; then
     echo -e "${YELLOW}清理旧日志文件...${NC}"
     rm -f "$LOG_FILE"
 fi
-
-# 设置环境变量
-export NODE_ENV=development
-export CCGUI_DEBUG_STARTUP=1
+mkdir -p "$(dirname "$LOG_FILE")"
+: > "$LOG_FILE"
 
 # 启动提示
 echo -e "${CYAN}═══════════════════════════════════════${NC}"
 echo -e "${CYAN}   启动信息${NC}"
 echo -e "${CYAN}═══════════════════════════════════════${NC}"
-echo -e "${GREEN}✓ 前端开发服务器:${NC} http://localhost:5173"
+echo -e "${GREEN}✓ 前端开发服务器:${NC} http://localhost:${VITE_PORT}"
+echo -e "${GREEN}✓ 共享数据目录:${NC} $PROFILE_HOME"
+echo -e "${GREEN}✓ 本地模型代理端口:${NC} $PROXY_PORT（占用时自动顺延）"
 echo -e "${GREEN}✓ 日志文件:${NC} $LOG_FILE"
 echo ""
 echo -e "${YELLOW}快捷键提示:${NC}"

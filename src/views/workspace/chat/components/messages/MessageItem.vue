@@ -18,7 +18,11 @@ import UnknownMessage from './UnknownMessage.vue'
 import SystemNotificationMessage from './SystemNotificationMessage.vue'
 import FileChangeSummaryMessage from './FileChangeSummaryMessage.vue'
 import TaskCompleteMessage from './TaskCompleteMessage.vue'
-import { useMessageList } from '../../composables/useMessageList'
+import {
+  isDialogOnlyTurnError,
+  isMessageHiddenByCollapsedTurn,
+  useMessageList
+} from '../../composables/useMessageList'
 import { useMessage } from '../../composables/useMessage'
 import { useSessionStore } from '../../../../../stores/useSessionStore'
 import { openAppErrorDialog } from '../../../../../utils/appErrorDialog'
@@ -90,6 +94,10 @@ const props = defineProps({
   paneWidth: {
     type: Number,
     default: 0
+  },
+  responseCollapsePrefiltered: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -118,7 +126,6 @@ const {
   isQuestionCollapsed,
   handleToolToggleCollapse,
   toggleThinkingCollapse,
-  getResponseCollapseState,
   toggleResponseCollapse,
   isLastUserMessage,
   openActionMenuIndex,
@@ -129,28 +136,6 @@ const {
 const { copiedMessageIndex, copyToClipboard } = useMessage()
 const sessionStore = useSessionStore()
 const dialogOnlyErrorShown = ref(false)
-
-function isDialogOnlyTurnError(message) {
-  if (message?.role !== 'system_notification' || message?.notificationType !== 'turn-error') {
-    return false
-  }
-
-  const errorText = typeof message?.data?.message === 'string' ? message.data.message : ''
-  if (!errorText) {
-    return false
-  }
-
-  return [
-    '撤销本次修改失败',
-    '重做本次修改失败',
-    '重置文件失败',
-    '撤销本次修改并创建分支失败',
-    '重置文件并创建分支失败',
-    '创建分支失败',
-    '获取预览失败',
-    '发送消息失败'
-  ].some(keyword => errorText.includes(keyword))
-}
 
 function maybeShowDialogOnlyTurnError() {
   if (dialogOnlyErrorShown.value || !isDialogOnlyTurnError(props.message)) {
@@ -180,23 +165,10 @@ const shouldHide = computed(() => {
   if (props.message.mergedIntoTaskComplete) {
     return true
   }
-  if (props.message.role === 'system' && props.message.subtype === 'rewind-notice') {
+  if (props.responseCollapsePrefiltered) {
     return false
   }
-  if (
-    props.message.role === 'status' ||
-    props.message.role === 'file_change_summary'
-  ) {
-    return false
-  }
-  if (props.message.role === 'system_notification') {
-    return props.message.scope !== 'session'
-      ? getResponseCollapseState(props.allMessages, props.messageIndex).collapsed
-      : false
-  }
-  if (isTurnMessageRole(props.message.role)) return false
-  const { collapsed } = getResponseCollapseState(props.allMessages, props.messageIndex)
-  return collapsed
+  return isMessageHiddenByCollapsedTurn(props.allMessages, props.messageIndex)
 })
 
 // 是否是一轮新问答的开始（用户消息且不是第一条）
@@ -493,13 +465,40 @@ function onToggleQuestionCollapse(messageIndex) {
   toggleQuestionCollapse(props.allMessages, messageIndex)
 }
 
-function setAllResponseCollapsed(nextCollapsed, { excludeIndex = null } = {}) {
-  props.allMessages.forEach((message, index) => {
-    if (!isTurnMessageRole(message?.role)) return
-    if (!findAssistantResponse(props.allMessages, index)) return
-    if (excludeIndex !== null && index === excludeIndex) return
-    message.responseCollapsed = nextCollapsed
+async function setAllResponseCollapsed(nextCollapsed, { excludeIndex = null } = {}) {
+  const ownerSession = props.sessionId
+    ? sessionStore.sessions.get(props.sessionId)
+    : sessionStore.currentSession
+  const turnMessages = props.allMessages.filter((message, index) => {
+    if (!isTurnMessageRole(message?.role)) return false
+    if (!findAssistantResponse(props.allMessages, index)) return false
+    return excludeIndex === null || index !== excludeIndex
   })
+
+  for (const message of turnMessages) {
+    if (nextCollapsed) {
+      message.responseCollapsed = true
+      continue
+    }
+
+    if (message.historyTurn?.hasResponse && message.historyTurn.turnId && !message.historyTurn.loaded) {
+      if (!ownerSession?.id) continue
+      const result = await sessionStore.loadHistoryTurn(
+        ownerSession.id,
+        message.historyTurn.turnId,
+        message.historyTurn
+      )
+      if (result?.success && !result.loading) {
+        message.responseCollapsed = false
+      }
+      continue
+    }
+
+    if (message._releasedResponses && ownerSession) {
+      sessionStore.restoreReleasedTurn(ownerSession, message)
+    }
+    message.responseCollapsed = false
+  }
 }
 
 async function onToggleResponseCollapse(messageIndex, event = null) {
@@ -513,12 +512,12 @@ async function onToggleResponseCollapse(messageIndex, event = null) {
   const useOthersMode = useGlobalMode && Boolean(event?.altKey)
 
   if (useOthersMode) {
-    setAllResponseCollapsed(nextCollapsed, { excludeIndex: messageIndex })
+    await setAllResponseCollapsed(nextCollapsed, { excludeIndex: messageIndex })
     return
   }
 
   if (useGlobalMode) {
-    setAllResponseCollapsed(nextCollapsed)
+    await setAllResponseCollapsed(nextCollapsed)
     return
   }
 
@@ -610,27 +609,44 @@ function handleViewportChange() {
   updateToolbarMenuPosition()
 }
 
-watch(() => openActionMenuIndex.value, async (nextIndex) => {
-  if (nextIndex === -1) {
-    toolbarMenuStyle.value = {}
-    return
-  }
+let actionMenuListenersBound = false
 
-  await nextTick()
-  updateToolbarMenuPosition()
-})
-
-onMounted(() => {
-  maybeShowDialogOnlyTurnError()
+function bindActionMenuListeners() {
+  if (actionMenuListenersBound) return
   document.addEventListener('click', handleGlobalClick)
   window.addEventListener('resize', handleViewportChange)
   window.addEventListener('scroll', handleViewportChange, true)
-})
+  actionMenuListenersBound = true
+}
 
-onUnmounted(() => {
+function unbindActionMenuListeners() {
+  if (!actionMenuListenersBound) return
   document.removeEventListener('click', handleGlobalClick)
   window.removeEventListener('resize', handleViewportChange)
   window.removeEventListener('scroll', handleViewportChange, true)
+  actionMenuListenersBound = false
+}
+
+watch(() => openActionMenuIndex.value, async (nextIndex) => {
+  if (nextIndex !== props.messageIndex) {
+    unbindActionMenuListeners()
+    if (nextIndex === -1) {
+      toolbarMenuStyle.value = {}
+    }
+    return
+  }
+
+  bindActionMenuListeners()
+  await nextTick()
+  updateToolbarMenuPosition()
+}, { immediate: true })
+
+onMounted(() => {
+  maybeShowDialogOnlyTurnError()
+})
+
+onUnmounted(() => {
+  unbindActionMenuListeners()
 })
 
 watch(() => props.message, () => {

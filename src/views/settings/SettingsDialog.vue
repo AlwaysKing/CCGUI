@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted } from 'vue'
 import ChatThemeSettings from './components/ChatThemeSettings.vue'
 import ShortcutSettings from './components/ShortcutSettings.vue'
 import TerminalSettings from './components/TerminalSettings.vue'
+import AiAssistSettings from './components/AiAssistSettings.vue'
 import SoftwareSettings from './components/SoftwareSettings.vue'
 import { useSettingsNavigation } from './hooks/useSettingsNavigation'
 import { useSettingsData } from './hooks/useSettingsData'
@@ -15,6 +16,7 @@ const {
   chatThemeSectionRef,
   shortcutSectionRef,
   terminalSectionRef,
+  aiAssistSectionRef,
   softwareSectionRef,
   navItems,
   scrollToSection,
@@ -24,6 +26,8 @@ const {
 
 const {
   settings,
+  claudeModels,
+  codexModels,
   loadSettings,
   saveSoftwareSettings,
   testBarkUrl,
@@ -93,6 +97,11 @@ useDialogStack(computed(() => true), handleClose)
               <path d="M15 9h.01"/>
               <path d="M7 13h10"/>
             </svg>
+            <svg v-else-if="item.icon === 'ai-assist'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/>
+              <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z"/>
+              <path d="M5 14l.7 2.3L8 17l-2.3.7L5 20l-.7-2.3L2 17l2.3-.7L5 14z"/>
+            </svg>
             <span>{{ item.label }}</span>
           </div>
         </div>
@@ -118,6 +127,16 @@ useDialogStack(computed(() => true), handleClose)
           <div ref="terminalSectionRef">
             <TerminalSettings
               :settings="settings"
+              @update:settings="settings = $event"
+              @save-settings="saveSoftwareSettings"
+            />
+          </div>
+
+          <div ref="aiAssistSectionRef">
+            <AiAssistSettings
+              :settings="settings"
+              :claude-models="claudeModels"
+              :codex-models="codexModels"
               @update:settings="settings = $event"
               @save-settings="saveSoftwareSettings"
             />

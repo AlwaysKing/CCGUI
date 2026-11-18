@@ -1,10 +1,114 @@
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
 const { execFileSync } = require('child_process')
 const logger = require('../logger')
+const { getCcguiPath, getProfile } = require('../runtime-paths')
 
-const INSTANCES_DIR = path.join(os.homedir(), '.ccgui', 'instances')
+const INSTANCES_DIR = getCcguiPath('instances', getProfile())
+
+function parseElapsedSeconds(value) {
+  const parts = String(value || '').trim().split(':')
+  if (parts.length < 2) {
+    return null
+  }
+
+  let days = 0
+  let hours = 0
+  let minutes = 0
+  let seconds = 0
+
+  if (parts.length === 3) {
+    const dayAndHours = parts[0].split('-')
+    if (dayAndHours.length === 2) {
+      days = Number(dayAndHours[0]) || 0
+      hours = Number(dayAndHours[1]) || 0
+    } else {
+      hours = Number(parts[0]) || 0
+    }
+    minutes = Number(parts[1]) || 0
+    seconds = Number(parts[2]) || 0
+  } else {
+    minutes = Number(parts[0]) || 0
+    seconds = Number(parts[1]) || 0
+  }
+
+  return days * 86400 + hours * 3600 + minutes * 60 + seconds
+}
+
+function listProcesses() {
+  if (process.platform === 'win32') {
+    return []
+  }
+
+  try {
+    const output = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,etime=,comm='], {
+      encoding: 'utf8',
+      timeout: 3000
+    })
+
+    return output.split(/\r?\n/)
+      .map(line => {
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+)$/)
+        if (!match) {
+          return null
+        }
+
+        return {
+          pid: Number(match[1]),
+          ppid: Number(match[2]),
+          pgid: Number(match[3]),
+          stat: match[4],
+          elapsed: match[5],
+          elapsedSeconds: parseElapsedSeconds(match[5]),
+          command: match[6].trim()
+        }
+      })
+      .filter(Boolean)
+  } catch (error) {
+    logger.warn('[ProcessRegistry] Failed to inspect process table', { error: error.message })
+    return []
+  }
+}
+
+function collectProcessTree(rootPid, processes = listProcesses()) {
+  const numericRootPid = Number(rootPid)
+  if (!numericRootPid) {
+    return []
+  }
+
+  const processByPid = new Map(processes.map(entry => [entry.pid, entry]))
+  const childrenByParent = new Map()
+  for (const entry of processes) {
+    if (!childrenByParent.has(entry.ppid)) {
+      childrenByParent.set(entry.ppid, [])
+    }
+    childrenByParent.get(entry.ppid).push(entry)
+  }
+
+  const result = []
+  const seen = new Set()
+  const queue = [numericRootPid]
+
+  while (queue.length > 0) {
+    const pid = queue.shift()
+    if (seen.has(pid)) {
+      continue
+    }
+    seen.add(pid)
+
+    const processEntry = processByPid.get(pid)
+    if (processEntry) {
+      result.push(processEntry)
+    }
+
+    const children = childrenByParent.get(pid) || []
+    for (const child of children) {
+      queue.push(child.pid)
+    }
+  }
+
+  return result.sort((left, right) => left.pid - right.pid)
+}
 
 function ensureInstancesDir() {
   if (!fs.existsSync(INSTANCES_DIR)) {
@@ -44,12 +148,23 @@ function register(sessionId, { pid, provider, exePath, projectPath }) {
 /**
  * 注销一个 provider 进程实例（删除 PID 文件）
  */
-function unregister(sessionId) {
+function unregister(sessionId, expectedPid = null) {
   if (!sessionId) return
 
   const filePath = instanceFilePath(sessionId)
   try {
     if (fs.existsSync(filePath)) {
+      if (expectedPid) {
+        let record = null
+        try {
+          record = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+        } catch {
+          record = null
+        }
+        if (Number(record?.pid) !== Number(expectedPid)) {
+          return
+        }
+      }
       fs.unlinkSync(filePath)
       logger.info(`[ProcessRegistry] Unregistered instance for session ${sessionId}`)
     }
@@ -145,6 +260,164 @@ function waitForExit(pid, timeoutMs) {
   })
 }
 
+function waitForProcessesExit(pids, timeoutMs) {
+  const targets = [...new Set(
+    (Array.isArray(pids) ? pids : [])
+      .map(pid => Number(pid))
+      .filter(pid => Number.isInteger(pid) && pid > 1)
+  )]
+
+  if (targets.length === 0) {
+    return Promise.resolve([])
+  }
+
+  return new Promise(resolve => {
+    const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0)
+    const check = () => {
+      const remaining = targets.filter(pid => isProcessAlive(pid))
+      if (remaining.length === 0 || Date.now() >= deadline) {
+        resolve(remaining)
+        return
+      }
+      setTimeout(check, 100)
+    }
+    check()
+  })
+}
+
+function signalProcesses(pids, signal, reason) {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal)
+      logger.info(`[ProcessRegistry] Sent ${signal} to ${reason} process (pid=${pid})`)
+    } catch (error) {
+      if (error.code !== 'ESRCH') {
+        logger.warn(`[ProcessRegistry] Failed to send ${signal} to ${reason} process (pid=${pid}): ${error.message}`)
+      }
+    }
+  }
+}
+
+async function terminateProcesses(pids, options = {}) {
+  const targets = [...new Set(
+    (Array.isArray(pids) ? pids : [])
+      .map(pid => Number(pid))
+      .filter(pid => Number.isInteger(pid) && pid > 1 && pid !== process.pid)
+  )]
+  const graceMs = Math.max(0, Number(options.graceMs) || 1500)
+  const forceWaitMs = Math.max(0, Number(options.forceWaitMs) || 1000)
+  const reason = options.reason || 'residual'
+
+  if (targets.length === 0) {
+    return { requested: [], terminated: [], remaining: [] }
+  }
+
+  signalProcesses(targets, 'SIGTERM', reason)
+  let remaining = await waitForProcessesExit(targets, graceMs)
+  if (remaining.length > 0) {
+    signalProcesses(remaining, 'SIGKILL', reason)
+    remaining = await waitForProcessesExit(remaining, forceWaitMs)
+  }
+
+  const remainingSet = new Set(remaining)
+  return {
+    requested: targets,
+    terminated: targets.filter(pid => !remainingSet.has(pid)),
+    remaining
+  }
+}
+
+function buildProcessTreeTargets(entries, rootPid) {
+  const rootEntry = entries.find(entry => entry.pid === rootPid) || null
+  const rootPgid = rootEntry?.pgid || null
+  const processesByPid = new Map(entries.map(entry => [entry.pid, entry]))
+  const pids = []
+  const pgids = []
+
+  for (const entry of entries) {
+    if (entry.pid === rootPid || entry.pid <= 1 || entry.pid === process.pid) {
+      continue
+    }
+    pids.push(entry.pid)
+
+    if (
+      process.platform !== 'win32' &&
+      entry.pgid > 1 &&
+      entry.pgid !== rootPgid &&
+      processesByPid.has(entry.pgid)
+    ) {
+      pgids.push(entry.pgid)
+    }
+  }
+
+  return {
+    pids: [...new Set(pids)],
+    pgids: [...new Set(pgids)]
+  }
+}
+
+function signalProcessTargets(targets, signal, reason) {
+  if (process.platform !== 'win32') {
+    for (const pgid of targets.pgids || []) {
+      try {
+        process.kill(-pgid, signal)
+        logger.info(`[ProcessRegistry] Sent ${signal} to ${reason} process group (pgid=${pgid})`)
+      } catch (error) {
+        if (error.code !== 'ESRCH') {
+          logger.warn(`[ProcessRegistry] Failed to send ${signal} to ${reason} process group (pgid=${pgid}): ${error.message}`)
+        }
+      }
+    }
+  }
+
+  signalProcesses(targets.pids || [], signal, reason)
+}
+
+async function terminateProcessTree(rootPid, options = {}) {
+  const numericRootPid = Number(rootPid)
+  if (!Number.isInteger(numericRootPid) || numericRootPid <= 1) {
+    return { requested: [], terminated: [], remaining: [] }
+  }
+
+  const graceMs = Math.max(0, Number(options.graceMs) || 1200)
+  const forceWaitMs = Math.max(0, Number(options.forceWaitMs) || 1000)
+  const reason = options.reason || 'shutdown'
+  const firstEntries = collectProcessTree(numericRootPid)
+  const firstTargets = buildProcessTreeTargets(firstEntries, numericRootPid)
+
+  if (firstTargets.pids.length === 0) {
+    return { requested: [], terminated: [], remaining: [] }
+  }
+
+  signalProcessTargets(firstTargets, 'SIGTERM', reason)
+  let remaining = await waitForProcessesExit(firstTargets.pids, graceMs)
+
+  const currentEntries = collectProcessTree(numericRootPid)
+  const currentTargets = buildProcessTreeTargets(currentEntries, numericRootPid)
+  const forceTargets = {
+    pids: [...new Set([
+      ...remaining,
+      ...currentTargets.pids
+    ])],
+    pgids: [...new Set([
+      ...firstTargets.pgids,
+      ...currentTargets.pgids
+    ])]
+  }
+
+  if (forceTargets.pids.length > 0) {
+    signalProcessTargets(forceTargets, 'SIGKILL', reason)
+    remaining = await waitForProcessesExit(forceTargets.pids, forceWaitMs)
+  }
+
+  const remainingSetAfter = new Set(remaining)
+  return {
+    requested: firstTargets.pids,
+    terminated: firstTargets.pids.filter(pid => !remainingSetAfter.has(pid)),
+    remaining
+  }
+}
+
 /**
  * 终止指定会话登记的 provider 进程（异步等待退出，不阻塞主进程）
  * 用于回收仍持有线程写锁的残留进程
@@ -165,7 +438,7 @@ async function terminateRegisteredInstance(sessionId, allowedPids = null) {
   }
 
   if (!record?.pid || !isProcessAlive(record.pid, record.exePath)) {
-    unregister(sessionId)
+    unregister(sessionId, record?.pid)
     return false
   }
 
@@ -178,7 +451,7 @@ async function terminateRegisteredInstance(sessionId, allowedPids = null) {
   try {
     process.kill(record.pid, 'SIGTERM')
   } catch (error) {
-    unregister(sessionId)
+    unregister(sessionId, record.pid)
     return false
   }
 
@@ -193,7 +466,7 @@ async function terminateRegisteredInstance(sessionId, allowedPids = null) {
   }
 
   const exited = !isProcessAlive(record.pid)
-  unregister(sessionId)
+  unregister(sessionId, record.pid)
   return exited
 }
 
@@ -248,8 +521,15 @@ function cleanupStaleInstances() {
 }
 
 module.exports = {
+  collectProcessTree,
+  isProcessAlive,
+  listProcesses,
+  parseElapsedSeconds,
   register,
-  unregister,
+  terminateProcesses,
+  terminateProcessTree,
   terminateRegisteredInstance,
-  cleanupStaleInstances
+  unregister,
+  cleanupStaleInstances,
+  waitForProcessesExit
 }

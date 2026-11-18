@@ -1,14 +1,33 @@
+const fs = require('fs')
+const path = require('path')
 const { SessionInstance } = require('./session-instance')
 const logger = require('../logger')
+
+function normalizeComparableProjectPath(projectPath) {
+  if (typeof projectPath !== 'string' || !projectPath.trim()) {
+    return null
+  }
+  const normalizedPath = path.resolve(projectPath.trim())
+  try {
+    return fs.realpathSync(normalizedPath)
+  } catch {
+    return normalizedPath
+  }
+}
 
 /**
  * SessionManager
  * 管理多个 SessionInstance，每个会话都是独立的
  */
 class SessionManager {
-  constructor({ onSessionEvent = null } = {}) {
+  constructor({ onSessionEvent = null, agentCommunicationService = null } = {}) {
     this.sessions = new Map() // sessionId -> SessionInstance
     this.onSessionEvent = typeof onSessionEvent === 'function' ? onSessionEvent : null
+    this.agentCommunicationService = agentCommunicationService
+  }
+
+  setAgentCommunicationService(service) {
+    this.agentCommunicationService = service || null
   }
 
   /**
@@ -22,10 +41,26 @@ class SessionManager {
     // 如果已存在，直接返回
     if (this.sessions.has(sessionId)) {
       const existingSession = this.sessions.get(sessionId)
-      if (typeof existingSession?.attachWebContents === 'function') {
-        existingSession.attachWebContents(webContents)
+      const existingProjectPath = normalizeComparableProjectPath(existingSession?.projectPath)
+      const requestedProjectPath = normalizeComparableProjectPath(projectPath)
+      if (
+        createIfNotExists &&
+        existingProjectPath &&
+        requestedProjectPath &&
+        existingProjectPath !== requestedProjectPath
+      ) {
+        logger.warn(`[SessionManager] Replacing session ${sessionId} due to project path mismatch`, {
+          existingProjectPath: existingSession.projectPath,
+          requestedProjectPath: projectPath
+        })
+        existingSession.stop()
+        this.sessions.delete(sessionId)
+      } else {
+        if (typeof existingSession?.attachWebContents === 'function') {
+          existingSession.attachWebContents(webContents)
+        }
+        return existingSession
       }
-      return existingSession
     }
 
     if (!createIfNotExists) {
@@ -38,7 +73,8 @@ class SessionManager {
     const session = new SessionInstance(sessionId, projectPath, webContents, {
       onEvent: (event, sessionInstance) => {
         this.onSessionEvent?.(event, sessionInstance)
-      }
+      },
+      agentCommunicationService: this.agentCommunicationService
     })
 
     // 初始化（加载历史）
@@ -124,6 +160,15 @@ class SessionManager {
     return session.queryAtReferences(forceRefresh)
   }
 
+  async unloadHistoryTurns(sessionId, turnIds = []) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return session.unloadHistoryTurns(turnIds)
+  }
+
   async runCommands(sessionId, payload = {}) {
     const session = this.sessions.get(sessionId)
     if (!session) {
@@ -157,6 +202,15 @@ class SessionManager {
     }
 
     return session.sendInterrupt()
+  }
+
+  async closeSubagentAgent(sessionId, agentId) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return session.closeSubagentAgent(agentId)
   }
 
   /**

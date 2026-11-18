@@ -10,6 +10,7 @@ const { findProviderModel, stripProxyProviderPrefix } = require('../adapters/sha
 const attachmentService = require('../services/attachment-service')
 const { stripAttachmentTokens } = require('../adapters/shared/ccgui-attachments')
 const processRegistry = require('../services/process-registry')
+const quitDiagnostics = require('../services/quit-diagnostics')
 const { encodeProjectPath } = require('../project-paths')
 
 function pickFirstDefined(...values) {
@@ -23,6 +24,12 @@ function pickFirstDefined(...values) {
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function omitUndefined(object = {}) {
+  return Object.fromEntries(
+    Object.entries(object).filter(([, value]) => value !== undefined)
+  )
 }
 
 function isThreadWriterConflictError(error) {
@@ -126,6 +133,26 @@ function normalizeHistoryContext(history = null) {
   }).filter(([, value]) => value !== null))
 }
 
+function normalizeInternalMessage(message = null) {
+  if (!isPlainObject(message)) {
+    return null
+  }
+
+  const normalized = Object.fromEntries(Object.entries({
+    id: pickFirstDefined(message.id),
+    senderSessionId: pickFirstDefined(message.senderSessionId, message.sender_session_id),
+    senderName: pickFirstDefined(message.senderName, message.sender_name),
+    senderProjectId: pickFirstDefined(message.senderProjectId, message.sender_project_id),
+    senderTeamId: pickFirstDefined(message.senderTeamId, message.sender_team_id),
+    senderRole: pickFirstDefined(message.senderRole, message.sender_role),
+    receiverSessionId: pickFirstDefined(message.receiverSessionId, message.receiver_session_id),
+    message: pickFirstDefined(message.message),
+    time: pickFirstDefined(message.time)
+  }).filter(([, value]) => value !== null))
+
+  return Object.keys(normalized).length > 0 ? normalized : null
+}
+
 function mergePlain(base = null, patch = null) {
   if (!base && !patch) {
     return null
@@ -160,6 +187,10 @@ function mergeCcguiSemantics(base = null, patch = null) {
     normalizeHistoryContext(safeBase.history),
     normalizeHistoryContext(safePatch.history)
   )
+  const internalMessage = mergePlain(
+    normalizeInternalMessage(safeBase.internalMessage),
+    normalizeInternalMessage(safePatch.internalMessage)
+  )
   const legacy = {
     subagentId: pickFirstDefined(safePatch.subagentId, safeBase.subagentId, registry?.agentId, attribution?.agentId),
     subagentType: pickFirstDefined(safePatch.subagentType, safeBase.subagentType, registry?.agentType),
@@ -176,6 +207,7 @@ function mergeCcguiSemantics(base = null, patch = null) {
     ...(orchestration ? { orchestration } : {}),
     ...(attribution ? { attribution } : {}),
     ...(history ? { history } : {}),
+    ...(internalMessage ? { internalMessage } : {}),
     ...(legacy.subagentId || legacy.subagentType || legacy.isSubagent ? legacy : {})
   }
 }
@@ -323,6 +355,27 @@ function isTurnEntryRole(role = '') {
   return role === 'user' || role === 'command'
 }
 
+const MAX_REPLAY_EVENT_LOG_SIZE = 2000
+const NON_REPLAY_EVENT_TYPES = new Set([
+  'cli-status',
+  'env-info',
+  'fast-mode-change',
+  'interrupt',
+  'message-complete',
+  'message-delta',
+  'message-replace',
+  'message-remove',
+  'message-result',
+  'message-snapshot',
+  'message-start',
+  'message-stop',
+  'message-update',
+  'permission-mode-change',
+  'result',
+  'state-update',
+  'tool-result'
+])
+
 function buildHistoryUserMessageFromTurn(turn = {}) {
   const timestamp = turn.createdAt || new Date().toISOString()
   const normalizedContent = typeof turn.userText === 'string'
@@ -338,6 +391,7 @@ function buildHistoryUserMessageFromTurn(turn = {}) {
       ? turn.serializedContent
       : normalizedContent,
     attachments: Array.isArray(turn.attachments) ? turn.attachments : [],
+    ...(turn.ccgui ? { ccgui: turn.ccgui } : {}),
     timestamp,
     ...(Number.isFinite(turn.duration) ? { duration: turn.duration } : {}),
     ...(Number.isFinite(turn.numTurns) ? { numTurns: turn.numTurns } : {}),
@@ -410,7 +464,7 @@ const SESSION_NOTIFICATION_TYPES = new Set([
   'provider-system-message'
 ])
 
-function normalizeLegacyManagerEvent(message = {}, provider = 'unknown') {
+function normalizeLegacyManagerEvent(message = {}, provider = 'unknown', operationIdOverride = '') {
   if (!message || typeof message !== 'object') {
     return null
   }
@@ -421,9 +475,12 @@ function normalizeLegacyManagerEvent(message = {}, provider = 'unknown') {
     const params = isPlainObject(message.params) ? message.params : {}
     const serverName = typeof params.name === 'string' ? params.name.trim() : ''
     const status = typeof params.status === 'string' ? params.status.trim() : ''
-    const operationId = serverName
-      ? `mcp-startup:${normalizedProvider}:${serverName}`
+    const threadId = typeof params.threadId === 'string' ? params.threadId.trim() : ''
+    const operationThreadId = threadId ? `:${threadId}` : ''
+    const baseOperationId = serverName
+      ? `mcp-startup:${normalizedProvider}${operationThreadId}:${serverName}`
       : ''
+    const operationId = operationIdOverride || baseOperationId
 
     if (status === 'starting') {
       return {
@@ -436,6 +493,8 @@ function normalizeLegacyManagerEvent(message = {}, provider = 'unknown') {
           operationId,
           startedAt: Date.now(),
           rawMessage: message,
+          threadId: threadId || null,
+          ...(isPlainObject(message.ccgui) ? { ccgui: message.ccgui } : {}),
           error: params.error ?? null
         }
       }
@@ -452,6 +511,8 @@ function normalizeLegacyManagerEvent(message = {}, provider = 'unknown') {
           operationId,
           completedAt: Date.now(),
           rawMessage: message,
+          threadId: threadId || null,
+          ...(isPlainObject(message.ccgui) ? { ccgui: message.ccgui } : {}),
           error: params.error ?? null
         }
       }
@@ -468,6 +529,8 @@ function normalizeLegacyManagerEvent(message = {}, provider = 'unknown') {
           operationId,
           completedAt: Date.now(),
           rawMessage: message,
+          threadId: threadId || null,
+          ...(isPlainObject(message.ccgui) ? { ccgui: message.ccgui } : {}),
           error: params.error ?? null
         }
       }
@@ -652,17 +715,26 @@ function extractChangedFilesFromControlResponse(message = {}) {
   ))
 }
 
+function compareQuestionAnswers(expected = {}, actual = {}) {
+  const normalize = value => Object.entries(value && typeof value === 'object' ? value : {})
+    .sort(([left], [right]) => left.localeCompare(right))
+  return JSON.stringify(normalize(expected)) === JSON.stringify(normalize(actual))
+}
+
 /**
  * SessionInstance
  * 每个会话的独立实例，包含该会话的所有数据和状态
  */
 class SessionInstance {
-  constructor(sessionId, projectPath, webContents, { onEvent = null } = {}) {
+  constructor(sessionId, projectPath, webContents, { onEvent = null, agentCommunicationService = null } = {}) {
     this.id = sessionId
     this.projectPath = projectPath
     this.webContents = webContents // 所属窗口的 webContents，用于向前端发送事件
     this.webContentsId = webContents?.id ?? null // 所属窗口 ID，用于按窗口关闭会话
     this.eventObserver = typeof onEvent === 'function' ? onEvent : null
+    this.agentCommunicationService = agentCommunicationService
+    this.agentIdentity = null
+    this.agentMcpConfig = null
 
     // 计算 projectId（编码后的路径，用于历史存储）
     this.projectId = this.calculateProjectId()
@@ -671,7 +743,6 @@ class SessionInstance {
 
     // 会话数据
     this.messages = []        // 消息历史
-    this.rawMessages = []     // 原始消息数据（用于详情查看）
 
     // 已保存到历史存储的消息 ID 集合
     this.savedMessageIds = new Set()
@@ -704,6 +775,7 @@ class SessionInstance {
     this.pendingLifecycleReason = null
     this.pendingPostStartNotification = null
     this.pendingLifecycleOperation = null
+    this.mcpStartupOperations = new Map()
 
     // 标记是否为手动停止（用于区分正常退出和异常退出）
     this.isManualStop = false
@@ -730,6 +802,7 @@ class SessionInstance {
     this.agentSubagentTurns = new Map()
     this.agentAliases = new Map()
     this.agentRegistrySnapshots = new Map()
+    this.activeAgentIds = new Set()
     this.pendingCollaborativeDeliveries = []
 
     // 流式消息处理状态
@@ -737,6 +810,8 @@ class SessionInstance {
     this.currentAssistantMessageIndex = -1
     this.currentContentBlockType = null
     this.contentBlockIndexToId = new Map()
+    this.pendingMessageDeltas = new Map()
+    this.pendingMessageDeltaTimer = null
     this.currentTurnNumber = 0
     this.hasSeenToolUseInCurrentTurn = false
     this.activeResponseUserMessageId = null
@@ -834,6 +909,40 @@ class SessionInstance {
     }
 
     return this.agentRegistrySnapshots.get(agentId) || null
+  }
+
+  getActiveAgentIds() {
+    return Array.from(this.activeAgentIds)
+  }
+
+  applyActiveAgentFromSemantics(payload = null) {
+    const agentId = this.getPayloadAgentId(payload)
+    if (!agentId || agentId === this.getMainAgentId()) {
+      return
+    }
+
+    const registry = payload?.ccgui?.registry || null
+    const orchestration = payload?.ccgui?.orchestration || null
+    const agentType = registry?.agentType || orchestration?.agentType || null
+    if (agentType === 'team') {
+      return
+    }
+
+    const status = registry?.status || orchestration?.status || null
+    const eventType = orchestration?.eventType || null
+    if (
+      eventType === 'end' ||
+      eventType === 'delete' ||
+      ['ended', 'failed', 'interrupted', 'deleted'].includes(status)
+    ) {
+      this.activeAgentIds.delete(agentId)
+    } else if (
+      eventType === 'start' ||
+      status === 'starting' ||
+      status === 'running'
+    ) {
+      this.activeAgentIds.add(agentId)
+    }
   }
 
   getPayloadAgentId(payload = null) {
@@ -1072,7 +1181,17 @@ class SessionInstance {
     }
 
     const actingAgentId = this.getPayloadAgentId(payload)
-    const sourceUserTurnId = actingAgentId ? this.getAgentSourceTurnId(actingAgentId) : null
+    let sourceUserTurnId = actingAgentId ? this.getAgentSourceTurnId(actingAgentId) : null
+    if (
+      actingAgentId &&
+      actingAgentId !== this.getMainAgentId() &&
+      !sourceUserTurnId
+    ) {
+      sourceUserTurnId = this.currentHistoryTurnId || this.activeResponseUserMessageId || null
+      if (sourceUserTurnId) {
+        this.setAgentSourceTurnId(actingAgentId, sourceUserTurnId)
+      }
+    }
     if (actingAgentId && sourceUserTurnId) {
       const historyPatch = {
         sourceUserTurnId,
@@ -1098,10 +1217,29 @@ class SessionInstance {
   async initialize() {
     await this.loadHistory()
     const sessionConfig = projectService.getSessionConfig(this.projectId, this.id)
+    this.agentIdentity = this.buildAgentIdentity(sessionConfig)
     if (sessionConfig?.settings) {
       this.applySessionSettings(sessionConfig.settings)
     }
     this.reconcilePersistedRuntimeState()
+  }
+
+  buildAgentIdentity(sessionConfig = null) {
+    const teamId = typeof sessionConfig?.teamId === 'string' && sessionConfig.teamId.trim()
+      ? sessionConfig.teamId.trim()
+      : null
+    const role = typeof sessionConfig?.role === 'string' && sessionConfig.role.trim()
+      ? sessionConfig.role.trim().toLowerCase()
+      : null
+    return {
+      sessionId: this.id,
+      projectId: sessionConfig?.projectId || this.projectId,
+      teamId,
+      role,
+      name: typeof sessionConfig?.name === 'string' && sessionConfig.name.trim()
+        ? sessionConfig.name.trim()
+        : this.id
+    }
   }
 
   /**
@@ -1220,13 +1358,238 @@ class SessionInstance {
     return true
   }
 
+  isSessionScopedMessage(message = null) {
+    return message?.role === 'system_notification' && message?.scope === 'session'
+  }
+
+  collectTurnRanges(turnIds = []) {
+    const targetIds = new Set(turnIds)
+    const ranges = new Map()
+    let currentTurnId = null
+
+    for (const message of this.messages) {
+      if (isTurnEntryRole(message?.role)) {
+        currentTurnId = targetIds.has(message.id) ? message.id : null
+      }
+
+      if (!currentTurnId) {
+        continue
+      }
+
+      if (!ranges.has(currentTurnId)) {
+        ranges.set(currentTurnId, [])
+      }
+      ranges.get(currentTurnId).push(message)
+    }
+
+    return ranges
+  }
+
+  pruneReplayEventLog(turnIds = [], removedMessageIds = new Set()) {
+    const targetTurnIds = new Set(turnIds)
+    if (targetTurnIds.size === 0 && removedMessageIds.size === 0) {
+      return
+    }
+
+    this.eventLog = this.eventLog.filter(event => {
+      const payload = event?.data || null
+      const messageId = payload?.messageId || payload?.id || null
+      if (messageId && removedMessageIds.has(messageId)) {
+        return false
+      }
+
+      const sourceTurnId = payload?.ccgui?.history?.sourceUserTurnId
+        || (isTurnEntryRole(payload?.role) ? payload?.id : null)
+      return !sourceTurnId || !targetTurnIds.has(sourceTurnId)
+    })
+
+    if (this.eventLog.length > MAX_REPLAY_EVENT_LOG_SIZE) {
+      this.eventLog.splice(0, this.eventLog.length - MAX_REPLAY_EVENT_LOG_SIZE)
+    }
+  }
+
+  async unloadHistoryTurns(turnIds = []) {
+    this.flushPendingMessageDeltas()
+    const normalizedTurnIds = Array.from(new Set(
+      (Array.isArray(turnIds) ? turnIds : [])
+        .map(value => String(value || '').trim())
+        .filter(Boolean)
+    ))
+    if (normalizedTurnIds.length === 0) {
+      return {
+        unloadedTurnIds: [],
+        skippedTurnIds: [],
+        subagentTurnIds: []
+      }
+    }
+
+    const indexEntries = historyManager.loadIndexEntries(this.projectId, this.id)
+    const turnEntries = new Map(
+      indexEntries
+        .filter(entry => !entry?.entryType || entry.entryType === 'turn')
+        .map(entry => [entry.turnId, entry])
+    )
+    const ranges = this.collectTurnRanges(normalizedTurnIds)
+    const unloadableTurnIds = []
+    const skippedTurnIds = []
+
+    for (const turnId of normalizedTurnIds) {
+      const entry = turnEntries.get(turnId)
+      const range = ranges.get(turnId) || []
+      const hasActiveMessages = range.some(message => message?.isStreaming || message?.isExecuting)
+      const isCurrentActiveTurn = this.currentHistoryTurnId === turnId
+        && (this.isProcessing || Boolean(this.currentStreamingAssistantId))
+
+      if (
+        !entry ||
+        entry.hasAssistantResponse !== true ||
+        Number(entry.eventCount || 0) <= 0 ||
+        hasActiveMessages ||
+        isCurrentActiveTurn
+      ) {
+        skippedTurnIds.push(turnId)
+        continue
+      }
+
+      unloadableTurnIds.push(turnId)
+    }
+
+    if (unloadableTurnIds.length === 0) {
+      return {
+        unloadedTurnIds: [],
+        skippedTurnIds,
+        subagentTurnIds: []
+      }
+    }
+
+    await Promise.all(unloadableTurnIds.map(turnId =>
+      historyManager.finalizeTurn(this.projectId, this.id, turnId)
+    ))
+
+    const sourceTurnIds = new Set(unloadableTurnIds)
+    const subagentTurnIds = []
+    for (const history of historyManager.loadAllSubagentHistories(this.projectId, this.id)) {
+      for (const entry of history.entries || []) {
+        if (entry?.turnId && sourceTurnIds.has(entry.sourceUserTurnId)) {
+          subagentTurnIds.push(entry.turnId)
+        }
+      }
+    }
+
+    try {
+      this.runtimeManager?.releaseTurnCaches?.({
+        turnIds: [...new Set([...unloadableTurnIds, ...subagentTurnIds])],
+        userMessageUuids: unloadableTurnIds
+      })
+    } catch (error) {
+      logger.warn('[SessionInstance] Failed to release runtime turn caches', {
+        sessionId: this.id,
+        turnIds: unloadableTurnIds,
+        error: error.message
+      })
+    }
+
+    const removedMessageIds = new Set()
+    const anchorMessages = new Map(
+      unloadableTurnIds.map(turnId => [
+        turnId,
+        buildHistoryUserMessageFromTurn(turnEntries.get(turnId))
+      ])
+    )
+    const nextMessages = []
+    let currentTurnId = null
+
+    for (const message of this.messages) {
+      if (isTurnEntryRole(message?.role)) {
+        if (anchorMessages.has(message.id)) {
+          nextMessages.push(anchorMessages.get(message.id))
+          currentTurnId = message.id
+        } else {
+          nextMessages.push(message)
+          currentTurnId = null
+        }
+        continue
+      }
+
+      if (currentTurnId) {
+        if (this.isSessionScopedMessage(message)) {
+          nextMessages.push(message)
+        } else if (message?.id) {
+          removedMessageIds.add(message.id)
+        }
+        continue
+      }
+
+      nextMessages.push(message)
+    }
+
+    for (const turnId of unloadableTurnIds) {
+      if (!nextMessages.some(message => isTurnEntryRole(message?.role) && message.id === turnId)) {
+        nextMessages.push(anchorMessages.get(turnId))
+      }
+    }
+
+    this.messages = nextMessages
+
+    const sourceFilter = message => {
+      const sourceTurnId = message?.ccgui?.history?.sourceUserTurnId
+        || (isTurnEntryRole(message?.role) ? message?.id : null)
+      return !sourceTurnId || !sourceTurnIds.has(sourceTurnId)
+    }
+    this.silentMessages = this.silentMessages.filter(sourceFilter)
+    this.taskEvents = this.taskEvents.filter(sourceFilter)
+    this.pendingCollaborativeDeliveries = this.pendingCollaborativeDeliveries
+      .filter(item => !sourceTurnIds.has(item.sourceUserTurnId))
+
+    const affectedAgentIds = new Set()
+    for (const [agentId, sourceTurnId] of this.agentSourceTurnIds.entries()) {
+      if (sourceTurnIds.has(sourceTurnId)) {
+        this.agentSourceTurnIds.delete(agentId)
+        affectedAgentIds.add(agentId)
+      }
+    }
+    for (const [agentId, turn] of this.agentSubagentTurns.entries()) {
+      if (sourceTurnIds.has(turn?.sourceUserTurnId)) {
+        this.agentSubagentTurns.delete(agentId)
+        affectedAgentIds.add(agentId)
+      }
+    }
+    for (const agentId of affectedAgentIds) {
+      if (!this.agentSubagentTurns.has(agentId)) {
+        this.activeAgentIds.delete(agentId)
+      }
+    }
+
+    if (sourceTurnIds.has(this.currentHistoryTurnId)) {
+      this.currentHistoryTurnId = null
+    }
+
+    this.pruneReplayEventLog(unloadableTurnIds, removedMessageIds)
+    logger.info('[SessionInstance] Unloaded history turns from memory', {
+      sessionId: this.id,
+      unloadedTurnIds: unloadableTurnIds,
+      skippedTurnIds,
+      removedMessageCount: removedMessageIds.size,
+      remainingMessageCount: this.messages.length,
+      eventLogSize: this.eventLog.length
+    })
+
+    return {
+      unloadedTurnIds: unloadableTurnIds,
+      skippedTurnIds,
+      subagentTurnIds
+    }
+  }
+
   /**
    * 获取会话状态（用于前端同步）
    */
   getState() {
     // 更新 envInfo 中的 PID
     if (this.envInfo) {
-      const pid = this.runtimeManager?.getPid() || null
+      const pid = typeof this.runtimeManager?.getPid === 'function'
+        ? (this.runtimeManager.getPid() || null)
+        : null
       this.envInfo = applySessionEnvInfoPatch({
         ...this.envInfo,
         provider: this.provider
@@ -1252,9 +1615,12 @@ class SessionInstance {
       silentMessages: this.silentMessages,
       taskEvents: this.taskEvents,
       subagentHistories: historyManager.loadAllSubagentHistories(this.projectId, this.id),
+      activeAgentIds: this.getActiveAgentIds(),
       eventLog: this.eventLog,
       historyTurns: this.historyTurns,
-      runtimeReady: this.runtimeManager?.isReady() || false,
+      runtimeReady: typeof this.runtimeManager?.isReady === 'function'
+        ? (this.runtimeManager.isReady() || false)
+        : false,
       provider: this.provider,
       permissionMode: this.permissionMode,
       autoApprove: this.autoApprove,
@@ -1354,6 +1720,39 @@ class SessionInstance {
     })
   }
 
+  resolveMcpStartupOperationId(message = {}) {
+    if (message?.method !== 'mcpServer/startupStatus/updated') {
+      return ''
+    }
+
+    const params = isPlainObject(message.params) ? message.params : {}
+    const provider = message.provider || this.provider || 'unknown'
+    const threadId = typeof params.threadId === 'string' ? params.threadId.trim() : ''
+    const serverName = typeof params.name === 'string' ? params.name.trim() : ''
+    const status = typeof params.status === 'string' ? params.status.trim() : ''
+    if (!serverName) {
+      return ''
+    }
+
+    const operationKey = [provider, threadId, serverName].join('\0')
+    const current = this.mcpStartupOperations.get(operationKey)
+    const shouldStartNewCycle = !current ||
+      (status === 'starting' && current.status !== 'starting')
+    const operationThreadId = threadId ? `:${threadId}` : ''
+    const operation = shouldStartNewCycle
+      ? {
+          operationId: `mcp-startup:${provider}${operationThreadId}:${serverName}:${crypto.randomUUID()}`,
+          status
+        }
+      : {
+          ...current,
+          status: status || current.status
+        }
+
+    this.mcpStartupOperations.set(operationKey, operation)
+    return operation.operationId
+  }
+
   /**
    * 启动运行时实例（懒加载）
    */
@@ -1386,6 +1785,8 @@ class SessionInstance {
    * 运行时启动的实际流程，由 startRuntime 串行化调用
    */
   async startRuntimeInternal(token, options = {}) {
+    this.mcpStartupOperations.clear()
+
     // 如果存在旧的运行时实例（进程已退出），先清理
     if (this.runtimeManager) {
       logger.info(`[SessionInstance] Cleaning up old runtime manager for session ${this.id}`)
@@ -1409,6 +1810,21 @@ class SessionInstance {
       logger.warn(`[SessionInstance] Failed to load settings:`, e.message)
     }
 
+    this.agentIdentity = this.buildAgentIdentity(projectService.getSessionConfig(this.projectId, this.id))
+    this.agentMcpConfig = null
+    if (this.agentCommunicationService) {
+      try {
+        const communication = await this.agentCommunicationService.prepareSession({
+          session: this,
+          provider: this.provider
+        })
+        this.agentIdentity = communication?.identity || this.agentIdentity
+        this.agentMcpConfig = communication?.mcpConfig || null
+      } catch (error) {
+        logger.warn(`[SessionInstance] Failed to prepare agent communication for session ${this.id}:`, error.message)
+      }
+    }
+
     let manager = null
     if (this.provider === 'codex') {
       const sessionStoragePath = path.dirname(historyManager.getSessionHistoryDir(this.projectId, this.id))
@@ -1421,7 +1837,10 @@ class SessionInstance {
         {
           resumeThreadId: this.sessionSettings.codexThreadId || null,
           debug: this.sessionSettings.debug === true,
-          sessionStoragePath
+          sessionStoragePath,
+          agentIdentity: this.agentIdentity,
+          agentMcpConfig: this.agentMcpConfig,
+          agentCommunicationEnabled: Boolean(this.agentMcpConfig)
         }
       )
     } else {
@@ -1436,7 +1855,10 @@ class SessionInstance {
         settings,
         {
           debug: this.sessionSettings.debug === true,
-          forkedFromSessionId: sessionConfigForFork?.forkedFrom || null
+          forkedFromSessionId: sessionConfigForFork?.forkedFrom || null,
+          agentIdentity: this.agentIdentity,
+          agentMcpConfig: this.agentMcpConfig,
+          agentCommunicationEnabled: Boolean(this.agentMcpConfig)
         }
       )
     }
@@ -1574,6 +1996,7 @@ class SessionInstance {
       } catch (stopError) {
         logger.warn(`[SessionInstance] Failed to recycle provider after start failure: ${stopError.message}`)
       }
+      this.agentCommunicationService?.revokeSession(this.id)
 
       // Codex 的线程写锁冲突多半是本会话遗留的 provider 进程仍在写同一个 thread：清掉残留进程后重试一次
       if (isCurrentManager && options.allowRetry !== false && isThreadWriterConflictError(e)) {
@@ -1630,6 +2053,20 @@ class SessionInstance {
 
   resolveNotificationScope(notificationType, data = {}) {
     const type = notificationType || data?.type || ''
+    const agentId = this.getPayloadAgentId(data)
+    if (
+      agentId &&
+      agentId !== this.getMainAgentId() &&
+      (
+        type === 'mcp-server-starting' ||
+        type === 'mcp-server-ready' ||
+        type === 'mcp-server-error' ||
+        type === 'mcp-server-status'
+      )
+    ) {
+      return 'turn'
+    }
+
     if (
       type === 'runtime-exit' ||
       type === 'runtime-stopped' ||
@@ -1668,6 +2105,8 @@ class SessionInstance {
       event.eventType === 'env-info' ||
       event.eventType === 'state-update' ||
       event.eventType === 'control-response' ||
+      event.eventType === 'message-snapshot' ||
+      event.eventType === 'message-remove' ||
       event.eventType === 'silent-message' ||
       event.eventType === 'task-event' ||
       event.eventType === 'agent-update' ||
@@ -1695,6 +2134,7 @@ class SessionInstance {
       notificationType,
       scope: this.resolveNotificationScope(notificationType, data),
       data,
+      ccgui: data?.ccgui || null,
       timestamp: new Date()
     }
 
@@ -1731,13 +2171,25 @@ class SessionInstance {
       )
 
       if (pendingMessage) {
+        const startedAt = Number.isFinite(pendingMessage.data?.startedAt)
+          ? pendingMessage.data.startedAt
+          : (pendingMessage.timestamp?.getTime?.() ?? null)
+        const completedAt = Number.isFinite(data.completedAt) ? data.completedAt : Date.now()
+        const durationMs = Number.isFinite(data.durationMs)
+          ? data.durationMs
+          : Number.isFinite(pendingMessage.data?.durationMs)
+            ? pendingMessage.data.durationMs
+            : Number.isFinite(startedAt)
+              ? Math.max(0, completedAt - startedAt)
+              : null
+
         pendingMessage.notificationType = notificationType
         pendingMessage.scope = this.resolveNotificationScope(notificationType, data)
         pendingMessage.data = {
           ...pendingMessage.data,
           ...data,
-          completedAt: Date.now(),
-          durationMs: data.durationMs ?? pendingMessage.data?.durationMs ?? null
+          completedAt,
+          durationMs
         }
         pendingMessage.timestamp = new Date()
         historyManager.updateMessage(this.projectId, this.id, pendingMessage.id, {
@@ -1760,6 +2212,24 @@ class SessionInstance {
     }
 
     return this.appendSystemNotificationMessage(notificationType, data)
+  }
+
+  emitSystemNotification(notificationType, data = {}) {
+    const message = this.syncSystemNotificationMessage(notificationType, data)
+    // 前端用同一个 ID 应用后续 message-snapshot，避免同一通知被追加两次。
+    const payload = message
+      ? {
+          ...message.data,
+          type: notificationType,
+          messageId: message.id
+        }
+      : {
+          ...data,
+          type: notificationType
+        }
+
+    this.emit('system-notification', payload)
+    return message
   }
 
   finalizePendingLifecycleNotification(notificationType = 'runtime-stopped', data = {}) {
@@ -1966,8 +2436,7 @@ class SessionInstance {
       reason: metadata.reason || this.pendingLifecycleReason || 'auto-start',
       changeType: metadata.changeType || null
     }
-    this.syncSystemNotificationMessage(type, payload)
-    this.emit('system-notification', payload)
+    this.emitSystemNotification(type, payload)
     return operation
   }
 
@@ -1987,8 +2456,7 @@ class SessionInstance {
       subModel: descriptor.subModel,
       effort: descriptor.effort
     }
-    this.syncSystemNotificationMessage('session-runtime-ready', payload)
-    this.emit('system-notification', payload)
+    this.emitSystemNotification('session-runtime-ready', payload)
 
     return {
       operationId: operation?.id || null,
@@ -2015,8 +2483,7 @@ class SessionInstance {
       effort: descriptor.effort,
       ...extra
     }
-    this.syncSystemNotificationMessage('session-config-applied', payload)
-    this.emit('system-notification', payload)
+    this.emitSystemNotification('session-config-applied', payload)
   }
 
   resolveUnifiedResult(message) {
@@ -2055,7 +2522,54 @@ class SessionInstance {
     }
   }
 
+  finalizeActiveTurnCaches({
+    historyTurnId = this.currentHistoryTurnId,
+    providerTurnId = null
+  } = {}) {
+    this.flushPendingMessageDeltas()
+    this.currentStreamingAssistantId = null
+    this.currentAssistantMessageIndex = -1
+    this.currentContentBlockType = null
+    this.contentBlockIndexToId.clear()
+    this.activeResponseUserMessageId = null
+
+    try {
+      this.runtimeManager?.releaseTurnCaches?.({
+        turnIds: providerTurnId ? [providerTurnId] : []
+      })
+    } catch (error) {
+      logger.warn('[SessionInstance] Failed to finalize runtime turn caches', {
+        sessionId: this.id,
+        turnId: historyTurnId,
+        providerTurnId,
+        error: error.message
+      })
+    }
+
+    if (!historyTurnId) {
+      return
+    }
+
+    this.pruneReplayEventLog([historyTurnId])
+    void historyManager.finalizeTurn(this.projectId, this.id, historyTurnId)
+      .catch(error => {
+        logger.warn('[SessionInstance] Failed to finalize turn write cache', {
+          sessionId: this.id,
+          turnId: historyTurnId,
+          error: error.message
+        })
+      })
+
+    if (this.agentSourceTurnIds.get(this.getMainAgentId()) === historyTurnId) {
+      this.agentSourceTurnIds.delete(this.getMainAgentId())
+    }
+    if (this.currentHistoryTurnId === historyTurnId) {
+      this.currentHistoryTurnId = null
+    }
+  }
+
   finalizeRuntimeResult(message) {
+    const completedHistoryTurnId = this.currentHistoryTurnId || this.activeResponseUserMessageId
     const { latestUserMessage, latestAssistantMessage, enrichedResult } = this.resolveUnifiedResult(message)
 
     if (latestUserMessage) {
@@ -2083,6 +2597,10 @@ class SessionInstance {
     this.pendingControlRequestResult = null
 
     for (const item of this.messages) {
+      const itemAgentId = this.getPayloadAgentId(item)
+      if (itemAgentId && itemAgentId !== this.getMainAgentId()) {
+        continue
+      }
       if (item.isStreaming) {
         item.isStreaming = false
         if (!item.duration && item.startTime) {
@@ -2098,14 +2616,35 @@ class SessionInstance {
       }
     }
 
+    this.flushPendingMessageDeltas()
+    if (completedHistoryTurnId) {
+      const completedTurnMessages = this.collectTurnRanges([completedHistoryTurnId])
+        .get(completedHistoryTurnId) || []
+      for (const item of completedTurnMessages) {
+        this.emitMessageSnapshot(item, 'turn-completed')
+      }
+    }
+
     this.saveUnsavedMessages()
     this.isProcessing = false
     this.emit('state-update', { isProcessing: false })
     this.emit('result', enrichedResult)
+    this.finalizeActiveTurnCaches({
+      historyTurnId: completedHistoryTurnId,
+      providerTurnId: message?.turn?.id || null
+    })
   }
 
   handleRuntimeExit({ code, signal }) {
     logger.info(`[SessionInstance] Provider process exited for session ${this.id}, code: ${code}, signal: ${signal}`)
+    this.activeAgentIds.clear()
+    this.mcpStartupOperations.clear()
+    const exitedHistoryTurnId = this.currentHistoryTurnId
+    this.finalizeActiveMessages()
+    this.finalizeActiveTurnCaches({
+      historyTurnId: exitedHistoryTurnId,
+      providerTurnId: this.runtimeManager?.currentTurnId || null
+    })
 
     const isAbnormalExit = !this.isManualStop && code !== 0 && code !== null
 
@@ -2153,12 +2692,27 @@ class SessionInstance {
 
     manager.on('message-start', (message) => {
       const normalizedMessage = attachExistingCcgui(message)
-      this.messages.push(normalizedMessage)
+      const existingMessage = this.findMessageByIdentifier(normalizedMessage?.id)
+      if (existingMessage) {
+        Object.assign(existingMessage, normalizedMessage)
+      } else {
+        this.messages.push(normalizedMessage)
+      }
+      const agentId = this.getPayloadAgentId(normalizedMessage)
+      if (
+        normalizedMessage.role === 'assistant' &&
+        (!agentId || agentId === this.getMainAgentId())
+      ) {
+        this.currentStreamingAssistantId = normalizedMessage.id
+      }
+      if (agentId && agentId !== this.getMainAgentId()) {
+        this.activeAgentIds.add(agentId)
+      }
       this.emit('message-start', normalizedMessage)
     })
 
     manager.on('message-delta', ({ messageId, field, delta }) => {
-      const msg = this.messages.find(item => item.id === messageId)
+      const msg = this.findMessageByIdentifier(messageId)
       if (!msg) return
 
       if (field === 'thinking') {
@@ -2170,20 +2724,27 @@ class SessionInstance {
         msg.content = (msg.content || '') + delta
       }
 
-      this.emit('message-delta', { messageId, field, delta })
+      this.queueMessageDelta(messageId, field, delta)
     })
 
     manager.on('message-update', ({ messageId, updates }) => {
-      const msg = this.messages.find(item => item.id === messageId)
-      const normalizedUpdates = attachExistingCcgui({
+      this.flushPendingMessageDeltas(messageId)
+      const msg = this.findMessageByIdentifier(messageId)
+      const mergedToolInput = updates?.toolInput && typeof updates.toolInput === 'object'
+        ? {
+            ...(msg?.toolInput || {}),
+            ...updates.toolInput
+          }
+        : updates?.toolInput
+      const normalizedUpdates = omitUndefined(attachExistingCcgui({
         ...(updates || {}),
         id: messageId,
         rawMessages: updates?.rawMessages,
         rawMessage: updates?.rawMessage,
-        toolInput: updates?.toolInput,
+        toolInput: mergedToolInput,
         tool_use_id: pickFirstDefined(updates?.tool_use_id, updates?.toolUseId, msg?.request_id, msg?.id),
         ccgui: mergeCcguiSemantics(msg?.ccgui || null, updates?.ccgui || null)
-      })
+      }))
       if (msg) {
         Object.assign(msg, normalizedUpdates)
         if (normalizedUpdates.ccgui) {
@@ -2192,12 +2753,16 @@ class SessionInstance {
         if ((normalizedUpdates.isStreaming === false || normalizedUpdates.isExecuting === false) && !msg.duration && msg.startTime) {
           msg.duration = Date.now() - msg.startTime
         }
+        if (normalizedUpdates.isExecuting === false || normalizedUpdates.result !== undefined) {
+          this.emitMessageSnapshot(msg, 'tool-completed')
+        }
       }
       this.emit('message-update', { messageId, updates: normalizedUpdates })
     })
 
     manager.on('message-replace', ({ messageId, replacement }) => {
-      const msg = this.messages.find(item => item.id === messageId)
+      this.flushPendingMessageDeltas(messageId)
+      const msg = this.findMessageByIdentifier(messageId)
       const normalizedReplacement = attachExistingCcgui({
         ...(replacement || {}),
         id: messageId,
@@ -2214,33 +2779,85 @@ class SessionInstance {
         }
         historyManager.updateMessage(this.projectId, this.id, messageId, normalizedReplacement)
       }
-      this.emit('message-replace', { messageId, replacement: normalizedReplacement })
+      this.emit('message-update', { messageId, updates: normalizedReplacement })
     })
 
     manager.on('tool-result', (payload) => {
-      const normalizedPayload = attachExistingCcgui(payload)
-      this.emit('tool-result', normalizedPayload)
+      const toolUseId = payload?.toolUseId || payload?.tool_use_id || payload?.messageId
+      if (!toolUseId) {
+        return
+      }
+      this.updateToolMessageState(toolUseId, {
+        isExecuting: false,
+        isError: payload.isError === true,
+        result: payload.content || '(无输出)',
+        ...(payload.usage ? { usage: payload.usage } : {}),
+        rawMessages: payload.rawMessages,
+        rawMessage: payload.rawMessage,
+        ccgui: payload.ccgui
+      })
     })
 
     manager.on('message-result', (payload) => {
-      const normalizedPayload = attachExistingCcgui(payload)
-      // 更新对应 tool_use 消息的状态
-      const toolMsgIndex = this.messages.findIndex(m => m.id === payload.messageId)
-      if (toolMsgIndex >= 0) {
-        const msg = this.messages[toolMsgIndex]
-        Object.assign(msg, {
-          isExecuting: false,
-          isError: payload.isError || false,
-          result: payload.content || '(无输出)',
-          ...(payload.usage ? { usage: payload.usage } : {})
+      const messageId = payload?.messageId
+      if (!messageId) {
+        return
+      }
+
+      this.flushPendingMessageDeltas(messageId)
+      const questionMessage = this.messages.find(message =>
+        message?.role === 'question' &&
+        String(message.tool_use_id || message.toolUseId || '') === String(messageId)
+      )
+      if (questionMessage) {
+        const answers = payload.answers || {}
+        const questionUpdates = {
+          resultReceived: true,
+          receivedAnswers: answers,
+          answersConsistent: compareQuestionAnswers(questionMessage.userAnswers, answers),
+          ...(payload.ccgui ? { ccgui: payload.ccgui } : {})
+        }
+        Object.assign(questionMessage, questionUpdates)
+        this.emit('message-update', {
+          messageId: questionMessage.id,
+          updates: questionUpdates
+        })
+        this.emitMessageSnapshot(questionMessage, 'question-result')
+      }
+
+      const toolMessage = this.updateToolMessageState(messageId, {
+        isExecuting: false,
+        isError: payload.isError === true,
+        result: payload.content || '(无输出)',
+        ...(payload.usage ? { usage: payload.usage } : {}),
+        rawMessages: payload.rawMessages,
+        rawMessage: payload.rawMessage,
+        ccgui: payload.ccgui
+      })
+      if (!questionMessage && !toolMessage) {
+        this.emit('message-update', {
+          messageId,
+          updates: omitUndefined(attachExistingCcgui({
+            id: messageId,
+            isExecuting: false,
+            isError: payload.isError === true,
+            result: payload.content || '(无输出)',
+            ...(payload.usage ? { usage: payload.usage } : {}),
+            rawMessages: payload.rawMessages,
+            rawMessage: payload.rawMessage,
+            ccgui: payload.ccgui
+          }))
         })
       }
-      this.emit('message-result', normalizedPayload)
     })
 
     manager.on('message-complete', ({ messageId, updates }) => {
+      this.flushPendingMessageDeltas(messageId)
       const msgIndex = this.messages.findIndex(item => item.id === messageId)
       const msg = msgIndex >= 0 ? this.messages[msgIndex] : null
+      if (this.currentStreamingAssistantId === messageId) {
+        this.currentStreamingAssistantId = null
+      }
       if (msg) {
         Object.assign(msg, updates)
         if (!msg.duration && msg.startTime) {
@@ -2269,8 +2886,10 @@ class SessionInstance {
           }
           this.messages.splice(msgIndex, 1)
           logger.info(`[SessionInstance] Removed empty assistant message ${messageId}`)
+          this.emit('message-remove', { messageId })
           this.emit('message-complete', {
             messageId,
+            ccgui: msg.ccgui || null,
             updates: {
               ...updates,
               ...(msg.duration ? { duration: msg.duration } : {})
@@ -2279,8 +2898,18 @@ class SessionInstance {
           return
         }
       }
+      if (msg) {
+        this.emit('message-update', {
+          messageId,
+          updates: {
+            ...updates,
+            ...(msg.duration ? { duration: msg.duration } : {})
+          }
+        })
+      }
       this.emit('message-complete', {
         messageId,
+        ccgui: msg?.ccgui || null,
         updates: {
           ...updates,
           ...(msg?.duration ? { duration: msg.duration } : {})
@@ -2289,6 +2918,7 @@ class SessionInstance {
     })
 
     manager.on('message-stop', ({ messageId }) => {
+      this.flushPendingMessageDeltas(messageId)
       // tool_use 输入流结束，标记 isStreaming=false 但保留 isExecuting=true
       const msg = this.messages.find(item => item.id === messageId)
       if (msg) {
@@ -2360,12 +2990,14 @@ class SessionInstance {
         ...attachExistingCcgui(message),
         timestamp: message.timestamp || new Date().toISOString()
       }
+      this.applyActiveAgentFromSemantics(silentMessage)
       this.silentMessages.push(silentMessage)
       this.emit('silent-message', silentMessage)
     })
 
     manager.on('agent-update', (message) => {
       const normalizedAgentUpdate = attachExistingCcgui(message)
+      this.applyActiveAgentFromSemantics(normalizedAgentUpdate)
       this.emit('agent-update', normalizedAgentUpdate)
     })
 
@@ -2387,21 +3019,28 @@ class SessionInstance {
       }
 
       if (message?.type) {
-        this.syncSystemNotificationMessage(message.type, message)
+        this.emitSystemNotification(message.type, message)
+        return
       }
       this.emit('system-notification', message)
     })
 
     manager.on('task-event', (message) => {
       const normalizedTaskEvent = attachExistingCcgui(message)
+      this.applyActiveAgentFromSemantics(normalizedTaskEvent)
       this.taskEvents.push(normalizedTaskEvent)
       this.emit('task-event', normalizedTaskEvent)
     })
 
     manager.on('system-message', (message) => {
-      const normalizedEvent = normalizeLegacyManagerEvent(message, this.provider)
+      const operationId = this.resolveMcpStartupOperationId(message)
+      const normalizedEvent = normalizeLegacyManagerEvent(message, this.provider, operationId)
       if (normalizedEvent) {
-        this.emit(normalizedEvent.eventType, normalizedEvent.data)
+        if (normalizedEvent.eventType === 'system-notification' && normalizedEvent.data?.type) {
+          this.emitSystemNotification(normalizedEvent.data.type, normalizedEvent.data)
+        } else {
+          this.emit(normalizedEvent.eventType, normalizedEvent.data)
+        }
         return
       }
 
@@ -2453,12 +3092,14 @@ class SessionInstance {
         })
       }
 
-      const normalizedEvent = normalizeLegacyManagerEvent(message, this.provider)
+      const operationId = this.resolveMcpStartupOperationId(message)
+      const normalizedEvent = normalizeLegacyManagerEvent(message, this.provider, operationId)
       if (normalizedEvent) {
         if (normalizedEvent.eventType === 'system-notification' && normalizedEvent.data?.type) {
-          this.syncSystemNotificationMessage(normalizedEvent.data.type, normalizedEvent.data)
+          this.emitSystemNotification(normalizedEvent.data.type, normalizedEvent.data)
+        } else {
+          this.emit(normalizedEvent.eventType, normalizedEvent.data)
         }
-        this.emit(normalizedEvent.eventType, normalizedEvent.data)
         return
       }
 
@@ -2470,12 +3111,29 @@ class SessionInstance {
       })
     })
 
-    manager.on('exit', ({ code, signal }) => {
+    manager.on('exit', ({ code, signal, pid: providerPid }) => {
+      quitDiagnostics.recordProviderExit({
+        sessionId: this.id,
+        provider: this.provider,
+        pid: providerPid || null,
+        code,
+        signal
+      })
+      const ownsCurrentRegistry = this.runtimeManager === manager || this.runtimeManager === null
+      if (ownsCurrentRegistry) {
+        processRegistry.unregister(this.id, providerPid)
+        if (providerPid) {
+          this.registeredRuntimePids.delete(providerPid)
+        } else {
+          this.registeredRuntimePids.clear()
+        }
+      }
       // 已被替换的旧实例退出时不再改动当前会话状态
-      if (this.runtimeManager !== manager) {
+      if (!ownsCurrentRegistry) {
         logger.info(`[SessionInstance] Ignoring exit from stale runtime manager for session ${this.id}`, { code, signal })
         return
       }
+      this.agentCommunicationService?.revokeSession(this.id)
       this.handleRuntimeExit({ code, signal })
     })
   }
@@ -2542,16 +3200,29 @@ class SessionInstance {
       const msgContent = content.message.content
       if (Array.isArray(msgContent)) {
         const textPart = msgContent.find(c => c.type === 'text')
-        textContent = textPart?.text || ''
-        serializedText = textContent
+        serializedText = textPart?.text || ''
+        textContent = typeof outgoingCcgui?.internalMessage?.message === 'string'
+          ? outgoingCcgui.internalMessage.message
+          : serializedText
       } else {
-        textContent = typeof msgContent === 'string' ? msgContent : ''
-        serializedText = textContent
+        serializedText = typeof msgContent === 'string' ? msgContent : ''
+        textContent = typeof outgoingCcgui?.internalMessage?.message === 'string'
+          ? outgoingCcgui.internalMessage.message
+          : serializedText
       }
       structuredAttachments = Array.isArray(content.attachments) ? content.attachments : []
     } else {
       throw new Error('Invalid message format')
     }
+
+    if (outgoingCcgui && userMessage && typeof userMessage === 'object') {
+      userMessage.ccgui = outgoingCcgui
+    }
+    const targetAgentId = outgoingCcgui?.attribution?.agentId || null
+    const isTargetedSubagent = Boolean(
+      targetAgentId &&
+      targetAgentId !== this.getMainAgentId()
+    )
 
     if (structuredAttachments.length > 0) {
       logger.info('[SessionInstance] Prepared attachments', {
@@ -2599,24 +3270,41 @@ class SessionInstance {
       ...(outgoingCcgui ? { ccgui: outgoingCcgui } : {})
     }
     this.messages.push(displayMessage)
-    this.rawMessages.push(userMessage)
     this.activeResponseUserMessageId = displayMessage.id
+    if (isTargetedSubagent) {
+      this.activeAgentIds.add(targetAgentId)
+    }
 
     this.saveMessageToHistory(displayMessage)
 
     this.emit('message', displayMessage)
 
     // 更新状态
-    this.isProcessing = true
-    this.emit('state-update', { isProcessing: true })
+    if (!isTargetedSubagent) {
+      this.isProcessing = true
+      this.emit('state-update', { isProcessing: true })
+    } else {
+      this.emit('state-update', {
+        isProcessing: false,
+        activeAgentIds: this.getActiveAgentIds()
+      })
+    }
 
     // 发送到运行时 provider
     try {
       await this.runtimeManager.sendMessage(userMessage)
     } catch (error) {
       logger.error(`[SessionInstance] Failed to send message:`, error)
-      this.isProcessing = false
-      this.emit('state-update', { isProcessing: false })
+      if (isTargetedSubagent) {
+        this.activeAgentIds.delete(targetAgentId)
+        this.emit('state-update', {
+          isProcessing: this.isProcessing,
+          activeAgentIds: this.getActiveAgentIds()
+        })
+      } else {
+        this.isProcessing = false
+        this.emit('state-update', { isProcessing: false })
+      }
       throw error
     }
   }
@@ -2651,8 +3339,13 @@ class SessionInstance {
 
   getLatestUserMessage() {
     for (let i = this.messages.length - 1; i >= 0; i--) {
-      if (isTurnEntryRole(this.messages[i].role)) {
-        return this.messages[i]
+      const message = this.messages[i]
+      const agentId = this.getPayloadAgentId(message)
+      if (agentId && agentId !== this.getMainAgentId()) {
+        continue
+      }
+      if (isTurnEntryRole(message.role)) {
+        return message
       }
     }
     return null
@@ -2660,7 +3353,12 @@ class SessionInstance {
 
   getAssistantMessageById(messageId) {
     if (!messageId) return null
-    return this.messages.find(item => item.id === messageId) || null
+    const message = this.messages.find(item => item.id === messageId) || null
+    const agentId = this.getPayloadAgentId(message)
+    if (agentId && agentId !== this.getMainAgentId()) {
+      return null
+    }
+    return message
   }
 
   resolveCodexRollbackTurnCount(userMessageId) {
@@ -2986,7 +3684,7 @@ class SessionInstance {
       return null
     }
 
-    const normalizedUpdates = attachExistingCcgui({
+    const normalizedUpdates = omitUndefined(attachExistingCcgui({
       ...updates,
       id: message.id,
       tool_use_id: pickFirstDefined(
@@ -2997,7 +3695,7 @@ class SessionInstance {
         message.id
       ),
       ccgui: mergeCcguiSemantics(message.ccgui || null, updates.ccgui || null)
-    })
+    }))
 
     Object.assign(message, normalizedUpdates)
     if ((normalizedUpdates.isStreaming === false || normalizedUpdates.isExecuting === false) && !message.duration && message.startTime) {
@@ -3015,6 +3713,7 @@ class SessionInstance {
         ...(message.duration ? { duration: message.duration } : {})
       }
     })
+    this.emitMessageSnapshot(message, 'tool-updated')
 
     return message
   }
@@ -3203,7 +3902,15 @@ class SessionInstance {
       return
     }
 
-    this.runtimeManager.sendInterrupt()
+    return this.runtimeManager.sendInterrupt()
+  }
+
+  async closeSubagentAgent(agentId) {
+    if (!this.runtimeManager || typeof this.runtimeManager.closeSubagentAgent !== 'function') {
+      throw new Error('当前 Provider 不支持关闭子代理')
+    }
+
+    return this.runtimeManager.closeSubagentAgent(agentId)
   }
 
   /**
@@ -3906,18 +4613,105 @@ class SessionInstance {
     }
   }
 
+  queueMessageDelta(messageId, field, delta) {
+    if (!messageId || !field || !delta) {
+      return
+    }
+
+    const key = `${messageId}\0${field}`
+    const pending = this.pendingMessageDeltas.get(key)
+    if (pending) {
+      pending.delta += delta
+    } else {
+      this.pendingMessageDeltas.set(key, {
+        messageId,
+        field,
+        delta
+      })
+    }
+
+    if (this.pendingMessageDeltaTimer) {
+      return
+    }
+
+    this.pendingMessageDeltaTimer = setTimeout(() => {
+      this.pendingMessageDeltaTimer = null
+      this.flushPendingMessageDeltas()
+    }, 16)
+  }
+
+  flushPendingMessageDeltas(messageId = null) {
+    if (this.pendingMessageDeltas.size === 0) {
+      return
+    }
+
+    const targetMessageId = messageId ? String(messageId) : null
+    for (const [key, pending] of [...this.pendingMessageDeltas.entries()]) {
+      if (targetMessageId && pending.messageId !== targetMessageId) {
+        continue
+      }
+
+      this.pendingMessageDeltas.delete(key)
+      this.emit('message-delta', pending)
+    }
+
+    if (this.pendingMessageDeltas.size === 0 && this.pendingMessageDeltaTimer) {
+      clearTimeout(this.pendingMessageDeltaTimer)
+      this.pendingMessageDeltaTimer = null
+    }
+  }
+
+  findMessageByIdentifier(identifier) {
+    if (identifier === undefined || identifier === null || identifier === '') {
+      return null
+    }
+
+    const normalizedId = String(identifier)
+    return [...this.messages].reverse().find(message =>
+      message &&
+      (
+        String(message.id || '') === normalizedId ||
+        String(message.request_id || '') === normalizedId ||
+        String(message.tool_use_id || '') === normalizedId ||
+        String(message.toolUseId || '') === normalizedId
+      )
+    ) || null
+  }
+
+  emitMessageSnapshot(message, reason = null) {
+    if (!message?.id || !this.webContents || this.webContents.isDestroyed()) {
+      return
+    }
+
+    this.emit('message-snapshot', {
+      message,
+      reason
+    })
+  }
+
   /**
    * 向前端发送事件
    */
   emit(eventType, data) {
-    const normalizedData = this.applyHistoryContextToEventData(eventType, data)
+    let normalizedData = this.applyHistoryContextToEventData(eventType, data)
+    if (eventType === 'message-update' && normalizedData?.messageId) {
+      normalizedData = {
+        ...normalizedData,
+        canonical: true
+      }
+    }
     const event = {
       sessionId: this.id,
       eventType,
       data: normalizedData,
       timestamp: new Date().toISOString()
     }
-    this.eventLog.push(event)
+    if (!NON_REPLAY_EVENT_TYPES.has(eventType)) {
+      this.eventLog.push(event)
+      if (this.eventLog.length > MAX_REPLAY_EVENT_LOG_SIZE) {
+        this.eventLog.splice(0, this.eventLog.length - MAX_REPLAY_EVENT_LOG_SIZE)
+      }
+    }
     this.appendEventToTurnHistory(event)
 
     try {
@@ -4109,10 +4903,16 @@ class SessionInstance {
         }
       }
       this.currentStreamingAssistantId = null
+      this.activeAgentIds.clear()
+      this.mcpStartupOperations.clear()
 
       const t1 = Date.now()
       this.finalizeActiveMessages()
       logger.info(`[SessionInstance] stop finalizeActiveMessages (${Date.now() - t1}ms)`, { sessionId: this.id, messageCount: this.messages?.length })
+      this.finalizeActiveTurnCaches({
+        historyTurnId: this.currentHistoryTurnId,
+        providerTurnId: this.runtimeManager?.currentTurnId || null
+      })
 
       if (reason !== 'restart-for-config') {
         this.finalizePendingLifecycleNotification('runtime-stopped', {
@@ -4142,14 +4942,16 @@ class SessionInstance {
       this.persistRuntimeSessionSettingsPatch()
 
       const stoppedPid = this.runtimeManager.getPid?.()
-      if (stoppedPid) {
-        this.registeredRuntimePids.delete(stoppedPid)
-      }
-      processRegistry.unregister(this.id)
+      quitDiagnostics.recordShutdownAction('session-stop-requested', {
+        sessionId: this.id,
+        provider: this.provider,
+        pid: stoppedPid || null
+      })
       logger.info(`[SessionInstance] stop sending SIGTERM (pre-stop total ${Date.now() - t0}ms)`, { sessionId: this.id })
 
       this.runtimeManager.stop()
       this.runtimeManager = null
+      this.agentCommunicationService?.revokeSession(this.id)
 
       logger.info(`[SessionInstance] stop END (total ${Date.now() - t0}ms)`, { sessionId: this.id })
     } else {

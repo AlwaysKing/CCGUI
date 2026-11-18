@@ -76,6 +76,26 @@ class ClaudeAdapter extends ClaudeClient {
     this.backgroundTasks = new Map()
   }
 
+  finalizeTurnCaches() {
+    this.currentAssistantMessage = null
+    this.assistantSnapshots.clear()
+    this.contentBlockIndexToId.clear()
+    this.contentBlockState.clear()
+    this.contentBlockMessageIds.clear()
+    this.toolUseMessages.clear()
+    this.streamedAssistantMessageIds.clear()
+    this.lastVisibleMessageId = null
+    this.currentTurnNumber = 0
+    this.hasSeenToolUseInCurrentTurn = false
+    this.currentTurnUserMessageId = null
+    this.clearPendingCollaborativePreAgents()
+    this.clearPendingAgentToolUses()
+  }
+
+  releaseTurnCaches() {
+    this.finalizeTurnCaches()
+  }
+
   normalizeMcpServerEntry(entry = null) {
     if (!entry || typeof entry !== 'object') {
       return null
@@ -1472,6 +1492,7 @@ class ClaudeAdapter extends ClaudeClient {
       this.requestContextUsage()
       this.currentTurnUserMessageId = null
       this.emit('result', message)
+      this.finalizeTurnCaches()
       return
     }
 

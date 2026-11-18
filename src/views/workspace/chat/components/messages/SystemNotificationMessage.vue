@@ -17,6 +17,20 @@ const props = defineProps({
 const now = ref(Date.now())
 let timer = null
 
+function toTimestampMs(value) {
+  if (Number.isFinite(value)) {
+    return value
+  }
+  if (value instanceof Date) {
+    return value.getTime()
+  }
+  if (typeof value === 'string' && value) {
+    const parsed = Date.parse(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
 function finalizeNotificationContent(content) {
   if (!content || typeof content !== 'object') {
     return {
@@ -101,9 +115,20 @@ const notificationContent = computed(() => {
     submodel: '模型',
     effort: '思考力度'
   }
+  const startedAt = toTimestampMs(data?.startedAt)
+  const completedAt = toTimestampMs(data?.completedAt)
+  const canTickLive = (
+    notificationType === 'session-runtime-starting' ||
+    notificationType === 'session-runtime-restarting' ||
+    notificationType === 'mcp-server-starting'
+  )
   const elapsedMs = Number.isFinite(data?.durationMs)
     ? data.durationMs
-    : (data?.startedAt ? Math.max(0, now.value - data.startedAt) : null)
+    : startedAt !== null && completedAt !== null
+      ? Math.max(0, completedAt - startedAt)
+      : canTickLive && startedAt !== null
+        ? Math.max(0, now.value - startedAt)
+        : null
   const elapsedText = elapsedMs !== null
     ? `${(elapsedMs / 1000).toFixed(elapsedMs >= 10000 ? 0 : 1)} 秒`
     : ''

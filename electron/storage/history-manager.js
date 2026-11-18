@@ -8,8 +8,8 @@
 const fs = require('fs')
 const fsp = fs.promises
 const path = require('path')
-const os = require('os')
 const logger = require('../logger')
+const { getCcguiPath } = require('../runtime-paths')
 
 // ============================================================
 // 异步写入队列：streaming 事件缓存 + 批量合并写入
@@ -20,7 +20,8 @@ const STREAMING_EVENT_TYPES = new Set(['message-delta', 'message-update', 'messa
 const writeQueue = {
   queue: [],
   processing: false,
-  streamingBuffers: new Map() // key: `${projectId}\0${sessionId}\0${turnId}\0${messageId}`
+  streamingBuffers: new Map(), // key: `${projectId}\0${sessionId}\0${turnId}\0${messageId}`
+  idleWaiters: []
 }
 
 function enqueue(task) {
@@ -48,6 +49,86 @@ async function processQueue() {
     }
   }
   writeQueue.processing = false
+  if (writeQueue.queue.length === 0 && writeQueue.idleWaiters.length > 0) {
+    const waiters = writeQueue.idleWaiters.splice(0)
+    waiters.forEach(resolve => resolve())
+  }
+}
+
+function waitForWriteQueueIdle() {
+  if (!writeQueue.processing && writeQueue.queue.length === 0) {
+    return Promise.resolve()
+  }
+
+  return new Promise(resolve => {
+    writeQueue.idleWaiters.push(resolve)
+  })
+}
+
+function getTurnBufferPrefix(projectId, sessionId, turnId) {
+  return `${projectId}\0${sessionId}\0${turnId}\0`
+}
+
+function flushTurnStreamingBuffers(projectId, sessionId, turnId) {
+  const prefix = getTurnBufferPrefix(projectId, sessionId, turnId)
+  let flushedCount = 0
+
+  for (const [cacheKey, cachedEvents] of [...writeQueue.streamingBuffers.entries()]) {
+    if (!cacheKey.startsWith(prefix)) {
+      continue
+    }
+
+    writeQueue.streamingBuffers.delete(cacheKey)
+    if (cachedEvents.length === 0) {
+      continue
+    }
+
+    for (const event of cachedEvents) {
+      enqueue({
+        type: 'direct',
+        projectId,
+        sessionId,
+        turnId,
+        event
+      })
+    }
+    flushedCount += 1
+  }
+
+  return flushedCount
+}
+
+function releaseTurnWriteCache(projectId, sessionId, turnId) {
+  const prefix = getTurnBufferPrefix(projectId, sessionId, turnId)
+  let releasedBuffers = 0
+
+  for (const cacheKey of [...writeQueue.streamingBuffers.keys()]) {
+    if (!cacheKey.startsWith(prefix)) {
+      continue
+    }
+    writeQueue.streamingBuffers.delete(cacheKey)
+    releasedBuffers += 1
+  }
+
+  return releasedBuffers
+}
+
+async function finalizeTurn(projectId, sessionId, turnId) {
+  if (!projectId || !sessionId || !turnId) {
+    return {
+      flushedBuffers: 0,
+      releasedBuffers: 0
+    }
+  }
+
+  const flushedBuffers = flushTurnStreamingBuffers(projectId, sessionId, turnId)
+  await waitForWriteQueueIdle()
+  const releasedBuffers = releaseTurnWriteCache(projectId, sessionId, turnId)
+
+  return {
+    flushedBuffers,
+    releasedBuffers
+  }
 }
 
 /**
@@ -157,7 +238,7 @@ async function processFlushTask({ projectId, sessionId, turnId, cachedEvents, co
 }
 
 function getHistoryRoot() {
-  return path.join(os.homedir(), '.ccgui', 'projects')
+  return getCcguiPath('projects')
 }
 
 // 历史遗留：同一项目路径存在过两种 projectId 编码（是否把 . 替换成 -）。
@@ -287,6 +368,7 @@ function createDefaultMetadata() {
   return {
     messageCount: 0,
     lastMessageAt: null,
+    aiSummary: null,
     totalTokens: {
       input: 0,
       output: 0
@@ -361,6 +443,7 @@ function createTurnIndexEntry(message = {}) {
       ? message.serializedContent
       : normalizedContent,
     attachments: cloneSerializable(Array.isArray(message.attachments) ? message.attachments : []),
+    ...(message.ccgui ? { ccgui: cloneSerializable(message.ccgui) } : {}),
     createdAt: message.timestamp || new Date().toISOString(),
     updatedAt: message.timestamp || new Date().toISOString(),
     streamFile: `${turnId}.jsonl`,
@@ -610,6 +693,94 @@ function updateSessionEnvInfo(projectId, sessionId, envInfo) {
       error: error.message
     })
     return false
+  }
+}
+
+function normalizeSessionAiSummary(summary = null) {
+  if (!summary || typeof summary !== 'object') {
+    return null
+  }
+
+  const text = typeof summary.text === 'string' ? summary.text.trim() : ''
+  if (!text) {
+    return null
+  }
+
+  return {
+    text,
+    updatedAt: typeof summary.updatedAt === 'string' ? summary.updatedAt : null,
+    model: typeof summary.model === 'string' ? summary.model : null,
+    userMessageCount: Number.isFinite(Number(summary.userMessageCount))
+      ? Math.max(0, Number(summary.userMessageCount))
+      : 0
+  }
+}
+
+function loadSessionAiSummary(projectId, sessionId) {
+  return normalizeSessionAiSummary(loadMetadata(projectId, sessionId)?.aiSummary)
+}
+
+function updateSessionAiSummary(projectId, sessionId, summary = {}) {
+  try {
+    const metadata = loadMetadata(projectId, sessionId)
+    const normalizedSummary = normalizeSessionAiSummary({
+      ...summary,
+      updatedAt: summary.updatedAt || new Date().toISOString()
+    })
+    if (!normalizedSummary) {
+      return null
+    }
+
+    metadata.aiSummary = normalizedSummary
+    return saveMetadata(projectId, sessionId, metadata)
+      ? normalizedSummary
+      : null
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to update session AI summary', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return null
+  }
+}
+
+function listRecentUserMessages(projectId, sessionId, limit = 20) {
+  try {
+    const maxCount = Math.max(1, Number.parseInt(limit, 10) || 20)
+    const userMessages = []
+
+    for (const entry of loadIndexEntries(projectId, sessionId)) {
+      if (entry?.entryType !== 'turn') {
+        continue
+      }
+      if (entry?.messageRole === 'command') {
+        continue
+      }
+      if (entry?.ccgui?.internalMessage) {
+        continue
+      }
+      const attributedAgentId = entry?.ccgui?.attribution?.agentId
+      if (attributedAgentId && attributedAgentId !== 'master') {
+        continue
+      }
+
+      const text = typeof entry?.userText === 'string'
+        ? entry.userText.trim()
+        : ''
+      if (text) {
+        userMessages.push(text)
+      }
+    }
+
+    return userMessages.slice(-maxCount)
+  } catch (error) {
+    logger.error('[HistoryManager] Failed to list recent user messages', {
+      projectId,
+      sessionId,
+      error: error.message
+    })
+    return []
   }
 }
 
@@ -870,9 +1041,27 @@ function buildTurnEventUpdates(turn, event) {
     nextUpdates.registry = mergeSubagentRegistrySnapshot(turn?.registry || null, registryPatch)
   }
 
+  const orchestration = payload?.ccgui?.orchestration || null
+  if (orchestration?.eventType === 'end' || orchestration?.eventType === 'delete') {
+    const lifecycleStatus = registryPatch?.status || orchestration.status || null
+    if (orchestration.eventType === 'delete' || lifecycleStatus === 'deleted') {
+      nextUpdates.status = 'deleted'
+    } else if (lifecycleStatus === 'failed') {
+      nextUpdates.status = 'failed'
+    } else if (lifecycleStatus === 'interrupted') {
+      nextUpdates.status = 'interrupted'
+    } else {
+      nextUpdates.status = 'completed'
+    }
+  }
+
   if ((event?.eventType === 'message-start' || event?.eventType === 'message') && payload?.role === 'assistant') {
     nextUpdates.hasAssistantResponse = true
-    nextUpdates.status = payload?.isStreaming ? 'streaming' : 'completed'
+    if (payload?.isStreaming) {
+      nextUpdates.status = 'streaming'
+    }
+  } else if (event?.eventType === 'message-complete' && payload?.role === 'assistant') {
+    nextUpdates.hasAssistantResponse = true
   } else if (event?.eventType === 'result') {
     nextUpdates.status = 'completed'
   } else if (
@@ -1072,6 +1261,9 @@ module.exports = {
   loadMetadata,
   saveMetadata,
   updateSessionEnvInfo,
+  loadSessionAiSummary,
+  updateSessionAiSummary,
+  listRecentUserMessages,
   appendMessage,
   appendTurn,
   appendIndexMessage,
@@ -1086,6 +1278,9 @@ module.exports = {
   loadSubagentIndexEntries,
   loadSubagentTurnEvents,
   loadAllSubagentHistories,
+  finalizeTurn,
+  waitForWriteQueueIdle,
+  releaseTurnWriteCache,
   deleteHistory,
   saveIndexEntries,
   saveSubagentIndexEntries,

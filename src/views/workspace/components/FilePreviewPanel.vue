@@ -34,7 +34,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel', 'toggle-sidebar', 'toggle-diff', 'open-markdown-preview', 'navigation-applied'])
+const emit = defineEmits(['activate-tab', 'close-tab', 'close-others', 'update-content', 'save-file', 'close-panel', 'toggle-chat-panel', 'toggle-sidebar', 'toggle-diff', 'open-markdown-preview', 'navigation-applied', 'confirm-large-file'])
 
 const contextMenuRef = ref(null)
 const contextMenu = reactive({
@@ -234,6 +234,31 @@ function isImageTab(tab) {
   return !!tab.isImage
 }
 
+function isPdfTab(tab) {
+  if (!tab) return false
+  return !!tab.isPdf
+}
+
+function formatFileSize(bytes = 0) {
+  const size = Number(bytes) || 0
+  if (size >= 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(1)}MB`
+  }
+  return `${Math.max(1, Math.round(size / 1024))}KB`
+}
+
+function getLargeFileWarningText(tab) {
+  const warning = tab?.previewWarning || {}
+  const fileType = warning.fileType === 'pdf' ? 'PDF' : '图片'
+  const thresholdText = warning.threshold ? `，超过 ${formatFileSize(warning.threshold)} 提示阈值` : ''
+  return `${fileType}大小为 ${formatFileSize(warning.size)}${thresholdText}。继续加载可能占用较多内存。`
+}
+
+function handleConfirmLargeFile() {
+  if (!props.activeTab?.path) return
+  emit('confirm-large-file', props.activeTab.path)
+}
+
 function resolveImageUrl(tab) {
   if (!tab || !tab.content) return ''
   return tab.content
@@ -431,6 +456,11 @@ onBeforeUnmount(() => {
     <div v-if="activeTab" class="preview-body">
       <div v-if="activeTab.loading" class="preview-state">正在读取文件...</div>
       <div v-else-if="activeTab.error" class="preview-state error">{{ activeTab.error }}</div>
+      <div v-else-if="activeTab.previewWarning" class="large-file-warning">
+        <div class="large-file-warning-title">文件较大</div>
+        <div class="large-file-warning-text">{{ getLargeFileWarningText(activeTab) }}</div>
+        <button class="large-file-load-btn" @click="handleConfirmLargeFile">仍然加载</button>
+      </div>
       <template v-else-if="activeTab.markdownPreview">
         <div class="markdown-preview-container">
           <MarkdownRenderer :content="activeTab.content" />
@@ -468,6 +498,19 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </template>
+      <template v-else-if="isPdfTab(activeTab)">
+        <div class="pdf-preview-container">
+          <iframe
+            class="pdf-preview-frame"
+            :src="activeTab.content"
+            :title="titleText"
+            allow="fullscreen"
+          ></iframe>
+        </div>
+        <div class="pdf-toolbar">
+          <div class="statusbar-path" :title="titleText">{{ titleText }}</div>
+        </div>
+      </template>
       <CodeEditor
         v-else
         :model-value="activeTab.content"
@@ -481,7 +524,7 @@ onBeforeUnmount(() => {
         @navigation-applied="emit('navigation-applied', activeTab.path, $event)"
       />
 
-      <div v-if="!activeTab.loading && !activeTab.error && !activeTab.markdownPreview && !isImageTab(activeTab)" class="preview-statusbar">
+      <div v-if="!activeTab.loading && !activeTab.error && !activeTab.previewWarning && !activeTab.markdownPreview && !isImageTab(activeTab) && !isPdfTab(activeTab)" class="preview-statusbar">
         <div class="statusbar-path" :title="titleText">{{ titleText }}</div>
         <div class="statusbar-actions">
           <span v-if="activeTab.diffMode && activeTab.diffBaseError" class="statusbar-note error">{{ activeTab.diffBaseError }}</span>
@@ -718,6 +761,48 @@ onBeforeUnmount(() => {
   color: #FCA5A5;
 }
 
+.large-file-warning {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+  background: rgba(17, 19, 23, 0.28);
+}
+
+.large-file-warning-title {
+  color: #F4F4F5;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.large-file-warning-text {
+  max-width: 420px;
+  color: #A1A1AA;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.large-file-load-btn {
+  height: 30px;
+  padding: 0 16px;
+  border: 1px solid rgba(249, 115, 22, 0.45);
+  border-radius: 6px;
+  background: rgba(249, 115, 22, 0.14);
+  color: #FDBA74;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.large-file-load-btn:hover {
+  border-color: rgba(249, 115, 22, 0.7);
+  background: rgba(249, 115, 22, 0.22);
+  color: #FFEDD5;
+}
+
 .preview-statusbar {
   height: 28px;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
@@ -865,6 +950,19 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 
+.pdf-preview-container {
+  flex: 1;
+  min-height: 0;
+  background: #525659;
+}
+
+.pdf-preview-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
 .preview-image {
   display: block;
   max-width: none;
@@ -872,7 +970,8 @@ onBeforeUnmount(() => {
   transform-origin: center center;
 }
 
-.image-toolbar {
+.image-toolbar,
+.pdf-toolbar {
   height: 28px;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
   background: rgba(17, 19, 23, 0.28);

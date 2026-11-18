@@ -5,7 +5,7 @@
 
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
+const { getLogDir } = require('./runtime-paths')
 
 /**
  * 日志级别
@@ -21,7 +21,7 @@ const LogLevel = {
  * 日志配置
  */
 const config = {
-  baseDir: '/tmp/ccgui',
+  baseDir: getLogDir(),
   appLogFile: 'app.log',
   streamLogDir: 'stream',
   maxFileSize: 10 * 1024 * 1024, // 10MB
@@ -84,6 +84,33 @@ function formatLogEntry(level, message, data = null) {
 }
 
 /**
+ * 日志文件超过 maxFileSize 时滚动归档为 .1 ~ .N-1
+ */
+function rotateLogIfNeeded(logPath) {
+  try {
+    const stats = fs.statSync(logPath)
+    if (stats.size < config.maxFileSize) {
+      return
+    }
+
+    for (let i = config.maxFiles - 1; i > 0; i -= 1) {
+      const current = `${logPath}.${i}`
+      if (!fs.existsSync(current)) {
+        continue
+      }
+      if (i === config.maxFiles - 1) {
+        fs.unlinkSync(current)
+      } else {
+        fs.renameSync(current, `${logPath}.${i + 1}`)
+      }
+    }
+    fs.renameSync(logPath, `${logPath}.1`)
+  } catch (_) {
+    // 日志文件不存在时无需滚动
+  }
+}
+
+/**
  * 写入应用程序日志
  */
 function writeAppLog(level, message, data = null) {
@@ -94,6 +121,7 @@ function writeAppLog(level, message, data = null) {
     // 确保目录存在
     ensureDir(path.dirname(logPath))
 
+    rotateLogIfNeeded(logPath)
     fs.appendFileSync(logPath, entry + '\n')
 
     return true

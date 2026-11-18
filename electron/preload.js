@@ -52,8 +52,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Get session state
   getSessionState: (options) => ipcRenderer.invoke('get-session-state', options),
+  listSessionHistoryTurns: (options) => ipcRenderer.invoke('list-session-history-turns', options),
   loadSessionHistoryTurn: (options) => ipcRenderer.invoke('load-session-history-turn', options),
   loadSubagentHistoryTurn: (options) => ipcRenderer.invoke('load-subagent-history-turn', options),
+  unloadSessionHistoryTurns: (options) => ipcRenderer.invoke('unload-session-history-turns', options),
   getSessionAvailable: (options) => ipcRenderer.invoke('get-session-available', options),
   listSessionSubmodels: (options) => ipcRenderer.invoke('list-session-submodels', options),
   setSessionModel: (options) => ipcRenderer.invoke('set-session-model', options),
@@ -85,6 +87,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Send interrupt request
   sendInterrupt: (options) => ipcRenderer.invoke('send-interrupt', options),
 
+  closeSubagentAgent: (options) => ipcRenderer.invoke('close-subagent-agent', options),
+
   // Send control request (主动请求，如切换权限模式)
   sendControlRequest: (options) => ipcRenderer.invoke('send-control-request', options),
 
@@ -113,6 +117,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('session-event', listener)
     return () => ipcRenderer.removeListener('session-event', listener)
   },
+
+  onSessionsChanged: (callback) => {
+    const listener = (event, data) => callback(data)
+    ipcRenderer.on('sessions-changed', listener)
+    return () => ipcRenderer.removeListener('sessions-changed', listener)
+  },
+
+  onSessionPreviewUpdated: (callback) => {
+    const listener = (event, data) => callback(data)
+    ipcRenderer.on('session-preview-updated', listener)
+    return () => ipcRenderer.removeListener('session-preview-updated', listener)
+  },
+
+  onInboxChanged: (callback) => {
+    const listener = (event, data) => callback(data)
+    ipcRenderer.on('inbox-changed', listener)
+    return () => ipcRenderer.removeListener('inbox-changed', listener)
+  },
+
+  getInboxSummary: (options) => ipcRenderer.invoke('get-inbox-summary', options),
+  getSessionInbox: (options) => ipcRenderer.invoke('get-session-inbox', options),
+  ackSessionInbox: (options) => ipcRenderer.invoke('ack-session-inbox', options),
+  dissolveTeam: (options) => ipcRenderer.invoke('dissolve-team', options),
+  destroyTeam: (options) => ipcRenderer.invoke('destroy-team', options),
 
   onSystemMessage: (callback) => {
     const listener = (event, message) => callback(message)
@@ -167,6 +195,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSessions: (options) => ipcRenderer.invoke('get-sessions', options),
   createSession: (options) => ipcRenderer.invoke('create-session', options),
   deleteSession: (options) => ipcRenderer.invoke('delete-session', options),
+  deleteSessions: (options) => ipcRenderer.invoke('delete-sessions', options),
   softDeleteSession: (options) => ipcRenderer.invoke('soft-delete-session', options),
   restoreSession: (options) => ipcRenderer.invoke('restore-session', options),
   openSession: (options) => ipcRenderer.invoke('open-session', options),
@@ -216,6 +245,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readProjectFile: (options) => ipcRenderer.invoke('read-project-file', options),
   readImageFile: (options) => ipcRenderer.invoke('read-image-file', options),
   readAttachmentImage: (options) => ipcRenderer.invoke('read-attachment-image', options),
+  readPdfFile: (options) => ipcRenderer.invoke('read-pdf-file', options),
+  readAttachmentPdf: (options) => ipcRenderer.invoke('read-attachment-pdf', options),
   readAttachmentFile: (options) => ipcRenderer.invoke('read-attachment-file', options),
   writeProjectFile: (options) => ipcRenderer.invoke('write-project-file', options),
   createProjectEntry: (options) => ipcRenderer.invoke('create-project-entry', options),

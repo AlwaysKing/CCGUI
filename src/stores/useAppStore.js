@@ -24,6 +24,9 @@ const STORAGE_KEYS = {
 }
 
 let hasBoundSessionCompletionListener = false
+let hasBoundSessionsChangedListener = false
+let hasBoundSessionPreviewListener = false
+let hasBoundInboxChangedListener = false
 let hasBoundSessionStatusListener = false
 let hasBoundFloatingMonitorModeListener = false
 
@@ -72,6 +75,9 @@ export const useAppStore = defineStore('app', () => {
   const currentProject = ref(null)
   const currentSession = ref(null) // 会话元信息（从文件系统扫描）
   const sessionStatuses = ref({}) // session 状态对象：{ ready, processing, streaming, unseenCompleted }
+  const pendingSessionDeletionIds = ref(new Set())
+  const inboxUnreadCounts = ref({})
+  const currentInboxMessages = ref([])
   const hasRunningTerminals = ref(false) // 终端运行状态（由 Workspace 同步）
   const sidebarCollapsed = ref(loadFromStorage(STORAGE_KEYS.SIDEBAR_STATE, {
     project: false,
@@ -89,6 +95,9 @@ export const useAppStore = defineStore('app', () => {
   watch(() => currentSession.value?.id, (sessionId) => {
     if (sessionId) {
       clearSessionUnseenCompleted(sessionId)
+      fetchCurrentInboxMessages(sessionId)
+    } else {
+      currentInboxMessages.value = []
     }
   })
 
@@ -98,6 +107,7 @@ export const useAppStore = defineStore('app', () => {
 
     // 基础数据：从文件系统扫描的session列表，根据回收站模式过滤
     const baseSessions = sessions.value.filter(s => {
+      if (pendingSessionDeletionIds.value.has(s.id)) return false
       if (s.projectId !== currentProject.value.id) return false
       return showRecycleBin.value ? s.deleted === true : s.deleted !== true
     })
@@ -110,8 +120,8 @@ export const useAppStore = defineStore('app', () => {
         return {
           ...session,
           messageCount: runtimeStatus.messageCount ?? session.messageCount,
-          updatedAt: runtimeStatus.updatedAt ?? session.updatedAt,
-          status: runtimeStatus.processing || runtimeStatus.streaming ? 'processing' : 'ready'
+          updatedAt: runtimeStatus.updatedAt || session.updatedAt,
+          status: isSessionResponding(runtimeStatus) ? 'processing' : 'ready'
         }
       }
       // 否则使用文件扫描的静态数据
@@ -124,7 +134,7 @@ export const useAppStore = defineStore('app', () => {
     if (!currentProject.value) return false
     return currentProjectSessions.value.some(session => {
       const status = sessionStatuses.value[session.id]
-      return status?.processing || status?.streaming
+      return isSessionResponding(status)
     })
   })
 
@@ -189,12 +199,135 @@ export const useAppStore = defineStore('app', () => {
       ready: false,
       processing: false,
       streaming: false,
+      // 当前仍在运行的子代理。session 是否正在回话必须同时聚合主代理和子代理。
+      activeAgentIds: [],
+      pendingCompletion: false,
       unseenCompleted: false,
       pendingPermission: false,
       autoApprove: false,
       messageCount: 0,
+      updatedAt: null
+    }
+  }
+
+  function isSessionResponding(status = null) {
+    return Boolean(
+      status?.ready &&
+      (
+        status.processing ||
+        status.streaming ||
+        (Array.isArray(status.activeAgentIds) && status.activeAgentIds.length > 0)
+      )
+    )
+  }
+
+  function getStatusAgentId(sessionId, data = {}) {
+    const ccgui = data?.ccgui || {}
+    const payloadAgentId = ccgui.attribution?.agentId ||
+      ccgui.attribution?.actorId ||
+      ccgui.registry?.agentId ||
+      ccgui.orchestration?.agentId ||
+      data.agentId ||
+      data.agent_id ||
+      data.teammate_id ||
+      data.teammateId ||
+      null
+    if (payloadAgentId) {
+      return payloadAgentId
+    }
+    if (ccgui.subagentId) {
+      return ccgui.subagentId === 'master' ? null : ccgui.subagentId
+    }
+
+    const messageId = data.messageId || data.id
+    if (messageId) {
+      const session = useSessionStore().sessions?.get?.(sessionId)
+      const message = session?.queueManager?.findEntryGlobal(messageId)
+      const messageAgentId = message?.ccgui?.attribution?.agentId ||
+        message?.ccgui?.registry?.agentId ||
+        message?.ccgui?.orchestration?.agentId ||
+        null
+      if (messageAgentId) {
+        return messageAgentId
+      }
+    }
+
+    const rawMessage = data.rawMessage || data.rawMessages?.[0] || null
+    if (
+      ccgui.isSubagent ||
+      ccgui.subagentId ||
+      rawMessage?.parent_tool_use_id ||
+      rawMessage?.teammate_id ||
+      rawMessage?.agent_thread_id
+    ) {
+      return '__subagent__'
+    }
+
+    return null
+  }
+
+  function isMainStatusAgent(sessionId, data = {}) {
+    const agentId = getStatusAgentId(sessionId, data)
+    return !agentId || agentId === 'master'
+  }
+
+  function updateActiveAgentStatus(sessionId, data = {}) {
+    const registry = data?.ccgui?.registry || null
+    const orchestration = data?.ccgui?.orchestration || null
+    const agentId = registry?.agentId || orchestration?.agentId || getStatusAgentId(sessionId, data)
+    if (!agentId || agentId === '__subagent__' || agentId === 'master') {
+      return
+    }
+    const agentType = registry?.agentType || orchestration?.agentType
+    if (agentType === 'team') {
+      return
+    }
+
+    const status = registry?.status || orchestration?.status || null
+    const eventType = orchestration?.eventType || null
+    const isInactive = status === 'ended' ||
+      status === 'failed' ||
+      status === 'interrupted' ||
+      status === 'deleted' ||
+      eventType === 'end' ||
+      eventType === 'delete'
+    const isActive = !isInactive && (
+      status === 'starting' ||
+      status === 'running' ||
+      eventType === 'start'
+    )
+    if (!isActive && !isInactive) {
+      return
+    }
+
+    setActiveAgentStatus(sessionId, agentId, isActive)
+  }
+
+  function setActiveAgentStatus(sessionId, agentId, isActive) {
+    if (!agentId || agentId === '__subagent__' || agentId === 'master') {
+      return
+    }
+
+    const currentStatus = ensureSessionStatus(sessionId)
+    const activeAgentIds = new Set(currentStatus?.activeAgentIds || [])
+    if (isActive) {
+      activeAgentIds.add(agentId)
+    } else {
+      activeAgentIds.delete(agentId)
+    }
+    const nextStatus = {
+      ...currentStatus,
+      activeAgentIds: Array.from(activeAgentIds),
       updatedAt: new Date().toISOString()
     }
+    if (isActive) {
+      nextStatus.pendingCompletion = false
+      nextStatus.unseenCompleted = false
+    } else if (!isSessionResponding(nextStatus) && nextStatus.pendingCompletion) {
+      nextStatus.pendingCompletion = false
+      nextStatus.unseenCompleted = currentSession.value?.id !== sessionId
+    }
+    patchSessionStatus(sessionId, nextStatus)
   }
 
   function patchSessionStatus(sessionId, updates = {}) {
@@ -209,6 +342,38 @@ export const useAppStore = defineStore('app', () => {
         ...currentStatus,
         ...updates
       }
+    }
+  }
+
+  function patchSessionBindingLinked(sessionId) {
+    if (!sessionId || !Array.isArray(sessions.value)) {
+      return
+    }
+
+    let changed = false
+    const nextSessions = sessions.value.map(session => {
+      if (session?.id !== sessionId) {
+        return session
+      }
+      if (
+        session.bindingState === 'linked' &&
+        !session.bindingLabel &&
+        !session.bindingMissing
+      ) {
+        return session
+      }
+
+      changed = true
+      return {
+        ...session,
+        bindingState: 'linked',
+        bindingLabel: '',
+        bindingMissing: false
+      }
+    })
+
+    if (changed) {
+      sessions.value = nextSessions
     }
   }
 
@@ -242,11 +407,23 @@ export const useAppStore = defineStore('app', () => {
       case 'state-update':
         patchSessionStatus(sessionId, {
           processing: Boolean(data?.isProcessing),
+          ...(Array.isArray(data?.activeAgentIds) ? { activeAgentIds: data.activeAgentIds } : {}),
+          ...(
+            data?.isProcessing || (Array.isArray(data?.activeAgentIds) && data.activeAgentIds.length > 0)
+              ? { pendingCompletion: false }
+              : {}
+          ),
           updatedAt: new Date().toISOString()
         })
         break
 
       case 'message':
+        {
+          const agentId = getStatusAgentId(sessionId, data)
+          if (agentId && agentId !== 'master') {
+            setActiveAgentStatus(sessionId, agentId, true)
+          }
+        }
         bumpSessionActivity(sessionId, {
           incrementMessageCount: true,
           updatedAt: data?.timestamp || new Date().toISOString()
@@ -254,22 +431,52 @@ export const useAppStore = defineStore('app', () => {
         break
 
       case 'message-start':
+        if (!isMainStatusAgent(sessionId, data)) {
+          updateActiveAgentStatus(sessionId, data)
+          bumpSessionActivity(sessionId, {
+            incrementMessageCount: true,
+            updatedAt: data?.timestamp || new Date().toISOString()
+          })
+          break
+        }
         bumpSessionActivity(sessionId, {
           incrementMessageCount: true,
           updatedAt: data?.timestamp || new Date().toISOString(),
           updates: {
             processing: true,
-            streaming: true
+            streaming: true,
+            pendingCompletion: false
           }
         })
         break
 
       case 'message-complete':
+        if (!isMainStatusAgent(sessionId, data)) {
+          // 单条消息完成不代表子代理 turn 结束；只有生命周期事件可以结束代理。
+          updateActiveAgentStatus(sessionId, data)
+          bumpSessionActivity(sessionId, {
+            updatedAt: data?.timestamp || new Date().toISOString()
+          })
+          break
+        }
+        patchSessionStatus(sessionId, {
+          streaming: false,
+          updatedAt: new Date().toISOString()
+        })
+        break
+
       case 'result':
+        patchSessionStatus(sessionId, {
+          streaming: false,
+          processing: false,
+          updatedAt: new Date().toISOString()
+        })
+        break
+
       case 'interrupt':
         patchSessionStatus(sessionId, {
           streaming: false,
-          processing: eventType === 'interrupt' ? false : ensureSessionStatus(sessionId)?.processing || false,
+          processing: false,
           updatedAt: new Date().toISOString()
         })
         break
@@ -286,20 +493,41 @@ export const useAppStore = defineStore('app', () => {
           patchSessionStatus(sessionId, {
             ready: false,
             streaming: false,
+            activeAgentIds: [],
             updatedAt: new Date().toISOString()
           })
           break
         }
 
         if (data?.type === 'session-runtime-ready') {
+          patchSessionBindingLinked(sessionId)
           patchSessionStatus(sessionId, {
             ready: true,
             streaming: false,
+            activeAgentIds: [],
             updatedAt: new Date().toISOString()
           })
           break
         }
 
+        if (data?.type === 'runtime-stopped' || data?.type === 'runtime-exit') {
+          patchSessionStatus(sessionId, {
+            ready: false,
+            processing: false,
+            streaming: false,
+            activeAgentIds: [],
+            pendingPermission: false,
+            updatedAt: new Date().toISOString()
+          })
+          break
+        }
+
+        break
+
+      case 'silent-message':
+      case 'agent-update':
+      case 'task-event':
+        updateActiveAgentStatus(sessionId, data)
         break
 
       case 'control-request': {
@@ -367,6 +595,7 @@ export const useAppStore = defineStore('app', () => {
           ready: false,
           processing: false,
           streaming: false,
+          activeAgentIds: [],
           pendingPermission: false,
           updatedAt: new Date().toISOString()
         })
@@ -472,6 +701,7 @@ export const useAppStore = defineStore('app', () => {
       sessions.value = result
       // Also fetch running sessions
       await fetchRunningSessions()
+      await fetchInboxSummary(projectId)
     } catch (e) {
       error.value = e.message
       logger.error('Failed to fetch sessions', { error: e.message })
@@ -490,11 +720,13 @@ export const useAppStore = defineStore('app', () => {
         const previousStatus = previousStatuses[sessionId]
         nextStatuses[sessionId] = {
           ...status,
+          pendingCompletion: Boolean(previousStatus?.pendingCompletion),
           unseenCompleted: Boolean(
             previousStatus?.unseenCompleted &&
             status?.ready &&
             !status?.processing &&
-            !status?.streaming
+            !status?.streaming &&
+            (!Array.isArray(status?.activeAgentIds) || status.activeAgentIds.length === 0)
           )
         }
       })
@@ -505,13 +737,96 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  function markSessionCompletedUnseen(sessionId) {
-    if (!sessionId) {
+  async function fetchInboxSummary(projectId = currentProject.value?.id) {
+    if (!projectId || typeof window === 'undefined') return
+    try {
+      inboxUnreadCounts.value = await window.electronAPI.getInboxSummary({ projectId })
+    } catch (e) {
+      logger.error('Failed to fetch inbox summary', { error: e.message })
+    }
+  }
+
+  async function fetchCurrentInboxMessages(sessionId = currentSession.value?.id) {
+    if (!currentProject.value?.id || !sessionId || typeof window === 'undefined') {
+      currentInboxMessages.value = []
       return
     }
+    try {
+      currentInboxMessages.value = await window.electronAPI.getSessionInbox({
+        projectId: currentProject.value.id,
+        sessionId,
+        unreadOnly: false
+      })
+    } catch (e) {
+      logger.error('Failed to fetch current inbox messages', { error: e.message })
+      currentInboxMessages.value = []
+    }
+  }
 
-    if (currentSession.value?.id === sessionId) {
-      clearSessionUnseenCompleted(sessionId)
+  async function ackCurrentInboxMessages(messageIds = []) {
+    if (!currentProject.value?.id || !currentSession.value?.id || !Array.isArray(messageIds) || messageIds.length === 0) {
+      return
+    }
+    try {
+      await window.electronAPI.ackSessionInbox({
+        projectId: currentProject.value.id,
+        sessionId: currentSession.value.id,
+        messageIds
+      })
+      await fetchInboxSummary(currentProject.value.id)
+      await fetchCurrentInboxMessages(currentSession.value.id)
+    } catch (e) {
+      logger.error('Failed to acknowledge inbox messages', { error: e.message })
+    }
+  }
+
+  async function dissolveTeam(projectId, teamId) {
+    if (!projectId || !teamId) return
+    const result = await window.electronAPI.dissolveTeam({ projectId, teamId })
+    if (!result?.success) {
+      throw new Error(result?.error || '解散团队失败')
+    }
+    await fetchSessions(projectId)
+    await fetchInboxSummary(projectId)
+  }
+
+  async function destroyTeam(projectId, teamId, options = {}) {
+    if (!projectId || !teamId) return
+    const optimistic = options?.optimistic === true
+    const teamSessionIds = optimistic
+      ? sessions.value
+        .filter(session => session.projectId === projectId && session.teamId === teamId)
+        .map(session => session.id)
+      : []
+
+    if (teamSessionIds.length > 0) {
+      updatePendingSessionDeletions(teamSessionIds, true)
+      if (teamSessionIds.includes(currentSession.value?.id)) {
+        currentSession.value = null
+      }
+    }
+
+    try {
+      const result = await window.electronAPI.destroyTeam({ projectId, teamId })
+      if (!result?.success) {
+        throw new Error(result?.error || '销毁团队失败')
+      }
+      await fetchSessions(projectId)
+      await fetchInboxSummary(projectId)
+      if (teamSessionIds.length > 0) {
+        updatePendingSessionDeletions(teamSessionIds, false)
+      }
+      return result
+    } catch (error) {
+      if (teamSessionIds.length > 0) {
+        updatePendingSessionDeletions(teamSessionIds, false)
+      }
+      throw error
+    }
+  }
+
+  function markSessionCompletedUnseen(sessionId) {
+    if (!sessionId) {
       return
     }
 
@@ -520,24 +835,36 @@ export const useAppStore = defineStore('app', () => {
       return
     }
 
-    sessionStatuses.value = {
-      ...sessionStatuses.value,
-      [sessionId]: {
-        ...currentStatus,
-        unseenCompleted: true
-      }
-    }
-  }
-
-  function clearSessionUnseenCompleted(sessionId) {
-    if (!sessionId || !sessionStatuses.value[sessionId]?.unseenCompleted) {
+    if (isSessionResponding(currentStatus)) {
+      patchSessionStatus(sessionId, {
+        pendingCompletion: true,
+        unseenCompleted: false,
+        updatedAt: new Date().toISOString()
+      })
       return
     }
 
     sessionStatuses.value = {
       ...sessionStatuses.value,
       [sessionId]: {
-        ...sessionStatuses.value[sessionId],
+        ...currentStatus,
+        pendingCompletion: false,
+        unseenCompleted: currentSession.value?.id !== sessionId
+      }
+    }
+  }
+
+  function clearSessionUnseenCompleted(sessionId) {
+    const currentStatus = sessionStatuses.value[sessionId]
+    if (!sessionId || (!currentStatus?.unseenCompleted && !currentStatus?.pendingCompletion)) {
+      return
+    }
+
+    sessionStatuses.value = {
+      ...sessionStatuses.value,
+      [sessionId]: {
+        ...currentStatus,
+        pendingCompletion: false,
         unseenCompleted: false
       }
     }
@@ -575,6 +902,87 @@ export const useAppStore = defineStore('app', () => {
 
   bindSessionStatusListener()
 
+  function bindSessionsChangedListener() {
+    if (hasBoundSessionsChangedListener || typeof window === 'undefined') {
+      return
+    }
+
+    window.electronAPI.onSessionsChanged((payload) => {
+      if (!currentProject.value || payload?.projectId !== currentProject.value.id) {
+        return
+      }
+      fetchSessions(currentProject.value.id).catch(() => {})
+    })
+
+    hasBoundSessionsChangedListener = true
+  }
+
+  bindSessionsChangedListener()
+
+  function bindSessionPreviewListener() {
+    if (hasBoundSessionPreviewListener || typeof window === 'undefined') {
+      return
+    }
+
+    window.electronAPI.onSessionPreviewUpdated?.((payload) => {
+      const projectId = payload?.projectId
+      const sessionId = payload?.sessionId
+      const preview = typeof payload?.preview === 'string' ? payload.preview.trim() : ''
+      if (!projectId || !sessionId || !preview) {
+        return
+      }
+
+      let changed = false
+      const nextSessions = sessions.value.map(session => {
+        if (session?.id !== sessionId || session?.projectId !== projectId) {
+          return session
+        }
+        if (session.preview === preview) {
+          return session
+        }
+        changed = true
+        return {
+          ...session,
+          preview
+        }
+      })
+
+      if (changed) {
+        sessions.value = nextSessions
+      }
+      if (currentSession.value?.id === sessionId && currentSession.value?.projectId === projectId) {
+        currentSession.value = {
+          ...currentSession.value,
+          preview
+        }
+      }
+    })
+
+    hasBoundSessionPreviewListener = true
+  }
+
+  bindSessionPreviewListener()
+
+  function bindInboxChangedListener() {
+    if (hasBoundInboxChangedListener || typeof window === 'undefined') {
+      return
+    }
+
+    window.electronAPI.onInboxChanged((payload) => {
+      if (!currentProject.value || payload?.projectId !== currentProject.value.id) {
+        return
+      }
+      fetchInboxSummary(currentProject.value.id)
+      if (payload?.sessionId && payload.sessionId === currentSession.value?.id) {
+        fetchCurrentInboxMessages(currentSession.value.id)
+      }
+    })
+
+    hasBoundInboxChangedListener = true
+  }
+
+  bindInboxChangedListener()
+
   async function createSession(projectId, name, options = {}) {
     try {
       isLoading.value = true
@@ -591,41 +999,136 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function deleteSession(sessionId) {
+  function updatePendingSessionDeletions(sessionIds = [], pending = true) {
+    const next = new Set(pendingSessionDeletionIds.value)
+    for (const sessionId of sessionIds) {
+      if (pending) {
+        next.add(sessionId)
+      } else {
+        next.delete(sessionId)
+      }
+    }
+    pendingSessionDeletionIds.value = next
+  }
+
+  async function deleteSessions(sessionIds = [], options = {}) {
+    const optimistic = options?.optimistic === true
+    const uniqueSessionIds = [...new Set(
+      (Array.isArray(sessionIds) ? sessionIds : []).filter(Boolean)
+    )]
+    if (uniqueSessionIds.length === 0) {
+      return { deletedSessionIds: [], failures: [], warnings: [] }
+    }
+
+    const targetSessionIds = optimistic
+      ? uniqueSessionIds.filter(sessionId => !pendingSessionDeletionIds.value.has(sessionId))
+      : uniqueSessionIds
+    if (targetSessionIds.length === 0) {
+      return { deletedSessionIds: [], failures: [], warnings: [] }
+    }
+
     try {
-      isLoading.value = true
+      if (!optimistic) {
+        isLoading.value = true
+      }
       error.value = null
 
-      // 关闭 SessionStore 中的会话
-      const sessionStore = useSessionStore()
-      await sessionStore.closeSession(sessionId)
+      const projectId = currentProject.value?.id
+      if (!projectId) {
+        throw new Error('No project selected')
+      }
 
-      // 删除文件系统中的会话
-      const result = await window.electronAPI.deleteSession({ sessionId, projectId: currentProject.value?.id })
-      if (!result?.success) {
+      if (optimistic) {
+        updatePendingSessionDeletions(targetSessionIds, true)
+        if (targetSessionIds.includes(currentSession.value?.id)) {
+          currentSession.value = null
+        }
+      }
+
+      const sessionStore = useSessionStore()
+      for (const sessionId of targetSessionIds) {
+        try {
+          await sessionStore.closeSession(sessionId)
+        } catch (closeError) {
+          logger.warn('Failed to close session before batch delete', {
+            sessionId,
+            error: closeError.message
+          })
+        }
+      }
+
+      const result = await window.electronAPI.deleteSessions({
+        sessionIds: targetSessionIds,
+        projectId
+      })
+      if (!result || !Array.isArray(result.deletedSessionIds)) {
         throw new Error(result?.error || '删除会话失败')
       }
 
-      sessions.value = sessions.value.filter(s => s.id !== sessionId)
+      const deletedSessionIds = [...new Set(result.deletedSessionIds)]
+      const failures = Array.isArray(result.failures) ? result.failures : []
+      const warnings = Array.isArray(result.warnings) ? result.warnings : []
 
-      if (currentSession.value?.id === sessionId) {
-        currentSession.value = null
+      if (deletedSessionIds.length > 0) {
+        const deletedSessionIdSet = new Set(deletedSessionIds)
+        sessions.value = sessions.value.filter(session => !deletedSessionIdSet.has(session.id))
+
+        if (deletedSessionIdSet.has(currentSession.value?.id)) {
+          currentSession.value = null
+        }
       }
+
+      if (optimistic) {
+        updatePendingSessionDeletions(targetSessionIds, false)
+      }
+
+      if (failures.length > 0) {
+        error.value = `有 ${failures.length} 个会话删除失败`
+        logger.error('Failed to delete sessions', {
+          failures,
+          deletedCount: deletedSessionIds.length
+        })
+      }
+
+      return { deletedSessionIds, failures, warnings }
     } catch (e) {
+      if (optimistic) {
+        updatePendingSessionDeletions(targetSessionIds, false)
+      }
       error.value = e.message
-      logger.error('Failed to delete session', { error: e.message })
+      logger.error('Failed to delete sessions', { error: e.message })
       throw e
     } finally {
-      isLoading.value = false
+      if (!optimistic) {
+        isLoading.value = false
+      }
+    }
+  }
+
+  async function deleteSession(sessionId, options = {}) {
+    const result = await deleteSessions([sessionId], options)
+    if (!result.deletedSessionIds.includes(sessionId)) {
+      const failure = result.failures.find(item => item.sessionId === sessionId)
+      throw new Error(failure?.error || '删除会话失败')
     }
   }
 
   /**
    * 软删除会话（移入回收站）
    */
-  async function softDeleteSession(sessionId) {
+  async function softDeleteSession(sessionId, options = {}) {
+    const optimistic = options?.optimistic === true
+    if (optimistic) {
+      updatePendingSessionDeletions([sessionId], true)
+      if (currentSession.value?.id === sessionId) {
+        currentSession.value = null
+      }
+    }
+
     try {
-      isLoading.value = true
+      if (!optimistic) {
+        isLoading.value = true
+      }
       error.value = null
 
       // 关闭运行中的 session
@@ -649,12 +1152,22 @@ export const useAppStore = defineStore('app', () => {
       if (currentSession.value?.id === sessionId) {
         currentSession.value = null
       }
+
+      if (optimistic) {
+        updatePendingSessionDeletions([sessionId], false)
+      }
+      return result
     } catch (e) {
+      if (optimistic) {
+        updatePendingSessionDeletions([sessionId], false)
+      }
       error.value = e.message
       logger.error('Failed to soft delete session', { error: e.message })
       throw e
     } finally {
-      isLoading.value = false
+      if (!optimistic) {
+        isLoading.value = false
+      }
     }
   }
 
@@ -850,6 +1363,8 @@ export const useAppStore = defineStore('app', () => {
     currentProject,
     currentSession,
     sessionStatuses,
+    inboxUnreadCounts,
+    currentInboxMessages,
     hasRunningTerminals,
     sidebarCollapsed,
     isLoading,
@@ -871,6 +1386,12 @@ export const useAppStore = defineStore('app', () => {
     selectProject,
     fetchSessions,
     fetchRunningSessions,
+    fetchInboxSummary,
+    fetchCurrentInboxMessages,
+    ackCurrentInboxMessages,
+    dissolveTeam,
+    destroyTeam,
+    isSessionResponding,
     setHasRunningTerminals,
     setFloatingMonitorMode,
     loadFloatingMonitorMode,
@@ -879,6 +1400,7 @@ export const useAppStore = defineStore('app', () => {
     clearSessionUnseenCompleted,
     createSession,
     deleteSession,
+    deleteSessions,
     softDeleteSession,
     restoreSession,
     renameSession,

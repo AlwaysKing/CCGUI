@@ -309,7 +309,7 @@ CCGUI 自己在 `~/.ccgui/` 下维护这份文件（如 `~/.ccgui/models.json`�
 - **Claude 侧的模型元数据无法配置**：Claude Code 没有 catalog 机制，未知模型按默认 200k 上下文计算，自动压缩会偏保守（cc-switch 同样如此）。实测 Claude Code 提供了两个逃生口：`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 环境变量、或模型名后加 `[1m]` 后缀。如果后续需要，可以把 claude 卡片的上下文窗口也接上这个环境变量（本期未做，界面上"高级配置"目前只对 codex 卡片开放）
 - **`[claude-code:unrecognized_model]` 警告会持续存在**：非致命，属于预期行为
 - **不再做跨协议转换**：claude 只对 anthropic 协议的供应商生效，codex 只对 OpenAI 协议生效；配置错了会在代理层直接返回上游错误
-- **多实例**：端口固定（默认 18921，可在软件配置中修改），第二个实例若端口被占用会启动失败并提示更换端口
+- **多实例**：正式版和 debug 版共享 `~/.ccgui` 配置与历史；代理从配置端口开始尝试，被占用时自动顺延到下一个可用端口。PID 注册表按运行实例分目录，避免跨实例误清理
 - **占位条目的代价**：未配置任何 Codex 元数据时，CCGUI 的目录文件里会有一条 `visibility = "hide"` 的 `__ccgui_placeholder__` 条目，只为满足 Codex 的"目录非空"要求，不会出现在模型列表里
 - **高级配置是自由 JSON**：字段写错会导致 codex 解析目录失败，目前只对已知易错项（`effort`、`visibility`）做归一化
 

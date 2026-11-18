@@ -27,21 +27,27 @@ const props = defineProps({
   content: {
     type: String,
     default: ''
+  },
+  isStreaming: {
+    type: Boolean,
+    default: false
   }
 })
 
 const containerRef = ref(null)
 const copiedIndex = ref(-1)
+const renderContent = ref(props.content)
 const appStore = useAppStore()
 const fileBrowserStore = useFileBrowserStore()
+let streamingRenderTimer = null
 
 const renderedHtml = computed(() => {
-  if (!props.content) return ''
+  if (!renderContent.value) return ''
   try {
-    return marked.parse(props.content)
+    return marked.parse(renderContent.value)
   } catch (error) {
     console.error('Markdown parse error:', error)
-    return props.content
+    return renderContent.value
   }
 })
 
@@ -170,13 +176,43 @@ onMounted(() => {
   containerRef.value?.addEventListener('click', handleLinkClick)
 })
 
-watch(() => props.content, () => {
+watch(() => props.content, (content) => {
+  if (!props.isStreaming) {
+    if (streamingRenderTimer) {
+      clearTimeout(streamingRenderTimer)
+      streamingRenderTimer = null
+    }
+    renderContent.value = content
+    return
+  }
+
+  if (streamingRenderTimer) return
+  streamingRenderTimer = setTimeout(() => {
+    streamingRenderTimer = null
+    renderContent.value = props.content
+  }, 80)
+}, { immediate: true })
+
+watch(() => props.isStreaming, (isStreaming) => {
+  if (isStreaming) return
+  if (streamingRenderTimer) {
+    clearTimeout(streamingRenderTimer)
+    streamingRenderTimer = null
+  }
+  renderContent.value = props.content
+})
+
+watch(renderedHtml, () => {
   nextTick(() => {
     addCopyButtons()
   })
 })
 
 onBeforeUnmount(() => {
+  if (streamingRenderTimer) {
+    clearTimeout(streamingRenderTimer)
+    streamingRenderTimer = null
+  }
   containerRef.value?.removeEventListener('click', handleLinkClick)
 })
 </script>

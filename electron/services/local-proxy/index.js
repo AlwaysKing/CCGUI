@@ -5,6 +5,7 @@
 
 const appConfigManager = require('../../storage/app-config-manager')
 const logger = require('../../logger')
+const { getDefaultProxyPort } = require('../../runtime-paths')
 const { SessionRegistry } = require('./session-registry')
 const { createProxyServer } = require('./server')
 const {
@@ -19,8 +20,9 @@ const {
 } = require('./model-catalog')
 const { buildModelName, resolveProxyTarget } = require('./router')
 
-const DEFAULT_PROXY_PORT = 18921
+const DEFAULT_PROXY_PORT = getDefaultProxyPort()
 const PROXY_HOST = '127.0.0.1'
+const MAX_PORT_ATTEMPTS = 100
 
 function stringifyTomlString(value) {
   return `"${String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
@@ -64,40 +66,65 @@ class LocalProxy {
   }
 
   async startServer() {
-    const port = this.getConfiguredPort()
-    logger.info('[LocalProxy] 启动本地模型代理', { port })
+    const preferredPort = this.getConfiguredPort()
+    logger.info('[LocalProxy] 启动本地模型代理', { preferredPort })
 
-    this.server = createProxyServer({ registry: this.registry })
+    let candidatePort = preferredPort
+    let lastError = null
+    for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt += 1) {
+      const server = createProxyServer({ registry: this.registry })
+      try {
+        await new Promise((resolve, reject) => {
+          const handleError = error => {
+            server.off('listening', handleListening)
+            reject(error)
+          }
+          const handleListening = () => {
+            server.off('error', handleError)
+            resolve()
+          }
+          server.once('error', handleError)
+          server.once('listening', handleListening)
+          server.listen(candidatePort, PROXY_HOST)
+        })
 
-    await new Promise(resolve => {
-      const handleError = error => {
-        this.server = null
-        this.status = 'error'
-        this.error = error.code === 'EADDRINUSE'
-          ? `端口 ${port} 已被占用，请在软件配置中更换代理端口`
-          : error.message
-        logger.error('[LocalProxy] 启动失败', { port, error: this.error })
-        resolve()
-      }
-
-      this.server.once('error', handleError)
-      this.server.listen(port, PROXY_HOST, () => {
-        if (this.server) {
-          this.server.off('error', handleError)
-          this.port = port
-          this.status = 'running'
-          this.error = null
-          logger.info('[LocalProxy] 已启动', {
-            url: this.getBaseUrl(),
-            claudeBaseUrl: this.getClaudeBaseUrl(),
-            codexBaseUrl: this.getCodexBaseUrl(),
-            endpoints: ['/api/hello', '/v1/messages', '/v1/messages/count_tokens', '/codex/responses']
+        this.server = server
+        this.port = candidatePort
+        this.status = 'running'
+        this.error = null
+        if (candidatePort !== preferredPort) {
+          logger.warn('[LocalProxy] 首选端口被占用，已自动选择可用端口', {
+            preferredPort,
+            actualPort: candidatePort
           })
         }
-        resolve()
-      })
-    })
+        logger.info('[LocalProxy] 已启动', {
+          url: this.getBaseUrl(),
+          claudeBaseUrl: this.getClaudeBaseUrl(),
+          codexBaseUrl: this.getCodexBaseUrl(),
+          endpoints: ['/api/hello', '/v1/messages', '/v1/messages/count_tokens', '/codex/responses']
+        })
+        return this.getStatus()
+      } catch (error) {
+        lastError = error
+        server.close(() => {})
+        if (error.code !== 'EADDRINUSE') {
+          this.status = 'error'
+          this.error = error.message
+          logger.error('[LocalProxy] 启动失败', { port: candidatePort, error: this.error })
+          return this.getStatus()
+        }
+        candidatePort = candidatePort >= 65535 ? 1024 : candidatePort + 1
+      }
+    }
 
+    this.status = 'error'
+    this.error = `连续 ${MAX_PORT_ATTEMPTS} 个端口均被占用，请检查本机端口使用情况`
+    logger.error('[LocalProxy] 启动失败', {
+      preferredPort,
+      error: this.error,
+      lastError: lastError?.message || null
+    })
     return this.getStatus()
   }
 

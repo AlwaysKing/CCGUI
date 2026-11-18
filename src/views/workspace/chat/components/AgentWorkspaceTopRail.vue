@@ -10,7 +10,15 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
+  standaloneEntries: {
+    type: Array,
+    default: () => []
+  },
   deletedTeamGroups: {
+    type: Array,
+    default: () => []
+  },
+  deletedStandaloneEntries: {
     type: Array,
     default: () => []
   },
@@ -24,7 +32,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select-agent', 'toggle-view-mode'])
+const emit = defineEmits(['select-agent', 'toggle-view-mode', 'open-agent-menu'])
 
 function selectAgent(agentId) {
   emit('select-agent', agentId)
@@ -34,6 +42,13 @@ function toggleViewMode(mode) {
   emit('toggle-view-mode', mode)
 }
 
+function openAgentMenu(event, agentItem) {
+  if (!agentItem?.agentId || agentItem.isMain) {
+    return
+  }
+  emit('open-agent-menu', event, agentItem)
+}
+
 function railItemTypeLabel(agentItem) {
   if (!agentItem) return ''
   if (agentItem.isMain) return '主会话'
@@ -41,6 +56,7 @@ function railItemTypeLabel(agentItem) {
   const typeMap = {
     team: '团队',
     'team-lead': '组长',
+    subagent: '子代理',
     'general-purpose': '通用代理',
     Explore: '探索',
     Plan: '规划'
@@ -50,8 +66,36 @@ function railItemTypeLabel(agentItem) {
 }
 
 const visibleGroups = computed(() => props.activeTeamGroups.filter(group => Array.isArray(group.members) && group.members.length > 0))
+const deletedAgentCount = computed(() => {
+  const groupedCount = props.deletedTeamGroups.reduce((count, group) => count + (group.members?.length || 0), 0)
+  return groupedCount + props.deletedStandaloneEntries.length
+})
+const runningAgentCount = computed(() => {
+  const entries = [
+    ...props.activeTeamGroups.flatMap(group => group.members || []),
+    ...props.standaloneEntries
+  ]
+  return entries.filter(isAgentRunning).length
+})
 
-const showDeletedTeams = ref(false)
+function isAgentRunning(agentItem) {
+  return agentItem?.status === 'running' || agentItem?.status === 'starting'
+}
+
+function agentStatusLabel(agentItem) {
+  const status = agentItem?.status || 'ended'
+  const labels = {
+    starting: '启动中',
+    running: '运行中',
+    ended: '空闲',
+    failed: '失败',
+    interrupted: '已中断',
+    deleted: '已关闭'
+  }
+  return labels[status] || status
+}
+
+const showDeletedAgents = ref(false)
 const expandedDeletedTeamId = ref(null)
 const hoveredAgentId = ref(null)
 const tooltipPosition = ref({ top: 0, left: 0 })
@@ -64,10 +108,16 @@ const hoveredAgent = computed(() => {
       if (member.agentId === hoveredAgentId.value) return member
     }
   }
+  for (const entry of props.standaloneEntries) {
+    if (entry.agentId === hoveredAgentId.value) return entry
+  }
   for (const group of props.deletedTeamGroups) {
     for (const member of (group.members || [])) {
       if (member.agentId === hoveredAgentId.value) return member
     }
+  }
+  for (const entry of props.deletedStandaloneEntries) {
+    if (entry.agentId === hoveredAgentId.value) return entry
   }
   return null
 })
@@ -87,11 +137,24 @@ function agentDotColor(agentItem) {
 function toggleDeletedTeam(teamId) {
   expandedDeletedTeamId.value = expandedDeletedTeamId.value === teamId ? null : teamId
 }
+
+function toggleDeletedAgents() {
+  showDeletedAgents.value = !showDeletedAgents.value
+  if (!showDeletedAgents.value) {
+    expandedDeletedTeamId.value = null
+    if (props.masterEntry) {
+      selectAgent(props.masterEntry.agentId)
+    }
+  }
+}
 </script>
 
 <template>
   <div class="top-rail">
-    <span class="top-rail__label">团队</span>
+    <span class="top-rail__label">代理</span>
+    <span v-if="runningAgentCount > 0" class="top-rail__running-count">
+      {{ runningAgentCount }} 运行中
+    </span>
 
     <div class="top-rail__tabs">
       <button
@@ -103,8 +166,13 @@ function toggleDeletedTeam(teamId) {
         @mouseenter="hoveredAgentId = masterEntry.agentId; onTabEnter($event)"
         @mouseleave="hoveredAgentId = null"
       >
-        <span class="top-rail__dot" :style="{ background: agentDotColor(masterEntry) }"></span>
+        <span
+          class="top-rail__dot"
+          :class="{ 'top-rail__dot--idle': !isAgentRunning(masterEntry) }"
+          :style="{ background: agentDotColor(masterEntry) }"
+        ></span>
         <span class="top-rail__name">{{ masterEntry.title }}</span>
+        <span v-if="isAgentRunning(masterEntry)" class="top-rail__spinner" aria-label="运行中"></span>
       </button>
 
       <span v-for="group in visibleGroups" :key="group.teamId" class="top-rail__group">
@@ -116,26 +184,52 @@ function toggleDeletedTeam(teamId) {
           :class="{ active: activeSession?.agentId === agentItem.agentId }"
           type="button"
           @click="selectAgent(agentItem.agentId)"
+          @contextmenu.prevent.stop="openAgentMenu($event, agentItem)"
           @mouseenter="hoveredAgentId = agentItem.agentId; onTabEnter($event)"
           @mouseleave="hoveredAgentId = null"
         >
-          <span class="top-rail__dot" :style="{ background: agentDotColor(agentItem) }"></span>
+          <span
+            class="top-rail__dot"
+            :class="{ 'top-rail__dot--idle': !isAgentRunning(agentItem) }"
+            :style="{ background: agentDotColor(agentItem) }"
+          ></span>
           <span class="top-rail__name">{{ agentItem.title }}</span>
+          <span v-if="isAgentRunning(agentItem)" class="top-rail__spinner" aria-label="运行中"></span>
         </button>
       </span>
 
-      <template v-if="deletedTeamGroups.length > 0">
+      <button
+        v-for="agentItem in standaloneEntries"
+        :key="agentItem.agentId"
+        class="top-rail__tab"
+        :class="{ active: activeSession?.agentId === agentItem.agentId }"
+        type="button"
+        @click="selectAgent(agentItem.agentId)"
+        @contextmenu.prevent.stop="openAgentMenu($event, agentItem)"
+        @mouseenter="hoveredAgentId = agentItem.agentId; onTabEnter($event)"
+        @mouseleave="hoveredAgentId = null"
+      >
+        <span
+          class="top-rail__dot"
+          :class="{ 'top-rail__dot--idle': !isAgentRunning(agentItem) }"
+          :style="{ background: agentDotColor(agentItem) }"
+        ></span>
+        <span class="top-rail__name">{{ agentItem.title }}</span>
+        <span v-if="isAgentRunning(agentItem)" class="top-rail__spinner" aria-label="运行中"></span>
+      </button>
+
+      <template v-if="deletedAgentCount > 0">
         <span class="top-rail__spacer"></span>
         <button
           class="top-rail__tab top-rail__tab--deleted"
           type="button"
-          @click="showDeletedTeams = !showDeletedTeams; if (!showDeletedTeams) { expandedDeletedTeamId = null; if (masterEntry) selectAgent(masterEntry.agentId) }"
+          @click="toggleDeletedAgents"
           @mouseenter="hoveredAgentId = null"
         >
-          <span class="top-rail__name">{{ showDeletedTeams ? '收起' : `已关闭 ${deletedTeamGroups.length}` }}</span>
+          <span class="top-rail__name">{{ showDeletedAgents ? '收起' : `已关闭 ${deletedAgentCount}` }}</span>
         </button>
 
-        <template v-if="showDeletedTeams">
+        <template v-if="showDeletedAgents">
           <span
             v-for="group in deletedTeamGroups"
             :key="'deleted-' + group.teamId"
@@ -167,6 +261,20 @@ function toggleDeletedTeam(teamId) {
               </button>
             </template>
           </span>
+
+          <button
+            v-for="agentItem in deletedStandaloneEntries"
+            :key="agentItem.agentId"
+            class="top-rail__tab top-rail__tab--deleted"
+            :class="{ active: activeSession?.agentId === agentItem.agentId }"
+            type="button"
+            @click="selectAgent(agentItem.agentId)"
+            @mouseenter="hoveredAgentId = agentItem.agentId; onTabEnter($event)"
+            @mouseleave="hoveredAgentId = null"
+          >
+            <span class="top-rail__dot top-rail__dot--deleted"></span>
+            <span class="top-rail__name">{{ agentItem.title }}</span>
+          </button>
         </template>
       </template>
     </div>
@@ -184,7 +292,7 @@ function toggleDeletedTeam(teamId) {
       >
         <span class="top-rail-tooltip__title">{{ hoveredAgent.title }}</span>
         <span class="top-rail-tooltip__line">类型: {{ railItemTypeLabel(hoveredAgent) }}</span>
-        <span v-if="hoveredAgent.status" class="top-rail-tooltip__line">状态: {{ hoveredAgent.status }}</span>
+        <span v-if="hoveredAgent.status" class="top-rail-tooltip__line">状态: {{ agentStatusLabel(hoveredAgent) }}</span>
         <span v-if="hoveredAgent.model" class="top-rail-tooltip__line">模型: {{ hoveredAgent.model }}</span>
       </div>
     </Teleport>
@@ -211,6 +319,21 @@ function toggleDeletedTeam(teamId) {
   font-weight: 600;
   letter-spacing: 0.04em;
   user-select: none;
+}
+
+.top-rail__running-count {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.1);
+  color: #86EFAC;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .top-rail__tabs {
@@ -277,6 +400,20 @@ function toggleDeletedTeam(teamId) {
   background: #71717a;
 }
 
+.top-rail__dot--idle {
+  opacity: 0.45;
+}
+
+.top-rail__spinner {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid rgba(134, 239, 172, 0.28);
+  border-top-color: #86EFAC;
+  border-radius: 50%;
+  animation: top-rail-spin 0.8s linear infinite;
+}
+
 .top-rail__name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -339,6 +476,12 @@ function toggleDeletedTeam(teamId) {
 .top-rail__spacer {
   flex: 1 1 auto;
   min-width: 8px;
+}
+
+@keyframes top-rail-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>
 

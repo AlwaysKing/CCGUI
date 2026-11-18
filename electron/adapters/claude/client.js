@@ -71,6 +71,9 @@ class ClaudeClient {
     this.referenceInventory = { agents: [], skills: [], mcpTools: [] }
     // Fork 来源 session ID（仅首次启动时有效）
     this.forkedFromSessionId = options.forkedFromSessionId || null
+    this.agentIdentity = options.agentIdentity || null
+    this.agentMcpConfig = options.agentMcpConfig || null
+    this.agentCommunicationEnabled = options.agentCommunicationEnabled === true
     // 枚举 provider 模型清单等场景不启动真实会话，跳过模型路由校验
     this.skipModelRouteValidation = options.skipModelRouteValidation === true
     this.proxySessionToken = null
@@ -574,12 +577,17 @@ class ClaudeClient {
    * @returns {Promise<string|null>} 系统提示词内容
    */
   async buildSystemPrompt() {
-    if (!this.projectSettings) {
+    if (!this.projectSettings && !this.agentIdentity) {
       return null
     }
 
     try {
-      const prompt = buildDeveloperInstructions(this.projectSettings, { provider: 'claude', projectPath: this.workingDirectory })
+      const prompt = buildDeveloperInstructions(this.projectSettings, {
+        provider: 'claude',
+        projectPath: this.workingDirectory,
+        agentIdentity: this.agentIdentity,
+        agentCommunicationEnabled: this.agentCommunicationEnabled
+      })
       return prompt
     } catch (error) {
       logger.error('[ClaudeClient] Failed to build system prompt:', error)
@@ -697,6 +705,13 @@ class ClaudeClient {
       '--replay-user-messages',  // 重新发送用户消息以便跟踪消息 ID
       '--setting-sources', 'user,project,local'  // 启用设置源
     ]
+
+    if (this.agentMcpConfig?.claudeConfigPath) {
+      args.push('--mcp-config', this.agentMcpConfig.claudeConfigPath)
+      logger.info('[ClaudeClient] Injected session agent communication MCP', {
+        serverName: this.agentMcpConfig.serverName || 'ccgui_internal'
+      })
+    }
 
     // Add max thinking tokens from settings
     const maxThinkingTokens = this.projectSettings?.maxThinkingTokens
@@ -1001,9 +1016,10 @@ class ClaudeClient {
    */
   setupStdioHandlers() {
     let buffer = ''
+    const childProcess = this.process
 
     // Handle stdout
-    this.process.stdout.on('data', (data) => {
+    childProcess.stdout.on('data', (data) => {
       const rawData = data.toString()
       buffer += rawData
       const lines = buffer.split('\n')
@@ -1022,7 +1038,7 @@ class ClaudeClient {
     })
 
     // Handle stderr - 系统状态消息
-    this.process.stderr.on('data', (data) => {
+    childProcess.stderr.on('data', (data) => {
       const errorMsg = data.toString()
       if (errorMsg.trim()) {
         // 将 stderr 消息发送到前端显示
@@ -1041,22 +1057,25 @@ class ClaudeClient {
     })
 
     // Handle exit
-    this.process.on('exit', (code, signal) => {
+    childProcess.on('exit', (code, signal) => {
+      const pid = childProcess.pid || null
       this.stopSidechainMonitor()
       // Emit exit event so SessionInstance can update envInfo
       const exitHandlers = this.messageHandlers.get('exit') || []
       exitHandlers.forEach(handler => {
         try {
-          handler({ code, signal })
+          handler({ code, signal, pid })
         } catch (error) {
           // Ignore handler errors
         }
       })
-      this.process = null
+      if (this.process === childProcess) {
+        this.process = null
+      }
     })
 
     // Handle error
-    this.process.on('error', (error) => {
+    childProcess.on('error', (error) => {
       // Ignore error
     })
   }

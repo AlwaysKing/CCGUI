@@ -5,14 +5,15 @@
 
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
 const crypto = require('crypto')
 const logger = require('../logger')
+const { getCcguiHome } = require('../runtime-paths')
+const projectConfigManager = require('./project-config-manager')
 
 /**
  * Storage base directory
  */
-const STORAGE_BASE = path.join(os.homedir(), '.ccgui')
+const STORAGE_BASE = getCcguiHome()
 
 /**
  * Ensure directory exists
@@ -21,6 +22,17 @@ function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true })
   }
+}
+
+function normalizeOptionalString(value) {
+  if (value === null || value === undefined) return null
+  const normalized = String(value).trim()
+  return normalized || null
+}
+
+function normalizeSessionRole(value) {
+  const normalized = normalizeOptionalString(value)
+  return normalized ? normalized.toLowerCase() : null
 }
 
 /**
@@ -41,6 +53,41 @@ function getSessionDir(encodedProjectId, sessionId) {
  */
 function getSessionConfigPath(encodedProjectId, sessionId) {
   return path.join(getSessionDir(encodedProjectId, sessionId), 'session.json')
+}
+
+function getProjectSessionIds(encodedProjectId) {
+  const sessionsDir = path.join(STORAGE_BASE, 'projects', encodedProjectId, 'sessions')
+  if (!fs.existsSync(sessionsDir)) {
+    return []
+  }
+
+  const sessions = fs.readdirSync(sessionsDir, { withFileTypes: true })
+    .filter(entry => (
+      entry.isDirectory() &&
+      fs.existsSync(path.join(sessionsDir, entry.name, 'session.json'))
+    ))
+    .map(entry => {
+      try {
+        const configPath = path.join(sessionsDir, entry.name, 'session.json')
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+        return {
+          id: entry.name,
+          updatedAt: config.updatedAt || config.createdAt || ''
+        }
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+
+  sessions.sort((left, right) => {
+    const leftTime = Date.parse(left.updatedAt)
+    const rightTime = Date.parse(right.updatedAt)
+    const timeDifference = (Number.isFinite(rightTime) ? rightTime : 0) -
+      (Number.isFinite(leftTime) ? leftTime : 0)
+    return timeDifference || left.id.localeCompare(right.id)
+  })
+  return sessions.map(session => session.id)
 }
 
 /**
@@ -68,6 +115,8 @@ function createSession(encodedProjectId, options = {}) {
       id: sessionId,
       projectId: encodedProjectId,
       name: options.name || `Session ${now.split('T')[0]}`,
+      teamId: normalizeOptionalString(options.teamId),
+      role: normalizeSessionRole(options.role),
       createdAt: now,
       updatedAt: now,
       messageCount: 0,
@@ -78,6 +127,11 @@ function createSession(encodedProjectId, options = {}) {
     // Write session config
     const configPath = getSessionConfigPath(encodedProjectId, sessionId)
     fs.writeFileSync(configPath, JSON.stringify(sessionConfig, null, 2), 'utf-8')
+    projectConfigManager.prependProjectSessionOrder(
+      encodedProjectId,
+      sessionId,
+      getProjectSessionIds(encodedProjectId)
+    )
 
     logger.info('[SessionConfigManager] Created session', {
       sessionId,
@@ -137,6 +191,7 @@ function getSession(encodedProjectId, sessionId) {
 function updateSession(encodedProjectId, sessionId, updates) {
   try {
     let sessionConfig = getSession(encodedProjectId, sessionId)
+    const isNewSession = !sessionConfig
 
     // If session doesn't exist, create it first
     if (!sessionConfig) {
@@ -159,6 +214,8 @@ function updateSession(encodedProjectId, sessionId, updates) {
         id: sessionId,
         projectId: encodedProjectId,
         name: updates.name || `Session ${now.split('T')[0]}`,
+        teamId: normalizeOptionalString(updates.teamId),
+        role: normalizeSessionRole(updates.role),
         createdAt: now,
         updatedAt: now,
         messageCount: 0,
@@ -174,10 +231,23 @@ function updateSession(encodedProjectId, sessionId, updates) {
       projectId: encodedProjectId, // Prevent project ID changes
       updatedAt: new Date().toISOString()
     }
+    if (Object.prototype.hasOwnProperty.call(updates || {}, 'teamId')) {
+      updatedConfig.teamId = normalizeOptionalString(updates.teamId)
+    }
+    if (Object.prototype.hasOwnProperty.call(updates || {}, 'role')) {
+      updatedConfig.role = normalizeSessionRole(updates.role)
+    }
 
     // Write updated config
     const configPath = getSessionConfigPath(encodedProjectId, sessionId)
     fs.writeFileSync(configPath, JSON.stringify(updatedConfig, null, 2), 'utf-8')
+    if (isNewSession) {
+      projectConfigManager.prependProjectSessionOrder(
+        encodedProjectId,
+        sessionId,
+        getProjectSessionIds(encodedProjectId)
+      )
+    }
 
     logger.info('[SessionConfigManager] Updated session', {
       sessionId,
@@ -216,6 +286,7 @@ function deleteSession(encodedProjectId, sessionId) {
 
     // Recursively delete session directory
     fs.rmSync(sessionDir, { recursive: true, force: true })
+    projectConfigManager.removeProjectSessionOrder(encodedProjectId, sessionId)
 
     logger.info('[SessionConfigManager] Deleted session', {
       sessionId,
@@ -267,8 +338,24 @@ function getProjectSessions(encodedProjectId) {
       }
     }
 
-    // Sort by updatedAt descending (most recent first)
-    sessions.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+    const sessionOrder = projectConfigManager.getProjectSessionOrder(encodedProjectId)
+    if (sessionOrder.length > 0) {
+      const orderIndex = new Map(sessionOrder.map((sessionId, index) => [sessionId, index]))
+      sessions.sort((left, right) => {
+        const leftIndex = orderIndex.has(left.id) ? orderIndex.get(left.id) : -1
+        const rightIndex = orderIndex.has(right.id) ? orderIndex.get(right.id) : -1
+        return leftIndex - rightIndex
+      })
+    } else {
+      // 旧项目首次迁移时沿用原列表顺序；迁移落盘后不再参与时间排序。
+      sessions.sort((left, right) => {
+        const leftTime = Date.parse(left.updatedAt || left.createdAt || '')
+        const rightTime = Date.parse(right.updatedAt || right.createdAt || '')
+        const timeDifference = (Number.isFinite(rightTime) ? rightTime : 0) -
+          (Number.isFinite(leftTime) ? leftTime : 0)
+        return timeDifference || String(left.id || '').localeCompare(String(right.id || ''))
+      })
+    }
 
     logger.debug('[SessionConfigManager] Retrieved project sessions', {
       projectId: encodedProjectId,

@@ -5,14 +5,13 @@
 
 const fs = require('fs').promises
 const path = require('path')
-const os = require('os')
 const logger = require('./logger')
+const { getCcguiHome } = require('./runtime-paths')
 
 /**
  * 存储配置
  */
 const STORAGE_CONFIG = {
-  baseDir: '.ccgui',
   projectsDir: 'projects',
   appConfigFile: 'app.json'
 }
@@ -44,7 +43,7 @@ class StorageManager {
       logger.info('[StorageManager] Initializing storage system...')
 
       // 设置基础路径
-      this.basePath = path.join(os.homedir(), STORAGE_CONFIG.baseDir)
+      this.basePath = getCcguiHome()
       this.projectsPath = path.join(this.basePath, STORAGE_CONFIG.projectsDir)
       this.appConfigPath = path.join(this.basePath, STORAGE_CONFIG.appConfigFile)
 
@@ -139,7 +138,19 @@ class StorageManager {
             showNotifications: true,
             systemPrompt: '',
             models: [],
-            selectedModelId: null
+            selectedModelId: null,
+            aiAssist: {
+              enabled: false,
+              provider: 'claude',
+              modelId: null,
+              modelCardId: null,
+              features: {
+                sessionSummary: {
+                  enabled: false,
+                  userMessageLimit: 20
+                }
+              }
+            }
           }
         }
 

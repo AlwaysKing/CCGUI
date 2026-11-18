@@ -3,6 +3,12 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { IconButton } from '@/components/base'
 import { useAppStore } from '../../../stores/useAppStore'
 import { findProviderModel, getProviderCapabilities } from '../../../utils/provider-models'
+import {
+  buildSessionListGroups,
+  mergeSessionOrderWithHidden,
+  moveSessionIdsInOrder,
+  orderSessionsByList
+} from '../../../utils/session-team-groups'
 import FileTreePanel from './FileTreePanel.vue'
 
 const props = defineProps({
@@ -93,10 +99,14 @@ const props = defineProps({
   showRecycleBin: {
     type: Boolean,
     default: false
+  },
+  recycleBinSessionCount: {
+    type: Number,
+    default: 0
   }
 })
 
-const emit = defineEmits(['select', 'delete', 'softDelete', 'restore', 'permanentDelete', 'toggleRecycleBin', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openClaudeDialog', 'openCodexDialog', 'openPromptDialog', 'openTaskTemplatesDialog', 'selectPrimaryView', 'toggleLock', 'minimizeToMonitor'])
+const emit = defineEmits(['select', 'delete', 'softDelete', 'restore', 'permanentDelete', 'emptyRecycleBin', 'deleteSelectedSessions', 'dissolveTeam', 'destroyTeam', 'toggleRecycleBin', 'newSession', 'toggle', 'rename', 'switchProject', 'home', 'openAppSettings', 'close', 'start', 'openProjectConfig', 'openSessionConfig', 'deleteSessionConfig', 'copySession', 'toggleFilePanel', 'togglePreviewPanel', 'toggleTerminalPanel', 'runTaskLauncher', 'toggleTaskLauncher', 'deleteTaskLauncher', 'openTaskLauncherConfig', 'openTaskLauncherFile', 'refreshTaskLauncherTasks', 'refreshFileTree', 'toggleDirectory', 'previewFile', 'pinFile', 'selectFileNode', 'startRenameFileNode', 'stopRenameFileNode', 'renameFileNode', 'createFileNode', 'deleteFileNode', 'addFileToChat', 'layoutChange', 'toggleShowClaude', 'toggleShowCodex', 'deleteInactiveSessions', 'openSkillsDialog', 'openMcpDialog', 'openClaudeDialog', 'openCodexDialog', 'openPromptDialog', 'openTaskTemplatesDialog', 'selectPrimaryView', 'toggleLock', 'minimizeToMonitor'])
 
 const appStore = useAppStore()
 const projectConfig = ref(null)
@@ -107,8 +117,18 @@ const sessionConfigs = ref({}) // Map of sessionId -> hasCustomConfig
 const compactCountLabels = ref(new Set()) // Sessions with compact count labels
 const showSessionListMenu = ref(false)
 const sessionListCollapsed = ref(false)
+const collapsedTeamIds = ref(new Set())
+const selectedRecycleSessionIds = ref(new Set())
 const sessionListMenuRef = ref(null)
 const sessionListDropdownRef = ref(null)
+const draggedSessionId = ref('')
+const draggedTeamId = ref('')
+const dragOverSessionId = ref('')
+const dragOverTeamId = ref('')
+const dragOverPosition = ref('before')
+let suppressSessionClick = false
+let sessionOrderPersistQueue = Promise.resolve()
+let sessionOrderRevision = 0
 
 const showConfigMenu = ref(false)
 const configMenuBtnRef = ref(null)
@@ -271,7 +291,8 @@ const contextMenu = ref({
   show: false,
   x: 0,
   y: 0,
-  session: null
+  session: null,
+  teamId: null
 })
 
 // ResizeObserver for detecting width changes
@@ -328,7 +349,28 @@ async function openContextMenuAt(x, y, session) {
     show: true,
     x,
     y,
-    session
+    session,
+    teamId: null
+  }
+
+  await nextTick()
+  const clamped = clampMenuPosition(x, y)
+  if (clamped.x !== contextMenu.value.x || clamped.y !== contextMenu.value.y) {
+    contextMenu.value = {
+      ...contextMenu.value,
+      x: clamped.x,
+      y: clamped.y
+    }
+  }
+}
+
+async function openTeamContextMenuAt(x, y, teamId) {
+  contextMenu.value = {
+    show: true,
+    x,
+    y,
+    session: null,
+    teamId
   }
 
   await nextTick()
@@ -384,6 +426,8 @@ function handleGlobalContextMenu(event) {
 function handleWindowBlur() {
   closeContextMenu()
   showSessionListMenu.value = false
+  clearSessionDragState()
+  suppressSessionClick = false
 }
 
 function toggleSessionListMenu() {
@@ -494,9 +538,89 @@ const readySessionCount = computed(() =>
 const respondingSessionCount = computed(() =>
   props.sessions.filter(session => {
     const status = props.sessionStatuses[session.id]
-    return Boolean(status?.ready && (status.processing || status.streaming))
+    return appStore.isSessionResponding(status)
   }).length
 )
+
+const orderedSessions = computed(() => orderSessionsByList(
+  props.sessions,
+  projectConfig.value?.sessionOrder || []
+))
+
+const allOrderedSessions = computed(() => orderSessionsByList(
+  appStore.sessions.filter(session => session?.projectId === currentProjectId.value),
+  projectConfig.value?.sessionOrder || []
+))
+
+const sessionGroups = computed(() => buildSessionListGroups(orderedSessions.value, {
+  groupTeams: !props.showRecycleBin
+}))
+
+const allSessionGroups = computed(() => buildSessionListGroups(allOrderedSessions.value, {
+  groupTeams: !props.showRecycleBin
+}))
+
+const selectedRecycleSessionCount = computed(() => selectedRecycleSessionIds.value.size)
+const hasRecycleBinSessions = computed(() => props.recycleBinSessionCount > 0)
+
+function isRecycleSessionSelected(sessionId) {
+  return selectedRecycleSessionIds.value.has(sessionId)
+}
+
+function toggleRecycleSessionSelection(sessionId) {
+  if (!props.showRecycleBin || !sessionId) return
+
+  const next = new Set(selectedRecycleSessionIds.value)
+  if (next.has(sessionId)) {
+    next.delete(sessionId)
+  } else {
+    next.add(sessionId)
+  }
+  selectedRecycleSessionIds.value = next
+}
+
+function handleEmptyRecycleBin() {
+  if (!hasRecycleBinSessions.value) return
+  emit('emptyRecycleBin')
+}
+
+function handleDeleteSelectedSessions() {
+  const sessionIds = props.sessions
+    .filter(session => selectedRecycleSessionIds.value.has(session.id))
+    .map(session => session.id)
+
+  if (sessionIds.length === 0) return
+  emit('deleteSelectedSessions', sessionIds)
+}
+
+watch(() => props.showRecycleBin, () => {
+  selectedRecycleSessionIds.value = new Set()
+}, { immediate: true })
+
+watch(() => props.sessions.map(session => session.id), (sessionIds) => {
+  const availableIds = new Set(sessionIds)
+  const next = new Set(
+    [...selectedRecycleSessionIds.value].filter(sessionId => availableIds.has(sessionId))
+  )
+
+  if (next.size !== selectedRecycleSessionIds.value.size) {
+    selectedRecycleSessionIds.value = next
+  }
+}, { immediate: true })
+
+function isTeamGroupCollapsed(teamId) {
+  return collapsedTeamIds.value.has(teamId)
+}
+
+function toggleTeamGroup(teamId) {
+  const next = new Set(collapsedTeamIds.value)
+  if (next.has(teamId)) {
+    next.delete(teamId)
+  } else {
+    next.add(teamId)
+  }
+  collapsedTeamIds.value = next
+}
 
 // 加载系统配置
 async function loadSystemConfig() {
@@ -867,11 +991,316 @@ function applyLayoutState(layout = {}) {
   }
 }
 
-function handleSelect(session) {
-  if (session?.sessionAvailable === false) {
+function findSessionGroupBySessionId(sessionId) {
+  return allSessionGroups.value.find(group =>
+    group.sessions.some(session => session.id === sessionId)
+  ) || null
+}
+
+function updateDragOverPosition(event) {
+  const rect = event.currentTarget?.getBoundingClientRect?.()
+  if (!rect) {
+    dragOverPosition.value = 'before'
     return
   }
+  dragOverPosition.value = event.clientY >= rect.top + (rect.height / 2)
+    ? 'after'
+    : 'before'
+}
+
+function markSessionDragStarted() {
+  suppressSessionClick = true
+}
+
+function clearSessionDragState() {
+  draggedSessionId.value = ''
+  draggedTeamId.value = ''
+  dragOverSessionId.value = ''
+  dragOverTeamId.value = ''
+  dragOverPosition.value = 'before'
+}
+
+function handleSessionDragStart(event, session) {
+  if (props.showRecycleBin || !session?.id) {
+    event.preventDefault()
+    return
+  }
+
+  draggedSessionId.value = session.id
+  draggedTeamId.value = ''
+  dragOverSessionId.value = ''
+  dragOverTeamId.value = ''
+  markSessionDragStarted()
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', session.id)
+}
+
+function handleTeamDragStart(event, group) {
+  if (props.showRecycleBin || !group?.teamId) {
+    event.preventDefault()
+    return
+  }
+
+  draggedSessionId.value = ''
+  draggedTeamId.value = group.teamId
+  dragOverSessionId.value = ''
+  dragOverTeamId.value = ''
+  markSessionDragStarted()
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', `team:${group.teamId}`)
+}
+
+function handleSessionDragOver(event, session) {
+  if ((!draggedSessionId.value && !draggedTeamId.value) || !session?.id) {
+    return
+  }
+
+  const draggedSession = draggedSessionId.value
+    ? allOrderedSessions.value.find(item => item.id === draggedSessionId.value)
+    : null
+  const targetGroup = findSessionGroupBySessionId(session.id)
+  if (!targetGroup) {
+    return
+  }
+
+  if (draggedSession?.teamId) {
+    if (session.teamId !== draggedSession.teamId || session.id === draggedSession.id) {
+      return
+    }
+    updateDragOverPosition(event)
+    dragOverSessionId.value = session.id
+    dragOverTeamId.value = ''
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    return
+  }
+
+  if (draggedSession?.id === session.id) {
+    return
+  }
+  if (draggedTeamId.value) {
+    const sourceGroup = allSessionGroups.value.find(group => group.teamId === draggedTeamId.value)
+    if (!sourceGroup || sourceGroup.key === targetGroup.key) {
+      return
+    }
+  }
+
+  updateDragOverPosition(event)
+  if (targetGroup.teamId) {
+    dragOverSessionId.value = ''
+    dragOverTeamId.value = targetGroup.teamId
+  } else {
+    dragOverSessionId.value = session.id
+    dragOverTeamId.value = ''
+  }
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'move'
+}
+
+function handleTeamDragOver(event, group) {
+  if (!group?.teamId || (!draggedSessionId.value && !draggedTeamId.value)) {
+    return
+  }
+
+  const draggedSession = draggedSessionId.value
+    ? allOrderedSessions.value.find(item => item.id === draggedSessionId.value)
+    : null
+  if (draggedSession?.teamId) {
+    return
+  }
+  if (draggedTeamId.value === group.teamId) {
+    return
+  }
+
+  updateDragOverPosition(event)
+  dragOverSessionId.value = ''
+  dragOverTeamId.value = group.teamId
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'move'
+}
+
+function persistSessionOrder(nextOrder = []) {
+  const projectId = currentProjectId.value
+  if (!projectId) {
+    return
+  }
+
+  const previousOrder = Array.isArray(projectConfig.value?.sessionOrder)
+    ? [...projectConfig.value.sessionOrder]
+    : []
+  const existingSessionIds = [...new Set([
+    ...appStore.sessions
+      .filter(session => session?.projectId === projectId)
+      .map(session => session.id),
+    ...previousOrder
+  ])]
+  const normalizedOrder = mergeSessionOrderWithHidden(
+    nextOrder,
+    previousOrder,
+    existingSessionIds
+  )
+  const revision = ++sessionOrderRevision
+  projectConfig.value = {
+    ...(projectConfig.value || {}),
+    id: projectConfig.value?.id || projectId,
+    sessionOrder: normalizedOrder
+  }
+
+  sessionOrderPersistQueue = sessionOrderPersistQueue
+    .then(async () => {
+      const result = await window.electronAPI.updateProjectConfig({
+        projectId,
+        updates: { sessionOrder: normalizedOrder }
+      })
+      if (!result?.success) {
+        throw new Error(result?.error || '保存会话顺序失败')
+      }
+    })
+    .catch(async (error) => {
+      console.error('[SessionSidebar] Failed to save session order:', error)
+      if (currentProjectId.value !== projectId || revision !== sessionOrderRevision) {
+        return
+      }
+      projectConfig.value = {
+        ...(projectConfig.value || {}),
+        sessionOrder: previousOrder
+      }
+      await loadProjectConfig()
+    })
+}
+
+function reorderTopLevelGroup(sourceGroup, targetGroup, position = 'before') {
+  if (!sourceGroup || !targetGroup || sourceGroup.key === targetGroup.key) {
+    return
+  }
+
+  const chunks = allSessionGroups.value.map(group =>
+    group.sessions.map(session => session.id)
+  )
+  const sourceIndex = allSessionGroups.value.findIndex(group => group.key === sourceGroup.key)
+  if (sourceIndex < 0) {
+    return
+  }
+
+  const [movingChunk] = chunks.splice(sourceIndex, 1)
+  const targetIndex = allSessionGroups.value
+    .filter((_, index) => index !== sourceIndex)
+    .findIndex(group => group.key === targetGroup.key)
+  if (targetIndex < 0) {
+    return
+  }
+
+  chunks.splice(targetIndex + (position === 'after' ? 1 : 0), 0, movingChunk)
+  persistSessionOrder(chunks.flat())
+}
+
+function reorderTeamMember(sourceSession, targetSession, position = 'before') {
+  if (!sourceSession?.teamId || sourceSession.teamId !== targetSession?.teamId) {
+    return
+  }
+
+  const group = allSessionGroups.value.find(item => item.teamId === sourceSession.teamId)
+  if (!group) {
+    return
+  }
+
+  const groupOrder = group.sessions.map(session => session.id)
+  const nextGroupOrder = moveSessionIdsInOrder(
+    groupOrder,
+    [sourceSession.id],
+    [targetSession.id],
+    position
+  )
+  const nextOrder = allSessionGroups.value.flatMap(item => {
+    if (item.key !== group.key) {
+      return item.sessions.map(session => session.id)
+    }
+    return nextGroupOrder
+  })
+  persistSessionOrder(nextOrder)
+}
+
+function finishSessionDrop(event) {
+  event.preventDefault()
+  clearSessionDragState()
+  window.setTimeout(() => {
+    suppressSessionClick = false
+  }, 50)
+}
+
+function handleSessionDrop(event, session) {
+  event.preventDefault()
+  const targetGroup = findSessionGroupBySessionId(session?.id)
+  if (draggedTeamId.value) {
+    const sourceGroup = allSessionGroups.value.find(group => group.teamId === draggedTeamId.value)
+    reorderTopLevelGroup(sourceGroup, targetGroup, dragOverPosition.value)
+    finishSessionDrop(event)
+    return
+  }
+
+  const sourceSession = allOrderedSessions.value.find(item => item.id === draggedSessionId.value)
+  if (!sourceSession) {
+    finishSessionDrop(event)
+    return
+  }
+  if (sourceSession.teamId) {
+    if (sourceSession.teamId === session?.teamId) {
+      reorderTeamMember(sourceSession, session, dragOverPosition.value)
+    }
+  } else {
+    const sourceGroup = findSessionGroupBySessionId(sourceSession.id)
+    reorderTopLevelGroup(sourceGroup, targetGroup, dragOverPosition.value)
+  }
+  finishSessionDrop(event)
+}
+
+function handleTeamDrop(event, group) {
+  event.preventDefault()
+  if (draggedTeamId.value) {
+    const sourceGroup = allSessionGroups.value.find(item => item.teamId === draggedTeamId.value)
+    reorderTopLevelGroup(sourceGroup, group, dragOverPosition.value)
+  } else {
+    const sourceSession = allOrderedSessions.value.find(item => item.id === draggedSessionId.value)
+    if (sourceSession && !sourceSession.teamId) {
+      const sourceGroup = findSessionGroupBySessionId(sourceSession.id)
+      reorderTopLevelGroup(sourceGroup, group, dragOverPosition.value)
+    }
+  }
+  finishSessionDrop(event)
+}
+
+function handleSessionDragEnd(event) {
+  if (event?.dataTransfer) {
+    event.dataTransfer.dropEffect = 'none'
+  }
+  clearSessionDragState()
+  window.setTimeout(() => {
+    suppressSessionClick = false
+  }, 50)
+}
+
+function handleSessionItemClick(session) {
+  if (suppressSessionClick) {
+    suppressSessionClick = false
+    return
+  }
+  handleSelect(session)
+}
+
+function handleTeamHeaderClick(group) {
+  if (suppressSessionClick) {
+    suppressSessionClick = false
+    return
+  }
+  toggleTeamGroup(group.teamId)
+}
+
+function handleSelect(session) {
   if (props.showRecycleBin) {
+    toggleRecycleSessionSelection(session.id)
+    return
+  }
+  if (session?.sessionAvailable === false) {
     return
   }
   emit('select', session.id)
@@ -880,6 +1309,11 @@ function handleSelect(session) {
 function handleContextMenu(event, session) {
   event.preventDefault()
   openContextMenuAt(event.clientX, event.clientY, session)
+}
+
+function handleTeamContextMenu(event, teamId) {
+  event.preventDefault()
+  openTeamContextMenuAt(event.clientX, event.clientY, teamId)
 }
 
 function handleRename() {
@@ -952,6 +1386,22 @@ function handleCopySession() {
   closeContextMenu()
 }
 
+function handleDissolveTeam() {
+  const teamId = contextMenu.value.teamId
+  if (teamId) {
+    emit('dissolveTeam', teamId)
+  }
+  closeContextMenu()
+}
+
+function handleDestroyTeam() {
+  const teamId = contextMenu.value.teamId
+  if (teamId) {
+    emit('destroyTeam', teamId)
+  }
+  closeContextMenu()
+}
+
 function handleToggleLock() {
   if (contextMenu.value.session) {
     emit('toggleLock', contextMenu.value.session)
@@ -975,9 +1425,18 @@ function handleDeleteInactiveSessionsClick() {
 function getSessionStatus(sessionId) {
   const status = props.sessionStatuses[sessionId]
   if (!status || !status.ready) return 'inactive'
-  if (status.processing || status.streaming) return 'streaming'
+  if (appStore.isSessionResponding(status)) return 'streaming'
   if (status.unseenCompleted) return 'completed-unseen'
   return 'ready'
+}
+
+function getSessionStatusTitle(sessionId) {
+  const status = props.sessionStatuses[sessionId]
+  if (!status || !status.ready) return '运行时未启动'
+  if (status.processing || status.streaming) return '主会话运行中'
+  if (appStore.isSessionResponding(status)) return '子代理运行中'
+  if (status.unseenCompleted) return '已完成，尚未查看'
+  return '空闲'
 }
 
 function isSessionRunning(sessionId) {
@@ -1004,6 +1463,14 @@ function formatTime(date) {
 
 function getSessionName(session) {
   return session.name || session.id.slice(0, 8)
+}
+
+function getSessionTeamLabel(session) {
+  return session?.teamId || null
+}
+
+function getSessionInboxCount(session) {
+  return appStore.inboxUnreadCounts[session.id] || 0
 }
 
 // 获取会话的模型信息显示
@@ -1597,22 +2064,114 @@ watch([showConfigPanel, fileSectionHeight], () => {
           </div>
         </div>
 
+        <div v-if="showRecycleBin" class="recycle-bin-actions">
+          <span class="recycle-bin-actions-info">
+            {{ selectedRecycleSessionCount > 0 ? `已选择 ${selectedRecycleSessionCount} 个会话` : '勾选会话后可批量删除' }}
+          </span>
+          <div class="recycle-bin-action-buttons">
+            <button
+              type="button"
+              class="recycle-bin-action recycle-bin-action--clear"
+              :disabled="!hasRecycleBinSessions"
+              title="永久删除回收站中的全部会话"
+              @click="handleEmptyRecycleBin"
+            >
+              清空回收站
+            </button>
+            <button
+              type="button"
+              class="recycle-bin-action recycle-bin-action--delete"
+              :disabled="selectedRecycleSessionCount === 0"
+              title="永久删除选中的会话"
+              @click="handleDeleteSelectedSessions"
+            >
+              删除选中<span v-if="selectedRecycleSessionCount > 0"> ({{ selectedRecycleSessionCount }})</span>
+            </button>
+          </div>
+        </div>
+
         <div v-show="!(sessionListCollapsed && isFilePanelVisible)" class="session-list">
-          <div
-            v-for="session in sessions"
-            :key="session.id"
-            :data-session-id="session.id"
-            class="session-item"
+          <section
+            v-for="group in sessionGroups"
+            :key="group.key"
+            class="session-group"
             :class="{
-              active: currentSession?.id === session.id,
-              unavailable: session.sessionAvailable === false,
-              'permission-pending': Boolean(sessionStatuses[session.id]?.pendingPermission)
+              'team-group': Boolean(group.teamId),
+              collapsed: Boolean(group.teamId) && isTeamGroupCollapsed(group.teamId)
             }"
-            @click="handleSelect(session)"
-            @contextmenu="handleContextMenu($event, session)"
           >
+            <button
+              v-if="group.teamId"
+              type="button"
+              class="session-team-header"
+              :class="{
+                dragging: draggedTeamId === group.teamId,
+                'drag-over-before': dragOverTeamId === group.teamId && dragOverPosition === 'before',
+                'drag-over-after': dragOverTeamId === group.teamId && dragOverPosition === 'after'
+              }"
+              :draggable="!showRecycleBin"
+              :aria-expanded="!isTeamGroupCollapsed(group.teamId)"
+              @click="handleTeamHeaderClick(group)"
+              @contextmenu="handleTeamContextMenu($event, group.teamId)"
+              @dragstart.stop="handleTeamDragStart($event, group)"
+              @dragover="handleTeamDragOver($event, group)"
+              @drop.stop.prevent="handleTeamDrop($event, group)"
+              @dragend="handleSessionDragEnd"
+            >
+              <span class="session-team-heading">
+                <svg class="session-team-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+                <span class="session-team-name">{{ group.teamName }}</span>
+              </span>
+              <span class="session-team-meta">
+                <span class="session-team-count">{{ group.sessions.length }} 个会话</span>
+                <svg class="session-team-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </span>
+            </button>
+
+            <div
+              v-show="!group.teamId || !isTeamGroupCollapsed(group.teamId)"
+              class="session-group-body"
+            >
+              <div
+                v-for="session in group.sessions"
+                :key="session.id"
+                :data-session-id="session.id"
+                class="session-item"
+                :draggable="!showRecycleBin"
+                :class="{
+                  active: currentSession?.id === session.id,
+                  unavailable: session.sessionAvailable === false,
+                  'permission-pending': Boolean(sessionStatuses[session.id]?.pendingPermission),
+                  'recycle-selected': showRecycleBin && isRecycleSessionSelected(session.id),
+                  dragging: draggedSessionId === session.id,
+                  'drag-over-before': dragOverSessionId === session.id && dragOverPosition === 'before',
+                  'drag-over-after': dragOverSessionId === session.id && dragOverPosition === 'after'
+                }"
+                @click="handleSessionItemClick(session)"
+                @contextmenu="handleContextMenu($event, session)"
+                @dragstart.stop="handleSessionDragStart($event, session)"
+                @dragover="handleSessionDragOver($event, session)"
+                @drop.stop.prevent="handleSessionDrop($event, session)"
+                @dragend="handleSessionDragEnd"
+              >
             <div class="session-status-column">
-              <template v-if="session.sessionAvailable === false">
+              <input
+                v-if="showRecycleBin"
+                type="checkbox"
+                class="recycle-session-checkbox"
+                :checked="isRecycleSessionSelected(session.id)"
+                :aria-label="`选择会话 ${getSessionName(session)}`"
+                @click.stop
+                @change="toggleRecycleSessionSelection(session.id)"
+              >
+              <template v-else-if="session.sessionAvailable === false">
                 <div
                   class="session-unavailable-icon"
                   :title="getSessionAvailabilityTitle(session)"
@@ -1624,10 +2183,14 @@ watch([showConfigPanel, fileSectionHeight], () => {
                 </div>
               </template>
               <template v-else>
-                <div class="session-status" :class="getSessionStatus(session.id)" />
+                <div
+                  class="session-status"
+                  :class="getSessionStatus(session.id)"
+                  :title="getSessionStatusTitle(session.id)"
+                />
               </template>
               <div
-                v-if="isSessionDebugEnabled(session.id)"
+                v-if="!showRecycleBin && isSessionDebugEnabled(session.id)"
                 class="session-debug-badge"
                 title="Debug 已开启"
               >
@@ -1640,6 +2203,16 @@ watch([showConfigPanel, fileSectionHeight], () => {
                 <span class="session-name">
                   <span v-if="session.locked" class="session-lock-icon" title="已锁定">🔒</span>
                   <span class="session-name-text">{{ getSessionName(session) }}</span>
+                  <span v-if="!group.teamId && (session.teamName || getSessionTeamLabel(session))" class="session-team-badge">
+                    <span class="session-team-label">{{ session.teamName || getSessionTeamLabel(session) }}</span>
+                  </span>
+                  <span
+                    v-if="getSessionInboxCount(session) > 0"
+                    class="session-inbox-badge"
+                    :title="`${getSessionInboxCount(session)} 条未读收件箱消息`"
+                  >
+                    {{ getSessionInboxCount(session) }}
+                  </span>
                   <template v-if="getSessionBindingLabel(session)"> - <span class="session-binding-label">{{ getSessionBindingLabel(session) }}</span></template>
                   <span v-else class="session-id"> - {{ session.id.slice(0, 8) }}</span>
                 </span>
@@ -1702,10 +2275,15 @@ watch([showConfigPanel, fileSectionHeight], () => {
                 <circle cx="12" cy="19" r="2"/>
               </svg>
             </button>
-          </div>
+              </div>
+            </div>
+          </section>
 
           <div v-if="sessions.length === 0" class="empty-list">
-            <p v-if="showRecycleBin">回收站为空</p>
+            <template v-if="showRecycleBin">
+              <p v-if="recycleBinSessionCount === 0">回收站为空</p>
+              <p v-else>当前筛选下暂无会话</p>
+            </template>
             <template v-else>
               <p>暂无会话</p>
               <p class="hint">点击 + 创建新会话</p>
@@ -1739,6 +2317,15 @@ watch([showConfigPanel, fileSectionHeight], () => {
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
           </svg>
           永久删除
+        </button>
+      </template>
+
+      <template v-else-if="contextMenu.teamId">
+        <button class="menu-item warning" @click="handleDissolveTeam">
+          解散 team
+        </button>
+        <button class="menu-item danger" @click="handleDestroyTeam">
+          销毁 team
         </button>
       </template>
 
@@ -2340,6 +2927,74 @@ watch([showConfigPanel, fileSectionHeight], () => {
   gap: 6px;
 }
 
+.recycle-bin-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #27272A;
+  background: #1E1E1E;
+}
+
+.recycle-bin-actions-info {
+  min-width: 0;
+  overflow: hidden;
+  color: #71717A;
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recycle-bin-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.recycle-bin-action {
+  padding: 4px 7px;
+  border: 1px solid #3F3F46;
+  border-radius: 4px;
+  background: transparent;
+  color: #A1A1AA;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.recycle-bin-action:hover:not(:disabled) {
+  background: #27272A;
+}
+
+.recycle-bin-action--clear {
+  border-color: rgba(245, 158, 11, 0.38);
+  color: #FBBF24;
+}
+
+.recycle-bin-action--clear:hover:not(:disabled) {
+  border-color: rgba(245, 158, 11, 0.7);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.recycle-bin-action--delete {
+  border-color: rgba(239, 68, 68, 0.38);
+  color: #F87171;
+}
+
+.recycle-bin-action--delete:hover:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.72);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.recycle-bin-action:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .session-collapse-btn {
   width: 18px;
   height: 18px;
@@ -2501,6 +3156,162 @@ watch([showConfigPanel, fileSectionHeight], () => {
   overflow: hidden !important;
 }
 
+.session-group {
+  min-width: 0;
+}
+
+.session-group + .session-group {
+  margin-top: 8px;
+}
+
+.session-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.session-group.team-group {
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.045);
+  overflow: hidden;
+}
+
+.session-team-header {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid rgba(96, 165, 250, 0.2);
+  background: rgba(59, 130, 246, 0.07);
+  color: #D4D4D8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+}
+
+.session-team-header:hover {
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.session-team-header[draggable="true"],
+.session-item[draggable="true"] {
+  cursor: grab;
+}
+
+.session-team-header.dragging,
+.session-item.dragging {
+  opacity: 0.42;
+  cursor: grabbing;
+}
+
+.session-team-header.drag-over-before::after,
+.session-team-header.drag-over-after::after,
+.session-item.drag-over-before::after,
+.session-item.drag-over-after::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: #F97316;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.session-team-header.drag-over-before::after,
+.session-item.drag-over-before::after {
+  top: 0;
+}
+
+.session-team-header.drag-over-after::after,
+.session-item.drag-over-after::after {
+  bottom: 0;
+}
+
+.session-team-heading,
+.session-team-meta {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.session-team-heading {
+  gap: 7px;
+  flex: 1;
+}
+
+.session-team-meta {
+  gap: 6px;
+  flex-shrink: 0;
+  color: #93C5FD;
+}
+
+.session-team-icon {
+  flex-shrink: 0;
+  color: #60A5FA;
+}
+
+.session-team-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.session-team-count {
+  color: #71717A;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.session-team-chevron {
+  color: #71717A;
+  transition: transform 0.15s ease;
+}
+
+.session-group.team-group.collapsed .session-team-header {
+  border-bottom-color: transparent;
+}
+
+.session-group.team-group.collapsed .session-team-chevron {
+  transform: rotate(-90deg);
+}
+
+.session-group.team-group .session-group-body {
+  gap: 0;
+  padding: 0;
+}
+
+.session-group.team-group .session-item {
+  padding: 10px 12px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  border-color: rgba(255, 255, 255, 0.065);
+  background: transparent;
+}
+
+.session-group.team-group .session-item:hover {
+  background: transparent;
+  box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.38);
+}
+
+.session-group.team-group .session-item.active {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.065);
+  box-shadow: inset 3px 0 0 #F97316;
+}
+
+.session-group.team-group .session-item:last-child {
+  border-bottom: 0;
+}
+
 .session-item {
   display: flex;
   align-items: flex-start;
@@ -2521,6 +3332,11 @@ watch([showConfigPanel, fileSectionHeight], () => {
 .session-item.active {
   background: rgba(249, 115, 22, 0.1);
   border-color: #F97316;
+}
+
+.session-item.recycle-selected {
+  border-color: rgba(249, 115, 22, 0.58);
+  background: rgba(249, 115, 22, 0.07);
 }
 
 .session-item.permission-pending {
@@ -2604,6 +3420,18 @@ watch([showConfigPanel, fileSectionHeight], () => {
   min-height: 30px;
   flex-shrink: 0;
   position: relative;
+}
+
+.recycle-session-checkbox {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #F97316;
+  cursor: pointer;
+  transform: translateX(-50%);
 }
 
 .session-status.ready {
@@ -2780,6 +3608,43 @@ watch([showConfigPanel, fileSectionHeight], () => {
   text-overflow: ellipsis;
   min-width: 0;
   flex: 1;
+}
+
+.session-team-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.14);
+  border: 1px solid rgba(59, 130, 246, 0.34);
+  color: rgba(191, 219, 254, 0.86);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.session-team-label {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-inbox-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #E11D48;
+  color: #FFFFFF;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
 }
 
 .session-name .session-id {

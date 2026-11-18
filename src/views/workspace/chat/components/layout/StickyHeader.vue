@@ -3,7 +3,7 @@
  * StickyHeader - 粘性头部组件
  * 显示当前正在流式输出的消息，浮动在聊天内容上方
  */
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import CopyButton from '../ui/CopyButton.vue'
 import MarkdownRenderer from '@/components/base/MarkdownRenderer.vue'
 
@@ -35,10 +35,21 @@ const props = defineProps({
   isCopied: {
     type: Boolean,
     default: false
+  },
+  userQuestions: {
+    type: Array,
+    default: () => []
   }
 })
 
-const emit = defineEmits(['copy', 'scrollToUser'])
+const emit = defineEmits(['copy', 'scrollToUser', 'jumpToQuestion'])
+
+const stickyHeaderRef = ref(null)
+const questionListRef = ref(null)
+const showQuestionList = ref(false)
+
+const activeQuestionId = computed(() => props.message?.id || '')
+const questionCount = computed(() => props.userQuestions.length)
 
 // 格式化耗时
 function formatDuration(ms) {
@@ -102,13 +113,108 @@ function copyContent() {
 function scrollToUserMessage() {
   emit('scrollToUser')
 }
+
+function closeQuestionList() {
+  showQuestionList.value = false
+}
+
+async function toggleQuestionList() {
+  showQuestionList.value = !showQuestionList.value
+  if (!showQuestionList.value) {
+    return
+  }
+
+  await nextTick()
+  questionListRef.value
+    ?.querySelector('.question-list-item.active')
+    ?.scrollIntoView({ block: 'nearest' })
+}
+
+function jumpToQuestion(question) {
+  if (!question?.id) {
+    return
+  }
+  closeQuestionList()
+  emit('jumpToQuestion', question.id)
+}
+
+function handleDocumentPointerDown(event) {
+  if (!showQuestionList.value) {
+    return
+  }
+  if (stickyHeaderRef.value?.contains(event.target)) {
+    return
+  }
+  closeQuestionList()
+}
+
+function handleDocumentKeydown(event) {
+  if (event.key === 'Escape') {
+    closeQuestionList()
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleDocumentPointerDown)
+  document.addEventListener('keydown', handleDocumentKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleDocumentPointerDown)
+  document.removeEventListener('keydown', handleDocumentKeydown)
+})
 </script>
 
 <template>
-  <div class="sticky-header" :style="{ '--right-inset': cssRightInset }">
-    <div class="sticky-content" :style="{ '--max-height': cssMaxHeight, '--content-width': cssContentWidth }">
+  <div ref="stickyHeaderRef" class="sticky-header" :style="{ '--right-inset': cssRightInset }">
+    <div
+      class="sticky-content"
+      :class="{ 'question-list-mode': showQuestionList }"
+      :style="{ '--max-height': cssMaxHeight, '--content-width': cssContentWidth }"
+    >
+      <!-- 提问导航状态：原浮窗切换为全部提问 -->
+      <div v-if="showQuestionList" class="sticky-question-mode">
+        <div class="sticky-info question-list-toolbar">
+          <div class="question-list-heading">
+            <span>我的提问</span>
+            <span class="question-list-count">{{ questionCount }}</span>
+          </div>
+          <button
+            class="question-nav-btn active"
+            @click.stop="toggleQuestionList"
+            title="返回消息预览"
+            aria-label="返回消息预览"
+            :aria-expanded="true"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="7 9 12 4 17 9"></polyline>
+              <polyline points="7 15 12 20 17 15"></polyline>
+            </svg>
+          </button>
+          <button class="scroll-up-btn" @click="scrollToUserMessage" title="滚动到当前提问">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5"></line>
+              <polyline points="5 12 12 5 19 12"></polyline>
+            </svg>
+          </button>
+        </div>
+        <div ref="questionListRef" class="question-list-scroll">
+          <button
+            v-for="(question, index) in userQuestions"
+            :key="question.id"
+            class="question-list-item"
+            :class="{ active: question.id === activeQuestionId }"
+            :title="question.content"
+            @click="jumpToQuestion(question)"
+          >
+            <span class="question-list-index">{{ index + 1 }}</span>
+            <span class="question-list-text">{{ question.content }}</span>
+          </button>
+        </div>
+      </div>
+
       <!-- 折叠状态：简单信息 -->
-      <div class="sticky-collapsed">
+      <div v-else class="sticky-collapsed">
         <div class="sticky-info">
           <span v-if="formattedTime" class="sticky-time">
             <span class="sticky-info-icon">🕐</span>
@@ -126,6 +232,19 @@ function scrollToUserMessage() {
             <span class="sticky-info-icon">⚡</span>
             {{ formattedTokens }}
           </span>
+          <button
+            class="question-nav-btn"
+            :class="{ active: showQuestionList }"
+            @click.stop="toggleQuestionList"
+            title="展示所有我的提问"
+            aria-label="展示所有我的提问"
+            :aria-expanded="showQuestionList"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="7 9 12 4 17 9"></polyline>
+              <polyline points="7 15 12 20 17 15"></polyline>
+            </svg>
+          </button>
           <button class="scroll-up-btn" @click="scrollToUserMessage" title="滚动到提问">
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="19" x2="12" y2="5"></line>
@@ -137,7 +256,7 @@ function scrollToUserMessage() {
       </div>
 
       <!-- 展开状态：Markdown 渲染 -->
-      <div class="sticky-expanded">
+      <div v-if="!showQuestionList" class="sticky-expanded">
         <div class="sticky-info">
           <span v-if="formattedTime" class="sticky-time">
             <span class="sticky-info-icon">🕐</span>
@@ -155,6 +274,19 @@ function scrollToUserMessage() {
             <span class="sticky-info-icon">⚡</span>
             {{ formattedTokens }}
           </span>
+          <button
+            class="question-nav-btn"
+            :class="{ active: showQuestionList }"
+            @click.stop="toggleQuestionList"
+            title="展示所有我的提问"
+            aria-label="展示所有我的提问"
+            :aria-expanded="showQuestionList"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="7 9 12 4 17 9"></polyline>
+              <polyline points="7 15 12 20 17 15"></polyline>
+            </svg>
+          </button>
           <button class="scroll-up-btn" @click="scrollToUserMessage" title="滚动到提问">
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="19" x2="12" y2="5"></line>
@@ -269,8 +401,9 @@ function scrollToUserMessage() {
   color: #A78BFA;
 }
 
-/* 滚动到提问按钮 */
-.scroll-up-btn {
+/* 顶部操作按钮 */
+.scroll-up-btn,
+.question-nav-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -286,9 +419,115 @@ function scrollToUserMessage() {
   margin-left: 4px;
 }
 
-.scroll-up-btn:hover {
+.scroll-up-btn:hover,
+.question-nav-btn:hover,
+.question-nav-btn.active {
   background: rgba(255, 255, 255, 0.08);
   color: #E4E4E7;
+}
+
+.sticky-content.question-list-mode,
+.sticky-content.question-list-mode:hover {
+  width: min(520px, var(--content-width, 100%));
+  max-width: min(520px, var(--content-width, 100%));
+  max-height: var(--max-height, 300px);
+}
+
+.sticky-question-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-height: 0;
+  max-height: calc(var(--max-height, 300px) - 8px);
+  overflow: hidden;
+}
+
+.question-list-toolbar {
+  justify-content: flex-start;
+}
+
+.question-list-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  color: #E4E4E7;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.question-list-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #A1A1AA;
+  font-size: 10px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.question-list-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-height: 0;
+  max-height: calc(var(--max-height, 300px) - 42px);
+  padding: 2px 0 4px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #52525B transparent;
+}
+
+.question-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #D4D4D8;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.question-list-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #F4F4F5;
+}
+
+.question-list-item.active {
+  background: rgba(249, 115, 22, 0.14);
+  color: #FDBA74;
+}
+
+.question-list-index {
+  flex-shrink: 0;
+  min-width: 20px;
+  padding-top: 1px;
+  color: #71717A;
+  font-size: 10px;
+  text-align: right;
+}
+
+.question-list-item.active .question-list-index {
+  color: #F97316;
+}
+
+.question-list-text {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 /* 折叠时的文本：单行截断 */

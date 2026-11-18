@@ -9,6 +9,7 @@ import { logger } from '../../../../../utils/logger'
 import CopyButton from '../ui/CopyButton.vue'
 import BaseDialog from '@/components/base/BaseDialog.vue'
 import ContextUsageDetail from './ContextUsageDetail.vue'
+import { useAppStore } from '../../../../../stores/useAppStore'
 
 const props = defineProps({
   envInfo: {
@@ -71,6 +72,8 @@ const props = defineProps({
 
 const emit = defineEmits(['toggleSidebar', 'toggleCollapse', 'pidClick', 'toggleAgentRail', 'toggleViewMode', 'refreshCodexUsage', 'mcpAction', 'clearMcpError'])
 
+const appStore = useAppStore()
+
 // 使用 useMessage composable
 const { formatMcpServers, formatSkills, copiedMessageIndex, copyToClipboard } = useMessage()
 
@@ -78,6 +81,7 @@ const { formatMcpServers, formatSkills, copiedMessageIndex, copyToClipboard } = 
 const showEnvDetail = ref(false)
 const showMcpPanel = ref(false)
 const showSilentPanel = ref(false)
+const showInboxPanel = ref(false)
 const showContextDetailDialog = ref(false)
 const activeUsageTooltip = ref('')
 const topBarRef = ref(null)
@@ -218,6 +222,13 @@ const codexUsageError = computed(() => {
 })
 
 const silentMessageCount = computed(() => props.silentMessages?.length || 0)
+
+const currentInboxUnreadCount = computed(() => {
+  const sessionId = appStore.currentSession?.id
+  return sessionId ? appStore.inboxUnreadCounts[sessionId] || 0 : 0
+})
+
+const inboxMessages = computed(() => appStore.currentInboxMessages || [])
 
 function formatCompactNumber(value) {
   const num = Number(value)
@@ -572,6 +583,20 @@ function toggleSilentPanel() {
   showSilentPanel.value = !showSilentPanel.value
 }
 
+async function toggleInboxPanel() {
+  showInboxPanel.value = !showInboxPanel.value
+  if (showInboxPanel.value) {
+    await appStore.fetchCurrentInboxMessages()
+  }
+}
+
+async function markAllInboxRead() {
+  const unreadIds = inboxMessages.value
+    .filter(message => !message.read_at)
+    .map(message => message.message_id)
+  await appStore.ackCurrentInboxMessages(unreadIds)
+}
+
 function getSilentMessageContent(message) {
   return JSON.stringify(message?.params ?? message, null, 2)
 }
@@ -663,6 +688,20 @@ async function copySilentMessage(message, reverseIndex) {
         </div>
 
         <div class="env-right">
+          <button
+            v-if="appStore.currentSession"
+            type="button"
+            class="env-item env-inbox-btn"
+            :class="{ active: showInboxPanel }"
+            :aria-label="currentInboxUnreadCount > 0 ? `收件箱，${currentInboxUnreadCount} 条未读` : '收件箱'"
+            :title="currentInboxUnreadCount > 0 ? `查看 ${currentInboxUnreadCount} 条未读收件箱消息` : '查看收件箱消息'"
+            @click="toggleInboxPanel"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2.5 8.5L4.2 4.2C4.4 3.6 4.9 3.2 5.6 3.2H10.4C11.1 3.2 11.6 3.6 11.8 4.2L13.5 8.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M2.5 8.5H5.5L6.3 10H9.7L10.5 8.5H13.5V11.2C13.5 12.1 12.8 12.8 11.9 12.8H4.1C3.2 12.8 2.5 12.1 2.5 11.2V8.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+            </svg>
+          </button>
           <span
             v-if="sessionUsageSummary"
             class="env-item env-item-usage env-item-usage-clickable"
@@ -838,6 +877,35 @@ async function copySilentMessage(message, reverseIndex) {
               />
               <pre class="silent-content">{{ getSilentMessageContent(message) }}</pre>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showInboxPanel" class="inbox-detail-dropdown">
+        <div class="inbox-panel-header">
+          <span>收件箱</span>
+          <button
+            type="button"
+            class="inbox-ack-all-btn"
+            :disabled="currentInboxUnreadCount === 0"
+            @click="markAllInboxRead"
+          >
+            全部已读
+          </button>
+        </div>
+        <div v-if="!inboxMessages.length" class="inbox-empty">暂无收件箱消息</div>
+        <div v-else class="inbox-list">
+          <div
+            v-for="message in inboxMessages.slice().reverse()"
+            :key="message.message_id"
+            class="inbox-item"
+            :class="{ unread: !message.read_at }"
+          >
+            <div class="inbox-item-header">
+              <span class="inbox-sender">{{ message.sender_name || message.sender_session_id }}</span>
+              <span class="inbox-time">{{ new Date(message.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</span>
+            </div>
+            <div class="inbox-item-message">{{ message.message }}</div>
           </div>
         </div>
       </div>
@@ -1136,6 +1204,32 @@ async function copySilentMessage(message, reverseIndex) {
   background: rgba(244, 114, 182, 0.2);
 }
 
+.env-inbox-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  -webkit-app-region: no-drag;
+}
+
+.env-inbox-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+
+.env-inbox-btn.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary, #E4E4E7);
+}
+
 .env-icon {
   font-size: var(--font-size-sm);
 }
@@ -1331,6 +1425,100 @@ async function copySilentMessage(message, reverseIndex) {
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
   z-index: 140;
   -webkit-app-region: no-drag;
+}
+
+.inbox-detail-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 12px;
+  width: min(560px, calc(100vw - 32px));
+  max-height: 420px;
+  overflow: hidden;
+  background: #18181B;
+  border: 1px solid #3F3F46;
+  border-radius: 12px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  z-index: 140;
+  -webkit-app-region: no-drag;
+}
+
+.inbox-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid #27272A;
+  font-size: 13px;
+  font-weight: 600;
+  color: #F4F4F5;
+}
+
+.inbox-ack-all-btn {
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #93C5FD;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.inbox-ack-all-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.inbox-empty {
+  padding: 16px 14px;
+  color: #A1A1AA;
+  font-size: 13px;
+}
+
+.inbox-list {
+  max-height: 360px;
+  overflow: auto;
+  padding: 10px;
+}
+
+.inbox-item {
+  border: 1px solid #27272A;
+  border-radius: 10px;
+  background: #111113;
+  padding: 10px;
+}
+
+.inbox-item + .inbox-item {
+  margin-top: 10px;
+}
+
+.inbox-item.unread {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.inbox-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.inbox-sender {
+  font-size: 12px;
+  color: #93C5FD;
+  font-weight: 600;
+}
+
+.inbox-time {
+  font-size: 11px;
+  color: #71717A;
+}
+
+.inbox-item-message {
+  color: #E4E4E7;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .silent-panel-header {

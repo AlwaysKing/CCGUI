@@ -7,6 +7,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const logger = require('../../logger')
+const { getCcguiPath } = require('../../runtime-paths')
 
 const DEFAULT_ENTRY = {
   base_instructions: 'You are Codex, a coding agent. You and the user share the same workspace and collaborate to achieve the user\'s goals.',
@@ -84,7 +85,7 @@ const PLACEHOLDER_ENTRY = {
 }
 
 function getCatalogPath() {
-  return path.join(os.homedir(), '.ccgui', 'models.json')
+  return getCcguiPath('models.json')
 }
 
 function getUserCatalogPath() {

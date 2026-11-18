@@ -2,14 +2,29 @@ const { app, BrowserWindow, ipcMain, session, dialog, shell, protocol, systemPre
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const { Readable } = require('stream')
 const { execFile, fork, spawn } = require('child_process')
 const yaml = require('js-yaml')
+
+const requestedProfile = process.env.CCGUI_PROFILE
+const explicitProfile = requestedProfile === 'main' || requestedProfile === 'debug'
+  ? requestedProfile
+  : null
+process.env.CCGUI_PROFILE = explicitProfile || (
+  process.env.NODE_ENV === 'development' || !app.isPackaged
+    ? 'debug'
+    : 'main'
+)
+
+const runtimePaths = require('./runtime-paths')
 const { SessionManager } = require('./session/session-manager')
+const { AgentCommunicationService } = require('./agent-communication/agent-communication-service')
 const logger = require('./logger')
-const { encodeProjectPath, decodeProjectPath } = require('./project-paths')
+const { encodeProjectPath } = require('./project-paths')
 const appService = require('./services/app-service')
 const projectService = require('./services/project-service')
 const attachmentService = require('./services/attachment-service')
+const { AiAssistService } = require('./services/ai-assist-service')
 const codexAppServer = require('./services/codex-app-server')
 const providerInspector = require('./services/provider-inspector')
 const { getClaudePath } = require('./services/claude-path')
@@ -30,6 +45,7 @@ const SKILL_CONFIG = {
   codex: require('./adapters/codex/skill-config')
 }
 const processRegistry = require('./services/process-registry')
+const quitDiagnostics = require('./services/quit-diagnostics')
 const { buildAugmentedEnv } = require('./services/shell-env')
 const { localProxy } = require('./services/local-proxy')
 const { DEFAULT_ENTRY: DEFAULT_CODEX_CATALOG_ENTRY, getCatalogPath, normalizeCatalogConfig } = require('./services/local-proxy/model-catalog')
@@ -42,10 +58,33 @@ const DEV_SERVER_WS_URL = 'ws://127.0.0.1:5183'
 const MAC_SCREEN_CAPTURE_PRIVACY_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
 const PROJECT_MONITOR_WINDOW_TITLE = '浮窗'
 const RECENT_PROJECT_WINDOW_MS = 10 * 24 * 60 * 60 * 1000
+const APP_WINDOW_FOCUS_RETRY_DELAY_MS = 80
 
-if (isDevRuntime) {
+const isDebugProfile = process.env.CCGUI_PROFILE === 'debug'
+
+if (isDebugProfile) {
   const devUserDataPath = path.join(app.getPath('appData'), 'CCGUI-dev')
   app.setPath('userData', devUserDataPath)
+}
+
+const hasSingleInstanceLock = isDebugProfile
+  ? true
+  : app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.quit()
+} else if (!isDebugProfile) {
+  app.on('second-instance', () => {
+    const targetWindow = mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow
+      : BrowserWindow.getAllWindows().find(window => !window.isDestroyed())
+    if (!targetWindow) {
+      return
+    }
+    if (targetWindow.isMinimized()) {
+      targetWindow.restore()
+    }
+    activateAppWindow(targetWindow)
+  })
 }
 
 // 初始化日志系统
@@ -56,9 +95,12 @@ let isDev = isDevRuntime
 
 let mainWindow
 let sessionManager
+let agentCommunicationService
+let aiAssistService
 let projectActivityService
 let projectMonitorWindow
 let lastFocusedProjectWindow = null
+let appWindowActivationRequestId = 0
 let projectMonitorReady = false
 let projectMonitorPositioned = false
 let projectMonitorPositionSaveTimer = null
@@ -74,6 +116,8 @@ let screenshotRequestWebContents = null
 let screenshotHiddenWindow = null
 let screenshotCaptureActive = false
 let isAppQuitting = false
+let appShutdownPromise = null
+let appShutdownCompleted = false
 const pendingDockProjectOpens = []
 let appStartupStartedAt = Date.now()
 
@@ -84,7 +128,8 @@ protocol.registerSchemesAsPrivileged([
       secure: true,
       standard: true,
       supportFetchAPI: true,
-      corsEnabled: true
+      corsEnabled: true,
+      stream: true
     }
   }
 ])
@@ -97,7 +142,7 @@ function getIconPath() {
 }
 
 function getCcgGuiHistoryRoot() {
-  return path.join(os.homedir(), '.ccgui', 'projects')
+  return runtimePaths.getCcguiPath('projects')
 }
 
 function isAllowedAssetPath(filePath) {
@@ -114,11 +159,18 @@ function isAllowedAssetPath(filePath) {
     return true
   }
 
-  return typeof mimeType === 'string' && mimeType.startsWith('image/')
+  return mimeType === 'application/pdf' || (typeof mimeType === 'string' && mimeType.startsWith('image/'))
 }
 
 function buildAssetMimeType(filePath) {
   return attachmentService.inferMimeType(filePath) || 'application/octet-stream'
+}
+
+const ASSET_CORS_HEADERS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, HEAD, OPTIONS',
+  'access-control-allow-headers': 'Range',
+  'access-control-expose-headers': 'Content-Length, Content-Range, Accept-Ranges'
 }
 
 function createTextResponse(body, status) {
@@ -130,28 +182,104 @@ function createTextResponse(body, status) {
   })
 }
 
+function parseAssetRange(rangeHeader, fileSize) {
+  if (!rangeHeader) return null
+
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(String(rangeHeader).trim())
+  if (!match) return { invalid: true }
+
+  const [, startText, endText] = match
+  let start = startText ? Number(startText) : null
+  let end = endText ? Number(endText) : null
+
+  if (start === null) {
+    const suffixLength = end
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+      return { invalid: true }
+    }
+    start = Math.max(0, fileSize - suffixLength)
+    end = fileSize - 1
+  } else {
+    end = end === null ? fileSize - 1 : Math.min(end, fileSize - 1)
+  }
+
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    start < 0 ||
+    start >= fileSize ||
+    end < start
+  ) {
+    return { invalid: true }
+  }
+
+  return { start, end }
+}
+
 function registerAssetProtocol() {
   protocol.handle('ccgui-asset', async (request) => {
     try {
       const requestUrl = new URL(request.url)
       const rawPath = requestUrl.searchParams.get('path') || ''
-      const filePath = decodeURIComponent(rawPath)
+      const filePath = rawPath
 
       if (!filePath || !isAllowedAssetPath(filePath)) {
         return createTextResponse('Forbidden', 403)
+      }
+
+      if (request.method === 'OPTIONS') {
+        return new Response(null, {
+          status: 204,
+          headers: ASSET_CORS_HEADERS
+        })
       }
 
       if (!fs.existsSync(filePath)) {
         return createTextResponse('Not Found', 404)
       }
 
-      const data = fs.readFileSync(filePath)
-      return new Response(data, {
-        status: 200,
-        headers: {
-          'content-type': buildAssetMimeType(filePath),
-          'cache-control': 'no-store'
-        }
+      const stat = fs.statSync(filePath)
+      if (!stat.isFile()) {
+        return createTextResponse('Not Found', 404)
+      }
+
+      const range = parseAssetRange(request.headers.get('range'), stat.size)
+      if (range?.invalid) {
+        return new Response(null, {
+          status: 416,
+          headers: {
+            ...ASSET_CORS_HEADERS,
+            'content-range': `bytes */${stat.size}`,
+            'accept-ranges': 'bytes'
+          }
+        })
+      }
+
+      const start = range?.start ?? 0
+      const end = range?.end ?? Math.max(0, stat.size - 1)
+      const contentLength = stat.size === 0 ? 0 : end - start + 1
+      const headers = {
+        ...ASSET_CORS_HEADERS,
+        'content-type': buildAssetMimeType(filePath),
+        'content-length': String(contentLength),
+        'accept-ranges': 'bytes',
+        'cache-control': 'no-store'
+      }
+      if (range) {
+        headers['content-range'] = `bytes ${start}-${end}/${stat.size}`
+      }
+
+      if (request.method === 'HEAD' || stat.size === 0) {
+        return new Response(null, {
+          status: range ? 206 : 200,
+          headers
+        })
+      }
+
+      const stream = fs.createReadStream(filePath, { start, end })
+      return new Response(Readable.toWeb(stream), {
+        status: range ? 206 : 200,
+        headers
       })
     } catch (error) {
       logger.error('[AssetProtocol] Failed to resolve asset request', {
@@ -607,6 +735,100 @@ function sendTerminalHostRequest(type, payload = {}) {
   })
 }
 
+function waitForChildProcessExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true)
+  }
+
+  return new Promise(resolve => {
+    let settled = false
+    const finish = exited => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.removeListener('exit', handleExit)
+      resolve(exited)
+    }
+    const handleExit = () => finish(true)
+    const timer = setTimeout(() => finish(false), Math.max(0, Number(timeoutMs) || 0))
+    child.once('exit', handleExit)
+  })
+}
+
+function waitForPromiseWithin(promise, timeoutMs, label) {
+  return new Promise(resolve => {
+    let settled = false
+    const finish = result => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      quitDiagnostics.recordShutdownAction(`${label}-timeout`, { timeoutMs })
+      finish(false)
+    }, Math.max(0, Number(timeoutMs) || 0))
+
+    Promise.resolve(promise)
+      .then(() => finish(true))
+      .catch(error => {
+        quitDiagnostics.recordShutdownAction(`${label}-failed`, {
+          error: error.message
+        })
+        finish(false)
+      })
+  })
+}
+
+async function shutdownTerminalHost() {
+  const child = terminalHostProcess
+  if (!child) {
+    terminalSessions.clear()
+    return true
+  }
+
+  quitDiagnostics.recordShutdownAction('terminal-host-shutdown-requested', {
+    pid: child.pid
+  })
+  const exitPromise = waitForChildProcessExit(child, 2500)
+  try {
+    if (child.connected) {
+      child.send({ type: 'shutdown' }, error => {
+        if (!error) return
+        quitDiagnostics.recordShutdownAction('terminal-host-shutdown-send-failed', {
+          pid: child.pid,
+          error: error.message
+        })
+      })
+    }
+  } catch (error) {
+    quitDiagnostics.recordShutdownAction('terminal-host-shutdown-send-failed', {
+      pid: child.pid,
+      error: error.message
+    })
+  }
+
+  let exited = await exitPromise
+  if (!exited) {
+    const result = await processRegistry.terminateProcessTree(child.pid, {
+      graceMs: 1000,
+      forceWaitMs: 1000,
+      reason: 'terminal-host'
+    })
+    exited = result.remaining.length === 0
+    quitDiagnostics.recordShutdownAction('terminal-host-force-terminated', {
+      pid: child.pid,
+      remaining: result.remaining
+    })
+  }
+
+  if (terminalHostProcess === child) {
+    terminalHostProcess = null
+  }
+  terminalSessions.clear()
+  return exited
+}
+
 function disposeTerminalSession(terminalId) {
   const terminalSession = terminalSessions.get(terminalId)
   if (!terminalSession) return
@@ -646,6 +868,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      plugins: true,
       preload: path.join(__dirname, 'preload.js')
     }
   })
@@ -660,11 +883,12 @@ function createWindow() {
           `default-src 'self' ${DEV_SERVER_URL}; ` +
           `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${DEV_SERVER_URL} ${DEV_SERVER_WS_URL}; ` +
           `style-src 'self' 'unsafe-inline' ${DEV_SERVER_URL}; ` +
-          `connect-src 'self' ${DEV_SERVER_URL} ${DEV_SERVER_WS_URL} https: wss:; ` +
+          `connect-src 'self' ${DEV_SERVER_URL} ${DEV_SERVER_WS_URL} https: wss: ccgui-asset:; ` +
           `img-src 'self' data: ${DEV_SERVER_URL} https: ccgui-asset:; ` +
           `font-src 'self' data: ${DEV_SERVER_URL}; ` +
           `worker-src 'self' blob: ${DEV_SERVER_URL}; ` +
           `child-src 'self' blob: ${DEV_SERVER_URL}; ` +
+          "frame-src 'self' blob: ccgui-asset:; " +
           "object-src 'none';"
         ]
       }
@@ -728,12 +952,80 @@ function initSessionManager() {
     return
   }
 
+  aiAssistService = new AiAssistService({
+    onPreviewUpdated: broadcastSessionPreviewUpdated
+  })
+
   // Create SessionManager instance (webContents will be passed per-session)
   sessionManager = new SessionManager({
     onSessionEvent: (event, session) => {
       projectActivityService?.handleSessionEvent(event, session)
+      agentCommunicationService?.handleSessionEvent(event, session)
+      aiAssistService?.handleSessionEvent(event, session)
     }
   })
+  agentCommunicationService = new AgentCommunicationService({
+    sessionManager,
+    onSessionsChanged: broadcastAgentSessionsChanged,
+    onInboxChanged: broadcastAgentInboxChanged,
+    startSessionRecord: async ({ projectId, sessionId }) => {
+      const targetWindow = BrowserWindow.getAllWindows().find(win =>
+        win !== projectMonitorWindow &&
+        !win.isDestroyed() &&
+        win.projectId === projectId
+      ) || null
+      const session = await getOrCreateHydratedSession({
+        sessionId,
+        projectId,
+        webContents: targetWindow?.webContents || null,
+        createIfNotExists: true
+      })
+      if (!session.isRuntimeReady()) {
+        await session.start({ reason: 'agent-leader-start' })
+      }
+      return { success: true }
+    }
+  })
+  sessionManager.setAgentCommunicationService(agentCommunicationService)
+  agentCommunicationService.start().catch(error => {
+    logger.warn('[AgentCommunication] Failed to start service:', error.message)
+  })
+}
+
+function broadcastAgentSessionsChanged(payload = {}) {
+  if (isAppQuitting) {
+    return
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win === projectMonitorWindow || win.isDestroyed() || win.webContents.isDestroyed()) {
+      continue
+    }
+    win.webContents.send('sessions-changed', payload)
+  }
+}
+
+function broadcastSessionPreviewUpdated(payload = {}) {
+  if (isAppQuitting) {
+    return
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win === projectMonitorWindow || win.isDestroyed() || win.webContents.isDestroyed()) {
+      continue
+    }
+    win.webContents.send('session-preview-updated', payload)
+  }
+}
+
+function broadcastAgentInboxChanged(payload = {}) {
+  if (isAppQuitting) {
+    return
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win === projectMonitorWindow || win.isDestroyed() || win.webContents.isDestroyed()) {
+      continue
+    }
+    win.webContents.send('inbox-changed', payload)
+  }
 }
 
 function initProjectActivityService() {
@@ -746,6 +1038,9 @@ function initProjectActivityService() {
   projectActivityService.setMode(settings.floatingMonitorMode)
   projectActivityService.setStageManagerEnabled(settings.projectStageManagerEnabled)
   projectActivityService.on('updated', () => {
+    if (isAppQuitting) {
+      return
+    }
     broadcastProjectActivitySnapshot()
     syncProjectMonitorWindow()
   })
@@ -823,6 +1118,87 @@ function syncProjectWindowVisibility(win) {
   }
   const visible = isProjectWindowVisible(win)
   projectActivityService.setProjectWindowVisible(win.projectId, visible)
+}
+
+function activateAppWindow(win) {
+  if (!win || win.isDestroyed()) {
+    return
+  }
+
+  if (win.isMinimized()) {
+    win.restore()
+  }
+  win.setSkipTaskbar(false)
+  win.show()
+
+  const requestId = ++appWindowActivationRequestId
+  let focusObserved = win.isFocused()
+  const handleFocus = () => {
+    focusObserved = true
+  }
+  if (!focusObserved) {
+    win.once('focus', handleFocus)
+  }
+
+  const cleanup = () => {
+    if (!win.isDestroyed()) {
+      win.removeListener('focus', handleFocus)
+    }
+  }
+  const activateApplication = () => {
+    if (win.isDestroyed() || requestId !== appWindowActivationRequestId) {
+      return false
+    }
+    if (process.platform === 'darwin') {
+      // 保留用户点击上下文，先同步发起 App 激活。
+      app.focus({ steal: true })
+    }
+    return true
+  }
+  const focusWindow = () => {
+    if (
+      win.isDestroyed() ||
+      requestId !== appWindowActivationRequestId ||
+      !win.isVisible() ||
+      win.isMinimized()
+    ) {
+      return false
+    }
+    win.focus()
+    win.moveTop?.()
+    return true
+  }
+
+  activateApplication()
+  setImmediate(() => {
+    // macOS 完成 App 激活是异步的，窗口聚焦放到下一个事件循环，
+    // 避免非激活浮窗中的同步 focus 请求被系统丢弃。
+    if (!focusWindow()) {
+      cleanup()
+      return
+    }
+
+    setTimeout(() => {
+      if (
+        win.isDestroyed() ||
+        requestId !== appWindowActivationRequestId ||
+        !win.isVisible() ||
+        win.isMinimized()
+      ) {
+        cleanup()
+        return
+      }
+      if (!focusObserved && !win.isFocused()) {
+        logger.debug('[Window] Retrying app window activation', {
+          windowId: win.id,
+          projectId: win.projectId || null
+        })
+        activateApplication()
+        focusWindow()
+      }
+      cleanup()
+    }, APP_WINDOW_FOCUS_RETRY_DELAY_MS)
+  })
 }
 
 function getProjectStageManagerTargetWindow(preferredProjectId = null) {
@@ -1039,6 +1415,11 @@ function setProjectMonitorWindowTitle() {
 }
 
 function ensureProjectMonitorWindow() {
+  if (isAppQuitting) {
+    quitDiagnostics.recordShutdownAction('project-monitor-window-create-skipped')
+    return null
+  }
+
   if (projectMonitorWindow && !projectMonitorWindow.isDestroyed()) {
     return projectMonitorWindow
   }
@@ -1137,6 +1518,17 @@ function ensureProjectMonitorWindow() {
 }
 
 function syncProjectMonitorWindow() {
+  if (isAppQuitting) {
+    quitDiagnostics.recordShutdownAction('project-monitor-sync-skipped-during-quit')
+    if (projectMonitorWindow && !projectMonitorWindow.isDestroyed()) {
+      projectMonitorWindow.destroy()
+      projectMonitorWindow = null
+    }
+    projectMonitorReady = false
+    projectMonitorPositioned = false
+    return
+  }
+
   if (!projectActivityService) {
     return
   }
@@ -1236,14 +1628,13 @@ async function restoreProjectWindowById(projectId, { focus = true, sessionId = n
   }
 
   if (projectWindow && !projectWindow.isDestroyed()) {
-    projectWindow.setSkipTaskbar(false)
-    if (projectWindow.isMinimized()) {
-      projectWindow.restore()
-    }
     if (focus) {
-      projectWindow.show()
-      projectWindow.focus()
+      activateAppWindow(projectWindow)
     } else {
+      projectWindow.setSkipTaskbar(false)
+      if (projectWindow.isMinimized()) {
+        projectWindow.restore()
+      }
       projectWindow._stageManagerHidden = false
       projectWindow.showInactive()
     }
@@ -1286,7 +1677,9 @@ const PROJECT_HIDDEN_RULES_RELATIVE_PATH = '.ccgui/hidden'
 const FILE_TREE_DEFAULT_HIDDEN_RULES = ['.DS_Store']
 const projectHiddenRuleCache = new Map()
 
-const MAX_PREVIEW_FILE_SIZE = 1024 * 1024
+const MAX_TEXT_PREVIEW_FILE_SIZE = 1024 * 1024
+const IMAGE_PREVIEW_CONFIRM_SIZE = 20 * 1024 * 1024
+const PDF_PREVIEW_CONFIRM_SIZE = 50 * 1024 * 1024
 
 function normalizePathSlashes(value = '') {
   return String(value || '').replace(/\\/g, '/')
@@ -2014,7 +2407,7 @@ async function getOrCreateHydratedSession({
   webContents,
   createIfNotExists = true
 }) {
-  const resolvedProjectPath = projectPath || (projectId ? decodeProjectPath(projectId) : null)
+  const resolvedProjectPath = projectPath || (projectId ? projectService.getProjectPath(projectId) : null)
   const resolvedProjectId = projectId || (resolvedProjectPath ? encodeProjectPath(resolvedProjectPath) : null)
   const sessionExisted = sessionManager.hasSession(sessionId)
   let hasPersistedHistory = false
@@ -2065,7 +2458,7 @@ ipcMain.on('frontend-log', (event, args) => {
 })
 
 // Ensure log directory exists
-ipcMain.handle('ensure-log-dir', async (event, { baseDir = '/tmp/ccgui' }) => {
+ipcMain.handle('ensure-log-dir', async (event, { baseDir = runtimePaths.getLogDir() } = {}) => {
   logger.info('[IPC] ensure-log-dir called', { baseDir })
   try {
     // 日志模块已经在 initialize() 中创建了目录，但我们可以再次确保
@@ -2136,6 +2529,43 @@ ipcMain.handle('select-session', async (event, { sessionId, projectId, projectPa
 ipcMain.handle('get-session-state', async (event, { sessionId }) => {
   const state = sessionManager.getSessionState(sessionId)
   return state
+})
+
+ipcMain.handle('list-session-history-turns', async (event, { sessionId }) => {
+  try {
+    const session = sessionManager.getSession(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    return {
+      success: true,
+      turns: historyManager.loadIndexEntries(session.projectId, sessionId)
+    }
+  } catch (error) {
+    logger.error('[IPC] list-session-history-turns error:', {
+      sessionId,
+      message: error.message
+    })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('unload-session-history-turns', async (event, { sessionId, turnIds = [] }) => {
+  try {
+    const result = await sessionManager.unloadHistoryTurns(sessionId, turnIds)
+    return {
+      success: true,
+      ...result
+    }
+  } catch (error) {
+    logger.error('[IPC] unload-session-history-turns error:', {
+      sessionId,
+      turnIds,
+      message: error.message
+    })
+    return { success: false, error: error.message }
+  }
 })
 
 ipcMain.handle('load-session-history-turn', async (event, { sessionId, turnId }) => {
@@ -2374,6 +2804,21 @@ ipcMain.handle('send-interrupt', async (event, options) => {
   }
 })
 
+ipcMain.handle('close-subagent-agent', async (event, { sessionId, agentId } = {}) => {
+  logger.info('[IPC] close-subagent-agent:', { sessionId, agentId })
+  if (!sessionId || !agentId) {
+    return { success: false, error: 'Missing sessionId or agentId' }
+  }
+
+  try {
+    const result = await sessionManager.closeSubagentAgent(sessionId, agentId)
+    return { success: true, data: result || null }
+  } catch (error) {
+    logger.error('[IPC] close-subagent-agent error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
 // Send control request (主动请求，如切换权限模式)
 ipcMain.handle('send-control-request', async (event, { sessionId, request }) => {
   logger.info('[IPC] send-control-request:', { sessionId, request })
@@ -2571,7 +3016,7 @@ ipcMain.handle('add-project', async (event, { projectPath, settings }) => {
 
 // Ensure CCAgent built-in project exists
 ipcMain.handle('ensure-ccagent-project', async () => {
-  const ccagentPath = path.join(os.homedir(), '.ccgui', 'ccagent')
+  const ccagentPath = runtimePaths.getCcguiPath('ccagent')
 
   try {
     // 1. 创建目录（如不存在）
@@ -2762,7 +3207,7 @@ ipcMain.handle('set-session-submodel', async (event, {
     const session = await getOrCreateHydratedSession({
       sessionId,
       projectId,
-      projectPath: workingDirectory || (projectId ? decodeProjectPath(projectId) : null),
+      projectPath: workingDirectory || (projectId ? projectService.getProjectPath(projectId) : null),
       webContents: event.sender,
       createIfNotExists: true
     })
@@ -2806,7 +3251,7 @@ ipcMain.handle('set-session-model', async (event, {
     const session = await getOrCreateHydratedSession({
       sessionId,
       projectId,
-      projectPath: workingDirectory || decodeProjectPath(projectId),
+      projectPath: workingDirectory || projectService.getProjectPath(projectId),
       webContents: event.sender,
       createIfNotExists: true
     })
@@ -2844,7 +3289,7 @@ ipcMain.handle('set-session-target', async (event, {
     const session = await getOrCreateHydratedSession({
       sessionId,
       projectId,
-      projectPath: workingDirectory || decodeProjectPath(projectId),
+      projectPath: workingDirectory || projectService.getProjectPath(projectId),
       webContents: event.sender,
       createIfNotExists: true
     })
@@ -2884,7 +3329,7 @@ ipcMain.handle('set-session-effort', async (event, {
     const session = await getOrCreateHydratedSession({
       sessionId,
       projectId,
-      projectPath: workingDirectory || decodeProjectPath(projectId),
+      projectPath: workingDirectory || projectService.getProjectPath(projectId),
       webContents: event.sender,
       createIfNotExists: true
     })
@@ -3021,28 +3466,74 @@ ipcMain.handle('get-running-sessions', async () => {
       ready: session.isRuntimeReady(),
       processing: session.isProcessing,
       streaming: session.currentStreamingAssistantId !== null,
+      activeAgentIds: typeof session.getActiveAgentIds === 'function'
+        ? session.getActiveAgentIds()
+        : [],
       // 添加实时统计信息
       messageCount: messages.length,
-      updatedAt: lastMessage?.timestamp || new Date().toISOString(),
+      updatedAt: lastMessage?.timestamp || null,
       autoApprove: Boolean(session.autoApprove)
     }
   }
   return sessionStatuses
 })
 
+ipcMain.handle('get-inbox-summary', async (event, { projectId }) => {
+  if (!agentCommunicationService || !projectId) {
+    return {}
+  }
+  return agentCommunicationService.getInboxUnreadCounts(projectId)
+})
+
+ipcMain.handle('get-session-inbox', async (event, { projectId, sessionId, unreadOnly = false }) => {
+  if (!agentCommunicationService || !projectId || !sessionId) {
+    return []
+  }
+  return agentCommunicationService.getSessionInbox(projectId, sessionId, { unreadOnly })
+})
+
+ipcMain.handle('ack-session-inbox', async (event, { projectId, sessionId, messageIds = [] }) => {
+  if (!agentCommunicationService || !projectId || !sessionId) {
+    return { success: false, error: 'Invalid inbox ack request' }
+  }
+  const acknowledged = agentCommunicationService.ackSessionInbox(projectId, sessionId, messageIds)
+  return { success: true, acknowledgedMessageIds: acknowledged }
+})
+
+ipcMain.handle('dissolve-team', async (event, { projectId, teamId }) => {
+  if (!agentCommunicationService || !projectId || !teamId) {
+    return { success: false, error: 'Invalid dissolve team request' }
+  }
+  const result = await agentCommunicationService.dissolveTeam(projectId, teamId)
+  return { success: result.ok, ...result }
+})
+
+ipcMain.handle('destroy-team', async (event, { projectId, teamId }) => {
+  if (!agentCommunicationService || !projectId || !teamId) {
+    return { success: false, error: 'Invalid destroy team request' }
+  }
+  const result = await agentCommunicationService.destroyTeam(projectId, teamId)
+  return { success: result.ok, ...result }
+})
+
 // Create a new session
-ipcMain.handle('create-session', async (event, { projectId, name, settings }) => {
+ipcMain.handle('create-session', async (event, { projectId, name, settings, teamId, role }) => {
   const nextSettings = {
     ...(settings || {}),
     ...(settings?.debug === undefined ? { debug: isDev === true } : {})
   }
 
-  const sessionConfig = await projectService.createSession(projectId, name, nextSettings)
+  const sessionConfig = await projectService.createSession(projectId, name, nextSettings, {
+    teamId,
+    role
+  })
 
   return {
     id: sessionConfig.id,
     projectId,
     name: sessionConfig.name,
+    teamId: sessionConfig.teamId || null,
+    role: sessionConfig.role || null,
     preview: '',
     createdAt: sessionConfig.createdAt,
     updatedAt: sessionConfig.updatedAt,
@@ -3066,6 +3557,34 @@ ipcMain.handle('delete-session', async (event, { sessionId, projectId }) => {
     return { success: true, ...result }
   } catch (e) {
     logger.error('[Sessions] Failed to delete session cleanly', { sessionId, projectId, error: e.message })
+    return { success: false, error: e.message }
+  }
+})
+
+ipcMain.handle('delete-sessions', async (event, { sessionIds, projectId }) => {
+  if (!projectId || !Array.isArray(sessionIds) || sessionIds.length === 0) {
+    return { success: false, error: 'Invalid delete sessions request' }
+  }
+
+  for (const sessionId of sessionIds) {
+    sessionManager.closeSession(sessionId)
+  }
+
+  try {
+    const result = await projectService.deleteSessions(projectId, sessionIds)
+    logger.info('[Sessions] Deleted sessions batch', {
+      projectId,
+      requestedCount: sessionIds.length,
+      deletedCount: result.deletedSessionIds?.length || 0,
+      failureCount: result.failures?.length || 0
+    })
+    return result
+  } catch (e) {
+    logger.error('[Sessions] Failed to delete sessions batch', {
+      projectId,
+      requestedCount: sessionIds.length,
+      error: e.message
+    })
     return { success: false, error: e.message }
   }
 })
@@ -3158,11 +3677,7 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
     if (existingWindow) {
       // Focus the existing window instead of creating a new one
       projectActivityService?.restoreProject(projectId)
-      if (existingWindow.isMinimized()) {
-        existingWindow.restore()
-      }
-      existingWindow.show()
-      existingWindow.focus()
+      activateAppWindow(existingWindow)
       enforceProjectStageManager(existingWindow)
       logger.info('[Window] Project already open, focused existing window', { projectId, windowId: existingWindow.id })
       return { success: true, windowId: existingWindow.id, reused: true }
@@ -3189,7 +3704,8 @@ ipcMain.handle('open-project-in-new-window', async (event, { projectId }) => {
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
         contextIsolation: true,
-        nodeIntegration: false
+        nodeIntegration: false,
+        plugins: true
       }
     })
 
@@ -3263,11 +3779,7 @@ ipcMain.handle('focus-project-window', async (event, { projectId }) => {
     if (existingWindow) {
       // Focus the existing window
       projectActivityService?.restoreProject(projectId)
-      if (existingWindow.isMinimized()) {
-        existingWindow.restore()
-      }
-      existingWindow.show()
-      existingWindow.focus()
+      activateAppWindow(existingWindow)
       logger.info('[Window] Project already open in another window, focused it', { projectId, windowId: existingWindow.id })
       return { focused: true, windowId: existingWindow.id }
     }
@@ -3603,7 +4115,7 @@ ipcMain.handle('read-project-file', async (event, { projectPath, filePath }) => 
       throw new Error('目标不是文件')
     }
 
-    if (stat.size > MAX_PREVIEW_FILE_SIZE) {
+    if (stat.size > MAX_TEXT_PREVIEW_FILE_SIZE) {
       return {
         success: false,
         error: '文件过大，暂不支持预览',
@@ -3659,7 +4171,46 @@ const IMAGE_MIME_MAP = {
   avif: 'image/avif'
 }
 
-ipcMain.handle('read-image-file', async (event, { projectPath, filePath }) => {
+function buildAssetPreviewUrl(absolutePath, stat) {
+  const assetUrl = new URL('ccgui-asset://local')
+  assetUrl.searchParams.set('path', absolutePath)
+  assetUrl.searchParams.set('version', String(Math.round(stat.mtimeMs)))
+  return assetUrl.toString()
+}
+
+function buildMediaPreviewResult({ absolutePath, displayPath, fileType, force = false }) {
+  const stat = fs.statSync(absolutePath)
+  if (!stat.isFile()) {
+    throw new Error('目标不是文件')
+  }
+
+  const threshold = fileType === 'pdf' ? PDF_PREVIEW_CONFIRM_SIZE : IMAGE_PREVIEW_CONFIRM_SIZE
+  const file = {
+    path: displayPath,
+    name: path.basename(absolutePath),
+    size: stat.size,
+    updatedAt: stat.mtime.toISOString()
+  }
+
+  if (stat.size > threshold && !force) {
+    return {
+      success: true,
+      requiresConfirmation: true,
+      warning: {
+        fileType,
+        size: stat.size,
+        threshold
+      },
+      file
+    }
+  }
+
+  file.content = buildAssetPreviewUrl(absolutePath, stat)
+  file.language = fileType
+  return { success: true, file }
+}
+
+ipcMain.handle('read-image-file', async (event, { projectPath, filePath, force = false } = {}) => {
   try {
     if (!projectPath || !filePath) {
       throw new Error('缺少文件路径')
@@ -3672,42 +4223,41 @@ ipcMain.handle('read-image-file', async (event, { projectPath, filePath }) => {
     }
 
     const absolutePath = resolveProjectTargetPath(projectPath, filePath)
-    const stat = fs.statSync(absolutePath)
-
-    if (!stat.isFile()) {
-      throw new Error('目标不是文件')
-    }
-
-    if (stat.size > MAX_PREVIEW_FILE_SIZE) {
-      return {
-        success: false,
-        error: '文件过大，暂不支持预览',
-        code: 'FILE_TOO_LARGE',
-        file: { path: filePath, size: stat.size }
-      }
-    }
-
-    const buffer = fs.readFileSync(absolutePath)
-    const base64 = buffer.toString('base64')
-    const dataUrl = `data:${mime};base64,${base64}`
-
-    return {
-      success: true,
-      file: {
-        path: filePath,
-        name: path.basename(filePath),
-        content: dataUrl,
-        size: stat.size,
-        updatedAt: stat.mtime.toISOString()
-      }
-    }
+    return buildMediaPreviewResult({
+      absolutePath,
+      displayPath: filePath,
+      fileType: 'image',
+      force
+    })
   } catch (error) {
     logger.error('[Files] Failed to read image file', { projectPath, filePath, error: error.message })
     return { success: false, error: error.message }
   }
 })
 
-ipcMain.handle('read-attachment-image', async (event, { filePath }) => {
+ipcMain.handle('read-pdf-file', async (event, { projectPath, filePath, force = false } = {}) => {
+  try {
+    if (!projectPath || !filePath) {
+      throw new Error('缺少文件路径')
+    }
+    if (path.extname(filePath).toLowerCase() !== '.pdf') {
+      throw new Error('不支持的 PDF 格式')
+    }
+
+    const absolutePath = resolveProjectTargetPath(projectPath, filePath)
+    return buildMediaPreviewResult({
+      absolutePath,
+      displayPath: filePath,
+      fileType: 'pdf',
+      force
+    })
+  } catch (error) {
+    logger.error('[Files] Failed to read PDF file', { projectPath, filePath, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('read-attachment-image', async (event, { filePath, force = false } = {}) => {
   try {
     if (!filePath) {
       throw new Error('缺少文件路径')
@@ -3720,37 +4270,36 @@ ipcMain.handle('read-attachment-image', async (event, { filePath }) => {
     }
 
     const absolutePath = path.resolve(filePath)
-    const stat = fs.statSync(absolutePath)
-
-    if (!stat.isFile()) {
-      throw new Error('目标不是文件')
-    }
-
-    if (stat.size > MAX_PREVIEW_FILE_SIZE) {
-      return {
-        success: false,
-        error: '文件过大，暂不支持预览',
-        code: 'FILE_TOO_LARGE',
-        file: { path: absolutePath, size: stat.size }
-      }
-    }
-
-    const buffer = fs.readFileSync(absolutePath)
-    const base64 = buffer.toString('base64')
-    const dataUrl = `data:${mime};base64,${base64}`
-
-    return {
-      success: true,
-      file: {
-        path: absolutePath,
-        name: path.basename(absolutePath),
-        content: dataUrl,
-        size: stat.size,
-        updatedAt: stat.mtime.toISOString()
-      }
-    }
+    return buildMediaPreviewResult({
+      absolutePath,
+      displayPath: absolutePath,
+      fileType: 'image',
+      force
+    })
   } catch (error) {
     logger.error('[Files] Failed to read attachment image', { filePath, error: error.message })
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('read-attachment-pdf', async (event, { filePath, force = false } = {}) => {
+  try {
+    if (!filePath) {
+      throw new Error('缺少文件路径')
+    }
+    if (path.extname(filePath).toLowerCase() !== '.pdf') {
+      throw new Error('不支持的 PDF 格式')
+    }
+
+    const absolutePath = path.resolve(filePath)
+    return buildMediaPreviewResult({
+      absolutePath,
+      displayPath: absolutePath,
+      fileType: 'pdf',
+      force
+    })
+  } catch (error) {
+    logger.error('[Files] Failed to read attachment PDF', { filePath, error: error.message })
     return { success: false, error: error.message }
   }
 })
@@ -3768,7 +4317,7 @@ ipcMain.handle('read-attachment-file', async (event, { filePath }) => {
       throw new Error('目标不是文件')
     }
 
-    if (stat.size > MAX_PREVIEW_FILE_SIZE) {
+    if (stat.size > MAX_TEXT_PREVIEW_FILE_SIZE) {
       return {
         success: false,
         error: '文件过大，暂不支持预览',
@@ -5404,7 +5953,7 @@ ipcMain.handle('download-skill', async (event, { slug }) => {
     const { execSync } = require('child_process')
     const os = require('os')
 
-    const skillsDir = path.join(os.homedir(), '.ccgui', 'skills', 'clawhub')
+    const skillsDir = runtimePaths.getCcguiPath('skills', 'clawhub')
     const skillDir = path.join(skillsDir, slug)
 
     // 如果已存在，先删除
@@ -5496,7 +6045,7 @@ ipcMain.handle('check-skill-downloaded', async (event, { slug }) => {
     const fs = require('fs')
     const path = require('path')
     const os = require('os')
-    const skillDir = path.join(os.homedir(), '.ccgui', 'skills', 'clawhub', slug)
+    const skillDir = runtimePaths.getCcguiPath('skills', 'clawhub', slug)
     return { success: true, downloaded: fs.existsSync(skillDir) }
   } catch (error) {
     return { success: false, downloaded: false }
@@ -5529,7 +6078,7 @@ ipcMain.handle('install-openai-market-skill', async (event, { skillId, repoPath 
 
 ipcMain.handle('list-downloaded-skills', async (event, options = {}) => {
   try {
-    const skillsRoot = path.join(os.homedir(), '.ccgui', 'skills')
+    const skillsRoot = runtimePaths.getCcguiPath('skills')
     const includeExternal = options?.includeExternal === true
 
     const skills = []
@@ -5881,7 +6430,7 @@ ipcMain.handle('install-skill', async (event, { source }) => {
     const https = require('https')
     const http = require('http')
 
-    const skillsRoot = path.join(os.homedir(), '.ccgui', 'skills')
+    const skillsRoot = runtimePaths.getCcguiPath('skills')
     fs.mkdirSync(skillsRoot, { recursive: true })
 
     // URL → 先下载到 /tmp
@@ -5979,7 +6528,7 @@ ipcMain.handle('delete-skill', async (event, { name, source }) => {
     const path = require('path')
     const os = require('os')
 
-    const skillDir = path.join(os.homedir(), '.ccgui', 'skills', source, name)
+    const skillDir = runtimePaths.getCcguiPath('skills', source, name)
 
     if (!fs.existsSync(skillDir)) {
       return { success: false, error: '技能不存在' }
@@ -6087,7 +6636,7 @@ ipcMain.handle('activate-skill', async (event, { slug, source, targets }) => {
     const path = require('path')
     const os = require('os')
 
-    const skillPath = path.join(os.homedir(), '.ccgui', 'skills', source, slug)
+    const skillPath = runtimePaths.getCcguiPath('skills', source, slug)
     if (!fs.existsSync(skillPath)) {
       return { success: false, error: '技能不存在' }
     }
@@ -6249,7 +6798,7 @@ ipcMain.handle('download-mcp', async (event, { server }) => {
       return { success: false, error: 'Invalid server name' }
     }
 
-    const mcpsDir = path.join(os.homedir(), '.ccgui', 'mcps')
+    const mcpsDir = runtimePaths.getCcguiPath('mcps')
     fs.mkdirSync(mcpsDir, { recursive: true })
 
     const mcpFile = path.join(mcpsDir, `${slug}.json`)
@@ -6311,7 +6860,7 @@ ipcMain.handle('download-mcp', async (event, { server }) => {
 // 列出已下载的 MCP 服务器
 ipcMain.handle('list-downloaded-mcps', async () => {
   try {
-    const mcpsDir = path.join(os.homedir(), '.ccgui', 'mcps')
+    const mcpsDir = runtimePaths.getCcguiPath('mcps')
     const mcps = []
 
     if (fs.existsSync(mcpsDir)) {
@@ -6428,7 +6977,7 @@ ipcMain.handle('install-mcp', async (event, { slug, target, envValues }) => {
     const os = require('os')
 
     // 读取 MCP 数据
-    const mcpFile = path.join(os.homedir(), '.ccgui', 'mcps', `${slug}.json`)
+    const mcpFile = runtimePaths.getCcguiPath('mcps', `${slug}.json`)
     if (!fs.existsSync(mcpFile)) {
       return { success: false, error: 'MCP 配置不存在' }
     }
@@ -6477,7 +7026,7 @@ ipcMain.handle('delete-mcp', async (event, { slug }) => {
     }
 
     // 删除 JSON 文件
-    const mcpFile = path.join(os.homedir(), '.ccgui', 'mcps', `${slug}.json`)
+    const mcpFile = runtimePaths.getCcguiPath('mcps', `${slug}.json`)
     if (fs.existsSync(mcpFile)) {
       fs.unlinkSync(mcpFile)
     }
@@ -6503,7 +7052,7 @@ ipcMain.handle('list-project-skills', async (event, { projectPath }) => {
     if (!projectPath) return { success: true, skills: [] }
 
     // 获取全局下载的 skills（用于关联）
-    const globalSkillsRoot = path.join(os.homedir(), '.ccgui', 'skills')
+    const globalSkillsRoot = runtimePaths.getCcguiPath('skills')
     const globalSkillsMap = new Map() // slug -> { source, skillPath }
     if (fs.existsSync(globalSkillsRoot)) {
       for (const sourceEntry of fs.readdirSync(globalSkillsRoot, { withFileTypes: true })) {
@@ -6619,7 +7168,7 @@ ipcMain.handle('activate-skill-to-project', async (event, { slug, source, target
 
     if (!projectPath) return { success: false, error: '未指定项目路径' }
 
-    const skillPath = path.join(os.homedir(), '.ccgui', 'skills', source, slug)
+    const skillPath = runtimePaths.getCcguiPath('skills', source, slug)
     if (!fs.existsSync(skillPath)) {
       return { success: false, error: '技能不存在，请先从"已下载"中确认该技能已下载' }
     }
@@ -6830,7 +7379,7 @@ ipcMain.handle('list-project-mcps', async (event, { projectPath }) => {
     if (!projectPath) return { success: true, mcps: [] }
 
     // 获取全局下载的 MCP（用于关联）
-    const globalMcpsDir = path.join(os.homedir(), '.ccgui', 'mcps')
+    const globalMcpsDir = runtimePaths.getCcguiPath('mcps')
     const globalMcpsMap = new Map() // slug -> data
     if (fs.existsSync(globalMcpsDir)) {
       for (const file of fs.readdirSync(globalMcpsDir).filter(f => f.endsWith('.json'))) {
@@ -6916,7 +7465,7 @@ ipcMain.handle('install-mcp-to-project', async (event, { slug, target, envValues
     if (!projectPath) return { success: false, error: '未指定项目路径' }
 
     // 读取 MCP 数据
-    const mcpFile = path.join(os.homedir(), '.ccgui', 'mcps', `${slug}.json`)
+    const mcpFile = runtimePaths.getCcguiPath('mcps', `${slug}.json`)
     if (!fs.existsSync(mcpFile)) {
       return { success: false, error: 'MCP 配置不存在，请先从"已下载"中确认该 MCP 已下载' }
     }
@@ -7288,8 +7837,7 @@ app.on('open-file', (event, filePath) => {
     if (existingWindow) {
       logger.info('[Dock] Found existing window for project, focusing it')
       projectActivityService?.restoreProject(existingWindow.projectId)
-      existingWindow.show()
-      existingWindow.focus()
+      activateAppWindow(existingWindow)
       return
     }
 
@@ -7350,11 +7898,7 @@ function openProjectWindow(projectId, projectName, projectPath, sessionId = null
   if (existingWindow) {
     // Focus the existing window instead of creating a new one
     projectActivityService?.restoreProject(projectId)
-    if (existingWindow.isMinimized()) {
-      existingWindow.restore()
-    }
-    existingWindow.show()
-    existingWindow.focus()
+    activateAppWindow(existingWindow)
     enforceProjectStageManager(existingWindow)
     requestProjectSessionSelection(existingWindow, sessionId)
     logger.info('[Window] Project already open, focused existing window', { projectId, windowId: existingWindow.id })
@@ -7374,7 +7918,8 @@ function openProjectWindow(projectId, projectName, projectPath, sessionId = null
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      plugins: true
     }
   })
   const newWindowWebContentsId = newWindow.webContents.id
@@ -7441,7 +7986,8 @@ function openWelcomeWithDropPath(folderPath) {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      plugins: true
     }
   })
   trackProjectWindow(newWindow)
@@ -7493,7 +8039,7 @@ function flushPendingDockProjectOpens() {
     const existingWindow = findWindowByProjectPath(pendingProject.projectPath)
     if (existingWindow) {
       logger.info('[Dock] Found existing window for queued project, focusing it')
-      existingWindow.focus()
+      activateAppWindow(existingWindow)
       continue
     }
 
@@ -7509,7 +8055,7 @@ function flushPendingDockProjectOpens() {
  * Open CCAgent built-in project in a new window
  */
 function openCCAgentWindow() {
-  const ccagentPath = path.join(os.homedir(), '.ccgui', 'ccagent')
+  const ccagentPath = runtimePaths.getCcguiPath('ccagent')
   const projectId = encodeProjectPath(ccagentPath)
   const projectName = 'CCAgent'
 
@@ -7567,7 +8113,8 @@ function isDockRecentProject(project) {
   }
 
   const normalizedPath = String(project.path).replace(/\\/g, '/')
-  if (normalizedPath.endsWith('/.ccgui/ccagent')) {
+  const ccagentPath = String(runtimePaths.getCcguiPath('ccagent')).replace(/\\/g, '/')
+  if (normalizedPath === ccagentPath) {
     return false
   }
 
@@ -7694,7 +8241,8 @@ function createNewWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      plugins: true
     }
   })
   trackProjectWindow(newWindow)
@@ -7730,15 +8278,24 @@ function createNewWindow() {
 // App lifecycle
 
 app.whenReady().then(() => {
-  // 清理上次异常退出残留的 provider 进程（开发模式下跳过）
-  if (!isDevRuntime) {
-    processRegistry.cleanupStaleInstances()
+  if (!hasSingleInstanceLock) {
+    return
   }
+
+  // 先核对上次退出留下的进程，再清理本 profile 的 PID 注册表。
+  quitDiagnostics.checkPreviousShutdown()
+  processRegistry.cleanupStaleInstances()
 
   appStartupStartedAt = Date.now()
   // Update isDev flag now that app is ready
   isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
   logger.info('[App] Development mode:', isDev)
+  logger.info('[App] runtime profile', {
+    profile: runtimePaths.getProfile(),
+    dataHome: runtimePaths.getCcguiHome(),
+    logDir: runtimePaths.getLogDir(),
+    defaultProxyPort: runtimePaths.getDefaultProxyPort()
+  })
   logger.info('[App] userData path', { userData: app.getPath('userData') })
   logger.info('[Startup] whenReady', { sinceAppStartMs: 0 })
   registerAssetProtocol()
@@ -7794,23 +8351,190 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
-  saveProjectMonitorPositionNow()
+async function performAppShutdown() {
+  const shutdownStartedAt = Date.now()
   isAppQuitting = true
-  localProxy.stop().catch(() => {})
-  for (const window of BrowserWindow.getAllWindows()) {
-    const webContents = window.webContents
-    if (webContents && !webContents.isDestroyed()) {
-      webContents.send('app-before-quit')
+
+  try {
+    saveProjectMonitorPositionNow()
+    aiAssistService?.stop()
+    const sessions = sessionManager ? [...sessionManager.sessions.values()] : []
+    const providerPids = new Set()
+    for (const session of sessions) {
+      for (const pid of [session.runtimeManager?.getPid?.(), ...(session.registeredRuntimePids || [])]) {
+        if (pid) {
+          providerPids.add(pid)
+        }
+      }
+    }
+
+    const snapshot = quitDiagnostics.captureShutdownSnapshot({
+      appPid: process.pid,
+      proxyStatus: localProxy.getStatus(),
+      terminalHostPid: terminalHostProcess?.pid || null,
+      sessions
+    })
+    const initiallyTrackedPids = (snapshot?.processTree || [])
+      .map(entry => entry.pid)
+      .filter(pid => pid && pid !== process.pid)
+    const shutdownTrackedPids = new Set([...initiallyTrackedPids, ...providerPids])
+    quitDiagnostics.recordShutdownAction('shutdown-sequence-started', {
+      sessionCount: sessions.length,
+      providerPids: [...providerPids],
+      trackedProcessCount: initiallyTrackedPids.length
+    })
+
+    if (projectMonitorWindow && !projectMonitorWindow.isDestroyed()) {
+      quitDiagnostics.recordShutdownAction('project-monitor-window-destroy-requested', {
+        windowId: projectMonitorWindow.id
+      })
+      projectMonitorWindow.destroy()
+      projectMonitorWindow = null
+    }
+
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window || window.isDestroyed()) {
+        continue
+      }
+      const webContents = window.webContents
+      if (webContents && !webContents.isDestroyed()) {
+        webContents.send('app-before-quit')
+      }
+    }
+
+    const localProxyStopPromise = waitForPromiseWithin(
+      localProxy.stop(),
+      2500,
+      'local-proxy-stop'
+    )
+    const agentCommunicationStopPromise = agentCommunicationService
+      ? waitForPromiseWithin(
+          agentCommunicationService.stop(),
+          2500,
+          'agent-communication-stop'
+        )
+      : Promise.resolve(true)
+    const terminalShutdownPromise = shutdownTerminalHost()
+
+    if (sessionManager) {
+      quitDiagnostics.recordShutdownAction('sessions-close-all-requested', {
+        sessionCount: sessions.length
+      })
+      sessionManager.closeAll()
+    }
+    for (const entry of processRegistry.collectProcessTree(process.pid)) {
+      if (entry.pid && entry.pid !== process.pid) {
+        shutdownTrackedPids.add(entry.pid)
+      }
+    }
+
+    const providerRemaining = await processRegistry.waitForProcessesExit(
+      [...providerPids],
+      4000
+    )
+    if (providerRemaining.length > 0) {
+      const result = await processRegistry.terminateProcesses(providerRemaining, {
+        graceMs: 1000,
+        forceWaitMs: 1000,
+        reason: 'provider'
+      })
+      quitDiagnostics.recordShutdownAction('provider-force-terminated', {
+        remaining: result.remaining
+      })
+    } else {
+      quitDiagnostics.recordShutdownAction('provider-exit-confirmed')
+    }
+
+    const [localProxyStopped, agentCommunicationStopped, terminalHostStopped] = await Promise.all([
+      localProxyStopPromise,
+      agentCommunicationStopPromise,
+      terminalShutdownPromise
+    ])
+    quitDiagnostics.recordShutdownAction('background-services-stopped', {
+      localProxyStopped,
+      agentCommunicationStopped,
+      terminalHostStopped
+    })
+    for (const entry of processRegistry.collectProcessTree(process.pid)) {
+      if (entry.pid && entry.pid !== process.pid) {
+        shutdownTrackedPids.add(entry.pid)
+      }
+    }
+
+    const remainingTrackedPids = [...shutdownTrackedPids]
+      .filter(pid => processRegistry.isProcessAlive(pid))
+    if (remainingTrackedPids.length > 0) {
+      const result = await processRegistry.terminateProcesses(remainingTrackedPids, {
+        graceMs: 800,
+        forceWaitMs: 800,
+        reason: 'shutdown'
+      })
+      quitDiagnostics.recordShutdownAction('tracked-processes-terminated', {
+        remaining: result.remaining
+      })
+    }
+
+    const treeResult = await processRegistry.terminateProcessTree(process.pid, {
+      graceMs: 1000,
+      forceWaitMs: 1000,
+      reason: 'shutdown'
+    })
+    quitDiagnostics.recordShutdownAction('shutdown-process-tree-reaped', {
+      remaining: treeResult.remaining,
+      terminatedCount: treeResult.terminated.length
+    })
+    logger.info('[App] Shutdown cleanup completed', {
+      durationMs: Date.now() - shutdownStartedAt,
+      remainingProcesses: treeResult.remaining,
+      localProxyStopped,
+      agentCommunicationStopped,
+      terminalHostStopped
+    })
+  } catch (error) {
+    quitDiagnostics.recordShutdownAction('shutdown-cleanup-failed', {
+      error: error.message,
+      stack: error.stack
+    })
+    logger.error('[App] Shutdown cleanup failed', {
+      error: error.message,
+      stack: error.stack
+    })
+    try {
+      await processRegistry.terminateProcessTree(process.pid, {
+        graceMs: 500,
+        forceWaitMs: 500,
+        reason: 'shutdown-fallback'
+      })
+    } catch (fallbackError) {
+      logger.warn('[App] Shutdown fallback cleanup failed', {
+        error: fallbackError.message
+      })
     }
   }
+}
 
-  terminalSessions.clear()
-  if (terminalHostProcess && !terminalHostProcess.killed) {
-    terminalHostProcess.kill()
-    terminalHostProcess = null
+app.on('before-quit', (event) => {
+  if (appShutdownCompleted) {
+    return
   }
-  if (sessionManager) {
-    sessionManager.closeAll()
+
+  event.preventDefault()
+  if (appShutdownPromise) {
+    return
   }
+
+  appShutdownPromise = performAppShutdown()
+    .catch(error => {
+      logger.error('[App] Unexpected shutdown failure', {
+        error: error.message,
+        stack: error.stack
+      })
+    })
+    .finally(() => {
+      appShutdownCompleted = true
+      quitDiagnostics.recordShutdownAction('app-exit-requested', {
+        uptimeMs: Date.now() - appStartupStartedAt
+      })
+      app.exit(0)
+    })
 })

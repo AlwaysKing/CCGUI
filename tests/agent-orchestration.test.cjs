@@ -1,9 +1,12 @@
 const assert = require('assert')
+const { EventEmitter } = require('events')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { ClaudeAdapter } = require('../electron/adapters/claude/adapter')
 const { CodexAdapter } = require('../electron/adapters/codex/adapter')
+const { SessionInstance } = require('../electron/session/session-instance')
+const historyManager = require('../electron/storage/history-manager')
 
 function createEventSink(instance) {
   const events = []
@@ -78,8 +81,8 @@ function testClaudeSubagentSemantics() {
     is_error: false
   })
 
-  const toolResult = findLastEvent(events, 'tool-result')
-  assert(toolResult, 'expected Claude tool-result')
+  const toolResult = findLastEvent(events, 'message-result')
+  assert(toolResult, 'expected Claude message-result')
   assert.strictEqual(toolResult.payload.ccgui.orchestration.eventType, 'end')
   assert.strictEqual(toolResult.payload.ccgui.attribution.agentId, taskStarted.payload.ccgui.registry.agentId)
 }
@@ -515,6 +518,13 @@ function testCodexSpawnAgentSemantics() {
     }
   })
 
+  const spawnToolStart = events.find(event =>
+    event.type === 'message-start' &&
+    event.payload.id === 'spawn-item-1'
+  )
+  assert(spawnToolStart, 'expected Codex agent tool message-start')
+  assert.strictEqual(spawnToolStart.payload.toolInput.agentAction, 'spawnAgent')
+
   adapter.handleItemCompleted({
     threadId: 'main-thread',
     turnId: 'turn-main',
@@ -562,13 +572,839 @@ function testCodexSpawnAgentSemantics() {
   )
 }
 
-testClaudeSubagentSemantics()
-testClaudeTeamLifecycleComesFromExplicitEvents()
-testClaudeTeamMemberIdsKeepDistinctNonAsciiNames()
-testClaudeCollaborativePendingStateClearsAtTurnBoundary()
-testClaudeCollaborativeSpawnWorksWithStreamFirstOrdering()
-testClaudeSidechainRequiresExplicitFileBinding()
-testClaudeBackgroundTaskEventsAreModeledWithoutProviderNotifications()
-testClaudeToolProgressUpdatesExistingToolMessage()
-testCodexSpawnAgentSemantics()
-console.log('agent-orchestration-tests: ok')
+function testCodexSubAgentActivitySemantics() {
+  const adapter = new CodexAdapter(process.cwd(), 'codex-subagent-activity-test-session')
+  const events = createEventSink(adapter)
+  adapter.currentThreadId = 'main-thread'
+
+  adapter.handleItemCompleted({
+    threadId: 'main-thread',
+    turnId: 'turn-main',
+    item: {
+      id: 'subagent-activity-1',
+      type: 'SubAgentActivity',
+      kind: 'started',
+      agent_thread_id: 'child-thread-activity',
+      agent_path: '/root/favorite_fix_acceptance'
+    }
+  })
+
+  const lifecycle = findLastEvent(events, 'silent-message')
+  assert(lifecycle, 'expected Codex SubAgentActivity lifecycle event')
+  assert.strictEqual(lifecycle.payload.ccgui.orchestration.eventType, 'start')
+  assert.strictEqual(lifecycle.payload.ccgui.orchestration.source, 'subagent_activity')
+  assert.strictEqual(lifecycle.payload.ccgui.registry.agentKind, 'collaborative')
+  assert.strictEqual(lifecycle.payload.ccgui.registry.name, 'favorite_fix_acceptance')
+  assert.strictEqual(
+    lifecycle.payload.ccgui.registry.agentId,
+    'codex-agent:child-thread-activity'
+  )
+
+  adapter.handleNotification({
+    method: 'item/agentMessage/delta',
+    params: {
+      threadId: 'child-thread-activity',
+      turnId: 'turn-child-activity',
+      itemId: 'child-activity-message-1',
+      delta: 'Hello from SubAgentActivity'
+    }
+  })
+
+  const childAssistantStart = events.find(event =>
+    event.type === 'message-start' &&
+    event.payload.id === 'codex-assistant-turn-child-activity-1'
+  )
+  assert(childAssistantStart, 'expected child assistant message-start')
+  assert.strictEqual(
+    childAssistantStart.payload.ccgui.attribution.agentId,
+    lifecycle.payload.ccgui.registry.agentId,
+    'expected SubAgentActivity child messages to map to the subagent'
+  )
+
+  adapter.handleNotification({
+    method: 'turn/diff/updated',
+    params: {
+      threadId: 'child-thread-activity',
+      turnId: 'turn-child-activity',
+      diff: 'diff --git a/example.js b/example.js\n+child change'
+    }
+  })
+
+  const childDiff = events.find(event =>
+    event.type === 'message-start' &&
+    event.payload.id === 'codex-diff-turn-child-activity'
+  )
+  assert(childDiff, 'expected child diff message-start')
+  assert.strictEqual(
+    childDiff.payload.ccgui.attribution.agentId,
+    lifecycle.payload.ccgui.registry.agentId,
+    'expected child diffs to map to the subagent'
+  )
+
+  adapter.handleItemCompleted({
+    threadId: 'main-thread',
+    turnId: 'turn-main',
+    item: {
+      id: 'subagent-completed-1',
+      type: 'SubAgentActivity',
+      kind: 'completed',
+      agent_thread_id: 'child-thread-activity',
+      agent_path: '/root/favorite_fix_acceptance'
+    }
+  })
+
+  const completedLifecycle = findLastEvent(events, 'silent-message')
+  assert.strictEqual(completedLifecycle.payload.ccgui.orchestration.eventType, 'end')
+  assert.strictEqual(completedLifecycle.payload.ccgui.registry.status, 'ended')
+
+  adapter.handleItemCompleted({
+    threadId: 'main-thread',
+    turnId: 'turn-main',
+    item: {
+      id: 'subagent-interacted-1',
+      type: 'SubAgentActivity',
+      kind: 'interacted',
+      agent_thread_id: 'child-thread-activity',
+      agent_path: '/root/favorite_fix_acceptance'
+    }
+  })
+
+  const interactedLifecycle = findLastEvent(events, 'silent-message')
+  assert.strictEqual(interactedLifecycle.payload.ccgui.registry.status, 'running')
+  assert.strictEqual(interactedLifecycle.payload.ccgui.orchestration.eventType, 'start')
+
+  adapter.handleItemCompleted({
+    threadId: 'main-thread',
+    turnId: 'turn-main',
+    item: {
+      id: 'subagent-completed-2',
+      type: 'SubAgentActivity',
+      kind: 'completed',
+      agent_thread_id: 'child-thread-activity',
+      agent_path: '/root/favorite_fix_acceptance'
+    }
+  })
+
+  adapter.handleNotification({
+    method: 'turn/started',
+    params: {
+      threadId: 'child-thread-activity',
+      turn: { id: 'turn-child-resumed' }
+    }
+  })
+
+  const resumedLifecycle = findLastEvent(events, 'silent-message')
+  assert.strictEqual(resumedLifecycle.payload.ccgui.orchestration.eventType, 'start')
+  assert.strictEqual(resumedLifecycle.payload.ccgui.registry.status, 'running')
+
+  adapter.handleItemCompleted({
+    threadId: 'main-thread',
+    turnId: 'turn-main',
+    item: {
+      id: 'subagent-interrupted-1',
+      type: 'SubAgentActivity',
+      kind: 'interrupted',
+      agent_thread_id: 'child-thread-activity',
+      agent_path: '/root/favorite_fix_acceptance'
+    }
+  })
+
+  const interruptedLifecycle = findLastEvent(events, 'silent-message')
+  assert.strictEqual(interruptedLifecycle.payload.ccgui.orchestration.eventType, 'end')
+  assert.strictEqual(interruptedLifecycle.payload.ccgui.orchestration.reason, 'interrupted')
+  assert.strictEqual(interruptedLifecycle.payload.ccgui.registry.status, 'interrupted')
+}
+
+function testCodexSubAgentThreadsDoNotReplaceMainThread() {
+  const adapter = new CodexAdapter(process.cwd(), 'codex-subagent-thread-test-session')
+  const events = createEventSink(adapter)
+  adapter.currentThreadId = 'main-thread'
+
+  adapter.handleNotification({
+    method: 'thread/started',
+    params: {
+      thread: {
+        id: 'child-thread',
+        parentThreadId: 'main-thread',
+        name: 'Child Agent',
+        agentNickname: 'Researcher',
+        agentRole: 'explore',
+        status: { type: 'active', activeFlags: [] }
+      }
+    }
+  })
+
+  assert.strictEqual(adapter.currentThreadId, 'main-thread', 'child thread must not replace the main thread')
+  const threadStart = findLastEvent(events, 'silent-message')
+  assert.strictEqual(threadStart.payload.ccgui.registry.agentId, 'codex-agent:child-thread')
+  assert.strictEqual(threadStart.payload.ccgui.registry.name, 'Researcher')
+  assert.strictEqual(threadStart.payload.ccgui.registry.agentType, 'explore')
+  assert.strictEqual(threadStart.payload.ccgui.registry.parentAgentId, 'master')
+  assert.strictEqual(threadStart.payload.ccgui.registry.status, 'running')
+
+  adapter.handleNotification({
+    method: 'turn/started',
+    params: {
+      threadId: 'main-thread',
+      turn: { id: 'turn-main' }
+    }
+  })
+  adapter.handleNotification({
+    method: 'turn/started',
+    params: {
+      threadId: 'child-thread',
+      turn: { id: 'turn-child' }
+    }
+  })
+  adapter.handleNotification({
+    method: 'turn/completed',
+    params: {
+      threadId: 'child-thread',
+      turn: {
+        id: 'turn-child',
+        status: 'completed'
+      }
+    }
+  })
+
+  assert.strictEqual(
+    events.filter(event => event.type === 'result').length,
+    0,
+    'child turn completion must not complete the main turn'
+  )
+  const childCompleted = findLastEvent(events, 'silent-message')
+  assert.strictEqual(childCompleted.payload.ccgui.registry.status, 'ended')
+
+  adapter.handleNotification({
+    method: 'thread/status/changed',
+    params: {
+      threadId: 'child-thread',
+      status: { type: 'idle' }
+    }
+  })
+  const idleLifecycle = findLastEvent(events, 'silent-message')
+  assert.strictEqual(idleLifecycle.payload.ccgui.orchestration.source, 'thread_status')
+  assert.strictEqual(idleLifecycle.payload.ccgui.registry.status, 'ended')
+
+  adapter.handleNotification({
+    method: 'thread/status/changed',
+    params: {
+      threadId: 'child-thread',
+      status: { type: 'active', activeFlags: [] }
+    }
+  })
+  adapter.handleNotification({
+    method: 'thread/closed',
+    params: { threadId: 'child-thread' }
+  })
+  const closedLifecycle = findLastEvent(events, 'silent-message')
+  assert.strictEqual(closedLifecycle.payload.ccgui.orchestration.source, 'thread_lifecycle')
+  assert.strictEqual(closedLifecycle.payload.ccgui.orchestration.reason, 'closed')
+  assert.strictEqual(closedLifecycle.payload.ccgui.registry.status, 'ended')
+
+  adapter.handleNotification({
+    method: 'turn/completed',
+    params: {
+      threadId: 'main-thread',
+      turn: {
+        id: 'turn-main',
+        status: 'completed'
+      }
+    }
+  })
+  assert.strictEqual(
+    events.filter(event => event.type === 'result').length,
+    1,
+    'main turn completion must still produce the session result'
+  )
+}
+
+async function testCodexSendMessageToSubagentThread() {
+  const adapter = new CodexAdapter(process.cwd(), 'codex-subagent-send-test-session')
+  const requests = []
+  adapter.currentThreadId = 'main-thread'
+  adapter.ensureInitialized = async () => {}
+  adapter.buildDeveloperInstructions = async () => null
+  adapter.request = async (method, params) => {
+    requests.push({ method, params })
+    if (method === 'thread/resume') {
+      return { thread: { id: params.threadId } }
+    }
+    if (method === 'turn/start') {
+      return { turn: { id: 'turn-child-resumed' } }
+    }
+    throw new Error(`unexpected request: ${method}`)
+  }
+
+  const message = {
+    type: 'user',
+    uuid: 'user-message-child',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: 'Continue the child task' }]
+    },
+    ccgui: {
+      attribution: {
+        agentId: 'codex-agent:child-thread',
+        actorId: 'codex-agent:child-thread'
+      }
+    }
+  }
+
+  await adapter.sendMessage(message)
+
+  assert.deepStrictEqual(
+    requests.map(request => request.method),
+    ['thread/resume', 'turn/start'],
+    'expected a persisted child thread to be resumed before starting its turn'
+  )
+  assert.strictEqual(requests[0].params.threadId, 'child-thread')
+  assert.strictEqual(requests[1].params.threadId, 'child-thread')
+  assert.strictEqual(adapter.currentThreadId, 'main-thread')
+  assert.strictEqual(
+    adapter.turnUserMessageUuids.get('turn-child-resumed'),
+    'user-message-child'
+  )
+
+  requests.length = 0
+  await adapter.sendMessage({
+    ...message,
+    uuid: 'user-message-child-2'
+  })
+  assert.deepStrictEqual(
+    requests.map(request => request.method),
+    ['turn/start'],
+    'an already loaded child thread should be reused'
+  )
+}
+
+async function testCodexInterruptsMainAndSubAgentTurns() {
+  const adapter = new CodexAdapter(process.cwd(), 'codex-interrupt-test-session')
+  const requests = []
+  adapter.currentThreadId = 'main-thread'
+  adapter.ensureInitialized = async () => {}
+  adapter.request = async (method, params) => {
+    requests.push({ method, params })
+    return {}
+  }
+
+  adapter.handleNotification({
+    method: 'turn/started',
+    params: {
+      threadId: 'main-thread',
+      turn: { id: 'turn-main-active' }
+    }
+  })
+  adapter.handleItemCompleted({
+    threadId: 'main-thread',
+    turnId: 'turn-main-active',
+    item: {
+      id: 'subagent-activity-active',
+      type: 'SubAgentActivity',
+      kind: 'started',
+      agent_thread_id: 'child-thread-active',
+      agent_path: '/root/active_subagent'
+    }
+  })
+  adapter.handleNotification({
+    method: 'turn/started',
+    params: {
+      threadId: 'child-thread-active',
+      turn: { id: 'turn-child-active' }
+    }
+  })
+
+  await adapter.sendInterrupt()
+
+  assert.strictEqual(requests.length, 2, 'expected main and child turns to be interrupted')
+  const interruptTargets = requests
+    .filter(request => request.method === 'turn/interrupt')
+    .map(request => `${request.params.threadId}:${request.params.turnId}`)
+    .sort()
+  assert.deepStrictEqual(interruptTargets, [
+    'child-thread-active:turn-child-active',
+    'main-thread:turn-main-active'
+  ])
+  assert.strictEqual(adapter.interruptRequested, true, 'interrupt state should persist after dispatch')
+
+  adapter.handleNotification({
+    method: 'turn/started',
+    params: {
+      threadId: 'late-child-thread',
+      turn: { id: 'turn-late-child' }
+    }
+  })
+  await Promise.resolve()
+
+  assert.strictEqual(requests.length, 3, 'expected a late subagent turn to be interrupted immediately')
+  assert.strictEqual(requests[2].params.threadId, 'late-child-thread')
+  assert.strictEqual(requests[2].params.turnId, 'turn-late-child')
+
+  adapter.handleNotification({
+    method: 'turn/completed',
+    params: {
+      threadId: 'child-thread-active',
+      turn: {
+        id: 'turn-child-active',
+        status: 'interrupted'
+      }
+    }
+  })
+  adapter.handleNotification({
+    method: 'turn/completed',
+    params: {
+      threadId: 'late-child-thread',
+      turn: {
+        id: 'turn-late-child',
+        status: 'interrupted'
+      }
+    }
+  })
+  requests.length = 0
+  await adapter.sendInterrupt()
+
+  assert.strictEqual(requests.length, 1, 'completed child turn should not be interrupted again')
+  assert.strictEqual(requests[0].params.threadId, 'main-thread')
+  assert.strictEqual(requests[0].params.turnId, 'turn-main-active')
+}
+
+function testSessionActiveAgentTracking() {
+  const session = new SessionInstance('active-agent-test-session', '/tmp/ccgui-active-agent-test')
+  session.runtimeManager = new EventEmitter()
+  session.setupRuntimeHandlers()
+
+  const runningCcgui = {
+    registry: {
+      agentId: 'codex-agent:child-thread',
+      agentKind: 'collaborative',
+      agentType: 'subagent',
+      status: 'running'
+    },
+    orchestration: {
+      eventType: 'start',
+      agentId: 'codex-agent:child-thread',
+      agentKind: 'collaborative',
+      agentType: 'subagent',
+      status: 'running'
+    }
+  }
+
+  session.runtimeManager.emit('silent-message', {
+    messageType: 'agent-orchestration',
+    ccgui: runningCcgui
+  })
+  assert.deepStrictEqual(session.getActiveAgentIds(), ['codex-agent:child-thread'])
+  assert.deepStrictEqual(
+    session.getState().activeAgentIds,
+    ['codex-agent:child-thread'],
+    'session state should expose live agent ids to the renderer'
+  )
+
+  session.runtimeManager.emit('message-start', {
+    id: 'child-assistant-message',
+    role: 'assistant',
+    content: '',
+    isStreaming: true,
+    ccgui: {
+      attribution: {
+        agentId: 'codex-agent:child-thread'
+      }
+    }
+  })
+  session.runtimeManager.emit('message-complete', {
+    messageId: 'child-assistant-message',
+    updates: {
+      isStreaming: false
+    }
+  })
+  assert.deepStrictEqual(
+    session.getActiveAgentIds(),
+    ['codex-agent:child-thread'],
+    'one completed assistant message must not end the subagent turn'
+  )
+
+  session.runtimeManager.emit('silent-message', {
+    messageType: 'agent-orchestration',
+    ccgui: {
+      registry: {
+        ...runningCcgui.registry,
+        status: 'ended'
+      },
+      orchestration: {
+        ...runningCcgui.orchestration,
+        eventType: 'end',
+        status: 'ended'
+      }
+    }
+  })
+  assert.deepStrictEqual(session.getActiveAgentIds(), [])
+
+  session.runtimeManager.emit('task-event', {
+    eventType: 'notification',
+    ccgui: {
+      registry: {
+        agentId: 'claude-task-agent',
+        agentKind: 'execution',
+        status: 'running'
+      },
+      orchestration: {
+        eventType: 'start',
+        agentId: 'claude-task-agent',
+        status: 'running'
+      }
+    }
+  })
+  assert.deepStrictEqual(session.getActiveAgentIds(), ['claude-task-agent'])
+
+  session.runtimeManager.emit('task-event', {
+    eventType: 'notification',
+    ccgui: {
+      registry: {
+        agentId: 'claude-task-agent',
+        agentKind: 'execution',
+        status: 'ended'
+      },
+      orchestration: {
+        eventType: 'end',
+        agentId: 'claude-task-agent',
+        status: 'ended'
+      }
+    }
+  })
+  assert.deepStrictEqual(session.getActiveAgentIds(), [])
+}
+
+async function testCodexCloseSubagentAgent() {
+  const adapter = new CodexAdapter(process.cwd(), 'codex-close-subagent-test-session')
+  const events = createEventSink(adapter)
+  const requests = []
+  adapter.currentThreadId = 'main-thread'
+  adapter.ensureInitialized = async () => {}
+  adapter.request = async (method, params) => {
+    requests.push({ method, params })
+    return {}
+  }
+
+  adapter.handleItemCompleted({
+    threadId: 'main-thread',
+    turnId: 'turn-main',
+    item: {
+      id: 'subagent-close-start',
+      type: 'SubAgentActivity',
+      kind: 'started',
+      agent_thread_id: 'child-thread-close',
+      agent_path: '/root/close_me'
+    }
+  })
+  adapter.activeTurnByThreadId.set('child-thread-close', 'turn-child-close')
+
+  await adapter.closeSubagentAgent('codex-agent:child-thread-close')
+
+  assert.deepStrictEqual(
+    requests.map(request => request.method),
+    ['turn/interrupt', 'thread/archive']
+  )
+  assert.strictEqual(requests[0].params.threadId, 'child-thread-close')
+  assert.strictEqual(requests[1].params.threadId, 'child-thread-close')
+
+  const deleteEvent = findLastEvent(events, 'silent-message')
+  assert.strictEqual(deleteEvent.payload.ccgui.orchestration.eventType, 'delete')
+  assert.strictEqual(deleteEvent.payload.ccgui.registry.status, 'deleted')
+}
+
+function testCodexMcpStartupNotificationKeepsSubagentAttribution() {
+  const adapter = new CodexAdapter(process.cwd(), 'codex-mcp-subagent-test-session')
+  const events = createEventSink(adapter)
+  adapter.currentThreadId = 'main-thread'
+
+  adapter.handleNotification({
+    method: 'thread/started',
+    params: {
+      thread: {
+        id: 'child-thread',
+        parentThreadId: 'main-thread',
+        agentNickname: 'Verifier',
+        status: { type: 'active', activeFlags: [] }
+      }
+    }
+  })
+
+  adapter.handleNotification({
+    method: 'mcpServer/startupStatus/updated',
+    params: {
+      threadId: 'child-thread',
+      name: 'xcode',
+      status: 'ready'
+    }
+  })
+
+  const unknownMessage = findLastEvent(events, 'unknown_message')
+  assert(unknownMessage, 'expected MCP startup notification to remain an unknown provider event')
+  assert.strictEqual(
+    unknownMessage.payload.ccgui.attribution.agentId,
+    'codex-agent:child-thread',
+    'expected MCP startup notification to retain child thread attribution'
+  )
+
+  adapter.handleNotification({
+    method: 'mcpServer/startupStatus/updated',
+    params: {
+      threadId: 'unregistered-child-thread',
+      name: 'rea',
+      status: 'starting'
+    }
+  })
+
+  const fallbackMessage = findLastEvent(events, 'unknown_message')
+  assert.strictEqual(
+    fallbackMessage.payload.ccgui.attribution.agentId,
+    'codex-agent:unregistered-child-thread',
+    'expected MCP startup notification to retain attribution before child registration'
+  )
+}
+
+function testCodexReadStateNotificationIsIgnored() {
+  const adapter = new CodexAdapter(process.cwd(), 'codex-read-state-test-session')
+  const events = createEventSink(adapter)
+
+  adapter.handleNotification({
+    method: 'thread/readState/changed',
+    params: {
+      threadId: 'main-thread',
+      readState: {
+        firstUnread: null,
+        revision: 'read-state-revision'
+      }
+    }
+  })
+
+  assert.strictEqual(
+    findLastEvent(events, 'unknown_message'),
+    null,
+    'expected thread read state notification to be recognized and ignored'
+  )
+}
+
+function testSubagentMcpNotificationRoutesToSubagentHistory() {
+  const session = new SessionInstance('mcp-route-test-session', '/tmp/ccgui-mcp-route-test')
+  session.provider = 'codex'
+  session.runtimeManager = new EventEmitter()
+  session.setupRuntimeHandlers()
+  session.currentHistoryTurnId = 'main-user-turn'
+  session.agentSourceTurnIds.set('codex-agent:child-thread', 'main-user-turn')
+
+  const originalAppendIndexMessage = historyManager.appendIndexMessage
+  const originalLoadIndexEntries = historyManager.loadIndexEntries
+  const originalEnsureSubagentTurn = historyManager.ensureSubagentTurn
+  const originalAppendSubagentTurnEvent = historyManager.appendSubagentTurnEvent
+  let mainIndexWrites = 0
+  const subagentEvents = []
+
+  historyManager.appendIndexMessage = () => {
+    mainIndexWrites += 1
+    return {}
+  }
+  historyManager.loadIndexEntries = () => []
+  historyManager.ensureSubagentTurn = () => 'subagent-turn'
+  historyManager.appendSubagentTurnEvent = (projectId, sessionId, agentId, turnId, event) => {
+    subagentEvents.push({ projectId, sessionId, agentId, turnId, event })
+    return true
+  }
+
+  try {
+    session.runtimeManager.emit('unknown_message', {
+      method: 'mcpServer/startupStatus/updated',
+      params: {
+        threadId: 'child-thread',
+        name: 'xcode',
+        status: 'starting'
+      },
+      ccgui: {
+        attribution: {
+          agentId: 'codex-agent:child-thread',
+          actorId: 'codex-agent:child-thread'
+        }
+      }
+    })
+
+    assert.strictEqual(mainIndexWrites, 0, 'subagent MCP notification must not write to main index')
+    assert.strictEqual(subagentEvents.length, 1, 'expected subagent MCP notification in subagent history')
+    assert.strictEqual(subagentEvents[0].agentId, 'codex-agent:child-thread')
+    assert(
+      subagentEvents[0].turnId.startsWith('subagent-turn:'),
+      'expected a subagent turn id for the child notification'
+    )
+    assert.strictEqual(
+      subagentEvents[0].event.data.ccgui.history.targetAgentId,
+      'codex-agent:child-thread'
+    )
+    const firstOperationId = subagentEvents[0].event.data.operationId
+    assert(
+      firstOperationId.startsWith('mcp-startup:codex:child-thread:xcode:'),
+      'expected a cycle-specific MCP operation id'
+    )
+    const firstMessageId = subagentEvents[0].event.data.messageId
+    assert(firstMessageId, 'expected the backend notification message id')
+    assert.strictEqual(
+      session.messages.find(message => message.id === firstMessageId)?.notificationType,
+      'mcp-server-starting'
+    )
+
+    session.runtimeManager.emit('unknown_message', {
+      method: 'mcpServer/startupStatus/updated',
+      params: {
+        threadId: 'child-thread',
+        name: 'xcode',
+        status: 'ready'
+      },
+      ccgui: {
+        attribution: {
+          agentId: 'codex-agent:child-thread',
+          actorId: 'codex-agent:child-thread'
+        }
+      }
+    })
+
+    assert.strictEqual(mainIndexWrites, 0, 'subagent MCP ready must not write to main index')
+    assert.strictEqual(subagentEvents.length, 2, 'expected both subagent MCP state changes in subagent history')
+    assert.strictEqual(subagentEvents[1].event.data.operationId, firstOperationId)
+    assert.strictEqual(subagentEvents[1].event.data.messageId, firstMessageId)
+    assert(Number.isFinite(subagentEvents[1].event.data.durationMs))
+    assert.strictEqual(
+      session.messages.find(message => message.notificationType === 'mcp-server-ready')?.scope,
+      'turn'
+    )
+
+    session.runtimeManager.emit('unknown_message', {
+      method: 'mcpServer/startupStatus/updated',
+      params: {
+        threadId: 'main-thread',
+        name: 'xcode',
+        status: 'ready'
+      }
+    })
+
+    assert.strictEqual(mainIndexWrites, 1, 'main thread MCP notification should remain session scoped')
+    assert.strictEqual(subagentEvents.length, 2, 'main thread MCP notification must not enter subagent history')
+  } finally {
+    historyManager.appendIndexMessage = originalAppendIndexMessage
+    historyManager.loadIndexEntries = originalLoadIndexEntries
+    historyManager.ensureSubagentTurn = originalEnsureSubagentTurn
+    historyManager.appendSubagentTurnEvent = originalAppendSubagentTurnEvent
+  }
+}
+
+function testMcpStartupOperationCyclesAreIsolated() {
+  const session = new SessionInstance('mcp-cycle-test-session', '/tmp/ccgui-mcp-cycle-test')
+  session.provider = 'codex'
+
+  const message = status => ({
+    method: 'mcpServer/startupStatus/updated',
+    params: {
+      threadId: 'main-thread',
+      name: 'node_repl',
+      status
+    }
+  })
+
+  const firstStarting = session.resolveMcpStartupOperationId(message('starting'))
+  const duplicateStarting = session.resolveMcpStartupOperationId(message('starting'))
+  const firstReady = session.resolveMcpStartupOperationId(message('ready'))
+  const duplicateReady = session.resolveMcpStartupOperationId(message('ready'))
+  const secondStarting = session.resolveMcpStartupOperationId(message('starting'))
+  const secondReady = session.resolveMcpStartupOperationId(message('ready'))
+
+  assert(firstStarting.startsWith('mcp-startup:codex:main-thread:node_repl:'))
+  assert.strictEqual(duplicateStarting, firstStarting)
+  assert.strictEqual(firstReady, firstStarting)
+  assert.strictEqual(duplicateReady, firstStarting)
+  assert.notStrictEqual(secondStarting, firstStarting)
+  assert.strictEqual(secondReady, secondStarting)
+  assert(secondStarting.startsWith('mcp-startup:codex:main-thread:node_repl:'))
+}
+
+function testMcpSystemNotificationUsesCanonicalMessageIdAndDuration() {
+  const session = new SessionInstance('mcp-notification-identity-test-session', '/tmp/ccgui-mcp-notification-identity-test')
+  session.provider = 'codex'
+  const events = createEventSink(session)
+
+  const originalAppendIndexMessage = historyManager.appendIndexMessage
+  const originalLoadIndexEntries = historyManager.loadIndexEntries
+  const originalUpdateMessage = historyManager.updateMessage
+  const originalUpdateIndexMessage = historyManager.updateIndexMessage
+  const originalSaveMessageToHistory = session.saveMessageToHistory
+
+  try {
+    session.saveMessageToHistory = () => {}
+    historyManager.appendIndexMessage = () => true
+    historyManager.loadIndexEntries = () => []
+    historyManager.updateMessage = () => true
+    historyManager.updateIndexMessage = () => true
+
+    const startedAt = Date.now() - 1500
+    const operationId = 'mcp-startup:codex:thread-main:node_repl:identity'
+    const startingMessage = session.emitSystemNotification('mcp-server-starting', {
+      type: 'mcp-server-starting',
+      provider: 'codex',
+      name: 'node_repl',
+      status: 'starting',
+      operationId,
+      startedAt
+    })
+    const readyMessage = session.emitSystemNotification('mcp-server-ready', {
+      type: 'mcp-server-ready',
+      provider: 'codex',
+      name: 'node_repl',
+      status: 'ready',
+      operationId,
+      completedAt: startedAt + 1200
+    })
+
+    assert(startingMessage?.id)
+    assert.strictEqual(readyMessage?.id, startingMessage.id)
+    assert.strictEqual(readyMessage.data.durationMs, 1200)
+
+    const notifications = events.filter(event => event.type === 'system-notification')
+    assert.strictEqual(notifications.length, 2)
+    assert.strictEqual(notifications[0].payload.messageId, startingMessage.id)
+    assert.strictEqual(notifications[1].payload.messageId, startingMessage.id)
+    assert.strictEqual(notifications[1].payload.durationMs, 1200)
+  } finally {
+    session.saveMessageToHistory = originalSaveMessageToHistory
+    historyManager.appendIndexMessage = originalAppendIndexMessage
+    historyManager.loadIndexEntries = originalLoadIndexEntries
+    historyManager.updateMessage = originalUpdateMessage
+    historyManager.updateIndexMessage = originalUpdateIndexMessage
+  }
+}
+
+async function run() {
+  if (!process.argv.includes('--codex-only')) {
+    testClaudeSubagentSemantics()
+    testClaudeTeamLifecycleComesFromExplicitEvents()
+    testClaudeTeamMemberIdsKeepDistinctNonAsciiNames()
+    testClaudeCollaborativePendingStateClearsAtTurnBoundary()
+    testClaudeCollaborativeSpawnWorksWithStreamFirstOrdering()
+    testClaudeSidechainRequiresExplicitFileBinding()
+    testClaudeBackgroundTaskEventsAreModeledWithoutProviderNotifications()
+    testClaudeToolProgressUpdatesExistingToolMessage()
+  }
+  testCodexSpawnAgentSemantics()
+  testCodexSubAgentActivitySemantics()
+  testCodexSubAgentThreadsDoNotReplaceMainThread()
+  await testCodexSendMessageToSubagentThread()
+  await testCodexInterruptsMainAndSubAgentTurns()
+  testSessionActiveAgentTracking()
+  await testCodexCloseSubagentAgent()
+  testCodexMcpStartupNotificationKeepsSubagentAttribution()
+  testCodexReadStateNotificationIsIgnored()
+  testSubagentMcpNotificationRoutesToSubagentHistory()
+  testMcpStartupOperationCyclesAreIsolated()
+  testMcpSystemNotificationUsesCanonicalMessageIdAndDuration()
+  console.log('agent-orchestration-tests: ok')
+}
+
+run().catch(error => {
+  console.error(error)
+  process.exitCode = 1
+})

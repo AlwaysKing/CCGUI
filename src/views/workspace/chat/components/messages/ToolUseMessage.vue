@@ -107,13 +107,46 @@ const bashData = computed(() => {
   }
 })
 
+function resolveAgentAction(input = {}) {
+  const rawAction = String(
+    input.agentAction ||
+    input.agent_action ||
+    input.agentTool ||
+    input.agent_tool ||
+    ''
+  ).trim().toLowerCase().replace(/[-_\s]/g, '')
+  const actions = {
+    spawnagent: { label: '启动代理', value: '创建并启动子代理' },
+    wait: { label: '等待代理', value: '等待子代理完成当前任务' },
+    waitagent: { label: '等待代理', value: '等待子代理完成当前任务' },
+    followuptask: { label: '追加代理任务', value: '向子代理追加任务' },
+    sendmessage: { label: '发送代理消息', value: '向子代理发送消息' },
+    sendinput: { label: '发送代理消息', value: '向子代理发送消息' },
+    resumeagent: { label: '恢复代理', value: '恢复子代理继续执行' },
+    resume: { label: '恢复代理', value: '恢复子代理继续执行' },
+    interruptagent: { label: '中断代理', value: '中断子代理当前任务' },
+    closeagent: { label: '关闭代理', value: '关闭子代理' },
+    close: { label: '关闭代理', value: '关闭子代理' },
+    listagents: { label: '查询代理', value: '查询当前子代理状态' }
+  }
+  return actions[rawAction] || {
+    label: '代理任务',
+    value: '通用代理',
+    action: rawAction || null
+  }
+}
+
 // Agent 工具的数据
 const agentData = computed(() => {
   if (props.toolName !== 'Agent') return null
   const input = mergedToolInput.value
   if (!input) return null
+  const action = resolveAgentAction(input)
 
   return {
+    action: action.action || input.agentAction || input.agent_action || '',
+    actionLabel: action.label,
+    actionValue: action.value,
     subagentType: input.subagent_type || input.subagentType || '',
     description: input.description || input.task || input.instructions || input.message || '',
     prompt: input.prompt || input.task || input.instructions || input.message || ''
@@ -388,7 +421,7 @@ const toolIcon = computed(() => {
 
 const displayToolName = computed(() => {
   const labels = {
-    Agent: '代理任务',
+    Agent: agentData.value?.actionLabel || '代理任务',
     ApplyPatch: '补丁',
     TeamCreate: '创建团队',
     TeamDelete: '删除团队',
@@ -577,8 +610,11 @@ const primaryContent = computed(() => {
       }
     case 'Agent':
       return {
-        label: '代理任务',
-        value: input.subagent_type || input.subagentType || '通用代理',
+        label: agentData.value?.actionLabel || '代理任务',
+        value: input.subagent_type ||
+          input.subagentType ||
+          agentData.value?.actionValue ||
+          '通用代理',
         description: input.description || input.prompt || input.task || input.instructions || input.message || null
       }
     case 'ViewImage':
@@ -847,8 +883,11 @@ const collapsedSummary = computed(() => {
       // 默认显示第一个任务
       return formattedTodos.split('<br>')[0]
     case 'Agent':
-      // 显示代理类型和描述
-      const agentType = input.subagent_type || input.subagentType || '代理'
+      // 显示代理动作、类型和描述
+      const agentType = agentData.value?.actionLabel ||
+        input.subagent_type ||
+        input.subagentType ||
+        '代理'
       const agentDesc = input.description || input.prompt || ''
       const shortDesc = agentDesc.length > 40 ? agentDesc.substring(0, 40) + '...' : agentDesc
       return `🤖 ${agentType}${shortDesc ? ': ' + shortDesc : ''}`
@@ -1371,8 +1410,10 @@ async function handlePreviewFile(event) {
         <template v-else-if="props.toolName === 'Agent' && agentData">
           <div v-if="isTextStyle" class="agent-flat">
             <div class="tool-section">
-              <div class="section-label">类型</div>
-              <div class="section-content code">{{ agentData.subagentType || '通用代理' }}</div>
+              <div class="section-label">{{ agentData.action ? '动作' : '类型' }}</div>
+              <div class="section-content code">
+                {{ agentData.action ? agentData.actionLabel : (agentData.subagentType || '通用代理') }}
+              </div>
             </div>
             <div v-if="agentData.description" class="tool-section has-copy">
               <div class="section-label">说明</div>
@@ -1386,7 +1427,7 @@ async function handlePreviewFile(event) {
           <div v-else class="agent-container">
             <div class="agent-info-card">
               <div class="agent-type-badge">
-                🤖 {{ agentData.subagentType || '通用代理' }}
+                🤖 {{ agentData.action ? agentData.actionLabel : (agentData.subagentType || '通用代理') }}
               </div>
               <div v-if="agentData.description" class="agent-description">
                 {{ agentData.description }}

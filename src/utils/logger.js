@@ -30,31 +30,35 @@ class Logger {
 
   /**
    * 初始化日志系统
-   * @param {string} baseDir - 基础目录，默认为 /tmp/ccgui
+   * @param {string} baseDir - 基础目录；省略时由主进程按当前 profile 解析
    */
-  async initialize(baseDir = '/tmp/ccgui') {
+  async initialize(baseDir = null) {
     if (this.initialized) return
 
     try {
+      let resolvedBaseDir = baseDir
       // 确保目录存在
       if (window.electronAPI?.ensureLogDir) {
         // 前端：通过 Electron API 创建目录
-        await window.electronAPI.ensureLogDir({ baseDir })
+        const result = await window.electronAPI.ensureLogDir(baseDir ? { baseDir } : {})
+        resolvedBaseDir = result?.baseDir || baseDir
       } else {
         // 后端：直接创建目录
         const fs = require('fs')
         const path = require('path')
 
-        const appLogDir = path.dirname(path.join(baseDir, 'app.log'))
+        resolvedBaseDir = resolvedBaseDir || '/tmp/ccgui'
+        const appLogDir = path.dirname(path.join(resolvedBaseDir, 'app.log'))
         if (!fs.existsSync(appLogDir)) {
           fs.mkdirSync(appLogDir, { recursive: true })
         }
       }
 
-      this.appLogPath = `${baseDir}/app.log`
+      resolvedBaseDir = resolvedBaseDir || '/tmp/ccgui'
+      this.appLogPath = `${resolvedBaseDir}/app.log`
       this.initialized = true
 
-      this.info('Logger initialized', { baseDir })
+      this.info('Logger initialized', { baseDir: resolvedBaseDir })
     } catch (error) {
       console.error('Failed to initialize logger:', error)
       throw error

@@ -1,6 +1,6 @@
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
+const { getCcguiPath } = require('../runtime-paths')
 
 const TEMP_ATTACHMENT_DIR = path.join('/tmp', 'cache', 'ccgui-attachments')
 
@@ -11,6 +11,8 @@ const MIME_BY_EXTENSION = new Map([
   ['.gif', 'image/gif'],
   ['.webp', 'image/webp'],
   ['.bmp', 'image/bmp'],
+  ['.ico', 'image/x-icon'],
+  ['.avif', 'image/avif'],
   ['.svg', 'image/svg+xml'],
   ['.txt', 'text/plain'],
   ['.md', 'text/markdown'],
@@ -58,6 +60,8 @@ function inferExtensionFromMimeType(mimeType = '') {
   if (normalized === 'image/gif') return '.gif'
   if (normalized === 'image/webp') return '.webp'
   if (normalized === 'image/bmp') return '.bmp'
+  if (normalized === 'image/x-icon') return '.ico'
+  if (normalized === 'image/avif') return '.avif'
   if (normalized === 'image/svg+xml') return '.svg'
   if (normalized === 'application/pdf') return '.pdf'
   return ''
@@ -147,7 +151,7 @@ function readFileRange(filePath, startLine, endLine) {
 }
 
 function getHistoryDataDir(projectId, sessionId) {
-  return path.join(os.homedir(), '.ccgui', 'projects', projectId, 'sessions', sessionId, 'history', 'data')
+  return getCcguiPath('projects', projectId, 'sessions', sessionId, 'history', 'data')
 }
 
 function finalizeAttachmentsForHistory(projectId, sessionId, attachments = []) {

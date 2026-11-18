@@ -3,9 +3,11 @@ const os = require('os')
 const path = require('path')
 const { spawn, spawnSync } = require('child_process')
 const logger = require('../logger')
+const { getCcguiPath } = require('../runtime-paths')
 const appConfigManager = require('../storage/app-config-manager')
 const { localProxy } = require('./local-proxy')
 const { buildProxyModelString } = require('../adapters/shared/model-config')
+const { getCodexExecutablePath } = require('../adapters/codex/path')
 
 const RECOMMENDED_SKILLS_REPO = 'https://github.com/openai/skills.git'
 const RECOMMENDED_SKILLS_BRANCH = 'main'
@@ -13,35 +15,6 @@ const RECOMMENDED_SKILLS_PATHS = [
   ['skills', '.curated'],
   ['skills', '.experimental']
 ]
-let cachedCodexPath = null
-
-function getCodexExecutablePath() {
-  if (cachedCodexPath) return cachedCodexPath
-
-  const nvmBinPaths = []
-  const nvmVersionsPath = path.join(os.homedir(), '.nvm', 'versions', 'node')
-  try {
-    for (const version of fs.readdirSync(nvmVersionsPath)) {
-      nvmBinPaths.push(path.join(nvmVersionsPath, version, 'bin', 'codex'))
-    }
-  } catch (_) {
-    // nvm is optional
-  }
-
-  const possiblePaths = [
-    ...(process.env.CODEX_CLI_PATH ? [process.env.CODEX_CLI_PATH] : []),
-    '/Applications/Codex.app/Contents/Resources/codex',
-    '/Applications/ChatGPT.app/Contents/Resources/codex',
-    '/opt/homebrew/bin/codex',
-    '/usr/local/bin/codex',
-    path.join(os.homedir(), '.local', 'bin', 'codex'),
-    ...nvmBinPaths,
-    ...(process.env.PATH ? process.env.PATH.split(path.delimiter).map(dir => path.join(dir, 'codex')) : [])
-  ]
-
-  cachedCodexPath = possiblePaths.find(candidate => candidate && fs.existsSync(candidate)) || null
-  return cachedCodexPath
-}
 
 function getCodexResourcesPath() {
   const codexPath = getCodexExecutablePath()
@@ -456,7 +429,7 @@ async function installRecommendedSkill(skillId = '', repoPath = '') {
     throw new Error('未找到推荐技能源文件')
   }
 
-  const destinationRoot = path.join(os.homedir(), '.ccgui', 'skills', 'openai')
+  const destinationRoot = getCcguiPath('skills', 'openai')
   const destinationPath = path.join(destinationRoot, normalizedSkillId)
   fs.mkdirSync(destinationRoot, { recursive: true })
   fs.rmSync(destinationPath, { recursive: true, force: true })

@@ -5,6 +5,7 @@ import ExecutionAgentCard from './messages/ExecutionAgentCard.vue'
 import StickyHeader from './layout/StickyHeader.vue'
 import TaskFloatingWindow from './TaskFloatingWindow.vue'
 import AgentWorkspaceTopRail from './AgentWorkspaceTopRail.vue'
+import { buildRenderableMessageEntries } from '../composables/useMessageList'
 
 const props = defineProps({
   timelineBlocks: {
@@ -86,6 +87,10 @@ const props = defineProps({
   railPlacement: {
     type: String,
     default: 'side'
+  },
+  canCloseAgents: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -102,7 +107,9 @@ const emit = defineEmits([
   'copyQuestionContent',
   'copySticky',
   'scrollToSticky',
-  'contentScroll'
+  'jumpToQuestion',
+  'contentScroll',
+  'closeAgent'
 ])
 
 const AUTO_SCROLL_NEAR_BOTTOM_PX = 48
@@ -320,6 +327,16 @@ function toggleDeletedTeam(teamId) {
   expandedDeletedTeamId.value = expandedDeletedTeamId.value === teamId ? null : teamId
 }
 
+function toggleDeletedAgents() {
+  showDeletedAgents.value = !showDeletedAgents.value
+  if (!showDeletedAgents.value) {
+    expandedDeletedTeamId.value = null
+    if (railMasterEntry.value) {
+      selectAgent(railMasterEntry.value.agentId)
+    }
+  }
+}
+
 function selectTeamGroup(group) {
   const firstMember = group?.members?.[0]
   if (firstMember?.agentId) {
@@ -391,6 +408,7 @@ function startSplitDividerDrag(event) {
 }
 
 onMounted(() => {
+  window.addEventListener('pointerdown', handleAgentContextPointerDown, true)
   if (typeof ResizeObserver === 'undefined') {
     return
   }
@@ -436,6 +454,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopSplitDividerDrag()
+  window.removeEventListener('pointerdown', handleAgentContextPointerDown, true)
   paneResizeObserver?.disconnect()
   paneResizeObserver = null
 })
@@ -447,12 +466,30 @@ function railItemTypeLabel(agentItem) {
   const typeMap = {
     team: '团队',
     'team-lead': '组长',
+    subagent: '子代理',
     'general-purpose': '通用代理',
     Explore: '探索',
     Plan: '规划'
   }
 
   return typeMap[agentItem.agentType] || agentItem.agentType || '代理'
+}
+
+function isAgentRunning(agentItem) {
+  return agentItem?.status === 'running' || agentItem?.status === 'starting'
+}
+
+function agentStatusLabel(agentItem) {
+  const status = agentItem?.status || 'ended'
+  const labels = {
+    starting: '启动中',
+    running: '运行中',
+    ended: '空闲',
+    failed: '失败',
+    interrupted: '已中断',
+    deleted: '已关闭'
+  }
+  return labels[status] || status
 }
 
 const timelineBlocksWithShell = computed(() => {
@@ -504,10 +541,55 @@ const mainStageDisplayMessages = computed(() => {
   }).filter(Boolean)
 })
 
+const mainStageUserQuestions = computed(() => {
+  const questions = []
+  const seenIds = new Set()
+
+  for (const message of mainStageDisplayMessages.value) {
+    if (message?.role !== 'user' || message?.ccgui?.internalMessage) {
+      continue
+    }
+
+    const agentId = message?.ccgui?.attribution?.agentId
+    if (agentId && agentId !== 'master') {
+      continue
+    }
+
+    const content = typeof message?.content === 'string' ? message.content.trim() : ''
+    const messageId = message?.id || null
+    if (!content || !messageId || seenIds.has(messageId)) {
+      continue
+    }
+
+    seenIds.add(messageId)
+    questions.push({
+      id: messageId,
+      content,
+      timestamp: message.timestamp || null
+    })
+  }
+
+  return questions
+})
+
 function getBlockMessage(block) {
   if (!block) return null
   if (block.type === 'execution-card') return block.shellMessage || null
   return block.message || null
+}
+
+function getMessageCurrentTime(message) {
+  return message?.isStreaming ||
+    message?.isExecuting ||
+    (!message?.duration && message?.startTime)
+    ? props.currentTime
+    : null
+}
+
+function getExecutionCardCurrentTime(card) {
+  return card?.status === 'running' || card?.status === 'starting'
+    ? props.currentTime
+    : null
 }
 
 function isTurnMessage(message = null) {
@@ -549,27 +631,7 @@ function getActivityGroupKey(activityBlocks) {
   return `activity-group-${firstMessage?.id || firstBlock?.displayIndex || 'unknown'}`
 }
 
-function isMessageHiddenByResponseCollapse(messages, messageIndex) {
-  if (!Array.isArray(messages) || messageIndex <= 0) return false
-
-  for (let i = messageIndex - 1; i >= 0; i -= 1) {
-    const message = messages[i]
-    if (!message) continue
-
-    if (isTurnMessage(message)) {
-      return Boolean(message.responseCollapsed)
-    }
-  }
-
-  return false
-}
-
-function isActivityGroupHiddenByResponseCollapse(messages, renderBlock) {
-  const index = renderBlock.foldableBlocks?.[0]?.displayIndex
-  return isMessageHiddenByResponseCollapse(messages, index)
-}
-
-function buildRenderableTimeline(blocks) {
+function buildRenderableTimeline(blocks, visibleMessageIndexes) {
   const renderBlocks = []
   let pendingActivities = []
 
@@ -595,6 +657,10 @@ function buildRenderableTimeline(blocks) {
   }
 
   blocks.forEach(block => {
+    if (!visibleMessageIndexes.has(block.displayIndex)) {
+      return
+    }
+
     if (isFoldableActivityBlock(block)) {
       pendingActivities.push(block)
       return
@@ -616,7 +682,13 @@ function buildRenderableTimeline(blocks) {
 
 const collapsedActivityGroups = ref({})
 
-const renderableMainTimelineBlocks = computed(() => buildRenderableTimeline(timelineBlocksWithShell.value))
+const renderableMainMessageIndexes = computed(() => {
+  return new Set(buildRenderableMessageEntries(mainStageDisplayMessages.value).map(entry => entry.index))
+})
+
+const renderableMainTimelineBlocks = computed(() => {
+  return buildRenderableTimeline(timelineBlocksWithShell.value, renderableMainMessageIndexes.value)
+})
 const splitMainSession = computed(() => {
   if (props.viewMode !== 'split') {
     return props.activeSession
@@ -653,10 +725,40 @@ const railMasterEntry = computed(() => {
   return props.agentEntries.find(entry => entry.isMain) || null
 })
 
-const showDeletedTeams = ref(false)
+const showDeletedAgents = ref(false)
 const expandedDeletedTeamId = ref(null)
 const hoveredRailAgentId = ref(null)
 const railTooltipPosition = ref({ top: 0, left: 0 })
+const agentContextMenu = ref(null)
+
+function openAgentContextMenu(event, agentItem) {
+  if (!props.canCloseAgents || !agentItem?.agentId || agentItem.isMain) {
+    return
+  }
+  agentContextMenu.value = {
+    agentId: agentItem.agentId,
+    x: Math.min(event.clientX, window.innerWidth - 120),
+    y: Math.min(event.clientY, window.innerHeight - 44)
+  }
+}
+
+function closeAgentContextMenu() {
+  agentContextMenu.value = null
+}
+
+function handleAgentContextPointerDown(event) {
+  if (!event.target?.closest?.('.agent-context-menu')) {
+    closeAgentContextMenu()
+  }
+}
+
+function closeSelectedAgent() {
+  const agentId = agentContextMenu.value?.agentId
+  closeAgentContextMenu()
+  if (agentId) {
+    emit('closeAgent', agentId)
+  }
+}
 
 const hoveredRailAgent = computed(() => {
   if (!hoveredRailAgentId.value) return null
@@ -668,6 +770,14 @@ const hoveredRailAgent = computed(() => {
   }
   for (const entry of railStandaloneEntries.value) {
     if (entry.agentId === hoveredRailAgentId.value) return entry
+  }
+  for (const entry of railDeletedStandaloneEntries.value) {
+    if (entry.agentId === hoveredRailAgentId.value) return entry
+  }
+  for (const group of railDeletedTeamGroups.value) {
+    for (const member of group.members) {
+      if (member.agentId === hoveredRailAgentId.value) return member
+    }
   }
   return null
 })
@@ -705,7 +815,7 @@ const railTeamGroups = computed(() => {
       groups.set(member.teamId, {
         teamId: member.teamId,
         title: teamEntry?.title || teamEntry?.name || fallbackTitle,
-        status: teamEntry?.status || (member.status === 'deleted' ? 'deleted' : 'running'),
+        status: teamEntry?.status || (member.status === 'deleted' ? 'deleted' : 'ended'),
         members: []
       })
     }
@@ -717,16 +827,29 @@ const railTeamGroups = computed(() => {
     ...group,
     status: group.status === 'deleted' || group.members.every(member => member.status === 'deleted')
       ? 'deleted'
-      : 'running'
+      : 'ended'
   }))
 })
 
 const railActiveTeamGroups = computed(() => {
-  return railTeamGroups.value.filter(group => group.status !== 'deleted')
+  return railTeamGroups.value
+    .filter(group => group.status !== 'deleted')
+    .map(group => ({
+      ...group,
+      members: group.members.filter(member => member.status !== 'deleted')
+    }))
+    .filter(group => group.members.length > 0)
 })
 
 const railDeletedTeamGroups = computed(() => {
-  return railTeamGroups.value.filter(group => group.status === 'deleted')
+  return railTeamGroups.value
+    .map(group => ({
+      ...group,
+      members: group.status === 'deleted'
+        ? group.members
+        : group.members.filter(member => member.status === 'deleted')
+    }))
+    .filter(group => group.members.length > 0)
 })
 
 const railStandaloneEntries = computed(() => {
@@ -734,12 +857,39 @@ const railStandaloneEntries = computed(() => {
   return props.agentEntries.filter(entry => {
     if (entry.isMain) return false
     if (entry.agentType === 'team' || entry.agentType === 'team-lead') return false
+    if (entry.status === 'deleted') return false
     return !groupedMemberIds.has(entry.agentId)
   })
 })
 
+const railDeletedStandaloneEntries = computed(() => {
+  const groupedMemberIds = new Set(railTeamGroups.value.flatMap(group => group.members.map(member => member.agentId)))
+  return props.agentEntries.filter(entry => {
+    if (entry.isMain || entry.status !== 'deleted') return false
+    if (entry.agentType === 'team' || entry.agentType === 'team-lead') return false
+    return !groupedMemberIds.has(entry.agentId)
+  })
+})
+
+const railDeletedAgentCount = computed(() => {
+  return railDeletedTeamGroups.value.reduce((count, group) => count + group.members.length, 0) +
+    railDeletedStandaloneEntries.value.length
+})
+
+const railRunningAgentCount = computed(() => {
+  const entries = [
+    ...railActiveTeamGroups.value.flatMap(group => group.members || []),
+    ...railStandaloneEntries.value
+  ]
+  return entries.filter(isAgentRunning).length
+})
+
 const visibleSplitSessions = computed(() => {
-  const deletedTeamIds = new Set(railDeletedTeamGroups.value.map(group => group.teamId))
+  const deletedTeamIds = new Set(
+    railTeamGroups.value
+      .filter(group => group.status === 'deleted')
+      .map(group => group.teamId)
+  )
   const focusedSession = availableSplitSessions.value.find(session => session.agentId === props.focusedPaneAgentId) || null
   const focusedTeamId = focusedSession?.registry?.teamId || null
 
@@ -750,6 +900,15 @@ const visibleSplitSessions = computed(() => {
   return availableSplitSessions.value.filter(session => !session.registry?.teamId || !deletedTeamIds.has(session.registry.teamId))
 })
 const hasVisibleSplitSessions = computed(() => visibleSplitSessions.value.length > 0)
+const renderableSplitMainMessages = computed(() => {
+  return buildRenderableMessageEntries(splitMainSession.value?.messages || [])
+})
+const renderableVisibleSplitSessions = computed(() => {
+  return visibleSplitSessions.value.map(sessionItem => ({
+    ...sessionItem,
+    renderableMessages: buildRenderableMessageEntries(sessionItem.messages || [])
+  }))
+})
 
 watch(
   () => visibleSplitSessions.value.map(sessionItem => {
@@ -770,7 +929,7 @@ const shouldShowRail = computed(() => {
 
   return (
     railActiveTeamGroups.value.length > 0 ||
-    railDeletedTeamGroups.value.length > 0 ||
+    railDeletedAgentCount.value > 0 ||
     railStandaloneEntries.value.length > 0
   )
 })
@@ -791,9 +950,12 @@ const shouldShowRail = computed(() => {
       v-if="shouldShowRail && props.railPlacement === 'top'"
       :master-entry="railMasterEntry"
       :active-team-groups="railActiveTeamGroups"
+      :standalone-entries="railStandaloneEntries"
       :deleted-team-groups="railDeletedTeamGroups"
+      :deleted-standalone-entries="railDeletedStandaloneEntries"
       :active-session="activeSession"
       :view-mode="viewMode"
+      @open-agent-menu="openAgentContextMenu"
       @select-agent="selectAgent"
       @toggle-view-mode="toggleViewMode"
     />
@@ -813,14 +975,15 @@ const shouldShowRail = computed(() => {
           :right-inset="0"
           :content-width="0"
           :is-copied="stickyCopied"
+          :user-questions="mainStageUserQuestions"
           @copy="forward('copySticky')"
           @scroll-to-user="forward('scrollToSticky')"
+          @jump-to-question="forward('jumpToQuestion', $event)"
         />
         <div ref="mainScrollElementRef" class="agent-workspace__main-scroll" @scroll="handleContentScroll">
           <template v-if="splitMainSession?.isMain">
             <template v-for="renderBlock in renderableMainTimelineBlocks" :key="renderBlock.key">
               <template v-if="renderBlock.type === 'activity-group'">
-                <template v-if="!isActivityGroupHiddenByResponseCollapse(mainStageDisplayMessages, renderBlock)">
                 <div class="activity-group" :class="{ collapsed: resolveActivityGroupCollapsed(renderBlock) }">
                   <div class="activity-group__foldable">
                     <button
@@ -838,10 +1001,11 @@ const shouldShowRail = computed(() => {
                           :total-messages="mainStageDisplayMessages.length"
                           :session-id="sessionId"
                           :working-directory="workingDirectory"
-                          :current-time="currentTime"
+                          :current-time="getMessageCurrentTime(nestedBlock.message)"
                           :all-messages="mainStageDisplayMessages"
                           :chat-theme="chatTheme"
                           :pane-width="mainStageWidth"
+                          response-collapse-prefiltered
                           @message-click="forward('messageClick', $event)"
                           @rewind="forward('rewind', $event)"
                           @fork="forward('fork', $event)"
@@ -857,10 +1021,11 @@ const shouldShowRail = computed(() => {
                           :total-messages="mainStageDisplayMessages.length"
                           :session-id="sessionId"
                           :working-directory="workingDirectory"
-                          :current-time="currentTime"
+                          :current-time="getMessageCurrentTime(nestedBlock.shellMessage)"
                           :all-messages="mainStageDisplayMessages"
                           :chat-theme="chatTheme"
                           :pane-width="mainStageWidth"
+                          response-collapse-prefiltered
                           @message-click="forward('messageClick', $event)"
                           @rewind="forward('rewind', $event)"
                           @fork="forward('fork', $event)"
@@ -872,7 +1037,7 @@ const shouldShowRail = computed(() => {
                           <ExecutionAgentCard
                             :card="nestedBlock.card"
                             :working-directory="workingDirectory"
-                            :current-time="currentTime"
+                            :current-time="getExecutionCardCurrentTime(nestedBlock.card)"
                             :chat-theme="chatTheme"
                           />
                         </MessageItem>
@@ -888,7 +1053,6 @@ const shouldShowRail = computed(() => {
                     </button>
                   </div>
                 </div>
-                </template>
               </template>
 
               <MessageItem
@@ -898,10 +1062,11 @@ const shouldShowRail = computed(() => {
                 :total-messages="mainStageDisplayMessages.length"
                 :session-id="sessionId"
                 :working-directory="workingDirectory"
-                :current-time="currentTime"
+                :current-time="getMessageCurrentTime(renderBlock.block.message)"
                 :all-messages="mainStageDisplayMessages"
                 :chat-theme="chatTheme"
                 :pane-width="mainStageWidth"
+                response-collapse-prefiltered
                 @message-click="forward('messageClick', $event)"
                 @rewind="forward('rewind', $event)"
                 @fork="forward('fork', $event)"
@@ -917,10 +1082,11 @@ const shouldShowRail = computed(() => {
                 :total-messages="mainStageDisplayMessages.length"
                 :session-id="sessionId"
                 :working-directory="workingDirectory"
-                :current-time="currentTime"
+                :current-time="getMessageCurrentTime(renderBlock.block.shellMessage)"
                 :all-messages="mainStageDisplayMessages"
                 :chat-theme="chatTheme"
                 :pane-width="mainStageWidth"
+                response-collapse-prefiltered
                 @message-click="forward('messageClick', $event)"
                 @rewind="forward('rewind', $event)"
                 @fork="forward('fork', $event)"
@@ -932,7 +1098,7 @@ const shouldShowRail = computed(() => {
                 <ExecutionAgentCard
                   :card="renderBlock.block.card"
                   :working-directory="workingDirectory"
-                  :current-time="currentTime"
+                  :current-time="getExecutionCardCurrentTime(renderBlock.block.card)"
                   :chat-theme="chatTheme"
                 />
               </MessageItem>
@@ -941,17 +1107,18 @@ const shouldShowRail = computed(() => {
 
           <template v-else-if="splitMainSession">
             <MessageItem
-              v-for="(message, index) in splitMainSession.messages"
-              :key="message.id || `${splitMainSession.agentId}-${index}`"
-              :message="message"
-              :message-index="index"
+              v-for="entry in renderableSplitMainMessages"
+              :key="entry.message.id || `${splitMainSession.agentId}-${entry.index}`"
+              :message="entry.message"
+              :message-index="entry.index"
               :total-messages="splitMainSession.messages.length"
               :session-id="sessionId"
               :working-directory="workingDirectory"
-              :current-time="currentTime"
+              :current-time="getMessageCurrentTime(entry.message)"
               :all-messages="splitMainSession.messages"
               :chat-theme="chatTheme"
               :pane-width="mainStageWidth"
+              response-collapse-prefiltered
               @message-click="forward('messageClick', $event)"
               @rewind="forward('rewind', $event)"
               @fork="forward('fork', $event)"
@@ -980,7 +1147,7 @@ const shouldShowRail = computed(() => {
         class="agent-workspace__split-side"
       >
         <section
-          v-for="sessionItem in visibleSplitSessions"
+          v-for="sessionItem in renderableVisibleSplitSessions"
           :key="sessionItem.agentId"
           class="agent-workspace__split-pane"
           :class="{
@@ -1005,17 +1172,18 @@ const shouldShowRail = computed(() => {
             @scroll="handleSplitPaneScroll(sessionItem.agentId, $event)"
           >
             <MessageItem
-              v-for="(message, index) in sessionItem.messages"
-              :key="message.id || `${sessionItem.agentId}-${index}`"
-              :message="message"
-              :message-index="index"
+              v-for="entry in sessionItem.renderableMessages"
+              :key="entry.message.id || `${sessionItem.agentId}-${entry.index}`"
+              :message="entry.message"
+              :message-index="entry.index"
               :total-messages="sessionItem.messages.length"
               :session-id="sessionId"
               :working-directory="workingDirectory"
-              :current-time="currentTime"
+              :current-time="getMessageCurrentTime(entry.message)"
               :all-messages="sessionItem.messages"
               :chat-theme="chatTheme"
               :pane-width="splitPaneWidths[sessionItem.agentId] || 0"
+              response-collapse-prefiltered
               @message-click="forward('messageClick', $event)"
               @rewind="forward('rewind', $event)"
               @fork="forward('fork', $event)"
@@ -1030,33 +1198,74 @@ const shouldShowRail = computed(() => {
     </div>
 
     <aside v-if="shouldShowRail && props.railPlacement !== 'top'" class="agent-workspace__rail">
-      <div class="agent-workspace__rail-header">
-        <span>团队</span>
-      </div>
-      <button
-        v-if="railMasterEntry"
-        class="agent-workspace__rail-tab"
-        :class="{
-          active: activeSession?.agentId === railMasterEntry.agentId,
-          focused: focusedPaneAgentId === railMasterEntry.agentId
-        }"
-        type="button"
-        @click="selectAgent(railMasterEntry.agentId)"
-        @mouseenter="hoveredRailAgentId = railMasterEntry.agentId; onRailTabEnter($event)"
-        @mouseleave="hoveredRailAgentId = null"
-      >
-        <span class="agent-workspace__rail-dot" :style="{ background: railMasterEntry.color || '#60A5FA' }"></span>
-        <span class="agent-workspace__rail-tab-name">{{ railMasterEntry.title }}</span>
-      </button>
-
-      <div
-        v-for="group in railActiveTeamGroups"
-        :key="group.teamId"
-        class="agent-workspace__rail-group"
-      >
-        <div class="agent-workspace__rail-group-title">{{ group.title }}</div>
+      <div class="agent-workspace__rail-pinned">
+        <div class="agent-workspace__rail-header">
+          <span>代理</span>
+          <span
+            v-if="railRunningAgentCount > 0"
+            class="agent-workspace__rail-running-count"
+            :title="`${railRunningAgentCount} 个代理运行中`"
+            :aria-label="`${railRunningAgentCount} 个代理运行中`"
+          >
+            {{ railRunningAgentCount }}
+          </span>
+        </div>
         <button
-          v-for="agentItem in group.members"
+          v-if="railMasterEntry"
+          class="agent-workspace__rail-tab agent-workspace__rail-tab--master"
+          :class="{
+            active: activeSession?.agentId === railMasterEntry.agentId,
+            focused: focusedPaneAgentId === railMasterEntry.agentId
+          }"
+          type="button"
+          @click="selectAgent(railMasterEntry.agentId)"
+          @mouseenter="hoveredRailAgentId = railMasterEntry.agentId; onRailTabEnter($event)"
+          @mouseleave="hoveredRailAgentId = null"
+        >
+          <span
+            class="agent-workspace__rail-dot"
+            :class="{ 'agent-workspace__rail-dot--idle': !isAgentRunning(railMasterEntry) }"
+            :style="{ background: railMasterEntry.color || '#60A5FA' }"
+          ></span>
+          <span class="agent-workspace__rail-tab-name">{{ railMasterEntry.title }}</span>
+          <span v-if="isAgentRunning(railMasterEntry)" class="agent-workspace__rail-spinner" aria-label="运行中"></span>
+        </button>
+      </div>
+
+      <div class="agent-workspace__rail-scroll">
+        <div
+          v-for="group in railActiveTeamGroups"
+          :key="group.teamId"
+          class="agent-workspace__rail-group"
+        >
+          <div class="agent-workspace__rail-group-title">{{ group.title }}</div>
+          <button
+            v-for="agentItem in group.members"
+            :key="agentItem.agentId"
+            class="agent-workspace__rail-tab"
+            :class="{
+              active: activeSession?.agentId === agentItem.agentId,
+              focused: focusedPaneAgentId === agentItem.agentId
+            }"
+            type="button"
+            :disabled="agentItem.canActivate === false"
+            @click="selectAgent(agentItem.agentId)"
+            @contextmenu.prevent.stop="openAgentContextMenu($event, agentItem)"
+            @mouseenter="hoveredRailAgentId = agentItem.agentId; onRailTabEnter($event)"
+            @mouseleave="hoveredRailAgentId = null"
+          >
+            <span
+              class="agent-workspace__rail-dot"
+              :class="{ 'agent-workspace__rail-dot--idle': !isAgentRunning(agentItem) }"
+              :style="{ background: agentItem.color || '#60A5FA' }"
+            ></span>
+            <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
+            <span v-if="isAgentRunning(agentItem)" class="agent-workspace__rail-spinner" aria-label="运行中"></span>
+          </button>
+        </div>
+
+        <button
+          v-for="agentItem in railStandaloneEntries"
           :key="agentItem.agentId"
           class="agent-workspace__rail-tab"
           :class="{
@@ -1066,31 +1275,76 @@ const shouldShowRail = computed(() => {
           type="button"
           :disabled="agentItem.canActivate === false"
           @click="selectAgent(agentItem.agentId)"
+          @contextmenu.prevent.stop="openAgentContextMenu($event, agentItem)"
           @mouseenter="hoveredRailAgentId = agentItem.agentId; onRailTabEnter($event)"
           @mouseleave="hoveredRailAgentId = null"
         >
-          <span class="agent-workspace__rail-dot" :style="{ background: agentItem.color || '#60A5FA' }"></span>
+          <span
+            class="agent-workspace__rail-dot"
+            :class="{ 'agent-workspace__rail-dot--idle': !isAgentRunning(agentItem) }"
+            :style="{ background: agentItem.color || '#60A5FA' }"
+          ></span>
           <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
+          <span v-if="isAgentRunning(agentItem)" class="agent-workspace__rail-spinner" aria-label="运行中"></span>
         </button>
-      </div>
 
-      <button
-        v-for="agentItem in railStandaloneEntries"
-        :key="agentItem.agentId"
-        class="agent-workspace__rail-tab"
-        :class="{
-          active: activeSession?.agentId === agentItem.agentId,
-          focused: focusedPaneAgentId === agentItem.agentId
-        }"
-        type="button"
-        :disabled="agentItem.canActivate === false"
-        @click="selectAgent(agentItem.agentId)"
-        @mouseenter="hoveredRailAgentId = agentItem.agentId; onRailTabEnter($event)"
-        @mouseleave="hoveredRailAgentId = null"
-      >
-        <span class="agent-workspace__rail-dot" :style="{ background: agentItem.color || '#60A5FA' }"></span>
-        <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
-      </button>
+        <div v-if="railDeletedAgentCount > 0" class="agent-workspace__rail-deleted">
+          <button
+            class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
+            type="button"
+            @click="toggleDeletedAgents"
+          >
+            <span class="agent-workspace__rail-tab-name">{{ showDeletedAgents ? '收起' : `已关闭 ${railDeletedAgentCount}` }}</span>
+          </button>
+
+          <template v-if="showDeletedAgents">
+            <div
+              v-for="group in railDeletedTeamGroups"
+              :key="`deleted-${group.teamId}`"
+              class="agent-workspace__rail-deleted-group"
+            >
+              <button
+                class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
+                :class="{ active: expandedDeletedTeamId === group.teamId }"
+                type="button"
+                @click="toggleDeletedTeam(group.teamId)"
+              >
+                <span class="agent-workspace__rail-dot agent-workspace__rail-dot--deleted"></span>
+                <span class="agent-workspace__rail-tab-name">{{ group.title }}</span>
+              </button>
+              <template v-if="expandedDeletedTeamId === group.teamId">
+                <button
+                  v-for="agentItem in group.members"
+                  :key="agentItem.agentId"
+                  class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
+                  :class="{ active: activeSession?.agentId === agentItem.agentId }"
+                  type="button"
+                  :disabled="agentItem.canActivate === false"
+                  @click="selectAgent(agentItem.agentId)"
+                >
+                  <span class="agent-workspace__rail-dot agent-workspace__rail-dot--deleted"></span>
+                  <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
+                </button>
+              </template>
+            </div>
+
+            <button
+              v-for="agentItem in railDeletedStandaloneEntries"
+              :key="agentItem.agentId"
+              class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
+              :class="{ active: activeSession?.agentId === agentItem.agentId }"
+              type="button"
+              :disabled="agentItem.canActivate === false"
+              @click="selectAgent(agentItem.agentId)"
+              @mouseenter="hoveredRailAgentId = agentItem.agentId; onRailTabEnter($event)"
+              @mouseleave="hoveredRailAgentId = null"
+            >
+              <span class="agent-workspace__rail-dot agent-workspace__rail-dot--deleted"></span>
+              <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
+            </button>
+          </template>
+        </div>
+      </div>
 
       <Teleport to="body">
         <div
@@ -1105,52 +1359,24 @@ const shouldShowRail = computed(() => {
         >
           <span class="rail-tooltip__title">{{ hoveredRailAgent.title }}</span>
           <span class="rail-tooltip__line">类型: {{ railItemTypeLabel(hoveredRailAgent) }}</span>
-          <span v-if="hoveredRailAgent.status" class="rail-tooltip__line">状态: {{ hoveredRailAgent.status }}</span>
+          <span v-if="hoveredRailAgent.status" class="rail-tooltip__line">状态: {{ agentStatusLabel(hoveredRailAgent) }}</span>
           <span v-if="hoveredRailAgent.model" class="rail-tooltip__line">模型: {{ hoveredRailAgent.model }}</span>
         </div>
       </Teleport>
 
-      <div v-if="railDeletedTeamGroups.length > 0" class="agent-workspace__rail-deleted">
-        <button
-          class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
-          type="button"
-          @click="showDeletedTeams = !showDeletedTeams; if (!showDeletedTeams) { expandedDeletedTeamId = null; selectAgent(railMasterEntry.agentId) }"
+      <Teleport to="body">
+        <div
+          v-if="agentContextMenu"
+          class="agent-context-menu"
+          :style="{ top: `${agentContextMenu.y}px`, left: `${agentContextMenu.x}px` }"
+          @contextmenu.prevent
         >
-          <span class="agent-workspace__rail-tab-name">{{ showDeletedTeams ? '收起' : `已关闭 ${railDeletedTeamGroups.length}` }}</span>
-        </button>
+          <button type="button" class="agent-context-menu__item" @click="closeSelectedAgent">
+            关闭
+          </button>
+        </div>
+      </Teleport>
 
-        <template v-if="showDeletedTeams">
-          <div
-            v-for="group in railDeletedTeamGroups"
-            :key="`deleted-${group.teamId}`"
-            class="agent-workspace__rail-deleted-group"
-          >
-            <button
-              class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
-              :class="{ active: expandedDeletedTeamId === group.teamId }"
-              type="button"
-              @click="toggleDeletedTeam(group.teamId)"
-            >
-              <span class="agent-workspace__rail-dot agent-workspace__rail-dot--deleted"></span>
-              <span class="agent-workspace__rail-tab-name">{{ group.title }}</span>
-            </button>
-            <template v-if="expandedDeletedTeamId === group.teamId">
-              <button
-                v-for="agentItem in group.members"
-                :key="agentItem.agentId"
-                class="agent-workspace__rail-tab agent-workspace__rail-tab--deleted"
-                :class="{ active: activeSession?.agentId === agentItem.agentId }"
-                type="button"
-                :disabled="agentItem.canActivate === false"
-                @click="selectAgent(agentItem.agentId)"
-              >
-                <span class="agent-workspace__rail-dot agent-workspace__rail-dot--deleted"></span>
-                <span class="agent-workspace__rail-tab-name">{{ agentItem.title }}</span>
-              </button>
-            </template>
-          </div>
-        </template>
-      </div>
     </aside>
   </div>
 </template>
@@ -1510,19 +1736,54 @@ const shouldShowRail = computed(() => {
   position: sticky;
   top: 0;
   align-self: stretch;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
   padding: 4px 0;
   border-left: 1px solid rgba(63, 63, 70, 0.75);
   background: transparent;
+  overflow: hidden;
+}
+
+.agent-workspace__rail-pinned {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(96, 165, 250, 0.22);
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(180deg, rgba(96, 165, 250, 0.08), rgba(96, 165, 250, 0.02));
+}
+
+.agent-workspace__rail-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 1px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #52525B transparent;
+}
+
+.agent-workspace__rail-scroll > * {
+  flex: 0 0 auto;
 }
 
 .agent-workspace__rail-header {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px;
   padding: 2px 0 2px;
   color: #71717a;
   font-size: 10px;
@@ -1534,6 +1795,16 @@ const shouldShowRail = computed(() => {
 
 .agent-workspace__rail-header span {
   display: inline;
+}
+
+.agent-workspace__rail-running-count {
+  padding: 1px 4px;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.1);
+  color: #86EFAC;
+  font-size: 9px;
+  letter-spacing: 0;
 }
 
 .agent-workspace__rail-tab {
@@ -1566,6 +1837,25 @@ const shouldShowRail = computed(() => {
   color: #f4f4f5;
 }
 
+.agent-workspace__rail-tab--master {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  background: rgba(96, 165, 250, 0.08);
+  color: #d4d4d8;
+  font-weight: 600;
+}
+
+.agent-workspace__rail-tab--master:hover {
+  background: rgba(96, 165, 250, 0.13);
+  color: #f4f4f5;
+}
+
+.agent-workspace__rail-tab--master.active {
+  background: rgba(96, 165, 250, 0.16);
+  box-shadow: inset 2px 0 0 #60A5FA;
+  color: #f4f4f5;
+}
+
 .agent-workspace__rail-tab--deleted {
   opacity: 0.55;
 }
@@ -1587,6 +1877,21 @@ const shouldShowRail = computed(() => {
   background: #71717a;
 }
 
+.agent-workspace__rail-dot--idle {
+  opacity: 0.4;
+}
+
+.agent-workspace__rail-spinner {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin-top: 2px;
+  border: 1.5px solid rgba(134, 239, 172, 0.28);
+  border-top-color: #86EFAC;
+  border-radius: 50%;
+  animation: agent-workspace-spin 0.8s linear infinite;
+}
+
 .agent-workspace__rail-tab-name {
   flex: 1;
   min-width: 0;
@@ -1597,6 +1902,12 @@ const shouldShowRail = computed(() => {
   -webkit-box-orient: vertical;
   word-break: break-all;
   line-height: 1.3;
+}
+
+@keyframes agent-workspace-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .agent-workspace__rail-group {
@@ -1650,7 +1961,9 @@ const shouldShowRail = computed(() => {
   .agent-workspace__rail {
     position: static;
     order: -1;
+    height: auto;
     min-height: 0;
+    max-height: none;
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
@@ -1658,6 +1971,29 @@ const shouldShowRail = computed(() => {
     padding: 0 0 4px;
     border-left: none;
     border-bottom: 1px solid rgba(63, 63, 70, 0.75);
+    overflow: visible;
+  }
+
+  .agent-workspace__rail-pinned {
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+    margin: 0;
+    border-bottom: none;
+    background: transparent;
+  }
+
+  .agent-workspace__rail-scroll {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding-right: 0;
+    overflow: visible;
   }
 
   .agent-workspace__rail-header {
@@ -1706,31 +2042,36 @@ const shouldShowRail = computed(() => {
 }
 
 .agent-workspace__main-scroll::-webkit-scrollbar,
-.agent-workspace__split-pane-scroll::-webkit-scrollbar {
+.agent-workspace__split-pane-scroll::-webkit-scrollbar,
+.agent-workspace__rail-scroll::-webkit-scrollbar {
   width: 4px;
   height: 4px;
 }
 
 .agent-workspace__main-scroll::-webkit-scrollbar-track,
-.agent-workspace__split-pane-scroll::-webkit-scrollbar-track {
+.agent-workspace__split-pane-scroll::-webkit-scrollbar-track,
+.agent-workspace__rail-scroll::-webkit-scrollbar-track {
   background: transparent;
   border-radius: 999px;
 }
 
 .agent-workspace__main-scroll::-webkit-scrollbar-thumb,
-.agent-workspace__split-pane-scroll::-webkit-scrollbar-thumb {
+.agent-workspace__split-pane-scroll::-webkit-scrollbar-thumb,
+.agent-workspace__rail-scroll::-webkit-scrollbar-thumb {
   background: #52525B;
   border-radius: 999px;
   border: none;
 }
 
 .agent-workspace__main-scroll::-webkit-scrollbar-thumb:hover,
-.agent-workspace__split-pane-scroll::-webkit-scrollbar-thumb:hover {
+.agent-workspace__split-pane-scroll::-webkit-scrollbar-thumb:hover,
+.agent-workspace__rail-scroll::-webkit-scrollbar-thumb:hover {
   background: #71717A;
 }
 
 .agent-workspace__main-scroll::-webkit-scrollbar-thumb:active,
-.agent-workspace__split-pane-scroll::-webkit-scrollbar-thumb:active {
+.agent-workspace__split-pane-scroll::-webkit-scrollbar-thumb:active,
+.agent-workspace__rail-scroll::-webkit-scrollbar-thumb:active {
   background: #A1A1AA;
 }
 </style>
@@ -1763,5 +2104,34 @@ const shouldShowRail = computed(() => {
   font-size: 11px;
   line-height: 1.4;
   color: #A1A1AA;
+}
+
+.agent-context-menu {
+  position: fixed;
+  min-width: 108px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(18, 18, 20, 0.98);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+  z-index: 10000;
+}
+
+.agent-context-menu__item {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #E4E4E7;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-context-menu__item:hover {
+  background: rgba(239, 68, 68, 0.14);
+  color: #FCA5A5;
 }
 </style>

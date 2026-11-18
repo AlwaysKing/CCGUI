@@ -60,7 +60,7 @@ function copyContent() {
 
     <!-- 消息内容（单独气泡） -->
     <div v-if="message.content" class="message-text" :class="[`surface-${chatTheme.messageSurface || 'bubble'}`]" :style="assistantMessageStyle">
-      <MarkdownRenderer :content="message.content" />
+      <MarkdownRenderer :content="message.content" :is-streaming="Boolean(message.isStreaming)" />
       <CopyButton
         :is-copied="isCopied"
         @copy="copyContent"

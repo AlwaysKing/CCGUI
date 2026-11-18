@@ -66,6 +66,62 @@
 - 它不承担 `execution / collaborative` 这种高阶分类职责
 - 它只描述“具体类型”，不描述统一工作模式
 
+## 固定术语
+
+后续产品、设计和代码讨论统一使用以下两个说法。
+
+### 任务型 Subagent
+
+对应统一语义：
+
+- `agentKind = execution`
+
+定义：
+
+- 以完成一次任务为目标
+- 在 CCGUI 中显示为主对话里的任务卡
+- 不作为右侧独立会话提供输入框
+- 生命周期重点是任务开始、工具执行和最终结果
+
+当前典型来源：
+
+- Claude Code 普通 `subagent`
+
+### 协作型 Subagent
+
+对应统一语义：
+
+- `agentKind = collaborative`
+
+定义：
+
+- 拥有独立上下文和消息队列
+- 显示在 Agent Rail / 右侧边栏
+- 可以被继续发消息、追加任务或恢复执行
+- 生命周期重点是 `start / end / delete` 和当前运行状态
+
+当前典型来源：
+
+- Claude Code `agent team` teammate
+- Codex `spawn_agent` / `SubAgentActivity` 创建的独立子代理
+
+### 不属于 Agent 实体的控制卡
+
+以下内容不属于第三种 Agent 类型：
+
+- Claude `SendMessage`
+- Codex `collabAgentToolCall` 中的 `wait`、`followup_task`、`send_message` 等
+
+它们是主 Agent 操作协作型 Subagent 的工具调用，应显示为主时间线中的控制卡，不进入 Agent Registry，也不计入活跃 Subagent 数量。
+
+### 对照表
+
+| 统一说法 | `agentKind` | Claude | Codex | UI |
+|---|---|---|---|---|
+| 任务型 Subagent | `execution` | 普通 `subagent` | 当前样本未观察到独立实体 | 主对话任务卡 |
+| 协作型 Subagent | `collaborative` | Team teammate | `spawn_agent` / `SubAgentActivity` | Agent Rail / 右侧边栏 |
+| Agent 控制卡 | 不适用 | `SendMessage` 等 | `wait` / `followup_task` / `send_message` 等 | 主对话工具卡 |
+
 ## 1. Agent Registry
 
 `Agent Registry` 是代理实体表。
@@ -391,10 +447,34 @@ Claude `agent team` 的统一映射原则：
 
 Codex `subagent` 的统一映射原则：
 
-- 通过 `spawnAgent`、`receiverThreadIds`、`threadId` 等信息在 adapter 内完成归属推导
+- 通过 `spawn_agent`、`SubAgentActivity`、`agent_thread_id`、`threadId` 等信息在 adapter 内完成归属推导
 - 统一输出 `agentId`
 - `agentKind = collaborative`
+- 当前作为独立协作型 Subagent，不要求存在 `teamId`
 - `start` 时保留初始化元数据和线程映射结果
+- 用户直接向历史 Subagent 发送消息时，adapter 必须恢复原 child thread 并向该线程发送新的 `turn/start`
+- 子线程恢复失败时必须明确报错，不能静默退回主线程
+- 历史恢复必须使用最后一个真实生命周期状态，不能把已 `end` 的 Subagent 推断为 `interrupted`
+
+Codex 协作型 Subagent 的会话活跃语义：
+
+- 主线程 turn 结束不代表整个 session 结束
+- 只要仍有 `starting / running` 的 Subagent，整个 session 就应保持“回话中”
+- 单条 assistant message 完成不代表 Subagent turn 结束
+- 只有对应 Agent 的 `end / delete / interrupted / failed` 生命周期事件才能将其移出活跃集合
+
+Codex `collabAgentToolCall` 的统一映射原则：
+
+- `wait`、`followup_task`、`send_message` 等是主 Agent 的控制动作
+- 保留动作类型供 UI 显示，不创建新的 Agent Registry 实体
+- 不作为协作型 Subagent 计入活跃 Agent 数量
+
+Codex 协作型 Subagent 的关闭语义：
+
+- 关闭动作通过 `thread/archive` 归档子线程
+- 关闭前若子线程仍有活跃 turn，先执行 `turn/interrupt`
+- 关闭后发出 `delete` 生命周期事件，并从 Agent Rail 移除
+- 保留 CCGUI 本地 subagent history，不执行物理删除
 
 ## 5. 正式不变量
 
@@ -408,6 +488,8 @@ Codex `subagent` 的统一映射原则：
 - `delete` 只表示对象被销毁或清理
 - `status` 是 registry 的材料化状态，不是事件主来源
 - provider 原始关联键不得进入统一语义主层
+- session 活跃状态必须聚合主代理和所有 Subagent，不能只看主代理
+- `activeAgentIds` 只能由 Agent 生命周期事件维护，不能由单条消息完成事件维护
 
 ## 6. 推荐文档结构
 

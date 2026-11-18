@@ -5,6 +5,7 @@ const path = require('path')
 let nodePty = null
 let terminalSequence = 0
 const terminalSessions = new Map()
+let shutdownPromise = null
 
 function dedupePaths(paths = []) {
   return [...new Set(paths.filter(Boolean))]
@@ -144,39 +145,36 @@ function sendResponse(requestId, success, payload = {}) {
   })
 }
 
-function disposeTerminal(terminalId) {
+function signalTerminalProcess(terminalId, signal) {
   const terminalSession = terminalSessions.get(terminalId)
   if (!terminalSession) return
 
+  const pid = terminalSession.process.pid
   try {
-    terminalSession.process.kill()
+    process.kill(-pid, signal)
   } catch (error) {
-    // Ignore already-closed terminal processes.
+    try {
+      process.kill(pid, signal)
+    } catch (_) {
+      // The process or its process group is already gone.
+    }
   }
+}
 
+function disposeTerminal(terminalId) {
+  if (!terminalSessions.has(terminalId)) return
+
+  signalTerminalProcess(terminalId, 'SIGTERM')
   terminalSessions.delete(terminalId)
 }
 
 function handleForceKillTerminal(requestId, payload = {}) {
-  const terminalSession = terminalSessions.get(payload.terminalId)
-  if (!terminalSession) {
+  if (!terminalSessions.has(payload.terminalId)) {
     sendResponse(requestId, false, { error: '终端不存在' })
     return
   }
 
-  const pid = terminalSession.process.pid
-  try {
-    // 使用负 PID 杀掉整个进程组（shell + 所有子进程）
-    process.kill(-pid, 'SIGKILL')
-  } catch (error) {
-    // 进程组可能已退出，尝试单独杀 shell 进程
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch (_) {
-      // 进程已不在，忽略
-    }
-  }
-
+  signalTerminalProcess(payload.terminalId, 'SIGKILL')
   terminalSessions.delete(payload.terminalId)
   sendResponse(requestId, true)
 }
@@ -287,13 +285,45 @@ function handleCloseTerminal(requestId, payload = {}) {
   sendResponse(requestId, true)
 }
 
-function handleShutdown(requestId) {
-  for (const terminalId of [...terminalSessions.keys()]) {
-    disposeTerminal(terminalId)
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function terminateAllTerminals() {
+  const terminalIds = [...terminalSessions.keys()]
+  for (const terminalId of terminalIds) {
+    signalTerminalProcess(terminalId, 'SIGTERM')
   }
 
-  sendResponse(requestId, true)
-  process.exit(0)
+  if (terminalIds.length > 0) {
+    await wait(250)
+  }
+
+  for (const terminalId of terminalIds) {
+    signalTerminalProcess(terminalId, 'SIGKILL')
+  }
+  terminalSessions.clear()
+}
+
+async function shutdownTerminalHost(exitCode = 0) {
+  if (shutdownPromise) {
+    return shutdownPromise
+  }
+
+  shutdownPromise = (async () => {
+    await terminateAllTerminals()
+    process.exit(exitCode)
+  })()
+  return shutdownPromise
+}
+
+async function handleShutdown(requestId) {
+  try {
+    await terminateAllTerminals()
+    sendResponse(requestId, true)
+  } finally {
+    process.exit(0)
+  }
 }
 
 process.on('message', async message => {
@@ -317,7 +347,7 @@ process.on('message', async message => {
         handleForceKillTerminal(requestId, payload)
         break
       case 'shutdown':
-        handleShutdown(requestId)
+        await handleShutdown(requestId)
         break
       default:
         throw new Error(`未知终端消息类型: ${type}`)
@@ -330,8 +360,11 @@ process.on('message', async message => {
 })
 
 process.on('disconnect', () => {
-  for (const terminalId of [...terminalSessions.keys()]) {
-    disposeTerminal(terminalId)
-  }
-  process.exit(0)
+  void shutdownTerminalHost(0)
 })
+
+for (const [signal, exitCode] of [['SIGTERM', 143], ['SIGINT', 130], ['SIGHUP', 129]]) {
+  process.on(signal, () => {
+    void shutdownTerminalHost(exitCode)
+  })
+}

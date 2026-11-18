@@ -83,9 +83,17 @@ function getBaseName(targetPath = '') {
   return normalizedPath.split('/').pop() || normalizedPath
 }
 
+function getFileExtension(filePath = '') {
+  return filePath.split('.').pop().toLowerCase()
+}
+
 function isImageExtension(filePath = '') {
-  const ext = filePath.split('.').pop().toLowerCase()
+  const ext = getFileExtension(filePath)
   return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'avif'].includes(ext)
+}
+
+function isPdfExtension(filePath = '') {
+  return getFileExtension(filePath) === 'pdf'
 }
 
 function getProjectRelativePath(projectPath = '', targetPath = '') {
@@ -139,6 +147,9 @@ function createTabBase(filePath, options = {}) {
     readOnly: !!options.readOnly,
     markdownPreview: !!options.markdownPreview,
     isImage: !!options.isImage,
+    isPdf: !!options.isPdf,
+    previewWarning: options.previewWarning || null,
+    largeFileLoadConfirmed: !!options.largeFileLoadConfirmed,
     navigationRequest: options.navigationRequest || null
   }
 }
@@ -527,39 +538,73 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     }
   }
 
-  async function ensureFileLoaded(filePath) {
+  async function ensureFileLoaded(filePath, { force = false } = {}) {
     const normalizedPath = normalizePath(filePath)
     const currentTab = tabs.value.find(tab => tab.path === normalizedPath && !tab.markdownPreview)
     if (!currentTab) return null
     if (currentTab.loaded || currentTab.error) return currentTab
+    if (currentTab.previewWarning && !force && !currentTab.largeFileLoadConfirmed) return currentTab
 
-    // Image files: load via IPC as base64 data URL
-    if (currentTab.isImage) {
+    // 图片和 PDF 通过流式资源协议读取，避免将文件内容整体塞入 IPC。
+    if (currentTab.isImage || currentTab.isPdf) {
       currentTab.loading = true
       currentTab.error = null
       try {
         const relativePath = getProjectRelativePath(projectPath.value, normalizedPath)
-        const result = relativePath !== null
-          ? await window.electronAPI.readImageFile({
-            projectPath: projectPath.value,
-            filePath: relativePath
-          })
-          : await window.electronAPI.readAttachmentImage({
-            filePath: normalizedPath
-          })
-        if (!result?.success) {
-          throw new Error(result?.error || '读取图片失败')
+        const shouldForceLoad = force || currentTab.largeFileLoadConfirmed
+        let result
+
+        if (currentTab.isImage) {
+          result = relativePath !== null
+            ? await window.electronAPI.readImageFile({
+              projectPath: projectPath.value,
+              filePath: relativePath,
+              force: shouldForceLoad
+            })
+            : await window.electronAPI.readAttachmentImage({
+              filePath: normalizedPath,
+              force: shouldForceLoad
+            })
+        } else {
+          result = relativePath !== null
+            ? await window.electronAPI.readPdfFile({
+              projectPath: projectPath.value,
+              filePath: relativePath,
+              force: shouldForceLoad
+            })
+            : await window.electronAPI.readAttachmentPdf({
+              filePath: normalizedPath,
+              force: shouldForceLoad
+            })
         }
+
+        if (!result?.success) {
+          throw new Error(result?.error || '读取文件预览失败')
+        }
+
+        if (result.requiresConfirmation) {
+          currentTab.content = ''
+          currentTab.savedContent = ''
+          currentTab.loaded = false
+          currentTab.previewWarning = result.warning || {
+            fileType: currentTab.isImage ? 'image' : 'pdf',
+            size: result.file?.size || 0,
+            threshold: 0
+          }
+          return currentTab
+        }
+
         currentTab.content = result.file.content || ''
         currentTab.savedContent = result.file.content || ''
         currentTab.size = result.file.size || 0
         currentTab.updatedAt = result.file.updatedAt || null
         currentTab.isDirty = false
         currentTab.readOnly = true
+        currentTab.previewWarning = null
         currentTab.loaded = true
         return currentTab
       } catch (error) {
-        currentTab.error = error.message || '读取图片失败'
+        currentTab.error = error.message || '读取文件预览失败'
         return currentTab
       } finally {
         currentTab.loading = false
@@ -705,6 +750,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
         loaded: false,
         loading: false,
         isImage: isImageExtension(normalizedPath),
+        isPdf: isPdfExtension(normalizedPath),
         navigationRequest
       })
       tabs.value.push(targetTab)
@@ -734,6 +780,16 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
 
   async function previewFile(filePath) {
     return openFile(filePath, { preview: true, pinned: false })
+  }
+
+  async function confirmLargeFilePreview(filePath) {
+    const normalizedPath = normalizePath(filePath)
+    const tab = tabs.value.find(item => item.path === normalizedPath && !item.markdownPreview)
+    if (!tab) return null
+
+    tab.largeFileLoadConfirmed = true
+    tab.previewWarning = null
+    return ensureFileLoaded(normalizedPath, { force: true })
   }
 
   async function previewAttachmentFile(filePath) {
@@ -1233,6 +1289,7 @@ export const useFileBrowserStore = defineStore('file-browser', () => {
     stopRenaming,
     clearNavigationRequest,
     previewFile,
+    confirmLargeFilePreview,
     previewAttachmentFile,
     pinFile,
     createEntry,

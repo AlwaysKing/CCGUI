@@ -54,6 +54,7 @@ const isCommandVariant = computed(() => props.variant === 'command')
 // 是否已复制
 const isCopied = computed(() => props.copiedMessageIndex === props.messageIndex)
 const attachments = computed(() => Array.isArray(props.message.attachments) ? props.message.attachments : [])
+const internalMessage = computed(() => props.message?.ccgui?.internalMessage || null)
 const imagePreviewUrl = ref('')
 const imagePreviewTitle = ref('')
 
@@ -96,6 +97,13 @@ function closeImagePreview() {
           @copy="copyContent"
         />
         <div v-if="isCommandVariant" class="message-command-label">命令</div>
+        <div v-if="internalMessage" class="internal-agent-message-label">
+          <span class="internal-agent-message-badge">AGENT</span>
+          <span>来自 {{ internalMessage.senderName || internalMessage.senderSessionId }}</span>
+          <span v-if="internalMessage.senderRole" class="internal-agent-message-role">
+            {{ internalMessage.senderRole }}
+          </span>
+        </div>
         <div v-if="attachments.length" class="user-attachments">
           <div
             v-for="attachment in attachments"
@@ -192,6 +200,35 @@ function closeImagePreview() {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(226, 232, 240, 0.7);
+}
+
+.internal-agent-message-label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 28px 8px 0;
+  font-size: 12px;
+  color: rgba(226, 232, 240, 0.74);
+}
+
+.internal-agent-message-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(249, 115, 22, 0.18);
+  border: 1px solid rgba(249, 115, 22, 0.42);
+  color: #FDBA74;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.internal-agent-message-role {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(228, 228, 231, 0.7);
+  font-size: 10px;
 }
 
 .user-attachments {

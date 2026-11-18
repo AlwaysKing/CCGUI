@@ -43,9 +43,12 @@
   "path": "/path/to/project",
   "createdAt": "2026-03-09T00:00:00.000Z",
   "updatedAt": "2026-03-09T00:00:00.000Z",
+  "sessionOrder": ["session-id-2", "session-id-1"],
   "settings": {}
 }
 ```
+
+`sessionOrder` 保存会话列表的固定顺序。新建会话插入数组首位，拖动排序时直接更新该数组，不参与时间排序。
 
 ### 3.3 session.json
 ```json

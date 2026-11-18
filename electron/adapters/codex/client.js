@@ -22,9 +22,9 @@ const {
 const { buildAugmentedEnv } = require('../../services/shell-env')
 const { localProxy } = require('../../services/local-proxy')
 const { hasCatalogConfig } = require('../../services/local-proxy/model-catalog')
+const { getCodexExecutablePath } = require('./path')
 
 let HttpsProxyAgent = null
-let cachedCodexPath = null
 try {
   HttpsProxyAgent = require('https-proxy-agent').HttpsProxyAgent
 } catch (error) {
@@ -42,6 +42,10 @@ function pickFirstDefined(...values) {
 
 function stringifyTomlString(value = '') {
   return JSON.stringify(String(value ?? ''))
+}
+
+function stringifyTomlStringArray(values = []) {
+  return `[${values.map(value => stringifyTomlString(value)).join(', ')}]`
 }
 
 function parseTomlTopLevelValue(rawValue) {
@@ -479,6 +483,9 @@ class CodexClient {
     this.isNewSession = isNewSession
     this.permissionMode = permissionMode
     this.projectSettings = projectSettings
+    this.agentIdentity = options.agentIdentity || null
+    this.agentMcpConfig = options.agentMcpConfig || null
+    this.agentCommunicationEnabled = options.agentCommunicationEnabled === true
     this.resumeThreadId = options.resumeThreadId || null
     this.debugEnabled = options.debug === true
 
@@ -553,29 +560,6 @@ class CodexClient {
     this.projectSettings = settings && typeof settings === 'object'
       ? { ...settings }
       : settings
-  }
-
-  detectCodexPath(environment = process.env) {
-    if (cachedCodexPath) return cachedCodexPath
-
-    const possiblePaths = [
-      ...(environment.CODEX_CLI_PATH ? [environment.CODEX_CLI_PATH] : []),
-      '/Applications/ChatGPT.app/Contents/Resources/codex',
-      '/Applications/Codex.app/Contents/Resources/codex',
-      '/opt/homebrew/bin/codex',
-      '/usr/local/bin/codex',
-      path.join(environment.HOME || process.env.HOME || '', '.local/bin/codex'),
-      ...(environment.PATH ? environment.PATH.split(path.delimiter).map(dir => path.join(dir, 'codex')) : [])
-    ]
-
-    for (const candidate of possiblePaths) {
-      if (candidate && fs.existsSync(candidate)) {
-        cachedCodexPath = candidate
-        return cachedCodexPath
-      }
-    }
-
-    throw new Error('Codex CLI not found. Please install Codex first.')
   }
 
   resolveModelRuntime() {
@@ -674,10 +658,10 @@ class CodexClient {
     return null
   }
 
-  async buildThreadResumeParams(overrides = {}) {
+  async buildThreadResumeParams(overrides = {}, threadIdOverride = null) {
     const developerInstructions = await this.buildDeveloperInstructions()
     const currentSelection = this.getCurrentModelSelection()
-    const threadId = this.currentThreadId || this.resumeThreadId
+    const threadId = threadIdOverride || this.currentThreadId || this.resumeThreadId
 
     if (!threadId) {
       throw new Error('Codex thread not initialized')
@@ -844,7 +828,7 @@ class CodexClient {
 
   async resumeThreadWithSelection(selection = {}, threadId = null) {
     try {
-      return await this.request('thread/resume', await this.buildThreadResumeParams(selection))
+      return await this.request('thread/resume', await this.buildThreadResumeParams(selection, threadId))
     } catch (error) {
       if (!isMissingCodexRolloutError(error)) {
         throw error
@@ -902,7 +886,12 @@ class CodexClient {
 
   async buildDeveloperInstructions() {
     try {
-      return buildDeveloperInstructions(this.projectSettings, { provider: 'codex', projectPath: this.workingDirectory })
+      return buildDeveloperInstructions(this.projectSettings, {
+        provider: 'codex',
+        projectPath: this.workingDirectory,
+        agentIdentity: this.agentIdentity,
+        agentCommunicationEnabled: this.agentCommunicationEnabled
+      })
     } catch (error) {
       logger.warn('[CodexClient] Failed to build developer instructions', {
         error: error.message
@@ -1066,12 +1055,18 @@ class CodexClient {
       codexEnvOverrides.HTTPS_PROXY = proxyUrl
       codexEnvOverrides.ALL_PROXY = proxyUrl
     }
+    if (this.agentMcpConfig?.env && typeof this.agentMcpConfig.env === 'object') {
+      Object.assign(codexEnvOverrides, this.agentMcpConfig.env)
+    }
 
     const codexEnv = await buildAugmentedEnv(process.env, codexEnvOverrides)
 
     // Electron launched from Finder may not inherit the terminal's nvm/npm PATH.
     // Resolve the login-shell environment before locating the CLI.
-    this.codexPath = this.detectCodexPath(codexEnv)
+    this.codexPath = getCodexExecutablePath(codexEnv)
+    if (!this.codexPath) {
+      throw new Error('Codex CLI not found. Please install Codex first.')
+    }
     logger.info('[CodexClient] Using Codex executable:', { path: this.codexPath })
 
     logger.info('[CodexClient] PATH entries:', {
@@ -1079,6 +1074,18 @@ class CodexClient {
     })
 
     const args = ['app-server']
+    if (this.agentMcpConfig?.serverName && this.agentMcpConfig?.command) {
+      const serverKey = `mcp_servers.${this.agentMcpConfig.serverName}`
+      args.push(
+        '-c', `${serverKey}.command=${stringifyTomlString(this.agentMcpConfig.command)}`,
+        '-c', `${serverKey}.args=${stringifyTomlStringArray(this.agentMcpConfig.args || [])}`,
+        '-c', `${serverKey}.startup_timeout_sec=20`,
+        '-c', `${serverKey}.env_vars=${stringifyTomlStringArray(Object.keys(this.agentMcpConfig.env || {}))}`
+      )
+      logger.info('[CodexClient] Injected session agent communication MCP', {
+        serverName: this.agentMcpConfig.serverName
+      })
+    }
     if (!localProxy.getBaseUrl()) {
       await localProxy.start()
     }
@@ -1187,8 +1194,9 @@ class CodexClient {
 
   setupStdioHandlers() {
     let stdoutBuffer = ''
+    const childProcess = this.process
 
-    this.process.stdout.on('data', data => {
+    childProcess.stdout.on('data', data => {
       stdoutBuffer += data.toString()
       const lines = stdoutBuffer.split('\n')
       stdoutBuffer = lines.pop()
@@ -1207,7 +1215,7 @@ class CodexClient {
       })
     })
 
-    this.process.stderr.on('data', data => {
+    childProcess.stderr.on('data', data => {
       const message = data.toString().trim()
       if (!message) {
         return
@@ -1219,9 +1227,11 @@ class CodexClient {
       })
     })
 
-    this.process.on('exit', (code, signal) => {
-      this.emit('exit', { code, signal })
-      this.process = null
+    childProcess.on('exit', (code, signal) => {
+      if (this.process === childProcess) {
+        this.process = null
+      }
+      this.emit('exit', { code, signal, pid: childProcess.pid || null })
     })
   }
 
@@ -1289,10 +1299,11 @@ class CodexClient {
     this.emit('unknown_message', message)
   }
 
-  async sendMessage(message) {
+  async sendMessage(message, options = {}) {
     await this.ensureInitialized()
 
-    if (!this.currentThreadId) {
+    const threadId = options.threadId || this.currentThreadId
+    if (!threadId) {
       throw new Error('Codex thread not initialized')
     }
 
@@ -1302,7 +1313,7 @@ class CodexClient {
     const codexAttachments = []
 
     logger.info('[CodexClient] sendMessage input', {
-      threadId: this.currentThreadId,
+      threadId,
       rawText,
       attachmentCount: attachments.length,
       attachments: attachments.map(attachment => ({
@@ -1343,7 +1354,7 @@ class CodexClient {
 
     const text = replaceAttachmentTokens(rawText, attachments, buildCodexAttachmentReference)
     logger.info('[CodexClient] sendMessage translated', {
-      threadId: this.currentThreadId,
+      threadId,
       rawText,
       translatedText: text,
       codexAttachmentCount: codexAttachments.length,
@@ -1351,7 +1362,7 @@ class CodexClient {
       imageInputCount: imageInputs.length
     })
     const turnParams = {
-      threadId: this.currentThreadId,
+      threadId,
       input: [
         {
           type: 'text',
@@ -1379,7 +1390,9 @@ class CodexClient {
 
     const result = await this.request('turn/start', turnParams)
 
-    this.currentTurnId = result?.turn?.id || this.currentTurnId
+    if (threadId === this.currentThreadId) {
+      this.currentTurnId = result?.turn?.id || this.currentTurnId
+    }
     return result
   }
 

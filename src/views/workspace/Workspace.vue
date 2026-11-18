@@ -93,10 +93,15 @@ const {
   selectedProject,
   confirmDialogConfig,
   renameDialogConfig,
+  runSessionDeletionInBackground,
   handleNewSession,
   handleDeleteSession,
+  handleDissolveTeam,
+  handleDestroyTeam,
   handleRestoreSession,
   handlePermanentDeleteSession,
+  handleEmptyRecycleBin,
+  handleDeleteSelectedSessions,
   handleRenameSession,
   handleRenameConfirm,
   handleCloseSession,
@@ -594,6 +599,8 @@ async function handleDeleteTaskLauncher(task) {
   confirmDialogConfig.value = {
     title: '删除快捷命令',
     message: `确定要删除快捷命令“${String(task?.label || '').trim() || '未命名任务'}”吗？`,
+    confirmText: '删除',
+    danger: true,
     onConfirm: async () => {
       try {
         if (runningTaskLabels.value.includes(String(task?.label || '').trim())) {
@@ -1103,7 +1110,7 @@ watch([showClaudeSessions, showCodexSessions], () => {
   saveSessionFilterState()
 }, { immediate: true })
 
-async function handleDeleteInactiveSessions() {
+function handleDeleteInactiveSessions() {
   const inactiveSessions = store.currentProjectSessions.filter(session => {
     if (session.locked) return false
     const status = store.sessionStatuses[session.id]
@@ -1119,15 +1126,17 @@ async function handleDeleteInactiveSessions() {
   confirmDialogConfig.value = {
     title: '删除未激活会话',
     message,
-    onConfirm: async () => {
-      for (const session of inactiveSessions) {
-        try {
-          await store.deleteSession(session.id)
-        } catch (e) {
-          console.error('Failed to delete inactive session:', session.id, e)
-        }
-      }
+    confirmText: '永久删除',
+    danger: true,
+    onConfirm: () => {
       showConfirmDialog.value = false
+      runSessionDeletionInBackground(
+        store.deleteSessions(
+          inactiveSessions.map(session => session.id),
+          { optimistic: true }
+        ),
+        '删除未激活会话'
+      )
     }
   }
   showConfirmDialog.value = true
@@ -1165,6 +1174,7 @@ async function handleDeleteInactiveSessions() {
         :show-claude-filter="showClaudeSessions"
         :show-codex-filter="showCodexSessions"
         :show-recycle-bin="store.showRecycleBin"
+        :recycle-bin-session-count="store.showRecycleBin ? store.currentProjectSessions.length : 0"
         :file-tree="fileBrowserStore.tree"
         :file-tree-loading="fileBrowserStore.isTreeLoading"
         :file-tree-error="fileBrowserStore.treeError"
@@ -1182,8 +1192,12 @@ async function handleDeleteInactiveSessions() {
         @select="handleSelectSessionWithView"
         @delete="handleDeleteSession"
         @softDelete="handleDeleteSession"
+        @dissolveTeam="handleDissolveTeam"
+        @destroyTeam="handleDestroyTeam"
         @restore="handleRestoreSession"
         @permanentDelete="handlePermanentDeleteSession"
+        @emptyRecycleBin="handleEmptyRecycleBin"
+        @deleteSelectedSessions="handleDeleteSelectedSessions"
         @toggleRecycleBin="store.showRecycleBin = !store.showRecycleBin"
         @start="handleStartSession"
         @close="handleCloseSession"
@@ -1260,6 +1274,7 @@ async function handleDeleteInactiveSessions() {
             @toggle-sidebar="toggleSidebar"
             @toggle-diff="fileBrowserStore.toggleTabDiff"
             @open-markdown-preview="fileBrowserStore.openMarkdownPreview"
+            @confirm-large-file="fileBrowserStore.confirmLargeFilePreview"
             @navigation-applied="fileBrowserStore.clearNavigationRequest"
             @toggle-chat-panel="toggleChatPanelCollapse"
           />
@@ -1372,7 +1387,11 @@ async function handleDeleteInactiveSessions() {
       v-if="showConfirmDialog"
       :title="confirmDialogConfig.title"
       :message="confirmDialogConfig.message"
+      :confirm-text="confirmDialogConfig.confirmText || '确认'"
+      :danger="Boolean(confirmDialogConfig.danger)"
       @confirm="confirmDialogConfig.onConfirm"
+      :secondary-text="confirmDialogConfig.secondaryText || ''"
+      @secondary="confirmDialogConfig.onSecondary"
       @cancel="showConfirmDialog = false"
     />
 

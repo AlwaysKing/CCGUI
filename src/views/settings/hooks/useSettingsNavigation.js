@@ -6,12 +6,14 @@ export function useSettingsNavigation() {
   const chatThemeSectionRef = ref(null)
   const shortcutSectionRef = ref(null)
   const terminalSectionRef = ref(null)
+  const aiAssistSectionRef = ref(null)
   const softwareSectionRef = ref(null)
 
   const navItems = [
     { id: 'chat-theme', label: '消息主题', icon: 'chat-theme' },
     { id: 'shortcut', label: '快捷键', icon: 'shortcut' },
     { id: 'terminal', label: '终端配置', icon: 'terminal' },
+    { id: 'ai-assist', label: 'AI 辅助', icon: 'ai-assist' },
     { id: 'software', label: '软件配置', icon: 'software' }
   ]
 
@@ -21,6 +23,7 @@ export function useSettingsNavigation() {
       'chat-theme': chatThemeSectionRef.value,
       shortcut: shortcutSectionRef.value,
       terminal: terminalSectionRef.value,
+      'ai-assist': aiAssistSectionRef.value,
       software: softwareSectionRef.value
     }
 
@@ -41,6 +44,7 @@ export function useSettingsNavigation() {
       { id: 'chat-theme', ref: chatThemeSectionRef.value },
       { id: 'shortcut', ref: shortcutSectionRef.value },
       { id: 'terminal', ref: terminalSectionRef.value },
+      { id: 'ai-assist', ref: aiAssistSectionRef.value },
       { id: 'software', ref: softwareSectionRef.value }
     ]
 
@@ -71,6 +75,7 @@ export function useSettingsNavigation() {
     chatThemeSectionRef,
     shortcutSectionRef,
     terminalSectionRef,
+    aiAssistSectionRef,
     softwareSectionRef,
     navItems,
     scrollToSection,

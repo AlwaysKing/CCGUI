@@ -19,9 +19,10 @@ const logger = require('../../logger')
 const appConfigManager = require('../../storage/app-config-manager')
 const projectConfigManager = require('../../storage/project-config-manager')
 const { encodeProjectPath } = require('../../project-paths')
+const { getCcguiPath } = require('../../runtime-paths')
 
 const GLOBAL_ENABLED_KEY = 'settings.mcpEnabled.claude'
-const CCGUI_MCPS_DIR = path.join(os.homedir(), '.ccgui', 'mcps')
+const CCGUI_MCPS_DIR = getCcguiPath('mcps')
 
 function claudeJsonPath() {
   return path.join(os.homedir(), '.claude.json')

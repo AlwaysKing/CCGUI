@@ -22,10 +22,14 @@ const props = defineProps({
   dockDropPath: {
     type: String,
     default: null
+  },
+  hasNewVersion: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['dock-drop-consumed'])
+const emit = defineEmits(['dock-drop-consumed', 'open-update'])
 const {
   searchQuery,
   showSettingsDialog,
@@ -298,7 +302,18 @@ function handleShortcutEvent(event) {
       </div>
       <h1>Claude Code GUI</h1>
       <p class="subtitle">选择一个项目开始工作</p>
-      <p class="version">{{ version }}</p>
+      <p class="version">
+        <span>{{ version }}</span>
+        <button
+          v-if="props.hasNewVersion"
+          type="button"
+          class="new-version-badge"
+          title="发现新版本"
+          @click="$emit('open-update')"
+        >
+          NEW
+        </button>
+      </p>
     </div>
 
     <div class="search-bar">
@@ -750,9 +765,35 @@ function handleShortcutEvent(event) {
 }
 
 .welcome-header .version {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   font-size: 12px;
   color: #52525B;
   margin: 6px 0 0;
+}
+
+.new-version-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border: 1px solid rgba(249, 115, 22, 0.55);
+  border-radius: 999px;
+  background: rgba(249, 115, 22, 0.12);
+  color: #FB923C;
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.new-version-badge:hover {
+  border-color: rgba(249, 115, 22, 0.8);
+  background: rgba(249, 115, 22, 0.2);
 }
 
 .search-bar {

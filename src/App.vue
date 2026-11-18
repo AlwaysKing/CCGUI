@@ -9,6 +9,7 @@ const Welcome = defineAsyncComponent(() => import('./views/welcome/Welcome.vue')
 const Workspace = defineAsyncComponent(() => import('./views/workspace/Workspace.vue'))
 const ProjectActivityMonitor = defineAsyncComponent(() => import('./views/monitor/ProjectActivityMonitor.vue'))
 const CodexModelCatalogImportDialog = defineAsyncComponent(() => import('./views/settings/components/dialogs/CodexModelCatalogImportDialog.vue'))
+const VersionUpdateDialog = defineAsyncComponent(() => import('./views/welcome/components/VersionUpdateDialog.vue'))
 
 const store = useAppStore()
 const sessionStore = useSessionStore()
@@ -23,6 +24,30 @@ const closeConfirmBusy = ref(false)
 // Codex 模型元数据导入提示
 const showCatalogImportDialog = ref(false)
 const catalogImportCandidates = ref([])
+const appUpdateInfo = ref(null)
+const showUpdateDialog = ref(false)
+const hasNewAppVersion = computed(() => Boolean(appUpdateInfo.value?.hasNewVersion))
+
+async function checkForAppUpdate() {
+  try {
+    const result = await window.electronAPI?.checkAppUpdate?.({ currentVersion: __APP_VERSION__ })
+    appUpdateInfo.value = result?.success ? result : null
+  } catch (error) {
+    logger.warn('检查应用新版本失败', { error: error.message })
+  }
+}
+
+async function openAppReleasePage() {
+  const url = appUpdateInfo.value?.releaseUrl
+  if (!url) {
+    return
+  }
+  try {
+    await window.electronAPI?.openExternalUrl?.({ url })
+  } catch (error) {
+    logger.warn('打开发布页失败', { error: error.message })
+  }
+}
 
 async function checkCodexCatalogImportCandidates() {
   try {
@@ -236,6 +261,10 @@ onMounted(async () => {
   const projectId = urlParams.get('projectId')
   const dropPath = urlParams.get('dockDropPath')
 
+  if (!projectId) {
+    void checkForAppUpdate()
+  }
+
   // 读取 Dock 拖拽的文件夹路径
   if (dropPath) {
     dockDropPath.value = dropPath
@@ -334,7 +363,13 @@ onUnmounted(() => {
     <ProjectActivityMonitor v-if="isProjectMonitorView" />
 
     <!-- Welcome Page - 显示项目列表 -->
-    <Welcome v-else-if="currentView === 'welcome'" :dock-drop-path="dockDropPath" @dock-drop-consumed="dockDropPath = null" />
+    <Welcome
+      v-else-if="currentView === 'welcome'"
+      :dock-drop-path="dockDropPath"
+      :has-new-version="hasNewAppVersion"
+      @dock-drop-consumed="dockDropPath = null"
+      @open-update="showUpdateDialog = true"
+    />
 
     <!-- Workspace - 两栏布局（会话 + 聊天） -->
     <Workspace v-else />
@@ -345,6 +380,13 @@ onUnmounted(() => {
       v-model:visible="showCatalogImportDialog"
       :candidates="catalogImportCandidates"
       @confirm="handleImportCodexCatalogMetadata"
+    />
+
+    <VersionUpdateDialog
+      v-if="!isProjectMonitorView"
+      v-model="showUpdateDialog"
+      :update-info="appUpdateInfo"
+      @open-release="openAppReleasePage"
     />
 
     <!-- 窗口关闭确认弹窗 -->

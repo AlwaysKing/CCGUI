@@ -50,6 +50,8 @@ const { buildAugmentedEnv } = require('./services/shell-env')
 const { localProxy } = require('./services/local-proxy')
 const { DEFAULT_ENTRY: DEFAULT_CODEX_CATALOG_ENTRY, getCatalogPath, normalizeCatalogConfig } = require('./services/local-proxy/model-catalog')
 const { fetchProviderModels } = require('./services/provider-model-discovery')
+const appUpdater = require('./services/app-updater')
+const versionCheckService = require('./services/version-check')
 const Screenshots = require('electron-screenshots')
 
 const isDevRuntime = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -120,6 +122,7 @@ let appShutdownPromise = null
 let appShutdownCompleted = false
 const pendingDockProjectOpens = []
 let appStartupStartedAt = Date.now()
+let appUpdateInstallPromise = null
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -4807,6 +4810,59 @@ ipcMain.handle('force-kill-terminal', async (event, { terminalId } = {}) => {
     return { success: true }
   } catch (error) {
     return { success: false, error: error.message || '强制终止终端失败' }
+  }
+})
+
+// ============================================
+// Version Check IPC Handlers
+// ============================================
+
+ipcMain.handle('check-app-update', async (event, { currentVersion } = {}) => {
+  const result = await versionCheckService.checkForNewVersion({ currentVersion })
+  if (!result.success) {
+    return result
+  }
+  return {
+    ...result,
+    canAutoUpdate: app.isPackaged &&
+      process.platform === 'darwin' &&
+      Boolean(result.hasNewVersion && result.download)
+  }
+})
+
+ipcMain.handle('install-app-update', async (event, {
+  currentVersion,
+  expectedVersion
+} = {}) => {
+  if (appUpdateInstallPromise) {
+    return { success: false, error: '更新正在进行中' }
+  }
+
+  const sendProgress = progress => {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('app-update-progress', progress)
+    }
+  }
+
+  appUpdateInstallPromise = appUpdater.installUpdate({
+    currentVersion,
+    expectedVersion,
+    appBundlePath: appUpdater.getAppBundlePath(app.getPath('exe')),
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    pid: process.pid,
+    progress: sendProgress
+  })
+
+  try {
+    const result = await appUpdateInstallPromise
+    if (result.success) {
+      setTimeout(() => app.quit(), 500)
+    }
+    return result
+  } finally {
+    appUpdateInstallPromise = null
   }
 })
 

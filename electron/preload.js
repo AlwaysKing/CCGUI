@@ -299,6 +299,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   saveAppConfig: (options) => ipcRenderer.invoke('save-app-config', options),
   updateAppConfig: (options) => ipcRenderer.invoke('update-app-config', options),
+  checkAppUpdate: (options) => ipcRenderer.invoke('check-app-update', options),
+  installAppUpdate: (options) => ipcRenderer.invoke('install-app-update', options),
+  onAppUpdateProgress: (callback) => {
+    const listener = (event, progress) => callback(progress)
+    ipcRenderer.on('app-update-progress', listener)
+    return () => ipcRenderer.removeListener('app-update-progress', listener)
+  },
 
   // ============================================
   // Local Proxy API

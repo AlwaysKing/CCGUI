@@ -90,6 +90,8 @@ codex --version
 
 ## 快速开始
 
+项目构建使用 Node.js 26 LTS 和 npm 11+。Electron 26 应用运行时仍使用其内置的 Node.js 18.16.1。
+
 ### 安装依赖
 
 ```bash

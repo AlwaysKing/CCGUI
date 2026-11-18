@@ -25,11 +25,11 @@ jobs:
     # macos-15 是 GitHub 托管的 Apple Silicon（arm64）机器，构建 arm64 产物是原生的
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
 
       - name: 安装依赖
@@ -55,7 +55,7 @@ jobs:
         run: codesign --verify --deep --strict --verbose=2 output/mac-arm64/CCGUI.app
 
       - name: 发布 Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.version.outputs.build_version }}
           name: CCGUI v${{ steps.version.outputs.build_version }}

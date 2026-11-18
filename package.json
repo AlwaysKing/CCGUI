@@ -20,6 +20,10 @@
   "keywords": [],
   "author": "",
   "license": "MIT",
+  "engines": {
+    "node": ">=26 <27",
+    "npm": ">=11"
+  },
   "build": {
     "productName": "CCGUI",
     "appId": "com.ccgui.app",

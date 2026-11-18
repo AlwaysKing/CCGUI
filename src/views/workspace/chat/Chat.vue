@@ -368,6 +368,10 @@ const resolvedChatMessageTheme = computed(() => {
   ).theme
 })
 
+const collapseProcessOnDisplay = computed(() => {
+  return appConfig.value?.settings?.collapseProcessOnDisplay === true
+})
+
 const AUTO_SCROLL_NEAR_BOTTOM_PX = 5
 const SYSTEM_NEAR_BOTTOM_PX = 44
 
@@ -2820,6 +2824,10 @@ function isCollapseOnSendEnabled() {
   return appConfig.value?.settings?.collapseOnSend !== false
 }
 
+function isCollapseProcessOnDisplayEnabled() {
+  return appConfig.value?.settings?.collapseProcessOnDisplay === true
+}
+
 async function toggleCollapseOnSend() {
   const currentSettings = appConfig.value?.settings || {}
   const newValue = currentSettings.collapseOnSend === false ? true : false
@@ -2846,6 +2854,34 @@ async function toggleCollapseOnSend() {
     throw new Error(result?.error || '保存设置失败')
   } catch (error) {
     logger.error('[Chat] Failed to toggle collapseOnSend', { error: error.message })
+  }
+}
+
+async function toggleCollapseProcessOnDisplay() {
+  const currentSettings = appConfig.value?.settings || {}
+  const newValue = currentSettings.collapseProcessOnDisplay !== true
+
+  try {
+    const result = await window.electronAPI.updateAppConfig({
+      updates: { settings: { collapseProcessOnDisplay: newValue } }
+    })
+    if (result?.success) {
+      if (appConfig.value) {
+        appConfig.value.settings = {
+          ...currentSettings,
+          ...(result.config?.settings || {}),
+          collapseProcessOnDisplay: newValue
+        }
+      }
+      window.dispatchEvent(new CustomEvent('ccgui-app-config-updated', {
+        detail: { settings: appConfig.value?.settings || { ...currentSettings, collapseProcessOnDisplay: newValue } }
+      }))
+      closeContextMenu()
+      return
+    }
+    throw new Error(result?.error || '保存设置失败')
+  } catch (error) {
+    logger.error('[Chat] Failed to toggle collapseProcessOnDisplay', { error: error.message })
   }
 }
 
@@ -3034,6 +3070,7 @@ function handleToggleAgentRail() {
         :sticky-copied="stickyCopied"
         :container-height="containerHeight"
         :chat-theme="resolvedChatMessageTheme"
+        :collapse-process-on-display="collapseProcessOnDisplay"
         :rail-visible="isAgentRailVisible"
         :rail-placement="collaborativeRailPlacement"
         :can-close-agents="envInfo?.provider === 'codex'"
@@ -3431,6 +3468,16 @@ function handleToggleAgentRail() {
               <span v-if="isCollapseOnSendEnabled()" class="chat-context-menu-check">✓</span>
             </span>
             <span>自动折叠回答</span>
+          </button>
+          <button
+            class="chat-context-menu-item chat-context-menu-item--option"
+            type="button"
+            @click="toggleCollapseProcessOnDisplay"
+          >
+            <span class="chat-context-menu-check-slot">
+              <span v-if="isCollapseProcessOnDisplayEnabled()" class="chat-context-menu-check">✓</span>
+            </span>
+            <span>折叠回答过程</span>
           </button>
           <button
             class="chat-context-menu-item chat-context-menu-item--option"

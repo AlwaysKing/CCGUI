@@ -80,6 +80,7 @@ function getDefaultConfig() {
       customTerminalThemeText: '',
       notificationSound: 'Glass',
       chatMessageThemePreset: 'classic',
+      collapseProcessOnDisplay: false,
       chatMessageTheme: {
         avatarMode: 'large',
         statusPosition: 'top',

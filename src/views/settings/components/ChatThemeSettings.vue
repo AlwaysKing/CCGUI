@@ -29,8 +29,10 @@ function updateSettings(nextSettings, autoSave = false) {
       <ChatMessageThemeEditor
         :preset-key="settings.chatMessageThemePreset || 'classic'"
         :theme-config="settings.chatMessageTheme || {}"
+        :collapse-process-on-display="settings.collapseProcessOnDisplay === true"
         @update:preset-key="updateSettings({ ...settings, chatMessageThemePreset: $event, chatMessageTheme: buildChatMessageThemeFromPreset($event) }, true)"
         @update:theme-config="updateSettings({ ...settings, chatMessageThemePreset: settings.chatMessageThemePreset || 'classic', chatMessageTheme: $event }, true)"
+        @update:collapse-process-on-display="updateSettings({ ...settings, collapseProcessOnDisplay: $event }, true)"
       />
     </SettingItem>
   </SettingsSection>

@@ -101,6 +101,7 @@ export function useSettingsData(emit) {
     notificationSound: 'Glass',
     alertSound: 'Glass',
     collapseOnSend: true,
+    collapseProcessOnDisplay: false,
     barkUrl: '',
     chatMessageThemePreset: 'classic',
     chatMessageTheme: buildChatMessageThemeFromPreset('classic'),

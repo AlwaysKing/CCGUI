@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import MessageItem from './messages/MessageItem.vue'
 import ExecutionAgentCard from './messages/ExecutionAgentCard.vue'
+import ProcessSummaryMessage from './messages/ProcessSummaryMessage.vue'
 import StickyHeader from './layout/StickyHeader.vue'
 import TaskFloatingWindow from './TaskFloatingWindow.vue'
 import AgentWorkspaceTopRail from './AgentWorkspaceTopRail.vue'
@@ -80,6 +81,10 @@ const props = defineProps({
     type: Object,
     default: () => ({})
   },
+  collapseProcessOnDisplay: {
+    type: Boolean,
+    default: false
+  },
   railVisible: {
     type: Boolean,
     default: true
@@ -113,6 +118,7 @@ const emit = defineEmits([
 ])
 
 const AUTO_SCROLL_NEAR_BOTTOM_PX = 48
+const MAX_RUNNING_PROCESS_DURATION_MS = 24 * 60 * 60 * 1000
 
 function selectAgent(agentId) {
   emit('selectAgent', agentId)
@@ -155,6 +161,9 @@ const splitPaneElementToAgentId = new WeakMap()
 const splitPaneUserScrolledAway = ref({})
 const collapsedSplitPaneIds = ref({})
 const splitPaneWidths = ref({})
+const expandedProcessRuns = ref({})
+const processRunElements = new Map()
+let processRunResizeObserver = null
 const contentElementRef = ref(null)
 const contentWidth = ref(0)
 const mainScrollElementRef = ref(null)
@@ -409,6 +418,7 @@ function startSplitDividerDrag(event) {
 
 onMounted(() => {
   window.addEventListener('pointerdown', handleAgentContextPointerDown, true)
+  window.addEventListener('resize', updateAllProcessRunLines)
   if (typeof ResizeObserver === 'undefined') {
     return
   }
@@ -450,13 +460,23 @@ onMounted(() => {
   for (const [agentId, element] of splitPaneScrollRefs.entries()) {
     bindPaneWidth(agentId, element)
   }
+
+  processRunResizeObserver = new ResizeObserver(() => {
+    updateAllProcessRunLines()
+  })
+  for (const element of processRunElements.values()) {
+    processRunResizeObserver.observe(element)
+  }
 })
 
 onUnmounted(() => {
   stopSplitDividerDrag()
   window.removeEventListener('pointerdown', handleAgentContextPointerDown, true)
+  window.removeEventListener('resize', updateAllProcessRunLines)
   paneResizeObserver?.disconnect()
   paneResizeObserver = null
+  processRunResizeObserver?.disconnect()
+  processRunResizeObserver = null
 })
 
 function railItemTypeLabel(agentItem) {
@@ -680,6 +700,261 @@ function buildRenderableTimeline(blocks, visibleMessageIndexes) {
   return renderBlocks
 }
 
+function hasVisibleMessageContent(message) {
+  return typeof message?.content === 'string' && message.content.trim().length > 0
+}
+
+function isProcessRunBlock(block) {
+  const message = getBlockMessage(block)
+  if (!message) return false
+  if (
+    message.role === 'tool_use' ||
+    message.role === 'diff' ||
+    message.role === 'permission_result'
+  ) {
+    return true
+  }
+  return message.role === 'assistant' &&
+    !hasVisibleMessageContent(message) &&
+    (message.subtype === 'thinking' || message.hasThinking || Boolean(message.thinking))
+}
+
+function buildThinkingBlock(block, message) {
+  const displayKey = block.key || block.displayIndex
+  return {
+    ...block,
+    key: `${displayKey}-thinking`,
+    message: {
+      ...message,
+      id: `${message.id || displayKey}-thinking`,
+      subtype: 'thinking',
+      content: '',
+      isStreaming: false,
+      hasThinking: true
+    }
+  }
+}
+
+function buildVisibleMessageBlock(block, message) {
+  return {
+    ...block,
+    message: {
+      ...message,
+      thinking: '',
+      hasThinking: false
+    }
+  }
+}
+
+function buildProcessRenderableTimeline(blocks, visibleMessageIndexes) {
+  const renderBlocks = []
+  let pendingProcessBlocks = []
+
+  const flushProcessBlocks = () => {
+    if (pendingProcessBlocks.length === 0) return
+    const firstBlock = pendingProcessBlocks[0]
+    renderBlocks.push({
+      type: 'process-run',
+      key: `process-run-${firstBlock.key || firstBlock.displayIndex}`,
+      displayIndex: firstBlock.displayIndex,
+      foldableBlocks: [...pendingProcessBlocks]
+    })
+    pendingProcessBlocks = []
+  }
+
+  blocks.forEach(block => {
+    if (!visibleMessageIndexes.has(block.displayIndex)) {
+      return
+    }
+
+    const message = block.type === 'message' ? block.message : null
+    const hasThinking = message?.role === 'assistant' &&
+      (message.hasThinking || Boolean(message.thinking))
+
+    if (hasThinking && hasVisibleMessageContent(message)) {
+      pendingProcessBlocks.push(buildThinkingBlock(block, message))
+      flushProcessBlocks()
+      renderBlocks.push({
+        type: 'block',
+        key: block.key || `block-${block.displayIndex}`,
+        block: buildVisibleMessageBlock(block, message)
+      })
+      return
+    }
+
+    if (isProcessRunBlock(block)) {
+      pendingProcessBlocks.push(block)
+      return
+    }
+
+    flushProcessBlocks()
+    renderBlocks.push({
+      type: 'block',
+      key: block.key || `block-${block.displayIndex}`,
+      block
+    })
+  })
+
+  flushProcessBlocks()
+  return renderBlocks
+}
+
+function toTimestamp(value) {
+  if (value instanceof Date) {
+    return value.getTime()
+  }
+  if (typeof value === 'number') {
+    return value
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function formatProcessDuration(durationMs) {
+  const safeMs = Number(durationMs)
+  if (!Number.isFinite(safeMs) || safeMs < 0) return ''
+  if (safeMs < 1000) return `${Math.round(safeMs)}ms`
+  if (safeMs < 60000) return `${(safeMs / 1000).toFixed(safeMs >= 10000 ? 0 : 1)}s`
+  if (safeMs < 3600000) {
+    return `${Math.floor(safeMs / 60000)}m ${Math.floor((safeMs % 60000) / 1000)}s`
+  }
+  return `${Math.floor(safeMs / 3600000)}h ${Math.floor((safeMs % 3600000) / 60000)}m`
+}
+
+function isTrailingProcessRun(runKey) {
+  const renderBlocks = renderableMainTimelineBlocks.value
+  const lastBlock = renderBlocks[renderBlocks.length - 1]
+  return lastBlock?.type === 'process-run' && lastBlock.key === runKey
+}
+
+function getProcessRunStats(renderBlock) {
+  const messages = (renderBlock?.foldableBlocks || []).map(getBlockMessage).filter(Boolean)
+  const thinkingCount = messages.filter(message => {
+    return message.role === 'assistant' &&
+      (message.subtype === 'thinking' || message.hasThinking || Boolean(message.thinking))
+  }).length
+  const toolCallCount = messages.filter(message => {
+    return message.role === 'tool_use' || message.role === 'diff'
+  }).length
+  const permissionCount = messages.filter(message => message.role === 'permission_result').length
+  const running = isTrailingProcessRun(renderBlock.key) &&
+    props.activeSession?.isProcessing === true
+  const startTimes = messages
+    .map(message => toTimestamp(message.startTime ?? message.timestamp))
+    .filter(value => Number.isFinite(value))
+  const startTime = startTimes.length ? Math.min(...startTimes) : null
+  const endTimes = messages
+    .map(message => toTimestamp(message.timestamp) ?? toTimestamp(message.startTime))
+    .filter(value => Number.isFinite(value))
+  const currentTime = Number(props.currentTime) || Date.now()
+  const lastKnownEndTime = endTimes.length ? Math.max(...endTimes) : startTime
+  let endTime = running
+    ? Math.max(currentTime, lastKnownEndTime ?? currentTime)
+    : lastKnownEndTime
+  if (
+    running &&
+    Number.isFinite(startTime) &&
+    currentTime - startTime > MAX_RUNNING_PROCESS_DURATION_MS
+  ) {
+    endTime = lastKnownEndTime ?? startTime
+  }
+  const summedDuration = messages.reduce((sum, message) => {
+    const duration = Number(message.duration)
+    return sum + (
+      Number.isFinite(duration) && duration > 0 && duration <= MAX_RUNNING_PROCESS_DURATION_MS
+        ? duration
+        : 0
+    )
+  }, 0)
+  let durationMs = Number.isFinite(startTime) && Number.isFinite(endTime)
+    ? Math.max(0, endTime - startTime)
+    : summedDuration
+  if (durationMs === 0 && !running) {
+    durationMs = summedDuration
+  }
+
+  return {
+    thinkingCount,
+    toolCallCount,
+    permissionCount,
+    running,
+    durationMs,
+    durationLabel: formatProcessDuration(durationMs),
+    timestamp: messages[0]?.timestamp || null,
+    startTime,
+    currentTime
+  }
+}
+
+function isProcessRunExpanded(runKey) {
+  return expandedProcessRuns.value[runKey] === true
+}
+
+function toggleProcessRun(runKey) {
+  expandedProcessRuns.value = {
+    ...expandedProcessRuns.value,
+    [runKey]: !expandedProcessRuns.value[runKey]
+  }
+  nextTick(() => updateProcessRunLineEnd(runKey))
+}
+
+function setProcessRunRef(runKey, element) {
+  const previousElement = processRunElements.get(runKey)
+  if (previousElement && previousElement !== element) {
+    processRunResizeObserver?.unobserve(previousElement)
+  }
+
+  if (element) {
+    processRunElements.set(runKey, element)
+    processRunResizeObserver?.observe(element)
+    return
+  }
+
+  processRunElements.delete(runKey)
+}
+
+function updateProcessRunLineEnd(runKey) {
+  const container = processRunElements.get(runKey)
+  if (!container || !isProcessRunExpanded(runKey)) {
+    return
+  }
+
+  const avatars = []
+  for (const child of container.children) {
+    const messageRoot = child.classList.contains('message')
+      ? child
+      : child.querySelector(':scope > .message')
+    const avatar = messageRoot?.querySelector(':scope > .message-avatar')
+    if (avatar) {
+      avatars.push(avatar)
+    }
+  }
+  if (avatars.length < 2) {
+    container.style.setProperty('--process-line-opacity', '0')
+    return
+  }
+
+  const firstAvatar = avatars[0]
+  const lastAvatar = avatars[avatars.length - 1]
+  const containerRect = container.getBoundingClientRect()
+  const firstRect = firstAvatar.getBoundingClientRect()
+  const lastRect = lastAvatar.getBoundingClientRect()
+
+  container.style.setProperty('--process-line-x', `${firstRect.left + firstRect.width / 2 - containerRect.left}px`)
+  container.style.setProperty('--process-line-top', `${firstRect.top + firstRect.height / 2 - containerRect.top}px`)
+  container.style.setProperty('--process-line-bottom', `${containerRect.bottom - (lastRect.top + lastRect.height / 2)}px`)
+  container.style.setProperty('--process-line-opacity', '1')
+}
+
+function updateAllProcessRunLines() {
+  for (const runKey of processRunElements.keys()) {
+    updateProcessRunLineEnd(runKey)
+  }
+}
+
 const collapsedActivityGroups = ref({})
 
 const renderableMainMessageIndexes = computed(() => {
@@ -687,8 +962,21 @@ const renderableMainMessageIndexes = computed(() => {
 })
 
 const renderableMainTimelineBlocks = computed(() => {
+  if (props.collapseProcessOnDisplay) {
+    return buildProcessRenderableTimeline(timelineBlocksWithShell.value, renderableMainMessageIndexes.value)
+  }
   return buildRenderableTimeline(timelineBlocksWithShell.value, renderableMainMessageIndexes.value)
 })
+
+watch(
+  [renderableMainTimelineBlocks, expandedProcessRuns, () => props.chatTheme, () => props.currentTime],
+  async () => {
+    await nextTick()
+    updateAllProcessRunLines()
+  },
+  { deep: true, flush: 'post' }
+)
+
 const splitMainSession = computed(() => {
   if (props.viewMode !== 'split') {
     return props.activeSession
@@ -983,7 +1271,77 @@ const shouldShowRail = computed(() => {
         <div ref="mainScrollElementRef" class="agent-workspace__main-scroll" @scroll="handleContentScroll">
           <template v-if="splitMainSession?.isMain">
             <template v-for="renderBlock in renderableMainTimelineBlocks" :key="renderBlock.key">
-              <template v-if="renderBlock.type === 'activity-group'">
+              <div
+                v-if="renderBlock.type === 'process-run'"
+                :ref="element => setProcessRunRef(renderBlock.key, element)"
+                class="process-run"
+                :class="{ 'is-expanded': isProcessRunExpanded(renderBlock.key) }"
+              >
+                <ProcessSummaryMessage
+                  :run-key="renderBlock.key"
+                  :stats="getProcessRunStats(renderBlock)"
+                  :collapsed="!isProcessRunExpanded(renderBlock.key)"
+                  :chat-theme="chatTheme"
+                  @toggle="toggleProcessRun(renderBlock.key)"
+                />
+
+                <template v-if="isProcessRunExpanded(renderBlock.key)">
+                  <template
+                    v-for="nestedBlock in renderBlock.foldableBlocks"
+                    :key="nestedBlock.key || `nested-${nestedBlock.displayIndex}`"
+                  >
+                    <MessageItem
+                      v-if="nestedBlock.type === 'message'"
+                      :message="nestedBlock.message"
+                      :message-index="nestedBlock.displayIndex"
+                      :total-messages="mainStageDisplayMessages.length"
+                      :session-id="sessionId"
+                      :working-directory="workingDirectory"
+                      :current-time="getMessageCurrentTime(nestedBlock.message)"
+                      :all-messages="mainStageDisplayMessages"
+                      :chat-theme="chatTheme"
+                      :pane-width="mainStageWidth"
+                      response-collapse-prefiltered
+                      @message-click="forward('messageClick', $event)"
+                      @rewind="forward('rewind', $event)"
+                      @fork="forward('fork', $event)"
+                      @rewind-and-fork="forward('rewindAndFork', $event)"
+                      @jump-to-message="forward('jumpToMessage', $event)"
+                      @copy-content="forward('copyContent', $event)"
+                      @copy-question-content="forward('copyQuestionContent', $event)"
+                    />
+                    <MessageItem
+                      v-else
+                      :message="nestedBlock.shellMessage"
+                      :message-index="nestedBlock.displayIndex"
+                      :total-messages="mainStageDisplayMessages.length"
+                      :session-id="sessionId"
+                      :working-directory="workingDirectory"
+                      :current-time="getMessageCurrentTime(nestedBlock.shellMessage)"
+                      :all-messages="mainStageDisplayMessages"
+                      :chat-theme="chatTheme"
+                      :pane-width="mainStageWidth"
+                      response-collapse-prefiltered
+                      @message-click="forward('messageClick', $event)"
+                      @rewind="forward('rewind', $event)"
+                      @fork="forward('fork', $event)"
+                      @rewind-and-fork="forward('rewindAndFork', $event)"
+                      @jump-to-message="forward('jumpToMessage', $event)"
+                      @copy-content="forward('copyContent', $event)"
+                      @copy-question-content="forward('copyQuestionContent', $event)"
+                    >
+                      <ExecutionAgentCard
+                        :card="nestedBlock.card"
+                        :working-directory="workingDirectory"
+                        :current-time="getExecutionCardCurrentTime(nestedBlock.card)"
+                        :chat-theme="chatTheme"
+                      />
+                    </MessageItem>
+                  </template>
+                </template>
+              </div>
+
+              <template v-else-if="renderBlock.type === 'activity-group'">
                 <div class="activity-group" :class="{ collapsed: resolveActivityGroupCollapsed(renderBlock) }">
                   <div class="activity-group__foldable">
                     <button
@@ -1514,6 +1872,28 @@ const shouldShowRail = computed(() => {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: #52525B transparent;
+}
+
+.process-run {
+  position: relative;
+  min-width: 0;
+}
+
+.process-run.is-expanded::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--process-line-x, 5px) - 0.5px);
+  top: var(--process-line-top, 18px);
+  bottom: var(--process-line-bottom, 16px);
+  width: 1px;
+  border-radius: 999px;
+  background: repeating-linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent-primary) 46%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+  opacity: var(--process-line-opacity, 0);
+  pointer-events: none;
 }
 
 .activity-group {

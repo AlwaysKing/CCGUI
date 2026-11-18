@@ -6,6 +6,7 @@
 import { computed } from 'vue'
 import CollapseToggle from '../ui/CollapseToggle.vue'
 import CopyButton from '../ui/CopyButton.vue'
+import MessageStats from './MessageStats.vue'
 
 const props = defineProps({
   thinking: {

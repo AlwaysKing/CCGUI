@@ -609,6 +609,33 @@ function toIsoTimestamp(value) {
   return null
 }
 
+function toTimestampMs(value) {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    if (/^\d+$/.test(value.trim())) {
+      return Number(value.trim())
+    }
+    const parsed = Date.parse(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function applyMessageDuration(message, completedAt) {
+  if (!message || message.duration) return
+  const startTime = toTimestampMs(message.startTime ?? message.timestamp)
+  const endTime = toTimestampMs(completedAt)
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime < startTime) {
+    return
+  }
+
+  const duration = endTime - startTime
+  if (duration <= 24 * 60 * 60 * 1000) {
+    message.duration = duration
+  }
+}
+
 function buildSubagentHistoryAnchor(turn = {}, agentId, registry = null) {
   const timestamp = toIsoTimestamp(turn.createdAt) || new Date().toISOString()
   const content = typeof turn.inputText === 'string' ? turn.inputText : ''
@@ -2757,6 +2784,7 @@ export const useSessionStore = defineStore('session', () => {
     replaySession.permissionMode = baseSession.permissionMode
     replaySession.autoApprove = baseSession.autoApprove
     replaySession.envInfo = baseSession.envInfo
+    replaySession.isHistoryReplay = true
     return replaySession
   }
 
@@ -2913,12 +2941,14 @@ export const useSessionStore = defineStore('session', () => {
       log('[SessionStore] Event for unknown session:', sessionId)
       return
     }
+  const eventTimestamp = event?.timestamp || data?.timestamp || null
+  const isHistoryReplay = explicitSession?.isHistoryReplay === true
 
     // 根据事件类型处理
     switch (eventType) {
       case 'message':
         recordAgentSemantics(session, data)
-        handleAddMessage(session, data)
+      handleAddMessage(session, data, eventTimestamp, isHistoryReplay)
         // addMessageToQueue 兜底：handleAddMessage 对 tool_result/streaming 等场景走 early return
         // 不会 append，addMessageToQueue 通过全局索引去重确保不会重复插入
         addMessageToQueue(session, data)
@@ -2957,7 +2987,7 @@ export const useSessionStore = defineStore('session', () => {
       case 'message-complete':
         // 后端发送的消息完成事件
         recordAgentSemantics(session, data?.updates || data)
-        handleMessageComplete(session, data)
+        handleMessageComplete(session, data, eventTimestamp, isHistoryReplay)
         break
 
       case 'message-stop':
@@ -2968,7 +2998,7 @@ export const useSessionStore = defineStore('session', () => {
       case 'message-update':
         // 后端发送的字段更新事件
         recordAgentSemantics(session, data?.updates || data)
-        handleMessageUpdate(session, data)
+        handleMessageUpdate(session, data, eventTimestamp, isHistoryReplay)
         break
 
       case 'messages-reset':
@@ -2977,16 +3007,16 @@ export const useSessionStore = defineStore('session', () => {
 
       case 'tool-result':
         recordAgentSemantics(session, data)
-        handleToolResult(session, data)
+        handleToolResult(session, data, eventTimestamp, isHistoryReplay)
         break
 
       case 'message-result':
         recordAgentSemantics(session, data)
-        handleMessageResult(session, data)
+        handleMessageResult(session, data, eventTimestamp, isHistoryReplay)
         break
 
       case 'result':
-        handleResult(session, data)
+        handleResult(session, data, eventTimestamp, isHistoryReplay)
         break
 
       case 'control-request':
@@ -3111,7 +3141,7 @@ export const useSessionStore = defineStore('session', () => {
    * 添加消息
    * 注意：对于 assistant 消息，需要检查是否已有流式创建的消息
    */
-  function handleAddMessage(session, message) {
+  function handleAddMessage(session, message, eventTimestamp = null, isHistoryReplay = false) {
     const queue = session.queueManager.routeToQueue(session, message)
 
     if (message?.id) {
@@ -3169,7 +3199,10 @@ export const useSessionStore = defineStore('session', () => {
           msg.isExecuting = false
           msg.isError = toolResultContent.is_error
           msg.result = toolResultContent.content || '(无输出)'
-          msg.duration = Date.now() - (msg.startTime || Date.now())
+          applyMessageDuration(
+            msg,
+            eventTimestamp || message.timestamp || (isHistoryReplay ? null : Date.now())
+          )
           log('[SessionStore] handleAddMessage: updated tool_use message result')
           return // 不添加新消息
         }
@@ -3196,7 +3229,7 @@ export const useSessionStore = defineStore('session', () => {
   /**
    * 处理 result（包含 usage 信息）
    */
-  function handleResult(session, result) {
+  function handleResult(session, result, eventTimestamp = null, isHistoryReplay = false) {
     log('[SessionStore] handleResult called')
     log('[SessionStore] Full result object:', JSON.stringify(result, null, 2))
 
@@ -3219,16 +3252,18 @@ export const useSessionStore = defineStore('session', () => {
       for (const msg of mainQueue.entries) {
         if (msg.isStreaming) {
           msg.isStreaming = false
-          if (!msg.duration && msg.startTime) {
-            msg.duration = Date.now() - msg.startTime
-          }
+          applyMessageDuration(
+            msg,
+            eventTimestamp || result.timestamp || (isHistoryReplay ? null : Date.now())
+          )
         }
 
         if (msg.isExecuting) {
           msg.isExecuting = false
-          if (!msg.duration && msg.startTime) {
-            msg.duration = Date.now() - msg.startTime
-          }
+          applyMessageDuration(
+            msg,
+            eventTimestamp || result.timestamp || (isHistoryReplay ? null : Date.now())
+          )
         }
       }
     }
@@ -3240,10 +3275,17 @@ export const useSessionStore = defineStore('session', () => {
       msg.role === 'assistant' && ((msg.content && msg.content.trim()) || (msg.thinking && msg.thinking.trim()))
     ) || [...mainEntries].reverse().find(msg => msg.role === 'assistant') || null
 
+    const fallbackResultDuration = latestUserMessage?.startTime
+      ? (
+          eventTimestamp || result.timestamp
+            ? toTimestampMs(eventTimestamp || result.timestamp) - toTimestampMs(latestUserMessage.startTime)
+            : (isHistoryReplay ? null : Date.now() - toTimestampMs(latestUserMessage.startTime))
+        )
+      : null
     const durationMs =
       result.duration_ms ??
       latestUserMessage?.duration ??
-      (latestUserMessage?.startTime ? Date.now() - latestUserMessage.startTime : null)
+      (Number.isFinite(fallbackResultDuration) ? Math.max(0, fallbackResultDuration) : null)
 
     const numTurns =
       result.num_turns ??
@@ -3564,7 +3606,7 @@ export const useSessionStore = defineStore('session', () => {
   /**
    * 处理消息完成事件（来自后端）
    */
-  function handleMessageComplete(session, data) {
+  function handleMessageComplete(session, data, eventTimestamp = null, isHistoryReplay = false) {
     const { messageId, updates } = data
 
     // 查找对应的消息（跨队列）
@@ -3576,9 +3618,10 @@ export const useSessionStore = defineStore('session', () => {
 
     // 应用更新
     Object.assign(msg, updates)
-    if (!msg.duration && msg.startTime) {
-      msg.duration = Date.now() - msg.startTime
-    }
+    applyMessageDuration(
+      msg,
+      eventTimestamp || data?.timestamp || (isHistoryReplay ? null : Date.now())
+    )
 
     // 只清除主代理的流式标记，避免子代理完成事件覆盖主代理状态
     if (session.currentStreamingAssistantId === messageId) {
@@ -3605,7 +3648,7 @@ export const useSessionStore = defineStore('session', () => {
   /**
    * 处理消息字段更新（来自后端）
    */
-  function handleMessageUpdate(session, data) {
+  function handleMessageUpdate(session, data, eventTimestamp = null, isHistoryReplay = false) {
     const messageId = data?.messageId
     const updates = data?.updates || {}
     const canonical = data?.canonical === true
@@ -3640,8 +3683,11 @@ export const useSessionStore = defineStore('session', () => {
         : {})
     }
     Object.assign(msg, normalizedUpdates)
-    if ((updates.isStreaming === false || updates.isExecuting === false) && !msg.duration && msg.startTime) {
-      msg.duration = Date.now() - msg.startTime
+    if (updates.isStreaming === false || updates.isExecuting === false) {
+      applyMessageDuration(
+        msg,
+        eventTimestamp || data?.timestamp || (isHistoryReplay ? null : Date.now())
+      )
     }
 
     if (msg.role === 'assistant') {
@@ -3667,7 +3713,7 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function handleToolResult(session, data) {
+  function handleToolResult(session, data, eventTimestamp = null, isHistoryReplay = false) {
     const toolUseId = data?.toolUseId
     if (!toolUseId) return
 
@@ -3692,9 +3738,10 @@ export const useSessionStore = defineStore('session', () => {
       if (data.usage) {
         msg.usage = data.usage
       }
-      if (!msg.duration && msg.startTime) {
-        msg.duration = Date.now() - msg.startTime
-      }
+      applyMessageDuration(
+        msg,
+        eventTimestamp || data?.timestamp || (isHistoryReplay ? null : Date.now())
+      )
       if (msg.role === 'tool_use' && msg.toolName === 'Agent') {
         setUserUsageSource(session, `execution:${toolUseId}`, data.usage)
       }
@@ -3705,7 +3752,7 @@ export const useSessionStore = defineStore('session', () => {
    * 兼容旧历史中的 message-result 事件。
    * 新事件由后端归一成 message-update / message-snapshot。
    */
-  function handleMessageResult(session, data) {
+  function handleMessageResult(session, data, eventTimestamp = null, isHistoryReplay = false) {
     const messageId = data?.messageId
     if (!messageId) return
 
@@ -3732,9 +3779,10 @@ export const useSessionStore = defineStore('session', () => {
       if (data.usage) {
         msg.usage = data.usage
       }
-      if (!msg.duration && msg.startTime) {
-        msg.duration = Date.now() - msg.startTime
-      }
+      applyMessageDuration(
+        msg,
+        eventTimestamp || data?.timestamp || (isHistoryReplay ? null : Date.now())
+      )
       if (msg.role === 'tool_use' && msg.toolName === 'Agent') {
         setUserUsageSource(session, `execution:${messageId}`, data.usage)
       }

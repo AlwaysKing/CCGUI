@@ -5,6 +5,8 @@ import {
   buildChatMessageThemeFromPreset
 } from '@/utils/chatMessageTheme'
 import MessageList from '@/views/workspace/chat/components/messages/MessageList.vue'
+import MessageItem from '@/views/workspace/chat/components/messages/MessageItem.vue'
+import ProcessSummaryMessage from '@/views/workspace/chat/components/messages/ProcessSummaryMessage.vue'
 import AppSelect from '@/components/base/AppSelect.vue'
 
 const props = defineProps({
@@ -31,18 +33,24 @@ const props = defineProps({
   disabled: {
     type: Boolean,
     default: false
+  },
+  collapseProcessOnDisplay: {
+    type: Boolean,
+    default: false
   }
 })
 
 const emit = defineEmits([
   'update:mode',
   'update:presetKey',
-  'update:themeConfig'
+  'update:themeConfig',
+  'update:collapseProcessOnDisplay'
 ])
 
 const previewNow = ref(Date.now())
 let previewTimer = null
 const previewMessages = ref([])
+const previewProcessExpanded = ref(false)
 
 const showModeSelector = computed(() => props.modeOptions.length > 0)
 const canEditTheme = computed(() => !showModeSelector.value || props.mode === 'custom')
@@ -242,6 +250,11 @@ const fieldOptions = {
   ]
 }
 
+const processCollapseOptions = [
+  { value: 'off', label: '关闭' },
+  { value: 'on', label: '开启' }
+]
+
 const themeLabelMap = {
   avatarMode: Object.fromEntries(fieldOptions.avatarMode.map(option => [option.value, option.label])),
   statusStyle: Object.fromEntries(fieldOptions.statusStyle.map(option => [option.value, option.label])),
@@ -263,12 +276,66 @@ const avatarModeModelValue = computed(() => {
   return props.themeConfig?.avatarMode
 })
 
+const previewProcessChildren = computed(() => {
+  if (previewMessages.value.length < 7) {
+    return []
+  }
+
+  const assistantMessage = previewMessages.value[1]
+  return [
+    {
+      ...assistantMessage,
+      id: 'preview-process-thinking',
+      subtype: 'thinking',
+      content: '',
+      isStreaming: false,
+      hasThinking: true,
+      thinkingCollapsed: true
+    },
+    ...previewMessages.value.slice(2, 7)
+  ]
+})
+
+const previewProcessVisibleAssistant = computed(() => {
+  const assistantMessage = previewMessages.value[1]
+  if (!assistantMessage) return null
+  return {
+    ...assistantMessage,
+    thinking: '',
+    hasThinking: false
+  }
+})
+
+const previewProcessFinalAssistant = computed(() => {
+  return previewMessages.value[previewMessages.value.length - 1] || null
+})
+
+const previewProcessStats = computed(() => ({
+  thinkingCount: 1,
+  toolCallCount: 4,
+  permissionCount: 1,
+  durationLabel: '12s',
+  running: false,
+  timestamp: previewMessages.value[0]?.timestamp || null,
+  startTime: previewMessages.value[0]?.startTime || null,
+  currentTime: previewNow.value
+}))
+
+function getPreviewMessageIndex(message) {
+  const index = previewMessages.value.findIndex(item => item.id === message?.id)
+  return index >= 0 ? index : 0
+}
+
 function updateMode(nextMode) {
   emit('update:mode', nextMode)
 }
 
 function handlePresetChange(nextPresetKey) {
   emit('update:presetKey', nextPresetKey)
+}
+
+function handleCollapseProcessSelect(value) {
+  emit('update:collapseProcessOnDisplay', value === 'on')
 }
 
 function updateField(field, value) {
@@ -337,7 +404,63 @@ onUnmounted(() => {
       </div>
       <div class="theme-preview-shell">
         <div class="theme-preview-scroll">
+          <div
+            v-if="collapseProcessOnDisplay && previewMessages.length"
+            class="process-theme-preview"
+          >
+            <MessageItem
+              :message="previewMessages[0]"
+              :message-index="0"
+              :total-messages="previewMessages.length"
+              :all-messages="previewMessages"
+              :current-time="previewNow"
+              :chat-theme="themeConfig"
+            />
+
+            <ProcessSummaryMessage
+              run-key="theme-preview-process"
+              :stats="previewProcessStats"
+              :collapsed="!previewProcessExpanded"
+              :chat-theme="themeConfig"
+              @toggle="previewProcessExpanded = !previewProcessExpanded"
+            />
+
+            <div v-if="previewProcessExpanded" class="process-theme-preview__children">
+              <MessageItem
+                v-for="message in previewProcessChildren"
+                :key="message.id"
+                :message="message"
+                :message-index="getPreviewMessageIndex(message)"
+                :total-messages="previewMessages.length"
+                :all-messages="previewMessages"
+                :current-time="previewNow"
+                :chat-theme="themeConfig"
+              />
+            </div>
+
+            <MessageItem
+              v-if="previewProcessVisibleAssistant"
+              :message="previewProcessVisibleAssistant"
+              :message-index="getPreviewMessageIndex(previewProcessVisibleAssistant)"
+              :total-messages="previewMessages.length"
+              :all-messages="previewMessages"
+              :current-time="previewNow"
+              :chat-theme="themeConfig"
+            />
+
+            <MessageItem
+              v-if="previewProcessFinalAssistant"
+              :message="previewProcessFinalAssistant"
+              :message-index="previewMessages.length - 1"
+              :total-messages="previewMessages.length"
+              :all-messages="previewMessages"
+              :current-time="previewNow"
+              :chat-theme="themeConfig"
+            />
+          </div>
+
           <MessageList
+            v-else
             :messages="previewMessages"
             :current-time="previewNow"
             :working-directory="'/Users/alwaysking/AKProject/CCGUI'"
@@ -416,6 +539,18 @@ onUnmounted(() => {
               full-width
               :options="fieldOptions.messageSpacing"
               @update:model-value="updateField('messageSpacing', $event)"
+            />
+          </div>
+
+          <div class="theme-field">
+            <label class="field-label">折叠回答过程</label>
+            <AppSelect
+              :model-value="collapseProcessOnDisplay ? 'on' : 'off'"
+              class="theme-select"
+              full-width
+              :disabled="disabled"
+              :options="processCollapseOptions"
+              @update:model-value="handleCollapseProcessSelect"
             />
           </div>
         </div>
@@ -817,5 +952,15 @@ onUnmounted(() => {
   max-height: 520px;
   overflow-y: auto;
   padding: 18px 18px 10px;
+}
+
+.process-theme-preview {
+  display: flex;
+  flex-direction: column;
+}
+
+.process-theme-preview__children {
+  display: flex;
+  flex-direction: column;
 }
 </style>

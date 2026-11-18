@@ -73,6 +73,7 @@ const notificationTypeClass = computed(() => {
   if (
     notificationType === 'runtime-exit' ||
     notificationType === 'turn-error' ||
+    notificationType === 'tool-error' ||
     notificationType === 'mcp-server-error' ||
     (notificationType === 'mcp-server-status' && ['error', 'failed', 'disconnected'].includes(String(props.message.data?.status || '').toLowerCase())) ||
     (notificationType === 'account-login-completed' && props.message.data?.success === false) ||
@@ -493,6 +494,15 @@ const notificationContent = computed(() => {
       icon: '⚠️',
       title: '请求失败',
       description: `[${errorType}] ${errorMessage}`
+    })
+  }
+
+  if (notificationType === 'tool-error') {
+    const toolLabel = data.toolName === 'apply_patch' ? '补丁应用' : '工具调用'
+    return finalizeNotificationContent({
+      icon: '⚠️',
+      title: data.title || `${toolLabel}失败`,
+      description: data.message || (data.filePath ? `文件: ${data.filePath}` : '工具调用失败')
     })
   }
 

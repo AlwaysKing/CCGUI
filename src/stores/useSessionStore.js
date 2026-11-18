@@ -9,6 +9,7 @@ import {
 } from './systemNotificationOperation'
 import { logger } from '../utils/logger'
 import { stripAttachmentTokens } from '../utils/chatAttachments'
+import { stripAnsi } from '../utils/textSanitizers'
 import { useAppStore } from './useAppStore'
 import { openAppErrorDialog } from '../utils/appErrorDialog'
 
@@ -4613,10 +4614,10 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     // 构建更详细的错误消息
-    let displayMessage = data.message || ''
+    let displayMessage = stripAnsi(data.message || '')
     if (data.type === 'error') {
       // 尝试提取更多有用的错误信息
-      const parts = [data.message]
+      const parts = [displayMessage]
 
       if (data.errorType && data.errorType !== data.message) {
         parts.push(`类型: ${data.errorType}`)

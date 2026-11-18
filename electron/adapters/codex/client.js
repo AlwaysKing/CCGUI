@@ -40,6 +40,45 @@ function pickFirstDefined(...values) {
   return null
 }
 
+const ANSI_ESCAPE_PATTERN = /[\u001B\u009B][[\]()#;?]*(?:(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~])|(?:[A-Za-z]))/g
+
+function stripAnsi(value) {
+  return String(value || '').replace(ANSI_ESCAPE_PATTERN, '')
+}
+
+function buildCodexStderrEvent(rawMessage) {
+  const message = stripAnsi(rawMessage).trim()
+  if (!message) {
+    return null
+  }
+
+  const applyPatchErrorIndex = message.search(/apply_patch verification failed/i)
+  if (applyPatchErrorIndex === -1) {
+    return {
+      eventType: 'cli-status',
+      data: {
+        type: 'status',
+        message
+      }
+    }
+  }
+
+  const applyPatchMessage = message.slice(applyPatchErrorIndex)
+  const filePathMatch = applyPatchMessage.match(/Failed to find expected lines in (.+?):(?:\r?\n|$)/i)
+
+  return {
+    eventType: 'system-notification',
+    data: {
+      type: 'tool-error',
+      provider: 'codex',
+      toolName: 'apply_patch',
+      errorType: 'apply_patch_verification_failed',
+      message: applyPatchMessage,
+      filePath: filePathMatch?.[1]?.trim() || null
+    }
+  }
+}
+
 function stringifyTomlString(value = '') {
   return JSON.stringify(String(value ?? ''))
 }
@@ -1216,15 +1255,12 @@ class CodexClient {
     })
 
     childProcess.stderr.on('data', data => {
-      const message = data.toString().trim()
-      if (!message) {
+      const statusEvent = buildCodexStderrEvent(data.toString())
+      if (!statusEvent) {
         return
       }
 
-      this.emit('cli-status', {
-        type: 'status',
-        message
-      })
+      this.emit(statusEvent.eventType, statusEvent.data)
     })
 
     childProcess.on('exit', (code, signal) => {
@@ -1846,5 +1882,6 @@ module.exports = {
   buildDesktopUserAgent,
   buildProxyAgent,
   requestJson,
-  buildCodexUsageRequestError
+  buildCodexUsageRequestError,
+  buildCodexStderrEvent
 }

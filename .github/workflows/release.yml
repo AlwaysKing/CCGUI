@@ -43,6 +43,9 @@ jobs:
       # 没有 Developer ID 时由 sign-mac.cjs 做完整的 ad-hoc 签名；
       # 将来可以继续通过 CSC_LINK / CSC_NAME 提供正式证书。
       - name: 打包 macOS arm64（dmg + zip）
+        env:
+          # Vite 转换大依赖时会超过 Node 默认约 2GB 的 heap 上限
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npm run electron:build -- --mac --arm64 --publish never --config.mac.sign=.github/scripts/sign-mac.cjs
 
       # 签名不自洽的包，对方下载后会被系统判成「已损坏」而不是「无法验证开发者」；

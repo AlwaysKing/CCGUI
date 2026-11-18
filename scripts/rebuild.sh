@@ -43,47 +43,36 @@ done
 
 # 清理旧的构建文件
 if [ "$SKIP_CLEAN" = false ]; then
-    echo -e "${YELLOW}[1/4] 清理旧的构建文件...${NC}"
+    echo -e "${YELLOW}[1/3] 清理旧的构建文件...${NC}"
     rm -rf dist/
     rm -rf node_modules/.vite/
     echo -e "${GREEN}✓ 清理完成${NC}"
     echo ""
 else
-    echo -e "${YELLOW}[1/4] 跳过清理步骤${NC}"
+    echo -e "${YELLOW}[1/3] 跳过清理步骤${NC}"
     echo ""
 fi
 
-# 构建前端
-echo -e "${YELLOW}[2/4] 构建前端资源...${NC}"
-npm run build
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓ 前端构建完成${NC}"
-else
-    echo -e "${RED}✗ 前端构建失败${NC}"
-    exit 1
-fi
-echo ""
-
 # 如果只构建前端，到此结束
 if [ "$ONLY_BUILD" = true ]; then
+    echo -e "${YELLOW}[2/3] 构建前端资源...${NC}"
+    npm run build
+    echo -e "${GREEN}✓ 前端构建完成${NC}"
+    echo ""
     echo -e "${GREEN}═══════════════════════════════════════${NC}"
     echo -e "${GREEN}   ✓ 前端构建完成（未打包应用）${NC}"
     echo -e "${GREEN}═══════════════════════════════════════${NC}"
     exit 0
 fi
 
-# 打包 Electron 应用（只打 .app，不打包 dmg）
-echo -e "${YELLOW}[3/4] 打包 Electron 应用...${NC}"
-npx electron-builder --mac --config.mac.target=dir
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓ 应用打包完成${NC}"
-else
-    echo -e "${RED}✗ 应用打包失败${NC}"
-    exit 1
-fi
+# 构建并打包 Electron 应用（只打 .app，不打包 dmg）
+echo -e "${YELLOW}[2/3] 构建前端并打包 Electron 应用...${NC}"
+npm run electron:build -- --mac --config.mac.target=dir
+echo -e "${GREEN}✓ 应用打包完成${NC}"
 echo ""
 
 # 显示结果
+echo -e "${YELLOW}[3/3] 完成${NC}"
 echo -e "${GREEN}═══════════════════════════════════════${NC}"
 echo -e "${GREEN}   ✓ 重新编译打包完成！${NC}"
 echo -e "${GREEN}═══════════════════════════════════════${NC}"

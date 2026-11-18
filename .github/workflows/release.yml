@@ -1,6 +1,5 @@
-# 推 main 即编译并发布：macOS arm64 的 dmg 与 zip 传到以 v<package.json version> 命名的 Release。
-# 版本号没动就重推 main 时，会覆盖同名 Release 的附件（不会堆出多个 release）——
-# 要出新版本，先改 package.json 的 version 再推。
+# 推 main 即编译并发布：版本号使用 Asia/Shanghai 构建时间（年.月.日.当天分钟数）。
+# 界面、Release 和安装包文件名使用完整四段版本；Info.plist 使用前三段。
 #
 # fork 出来第一次跑之前，仓库设置里有两件事要确认（fork 默认都是关的）：
 #   1. Actions 标签页点一下「I understand my workflows, go ahead and enable them」
@@ -36,9 +35,9 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      - name: 读取版本号
-        id: pkg
-        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: 计算构建版本
+        id: version
+        run: node scripts/build-version.cjs --github-output >> "$GITHUB_OUTPUT"
 
       # 没有 Developer ID 时由 sign-mac.cjs 做完整的 ad-hoc 签名；
       # 将来可以继续通过 CSC_LINK / CSC_NAME 提供正式证书。
@@ -46,6 +45,8 @@ jobs:
         env:
           # Vite 转换大依赖时会超过 Node 默认约 2GB 的 heap 上限
           NODE_OPTIONS: --max-old-space-size=4096
+          CCGUI_BUILD_VERSION: ${{ steps.version.outputs.build_version }}
+          CCGUI_BUNDLE_VERSION: ${{ steps.version.outputs.bundle_version }}
         run: npm run electron:build -- --mac --arm64 --publish never --config.mac.sign=.github/scripts/sign-mac.cjs
 
       # 签名不自洽的包，对方下载后会被系统判成「已损坏」而不是「无法验证开发者」；
@@ -56,8 +57,8 @@ jobs:
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.pkg.outputs.version }}
-          name: CCGUI v${{ steps.pkg.outputs.version }}
+          tag_name: v${{ steps.version.outputs.build_version }}
+          name: CCGUI v${{ steps.version.outputs.build_version }}
           generate_release_notes: true
           overwrite_files: true
           fail_on_unmatched_files: true

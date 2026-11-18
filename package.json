@@ -9,7 +9,7 @@
     "build": "vite build",
     "electron:dev": "node scripts/electron-dev.cjs",
     "electron": "npx electron .",
-    "electron:build": "npm run build && electron-builder",
+    "electron:build": "node scripts/electron-build.cjs",
     "rebuild": "./scripts/rebuild.sh",
     "rebuild:fast": "./scripts/rebuild.sh --skip-clean",
     "rebuild:only": "./scripts/rebuild.sh --only-build",

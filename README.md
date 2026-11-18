@@ -38,6 +38,18 @@ CCGUI 是一个基于 Electron + Vue 3 的本地桌面应用，用来统一承�
 - `/` 命令与上下文附件
 - Computer Use、子 agent、权限确认等运行时能力展示
 
+### 内置团队 MCP
+
+CCGUI 会为每个 Claude Code / Codex Session 自动注入内置的 `ccgui_internal` MCP，不需要额外安装或手工修改 MCP 配置。它把同一项目下的多个 Session 组织成团队：
+
+- `leader` 可以创建团队和成员 Session，并启停、删除成员或中断其当前任务
+- 成员通过 `list_sessions` 发现团队内 Session，通过收件箱异步通信
+- 忙碌 Session 的直接消息会排队，不会打断当前任务
+- 通讯严格限制在同一项目、同一团队；无团队 Session 只能与同项目内同样无团队的 Session 通讯
+- Session 身份、团队和角色由 CCGUI 绑定，调用方不能伪造
+
+内置工具包括 `info`、`create_team`、`join_team`、`create_session`、`list_sessions`、`send_message`、`send_inbox_message`、`list_inbox_messages`、`ack_inbox_messages`、`start_session`、`stop_session`、`delete_session` 和 `interrupt_session`。
+
 ## 这不是独立运行时
 
 CCGUI 本身不提供 Claude Code 或 Codex 的模型运行能力。它依赖你本机已经安装并可正常使用的 provider。
@@ -166,6 +178,7 @@ npm run rebuild:only
 CCGUI/
 ├── electron/                    # Electron 主进程与 provider 适配层
 │   ├── adapters/                # Claude / Codex runtime adapters
+│   ├── agent-communication/     # 内置团队 MCP 与 Session 通讯
 │   ├── services/                # 项目、MCP、文件、Codex app server 等服务
 │   ├── session/                 # 会话运行时与消息编排
 │   └── storage/                 # 应用配置、历史与项目配置

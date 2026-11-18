@@ -1,0 +1,63 @@
+# 推 main 即编译并发布：macOS arm64 的 dmg 与 zip 传到以 v<package.json version> 命名的 Release。
+# 版本号没动就重推 main 时，会覆盖同名 Release 的附件（不会堆出多个 release）——
+# 要出新版本，先改 package.json 的 version 再推。
+#
+# fork 出来第一次跑之前，仓库设置里有两件事要确认（fork 默认都是关的）：
+#   1. Actions 标签页点一下「I understand my workflows, go ahead and enable them」
+#   2. Settings → Actions → General → Workflow permissions 选 “Read and write”（发 Release 要写权限）
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 发布 Release 需要写权限；GITHUB_TOKEN 是内置的，不用配 Secret
+permissions:
+  contents: write
+
+# 同一分支的发布串行跑，避免两次 push 同时改同一个 Release
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    # macos-14 是 GitHub 托管的 Apple Silicon（arm64）机器，构建 arm64 产物是原生的
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 读取版本号
+        id: pkg
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # 没有 Developer ID 时由 sign-mac.cjs 做完整的 ad-hoc 签名；
+      # 将来可以继续通过 CSC_LINK / CSC_NAME 提供正式证书。
+      - name: 打包 macOS arm64（dmg + zip）
+        run: npm run electron:build -- --mac --arm64 --publish never --config.mac.sign=.github/scripts/sign-mac.cjs
+
+      # 签名不自洽的包，对方下载后会被系统判成「已损坏」而不是「无法验证开发者」；
+      # 这条守住这个回退（漏签名时这里会直接失败）
+      - name: 校验签名自洽
+        run: codesign --verify --deep --strict --verbose=2 output/mac-arm64/CCGUI.app
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.pkg.outputs.version }}
+          name: CCGUI v${{ steps.pkg.outputs.version }}
+          generate_release_notes: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            output/*.dmg
+            output/*.zip

@@ -312,8 +312,6 @@ async function handleCreate() {
     }
 
     const newSession = await store.createSession(props.projectId, sessionName.value.trim() || null, { settings })
-    // Auto-select the new session
-    await store.selectSession(newSession)
     emit('created', newSession)
   } catch (e) {
     error.value = e.message || '创建会话失败'

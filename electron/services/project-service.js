@@ -882,7 +882,7 @@ async function importProviderSessionHistory(projectId, providerSession, targetSe
     return
   }
 
-  const provider = providerSession?.settings?.provider
+  const provider = resolveLinkedSessionProvider(providerSession)
   if (!provider) {
     return
   }
@@ -2011,8 +2011,11 @@ async function ensureSessionHistoryHydrated(projectId, sessionId, options = {}) 
     return { success: true, imported: false }
   }
 
-  const sessions = await getProjectSessions(projectId)
-  const session = sessions.find(item => item.id === sessionId) || null
+  let session = sessionConfigManager.getSession(projectId, sessionId)
+  if (!session) {
+    const sessions = await getProjectSessions(projectId)
+    session = sessions.find(item => item.id === sessionId) || null
+  }
   if (!session) {
     return { success: false, imported: false, error: 'Session not found' }
   }
@@ -2020,6 +2023,9 @@ async function ensureSessionHistoryHydrated(projectId, sessionId, options = {}) 
   const provider = resolveLinkedSessionProvider(session)
   const source = provider ? providerSessionSourcesById[provider] : null
   if (!provider || !source?.loadSessionHistory) {
+    return { success: true, imported: false }
+  }
+  if (!resolveToolBinding(session.settings || {})?.nativeSessionId) {
     return { success: true, imported: false }
   }
 

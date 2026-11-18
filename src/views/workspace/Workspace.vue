@@ -95,6 +95,7 @@ const {
   renameDialogConfig,
   runSessionDeletionInBackground,
   handleNewSession,
+  handleNewSessionCreated,
   handleDeleteSession,
   handleDissolveTeam,
   handleDestroyTeam,
@@ -1380,7 +1381,7 @@ function handleDeleteInactiveSessions() {
       v-if="showNewSessionDialog"
       :project-id="store.currentProject?.id"
       @close="showNewSessionDialog = false"
-      @created="showNewSessionDialog = false"
+      @created="handleNewSessionCreated"
     />
 
     <ConfirmDialog

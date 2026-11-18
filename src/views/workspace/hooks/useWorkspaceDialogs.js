@@ -63,6 +63,23 @@ export function useWorkspaceDialogs({
     showNewSessionDialog.value = true
   }
 
+  async function handleNewSessionCreated(session) {
+    showNewSessionDialog.value = false
+    if (!session?.id) {
+      return
+    }
+
+    try {
+      await store.selectSession(session)
+    } catch (error) {
+      logger.error('新会话已创建但打开失败', {
+        error: error.message,
+        sessionId: session.id
+      })
+      alert(`新会话已创建，但打开失败: ${error.message || '未知错误'}`)
+    }
+  }
+
   function handleDeleteSession(session) {
     if (session?.role === 'leader' && session?.teamId) {
       confirmDialogConfig.value = {
@@ -488,6 +505,7 @@ export function useWorkspaceDialogs({
     renameDialogConfig,
     runSessionDeletionInBackground,
     handleNewSession,
+    handleNewSessionCreated,
     handleDeleteSession,
     handleDissolveTeam,
     handleDestroyTeam,

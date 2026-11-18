@@ -1522,6 +1522,9 @@ function getSessionTool(session) {
 }
 
 function getSessionBindingLabel(session) {
+  if (session?.bindingState !== 'missing') {
+    return ''
+  }
   return typeof session?.bindingLabel === 'string' ? session.bindingLabel.trim() : ''
 }
 

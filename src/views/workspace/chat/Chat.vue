@@ -180,7 +180,7 @@ function startDurationTimer() {
   currentTime.value = Date.now()
   durationTimer = setInterval(() => {
     currentTime.value = Date.now()
-  }, 1000)
+  }, 100)
 }
 
 function stopDurationTimer() {
@@ -1731,7 +1731,10 @@ async function executeSlashCommand(command = null, commandArguments = '', option
       autoScrollActive = true
       scrollToBottom(true)
       if (!runtimeActive.value) {
-        emit('startSession', { id: sessionStore.currentSession?.id })
+        emit('startSession', {
+          id: sessionStore.currentSession?.id,
+          deferMcpStartupNotifications: true
+        })
       }
       return
     }
@@ -1932,7 +1935,10 @@ async function handleSendMessage(content) {
     inputAttachments.value = []
     autoScrollActive = true
     scrollToBottom(true)
-    emit('startSession', { id: sessionStore.currentSession?.id })
+    emit('startSession', {
+      id: sessionStore.currentSession?.id,
+      deferMcpStartupNotifications: true
+    })
     return
   }
 
@@ -2221,6 +2227,9 @@ function handleWindowResize() {
     messagesHeight.value = newHeight + 'px'
   }
   nextTick(updateContentViewport)
+  if (contextMenuState.value.show) {
+    nextTick(updateContextMenuPosition)
+  }
   // 如果没有设置高度（自动模式），则不需要处理，让 flex 布局自动调整
 }
 
@@ -2788,7 +2797,17 @@ function handleToggleAgentViewMode(mode) {
 
 const isAgentRailVisible = ref(true)
 
-const contextMenuState = ref({ show: false, x: 0, y: 0, hasSelection: false })
+const CONTEXT_MENU_VIEWPORT_MARGIN = 8
+const contextMenuState = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  originX: 0,
+  originY: 0,
+  hasSelection: false
+})
+const chatContextMenuRef = ref(null)
+const contextSubmenuPlacement = ref({})
 let contextMenuText = ''
 const contextThemeMenuGroups = [
   {
@@ -2826,6 +2845,94 @@ function isCollapseOnSendEnabled() {
 
 function isCollapseProcessOnDisplayEnabled() {
   return appConfig.value?.settings?.collapseProcessOnDisplay === true
+}
+
+function getContextMenuViewport() {
+  return {
+    width: window.innerWidth || document.documentElement.clientWidth || 0,
+    height: window.innerHeight || document.documentElement.clientHeight || 0
+  }
+}
+
+function resolveContextMenuAxis(origin, size, viewportSize) {
+  const maxPosition = Math.max(
+    CONTEXT_MENU_VIEWPORT_MARGIN,
+    viewportSize - size - CONTEXT_MENU_VIEWPORT_MARGIN
+  )
+  let position = origin
+
+  if (origin + size > viewportSize - CONTEXT_MENU_VIEWPORT_MARGIN) {
+    position = origin - size
+    if (position < CONTEXT_MENU_VIEWPORT_MARGIN) {
+      position = origin
+    }
+  }
+
+  return Math.max(
+    CONTEXT_MENU_VIEWPORT_MARGIN,
+    Math.min(position, maxPosition)
+  )
+}
+
+function updateContextMenuPosition() {
+  const menu = chatContextMenuRef.value
+  if (!contextMenuState.value.show || !(menu instanceof HTMLElement)) {
+    return
+  }
+
+  const rect = menu.getBoundingClientRect()
+  const viewport = getContextMenuViewport()
+  const x = resolveContextMenuAxis(contextMenuState.value.originX, rect.width, viewport.width)
+  const y = resolveContextMenuAxis(contextMenuState.value.originY, rect.height, viewport.height)
+
+  contextSubmenuPlacement.value = {}
+  if (contextMenuState.value.x === x && contextMenuState.value.y === y) {
+    return
+  }
+
+  contextMenuState.value = {
+    ...contextMenuState.value,
+    x,
+    y
+  }
+}
+
+function handleContextSubmenuEnter(event, groupKey) {
+  const group = event.currentTarget
+  const menu = chatContextMenuRef.value
+  if (!(group instanceof HTMLElement) || !(menu instanceof HTMLElement)) {
+    return
+  }
+
+  const submenu = group.querySelector(':scope > .chat-context-submenu')
+  if (!(submenu instanceof HTMLElement)) {
+    return
+  }
+
+  const menuRect = menu.getBoundingClientRect()
+  const groupRect = group.getBoundingClientRect()
+  const submenuRect = submenu.getBoundingClientRect()
+  if (!submenuRect.width || !submenuRect.height) {
+    return
+  }
+
+  const viewport = getContextMenuViewport()
+  const rightSpace = viewport.width - CONTEXT_MENU_VIEWPORT_MARGIN - menuRect.right
+  const leftSpace = menuRect.left - CONTEXT_MENU_VIEWPORT_MARGIN
+  const belowSpace = viewport.height - CONTEXT_MENU_VIEWPORT_MARGIN - groupRect.top
+  const aboveSpace = groupRect.bottom - CONTEXT_MENU_VIEWPORT_MARGIN
+  const horizontal = submenuRect.width > rightSpace && leftSpace > rightSpace ? 'left' : 'right'
+  const vertical = submenuRect.height > belowSpace && aboveSpace > belowSpace ? 'up' : 'down'
+  const current = contextSubmenuPlacement.value[groupKey]
+
+  if (current?.horizontal === horizontal && current?.vertical === vertical) {
+    return
+  }
+
+  contextSubmenuPlacement.value = {
+    ...contextSubmenuPlacement.value,
+    [groupKey]: { horizontal, vertical }
+  }
 }
 
 async function toggleCollapseOnSend() {
@@ -2930,16 +3037,21 @@ function handleContextMenu(event) {
 
   event.preventDefault()
   contextMenuText = text || ''
+  contextSubmenuPlacement.value = {}
   contextMenuState.value = {
     show: true,
     x: event.clientX,
     y: event.clientY,
+    originX: event.clientX,
+    originY: event.clientY,
     hasSelection: Boolean(text)
   }
+  nextTick(updateContextMenuPosition)
 }
 
 function closeContextMenu() {
   contextMenuState.value = { ...contextMenuState.value, show: false, hasSelection: false }
+  contextSubmenuPlacement.value = {}
   contextMenuText = ''
 }
 
@@ -3064,6 +3176,7 @@ function handleToggleAgentRail() {
         :input-target-agent-id="agentWorkspaceState.inputTargetAgentId"
         :working-directory="workingDirectory"
         :current-time="currentTime"
+        :session-is-processing="isProcessing"
         :sticky-message="stickyMessage"
         :show-sticky-header="shouldShowStickyHeader"
         :sticky-is-processing="isStickyMessageProcessing"
@@ -3423,6 +3536,7 @@ function handleToggleAgentRail() {
   <Teleport to="body">
     <div
       v-if="contextMenuState.show"
+      ref="chatContextMenuRef"
       class="chat-context-menu"
       :style="{ left: `${contextMenuState.x}px`, top: `${contextMenuState.y}px` }"
       @click.stop
@@ -3432,6 +3546,11 @@ function handleToggleAgentRail() {
         v-for="group in contextThemeMenuGroups"
         :key="group.key"
         class="chat-context-menu-group"
+        :class="{
+          'chat-context-menu-group--submenu-left': contextSubmenuPlacement[group.key]?.horizontal === 'left',
+          'chat-context-menu-group--submenu-up': contextSubmenuPlacement[group.key]?.vertical === 'up'
+        }"
+        @mouseenter="handleContextSubmenuEnter($event, group.key)"
       >
         <button class="chat-context-menu-item chat-context-menu-item--submenu" type="button">
           <span>{{ group.label }}</span>
@@ -3453,7 +3572,14 @@ function handleToggleAgentRail() {
           </button>
         </div>
       </div>
-      <div class="chat-context-menu-group">
+      <div
+        class="chat-context-menu-group"
+        :class="{
+          'chat-context-menu-group--submenu-left': contextSubmenuPlacement.messageCollapse?.horizontal === 'left',
+          'chat-context-menu-group--submenu-up': contextSubmenuPlacement.messageCollapse?.vertical === 'up'
+        }"
+        @mouseenter="handleContextSubmenuEnter($event, 'messageCollapse')"
+      >
         <button class="chat-context-menu-item chat-context-menu-item--submenu" type="button">
           <span>消息折叠</span>
           <span class="chat-context-menu-arrow">›</span>
@@ -5093,6 +5219,7 @@ function handleToggleAgentRail() {
 .chat-context-menu {
   position: fixed;
   min-width: 140px;
+  max-width: calc(100vw - 16px);
   padding: 4px 0;
   background: #1E1E1E;
   border: 1px solid #3F3F46;
@@ -5195,6 +5322,21 @@ function handleToggleAgentRail() {
   left: -8px;
   width: 8px;
   height: 100%;
+}
+
+.chat-context-menu-group--submenu-left > .chat-context-submenu {
+  right: 100%;
+  left: auto;
+}
+
+.chat-context-menu-group--submenu-left > .chat-context-submenu::before {
+  right: -8px;
+  left: auto;
+}
+
+.chat-context-menu-group--submenu-up > .chat-context-submenu {
+  top: auto;
+  bottom: -4px;
 }
 
 .chat-context-menu-group:hover .chat-context-submenu {

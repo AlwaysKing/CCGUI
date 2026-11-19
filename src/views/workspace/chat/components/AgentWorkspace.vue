@@ -57,6 +57,10 @@ const props = defineProps({
     type: Number,
     default: null
   },
+  sessionIsProcessing: {
+    type: Boolean,
+    default: false
+  },
   stickyMessage: {
     type: Object,
     default: null
@@ -716,7 +720,12 @@ function isProcessRunBlock(block) {
   }
   return message.role === 'assistant' &&
     !hasVisibleMessageContent(message) &&
-    (message.subtype === 'thinking' || message.hasThinking || Boolean(message.thinking))
+    (
+      message.subtype === 'thinking' ||
+      message.hasThinking ||
+      Boolean(message.thinking) ||
+      message.isStreaming
+    )
 }
 
 function buildThinkingBlock(block, message) {
@@ -740,6 +749,7 @@ function buildVisibleMessageBlock(block, message) {
     ...block,
     message: {
       ...message,
+      subtype: null,
       thinking: '',
       hasThinking: false
     }
@@ -750,14 +760,15 @@ function buildProcessRenderableTimeline(blocks, visibleMessageIndexes) {
   const renderBlocks = []
   let pendingProcessBlocks = []
 
-  const flushProcessBlocks = () => {
+  const flushProcessBlocks = (endedAt = null) => {
     if (pendingProcessBlocks.length === 0) return
     const firstBlock = pendingProcessBlocks[0]
     renderBlocks.push({
       type: 'process-run',
       key: `process-run-${firstBlock.key || firstBlock.displayIndex}`,
       displayIndex: firstBlock.displayIndex,
-      foldableBlocks: [...pendingProcessBlocks]
+      foldableBlocks: [...pendingProcessBlocks],
+      endedAt: Number.isFinite(endedAt) ? endedAt : null
     })
     pendingProcessBlocks = []
   }
@@ -773,7 +784,7 @@ function buildProcessRenderableTimeline(blocks, visibleMessageIndexes) {
 
     if (hasThinking && hasVisibleMessageContent(message)) {
       pendingProcessBlocks.push(buildThinkingBlock(block, message))
-      flushProcessBlocks()
+      flushProcessBlocks(toTimestamp(message?.timestamp ?? message?.startTime))
       renderBlocks.push({
         type: 'block',
         key: block.key || `block-${block.displayIndex}`,
@@ -787,7 +798,8 @@ function buildProcessRenderableTimeline(blocks, visibleMessageIndexes) {
       return
     }
 
-    flushProcessBlocks()
+    const blockMessage = getBlockMessage(block)
+    flushProcessBlocks(toTimestamp(blockMessage?.timestamp ?? blockMessage?.startTime))
     renderBlocks.push({
       type: 'block',
       key: block.key || `block-${block.displayIndex}`,
@@ -841,7 +853,7 @@ function getProcessRunStats(renderBlock) {
   }).length
   const permissionCount = messages.filter(message => message.role === 'permission_result').length
   const running = isTrailingProcessRun(renderBlock.key) &&
-    props.activeSession?.isProcessing === true
+    props.sessionIsProcessing === true
   const startTimes = messages
     .map(message => toTimestamp(message.startTime ?? message.timestamp))
     .filter(value => Number.isFinite(value))
@@ -851,9 +863,12 @@ function getProcessRunStats(renderBlock) {
     .filter(value => Number.isFinite(value))
   const currentTime = Number(props.currentTime) || Date.now()
   const lastKnownEndTime = endTimes.length ? Math.max(...endTimes) : startTime
+  const boundaryEndTime = Number.isFinite(Number(renderBlock?.endedAt))
+    ? Math.max(Number(renderBlock.endedAt), lastKnownEndTime ?? Number(renderBlock.endedAt))
+    : lastKnownEndTime
   let endTime = running
     ? Math.max(currentTime, lastKnownEndTime ?? currentTime)
-    : lastKnownEndTime
+    : boundaryEndTime
   if (
     running &&
     Number.isFinite(startTime) &&
@@ -969,7 +984,7 @@ const renderableMainTimelineBlocks = computed(() => {
 })
 
 watch(
-  [renderableMainTimelineBlocks, expandedProcessRuns, () => props.chatTheme, () => props.currentTime],
+  [renderableMainTimelineBlocks, expandedProcessRuns, () => props.chatTheme],
   async () => {
     await nextTick()
     updateAllProcessRunLines()
@@ -1876,6 +1891,7 @@ const shouldShowRail = computed(() => {
 
 .process-run {
   position: relative;
+  isolation: isolate;
   min-width: 0;
 }
 
@@ -1886,6 +1902,7 @@ const shouldShowRail = computed(() => {
   top: var(--process-line-top, 18px);
   bottom: var(--process-line-bottom, 16px);
   width: 1px;
+  z-index: -1;
   border-radius: 999px;
   background: repeating-linear-gradient(
     180deg,

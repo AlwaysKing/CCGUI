@@ -250,6 +250,38 @@ async function run() {
   assert.strictEqual(repeatedCycleNotifications.length, 2)
   assert(repeatedCycleNotifications.every(message => message.notificationType === 'mcp-server-ready'))
 
+  // 同一 operationId 的 status 变化必须原地合并，不能因为通知类型相同而被忽略或追加。
+  const statusOperationId = 'mcp-status:codex:thread-main:xcode'
+  dispatchSessionEvent({
+    sessionId,
+    eventType: 'system-notification',
+    data: {
+      type: 'mcp-server-status',
+      provider: 'codex',
+      name: 'xcode',
+      status: 'connected',
+      operationId: statusOperationId
+    }
+  })
+  dispatchSessionEvent({
+    sessionId,
+    eventType: 'system-notification',
+    data: {
+      type: 'mcp-server-status',
+      provider: 'codex',
+      name: 'xcode',
+      status: 'tool_changed',
+      operationId: statusOperationId
+    }
+  })
+
+  const statusNotifications = mainQueue.entries.filter(message =>
+    message.data?.operationId === statusOperationId
+  )
+  assert.strictEqual(statusNotifications.length, 1)
+  assert.strictEqual(statusNotifications[0].notificationType, 'mcp-server-status')
+  assert.strictEqual(statusNotifications[0].data.status, 'tool_changed')
+
   // starting → error → ready 都落在 700ms 展示窗口内时，后到的 ready 不得覆盖 error。
   const raceOperationId = 'mcp-startup:codex:thread-main:rea'
   dispatchSessionEvent({

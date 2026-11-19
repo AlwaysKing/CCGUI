@@ -37,9 +37,16 @@ const unrelatedMessage = {
   notificationType: 'mcp-server-ready',
   data: { operationId: 'mcp-startup:codex:thread-1:xcode' }
 }
+const statusOperationId = 'mcp-status:codex:thread-1:xcode'
+const statusMessage = {
+  id: 'notification-3',
+  role: 'system_notification',
+  notificationType: 'mcp-server-status',
+  data: { operationId: statusOperationId, status: 'connected' }
+}
 const queues = [
   createQueue([unrelatedMessage]),
-  createQueue([startingMessage])
+  createQueue([startingMessage, statusMessage])
 ]
 
 assert.strictEqual(isMcpNotificationType('mcp-server-starting'), true)
@@ -55,6 +62,7 @@ assert.strictEqual(shouldIgnoreMcpNotificationUpdate('mcp-server-ready', 'mcp-se
 assert.strictEqual(shouldIgnoreMcpNotificationUpdate('mcp-server-error', 'mcp-server-ready'), true)
 assert.strictEqual(shouldIgnoreMcpNotificationUpdate('mcp-server-ready', 'mcp-server-error'), false)
 assert.strictEqual(shouldIgnoreMcpNotificationUpdate('mcp-server-starting', 'mcp-server-ready'), false)
+assert.strictEqual(shouldIgnoreMcpNotificationUpdate('mcp-server-status', 'mcp-server-status'), false)
 
 assert.strictEqual(findMcpNotificationByOperationId(queues, ''), null)
 assert.deepStrictEqual(findMcpNotificationByOperationId(queues, operationId), {
@@ -65,5 +73,9 @@ assert.strictEqual(
   findMcpNotificationByOperationId([createQueue([unrelatedMessage])], operationId),
   null
 )
+assert.deepStrictEqual(findMcpNotificationByOperationId(queues, statusOperationId), {
+  queue: queues[1],
+  message: statusMessage
+})
 
 console.log('system-notification-operation-tests: ok')

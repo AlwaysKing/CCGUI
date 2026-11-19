@@ -2940,8 +2940,14 @@ ipcMain.handle('send-runtime-tool-result', async (event, { sessionId, toolUseId,
 })
 
 // Start session
-ipcMain.handle('start-session', async (event, { sessionId, projectPath, reason, postStartNotification }) => {
-  logger.info('[IPC] start-session:', { sessionId, projectPath, reason, hasPostStartNotification: !!postStartNotification })
+ipcMain.handle('start-session', async (event, { sessionId, projectPath, reason, postStartNotification, deferMcpStartupNotifications }) => {
+  logger.info('[IPC] start-session:', {
+    sessionId,
+    projectPath,
+    reason,
+    hasPostStartNotification: !!postStartNotification,
+    deferMcpStartupNotifications: deferMcpStartupNotifications === true
+  })
 
   try {
     // Use select-session internally, passing webContents for multi-window support
@@ -2953,7 +2959,7 @@ ipcMain.handle('start-session', async (event, { sessionId, projectPath, reason, 
     })
 
     // Start runtime process
-    await session.start({ reason, postStartNotification })
+    await session.start({ reason, postStartNotification, deferMcpStartupNotifications })
 
     logger.info('[IPC] start-session completed:', { sessionId, ready: session.isRuntimeReady() })
     return { success: true, sessionId }

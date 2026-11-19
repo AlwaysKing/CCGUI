@@ -572,6 +572,25 @@ function testCodexSpawnAgentSemantics() {
   )
 }
 
+function testCodexThinkingMessageIsProcessFromStart() {
+  const adapter = new CodexAdapter(process.cwd(), 'codex-process-classification-test')
+  const events = createEventSink(adapter)
+
+  adapter.emitAssistantDelta('turn-thinking', 'item-thinking', 'thinking', 'reasoning')
+  const thinkingStart = events.find(event => event.type === 'message-start')
+  assert(thinkingStart, 'expected thinking message-start')
+  assert.strictEqual(thinkingStart.payload.subtype, 'thinking')
+  assert.strictEqual(thinkingStart.payload.hasThinking, true)
+
+  const contentAdapter = new CodexAdapter(process.cwd(), 'codex-content-classification-test')
+  const contentEvents = createEventSink(contentAdapter)
+  contentAdapter.emitAssistantDelta('turn-content', 'item-content', 'content', 'answer')
+  const contentStart = contentEvents.find(event => event.type === 'message-start')
+  assert(contentStart, 'expected content message-start')
+  assert.strictEqual(contentStart.payload.subtype, null)
+  assert.strictEqual(contentStart.payload.hasThinking, false)
+}
+
 function testCodexSubAgentActivitySemantics() {
   const adapter = new CodexAdapter(process.cwd(), 'codex-subagent-activity-test-session')
   const events = createEventSink(adapter)
@@ -1378,6 +1397,196 @@ function testMcpSystemNotificationUsesCanonicalMessageIdAndDuration() {
   }
 }
 
+function testMcpRepeatedStatusesReuseNotification() {
+  const session = new SessionInstance('mcp-repeated-status-test-session', '/tmp/ccgui-mcp-repeated-status-test')
+  session.provider = 'codex'
+  const events = createEventSink(session)
+
+  const originalAppendIndexMessage = historyManager.appendIndexMessage
+  const originalLoadIndexEntries = historyManager.loadIndexEntries
+  const originalUpdateMessage = historyManager.updateMessage
+  const originalUpdateIndexMessage = historyManager.updateIndexMessage
+  const originalSaveMessageToHistory = session.saveMessageToHistory
+
+  try {
+    session.saveMessageToHistory = () => {}
+    historyManager.appendIndexMessage = () => true
+    historyManager.loadIndexEntries = () => []
+    historyManager.updateMessage = () => true
+    historyManager.updateIndexMessage = () => true
+
+    const operationId = 'mcp-startup:codex:thread-main:xcode:repeated'
+    const startedAt = Date.now() - 1200
+    const startingMessage = session.emitSystemNotification('mcp-server-starting', {
+      type: 'mcp-server-starting',
+      provider: 'codex',
+      name: 'xcode',
+      status: 'starting',
+      operationId,
+      startedAt
+    })
+    const duplicateStartingMessage = session.emitSystemNotification('mcp-server-starting', {
+      type: 'mcp-server-starting',
+      provider: 'codex',
+      name: 'xcode',
+      status: 'starting',
+      operationId,
+      startedAt
+    })
+    const readyMessage = session.emitSystemNotification('mcp-server-ready', {
+      type: 'mcp-server-ready',
+      provider: 'codex',
+      name: 'xcode',
+      status: 'ready',
+      operationId,
+      completedAt: startedAt + 800
+    })
+    const duplicateReadyMessage = session.emitSystemNotification('mcp-server-ready', {
+      type: 'mcp-server-ready',
+      provider: 'codex',
+      name: 'xcode',
+      status: 'ready',
+      operationId,
+      completedAt: startedAt + 1600
+    })
+
+    assert(startingMessage?.id)
+    assert.strictEqual(duplicateStartingMessage?.id, startingMessage.id)
+    assert.strictEqual(readyMessage?.id, startingMessage.id)
+    assert.strictEqual(duplicateReadyMessage?.id, startingMessage.id)
+    assert.strictEqual(
+      session.messages.filter(message => message.data?.operationId === operationId).length,
+      1,
+      'repeated MCP statuses must update one notification instead of appending a new batch'
+    )
+    assert.strictEqual(session.messages[0].notificationType, 'mcp-server-ready')
+    assert.strictEqual(session.messages[0].data.durationMs, 800)
+    assert.strictEqual(
+      events.filter(event => event.type === 'system-notification').length,
+      4,
+      'each provider update should still be available to the renderer'
+    )
+    assert(
+      events
+        .filter(event => event.type === 'system-notification')
+        .every(event => event.payload.messageId === startingMessage.id),
+      'all MCP updates must reuse the canonical message id'
+    )
+
+    const statusOperationId = 'mcp-status:codex:thread-main:xcode:status-updates'
+    const connectedMessage = session.emitSystemNotification('mcp-server-status', {
+      type: 'mcp-server-status',
+      provider: 'codex',
+      name: 'xcode',
+      status: 'connected',
+      operationId: statusOperationId
+    })
+    const changedMessage = session.emitSystemNotification('mcp-server-status', {
+      type: 'mcp-server-status',
+      provider: 'codex',
+      name: 'xcode',
+      status: 'tool_changed',
+      operationId: statusOperationId
+    })
+
+    assert.strictEqual(connectedMessage?.id, changedMessage?.id)
+    assert.strictEqual(changedMessage.data.status, 'tool_changed')
+    assert.strictEqual(
+      session.messages.filter(message => message.data?.operationId === statusOperationId).length,
+      1,
+      'same-type MCP status updates must update one notification'
+    )
+  } finally {
+    session.saveMessageToHistory = originalSaveMessageToHistory
+    historyManager.appendIndexMessage = originalAppendIndexMessage
+    historyManager.loadIndexEntries = originalLoadIndexEntries
+    historyManager.updateMessage = originalUpdateMessage
+    historyManager.updateIndexMessage = originalUpdateIndexMessage
+  }
+}
+
+async function testMcpStartupNotificationsWaitForUserMessage() {
+  const session = new SessionInstance('mcp-deferred-order-test-session', '/tmp/ccgui-mcp-deferred-order-test')
+  session.provider = 'codex'
+  const events = createEventSink(session)
+
+  const originalAppendIndexMessage = historyManager.appendIndexMessage
+  const originalAppendTurn = historyManager.appendTurn
+  const originalAppendTurnEvent = historyManager.appendTurnEvent
+  const originalLoadIndexEntries = historyManager.loadIndexEntries
+  const originalUpdateMessage = historyManager.updateMessage
+  const originalUpdateIndexMessage = historyManager.updateIndexMessage
+  const originalSaveMessageToHistory = session.saveMessageToHistory
+
+  try {
+    session.saveMessageToHistory = () => {}
+    historyManager.appendIndexMessage = () => true
+    historyManager.appendTurn = () => ({ turnId: 'deferred-order-turn' })
+    historyManager.appendTurnEvent = () => true
+    historyManager.loadIndexEntries = () => []
+    historyManager.updateMessage = () => true
+    historyManager.updateIndexMessage = () => true
+
+    const runtimeManager = new EventEmitter()
+    runtimeManager.isReady = () => true
+    runtimeManager.sendMessage = async () => {}
+    session.runtimeManager = runtimeManager
+    await session.startRuntime({ deferMcpStartupNotifications: true })
+    assert.strictEqual(
+      session.deferMcpStartupNotificationsUntilMessage,
+      true,
+      'ready runtime starts must still honor the deferred notification option'
+    )
+
+    const operationId = 'mcp-startup:codex:thread-main:node_repl:deferred'
+    session.emitSystemNotification('mcp-server-starting', {
+      type: 'mcp-server-starting',
+      provider: 'codex',
+      name: 'node_repl',
+      status: 'starting',
+      operationId,
+      startedAt: Date.now()
+    })
+    session.emitSystemNotification('mcp-server-ready', {
+      type: 'mcp-server-ready',
+      provider: 'codex',
+      name: 'node_repl',
+      status: 'ready',
+      operationId
+    })
+
+    assert.strictEqual(
+      events.filter(event => event.type === 'system-notification').length,
+      0,
+      'MCP startup notifications must remain buffered before the message is sent'
+    )
+
+    await session.sendMessage('triggered by message')
+
+    const messageEventIndex = events.findIndex(event =>
+      event.type === 'message' && event.payload?.role === 'user'
+    )
+    const notificationEventIndexes = events
+      .map((event, index) => event.type === 'system-notification' ? index : -1)
+      .filter(index => index >= 0)
+    assert(messageEventIndex >= 0, 'expected the user message event')
+    assert.strictEqual(notificationEventIndexes.length, 2)
+    assert(
+      notificationEventIndexes.every(index => index > messageEventIndex),
+      'MCP startup notifications must be emitted after the triggering user message'
+    )
+  } finally {
+    session.runtimeManager = null
+    session.saveMessageToHistory = originalSaveMessageToHistory
+    historyManager.appendIndexMessage = originalAppendIndexMessage
+    historyManager.appendTurn = originalAppendTurn
+    historyManager.appendTurnEvent = originalAppendTurnEvent
+    historyManager.loadIndexEntries = originalLoadIndexEntries
+    historyManager.updateMessage = originalUpdateMessage
+    historyManager.updateIndexMessage = originalUpdateIndexMessage
+  }
+}
+
 async function run() {
   if (!process.argv.includes('--codex-only')) {
     testClaudeSubagentSemantics()
@@ -1389,9 +1598,12 @@ async function run() {
     testClaudeBackgroundTaskEventsAreModeledWithoutProviderNotifications()
     testClaudeToolProgressUpdatesExistingToolMessage()
   }
+  testCodexThinkingMessageIsProcessFromStart()
   testCodexSpawnAgentSemantics()
   testCodexSubAgentActivitySemantics()
   testCodexSubAgentThreadsDoNotReplaceMainThread()
+  testMcpRepeatedStatusesReuseNotification()
+  await testMcpStartupNotificationsWaitForUserMessage()
   await testCodexSendMessageToSubagentThread()
   await testCodexInterruptsMainAndSubAgentTurns()
   testSessionActiveAgentTracking()

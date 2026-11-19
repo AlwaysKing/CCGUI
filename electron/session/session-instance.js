@@ -460,9 +460,21 @@ const SESSION_NOTIFICATION_TYPES = new Set([
   'provider-config-warning',
   'account-login-completed',
   'hook-event',
+  'runtime-diagnostic',
   'provider-message',
   'provider-system-message'
 ])
+
+const MCP_STARTUP_NOTIFICATION_TYPES = new Set([
+  'mcp-server-starting',
+  'mcp-server-ready',
+  'mcp-server-error',
+  'mcp-server-status'
+])
+
+function isMcpStartupNotificationType(notificationType = '') {
+  return MCP_STARTUP_NOTIFICATION_TYPES.has(notificationType)
+}
 
 function normalizeLegacyManagerEvent(message = {}, provider = 'unknown', operationIdOverride = '') {
   if (!message || typeof message !== 'object') {
@@ -776,6 +788,8 @@ class SessionInstance {
     this.pendingPostStartNotification = null
     this.pendingLifecycleOperation = null
     this.mcpStartupOperations = new Map()
+    this.deferMcpStartupNotificationsUntilMessage = false
+    this.deferredMcpStartupNotifications = []
 
     // 标记是否为手动停止（用于区分正常退出和异常退出）
     this.isManualStop = false
@@ -1756,20 +1770,26 @@ class SessionInstance {
   /**
    * 启动运行时实例（懒加载）
    */
-  async startRuntime() {
+  async startRuntime(options = {}) {
     // 如果已经就绪，直接返回
     if (this.runtimeManager && this.runtimeManager.isReady()) {
+      if (options.deferMcpStartupNotifications === true) {
+        this.deferMcpStartupNotificationsUntilMessage = true
+      }
       return true
     }
 
     // 已在启动中：复用同一次启动，避免并发清理/拉起导致 provider 进程互相抢占线程写锁
     if (this.startPromise) {
+      if (options.deferMcpStartupNotifications === true) {
+        this.deferMcpStartupNotificationsUntilMessage = true
+      }
       logger.info(`[SessionInstance] Runtime start already in progress for session ${this.id}, reusing it`)
       return this.startPromise
     }
 
     const token = ++this.runtimeStartToken
-    const startPromise = this.startRuntimeInternal(token)
+    const startPromise = this.startRuntimeInternal(token, options)
     this.startPromise = startPromise
 
     try {
@@ -1785,6 +1805,8 @@ class SessionInstance {
    * 运行时启动的实际流程，由 startRuntime 串行化调用
    */
   async startRuntimeInternal(token, options = {}) {
+    this.flushDeferredMcpStartupNotifications()
+    this.deferMcpStartupNotificationsUntilMessage = options.deferMcpStartupNotifications === true
     this.mcpStartupOperations.clear()
 
     // 如果存在旧的运行时实例（进程已退出），先清理
@@ -2003,10 +2025,11 @@ class SessionInstance {
         const released = await this.releaseResidualRuntimeProcess()
         if (released) {
           logger.info(`[SessionInstance] Retrying runtime start after releasing residual provider for session ${this.id}`)
-          return this.startRuntimeInternal(token, { allowRetry: false })
+          return this.startRuntimeInternal(token, { ...options, allowRetry: false })
         }
       }
 
+      this.flushDeferredMcpStartupNotifications()
       throw e
     }
   }
@@ -2149,6 +2172,67 @@ class SessionInstance {
 
   syncSystemNotificationMessage(notificationType, data = {}) {
     const operationId = typeof data?.operationId === 'string' ? data.operationId : ''
+    if (operationId && isMcpStartupNotificationType(notificationType)) {
+      const existingMessage = [...this.messages].reverse().find(message =>
+        message?.role === 'system_notification' &&
+        isMcpStartupNotificationType(message.notificationType) &&
+        message.data?.operationId === operationId
+      )
+
+      if (existingMessage) {
+        if (
+          existingMessage.notificationType === notificationType &&
+          notificationType !== 'mcp-server-status'
+        ) {
+          return existingMessage
+        }
+        if (existingMessage.notificationType === 'mcp-server-error' && notificationType === 'mcp-server-ready') {
+          return existingMessage
+        }
+
+        const startedAt = Number.isFinite(existingMessage.data?.startedAt)
+          ? existingMessage.data.startedAt
+          : (existingMessage.timestamp?.getTime?.() ?? Date.now())
+        const completedAt = Number.isFinite(data.completedAt) ? data.completedAt : Date.now()
+        const durationMs = Number.isFinite(data.durationMs)
+          ? data.durationMs
+          : Math.max(0, completedAt - startedAt)
+        const nextData = {
+          ...existingMessage.data,
+          ...data,
+          startedAt,
+          type: notificationType
+        }
+
+        if (notificationType !== 'mcp-server-starting') {
+          nextData.completedAt = completedAt
+          nextData.durationMs = durationMs
+        }
+
+        existingMessage.notificationType = notificationType
+        existingMessage.scope = this.resolveNotificationScope(notificationType, nextData)
+        existingMessage.data = nextData
+        existingMessage.ccgui = data?.ccgui || nextData.ccgui || existingMessage.ccgui || null
+        existingMessage.timestamp = new Date()
+        historyManager.updateMessage(this.projectId, this.id, existingMessage.id, {
+          notificationType: existingMessage.notificationType,
+          scope: existingMessage.scope,
+          data: existingMessage.data,
+          timestamp: existingMessage.timestamp
+        })
+        if (existingMessage.scope === 'session') {
+          historyManager.updateIndexMessage(this.projectId, this.id, existingMessage.id, {
+            notificationType: existingMessage.notificationType,
+            scope: existingMessage.scope,
+            data: existingMessage.data,
+            timestamp: existingMessage.timestamp
+          })
+          this.historyTurns = historyManager.loadIndexEntries(this.projectId, this.id)
+        }
+        return existingMessage
+      }
+    }
+
     if (
       operationId && (
         notificationType === 'session-runtime-ready' ||
@@ -2215,6 +2299,14 @@ class SessionInstance {
   }
 
   emitSystemNotification(notificationType, data = {}) {
+    if (this.deferMcpStartupNotificationsUntilMessage && isMcpStartupNotificationType(notificationType)) {
+      this.deferredMcpStartupNotifications.push({
+        notificationType,
+        data: { ...data }
+      })
+      return null
+    }
+
     const message = this.syncSystemNotificationMessage(notificationType, data)
     // 前端用同一个 ID 应用后续 message-snapshot，避免同一通知被追加两次。
     const payload = message
@@ -2230,6 +2322,18 @@ class SessionInstance {
 
     this.emit('system-notification', payload)
     return message
+  }
+
+  flushDeferredMcpStartupNotifications() {
+    this.deferMcpStartupNotificationsUntilMessage = false
+    if (this.deferredMcpStartupNotifications.length === 0) {
+      return
+    }
+
+    const pendingNotifications = this.deferredMcpStartupNotifications.splice(0)
+    for (const notification of pendingNotifications) {
+      this.emitSystemNotification(notification.notificationType, notification.data)
+    }
   }
 
   finalizePendingLifecycleNotification(notificationType = 'runtime-stopped', data = {}) {
@@ -3254,7 +3358,7 @@ class SessionInstance {
       } catch (e) {
         logger.warn(`[SessionInstance] Failed to resolve provider before startup status:`, e.message)
       }
-      await this.startRuntime()
+      await this.startRuntime({ deferMcpStartupNotifications: true })
     }
 
     // 添加到本地消息列表（使用真实 UUID）
@@ -3278,6 +3382,7 @@ class SessionInstance {
     this.saveMessageToHistory(displayMessage)
 
     this.emit('message', displayMessage)
+    this.flushDeferredMcpStartupNotifications()
 
     // 更新状态
     if (!isTargetedSubagent) {
@@ -3769,7 +3874,7 @@ class SessionInstance {
 
       if (!this.runtimeManager || !this.runtimeManager.isReady()) {
         this.loadResolvedRuntimeConfig()
-        await this.startRuntime()
+        await this.startRuntime({ deferMcpStartupNotifications: true })
       }
 
       const commandId = crypto.randomUUID()
@@ -3802,6 +3907,7 @@ class SessionInstance {
       this.activeResponseUserMessageId = displayMessage.id
       this.saveMessageToHistory(displayMessage)
       this.emit('message', displayMessage)
+      this.flushDeferredMcpStartupNotifications()
 
       this.isProcessing = true
       this.emit('state-update', { isProcessing: true })
@@ -4889,6 +4995,7 @@ class SessionInstance {
     // 作废进行中的启动：启动流程会在检查点发现代次变化，并自行回收 provider 进程
     this.runtimeStartToken += 1
     this.startPromise = null
+    this.flushDeferredMcpStartupNotifications()
 
     if (this.runtimeManager) {
       const t0 = Date.now()
@@ -4976,7 +5083,7 @@ class SessionInstance {
       }
     }
     logger.info(`[SessionInstance] Starting runtime via public start() method for session ${this.id}`)
-    return this.startRuntime()
+    return this.startRuntime(options)
   }
 
   /**

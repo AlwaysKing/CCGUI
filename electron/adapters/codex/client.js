@@ -46,35 +46,71 @@ function stripAnsi(value) {
   return String(value || '').replace(ANSI_ESCAPE_PATTERN, '')
 }
 
+function parseCodexStderrLevel(message = '') {
+  const match = String(message || '').match(/\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\b/i)
+  if (!match) {
+    return 'info'
+  }
+
+  const level = match[1].toUpperCase()
+  return level === 'WARN' || level === 'WARNING' ? 'warning' : level.toLowerCase()
+}
+
+function parseCodexToolRouterError(message = '') {
+  const routerMatch = String(message || '').match(/codex_core::tools::router\s*:\s*error=([\s\S]+)$/i)
+  if (!routerMatch) {
+    return null
+  }
+
+  const errorMessage = routerMatch[1].trim()
+  const applyPatchErrorIndex = errorMessage.search(/apply_patch verification failed/i)
+  if (applyPatchErrorIndex !== -1) {
+    const applyPatchMessage = errorMessage.slice(applyPatchErrorIndex)
+    const filePathMatch = applyPatchMessage.match(/Failed to find expected lines in (.+?):(?:\r?\n|$)/i)
+    return {
+      toolName: 'apply_patch',
+      errorType: 'apply_patch_verification_failed',
+      message: applyPatchMessage,
+      filePath: filePathMatch?.[1]?.trim() || null
+    }
+  }
+
+  const toolNameMatch = errorMessage.match(/^([a-zA-Z0-9_.:/-]+)\s+(?:is not allowed because|not allowed because|failed:|is not supported|not supported)/i)
+  let errorType = 'tool_router_error'
+  if (/^view_image\b/i.test(errorMessage)) {
+    errorType = 'unsupported_image_input'
+  } else if (/^write_stdin\b/i.test(errorMessage)) {
+    errorType = 'stdin_closed'
+  } else if (/not allowed because/i.test(errorMessage)) {
+    errorType = 'tool_not_allowed'
+  }
+
+  return {
+    toolName: toolNameMatch?.[1] || null,
+    errorType,
+    message: errorMessage
+  }
+}
+
 function buildCodexStderrEvent(rawMessage) {
   const message = stripAnsi(rawMessage).trim()
   if (!message) {
     return null
   }
 
-  const applyPatchErrorIndex = message.search(/apply_patch verification failed/i)
-  if (applyPatchErrorIndex === -1) {
-    return {
-      eventType: 'cli-status',
-      data: {
-        type: 'status',
-        message
-      }
-    }
-  }
-
-  const applyPatchMessage = message.slice(applyPatchErrorIndex)
-  const filePathMatch = applyPatchMessage.match(/Failed to find expected lines in (.+?):(?:\r?\n|$)/i)
+  const toolRouterError = parseCodexToolRouterError(message)
 
   return {
-    eventType: 'system-notification',
+    eventType: 'runtime-diagnostic',
     data: {
-      type: 'tool-error',
+      type: toolRouterError ? 'tool-router-error' : 'runtime-log',
       provider: 'codex',
-      toolName: 'apply_patch',
-      errorType: 'apply_patch_verification_failed',
-      message: applyPatchMessage,
-      filePath: filePathMatch?.[1]?.trim() || null
+      source: 'codex-cli',
+      stream: 'stderr',
+      level: parseCodexStderrLevel(message),
+      message: toolRouterError?.message || message,
+      raw: message,
+      ...(toolRouterError || {})
     }
   }
 }

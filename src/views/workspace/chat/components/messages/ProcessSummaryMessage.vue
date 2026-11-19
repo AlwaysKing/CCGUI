@@ -89,17 +89,23 @@ function toggle() {
   min-width: 0;
 }
 
+.process-summary-message :deep(.message) {
+  align-items: center;
+}
+
 .process-summary-message :deep(.message-avatar) {
-  background: transparent !important;
+  background: #15171b !important;
   border: 1.5px solid color-mix(in srgb, var(--accent-primary) 58%, transparent);
   color: transparent !important;
   font-size: 0 !important;
   box-shadow: none !important;
   box-sizing: border-box;
+  align-self: center;
 }
 
 .process-summary-message :deep(.message.avatar-small .message-avatar) {
   border-width: 1.2px;
+  margin-top: 0;
 }
 
 .process-summary-toggle {

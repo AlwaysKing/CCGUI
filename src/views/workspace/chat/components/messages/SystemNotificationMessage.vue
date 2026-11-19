@@ -74,6 +74,7 @@ const notificationTypeClass = computed(() => {
     notificationType === 'runtime-exit' ||
     notificationType === 'turn-error' ||
     notificationType === 'tool-error' ||
+    (notificationType === 'runtime-diagnostic' && props.message.data?.level === 'error') ||
     notificationType === 'mcp-server-error' ||
     (notificationType === 'mcp-server-status' && ['error', 'failed', 'disconnected'].includes(String(props.message.data?.status || '').toLowerCase())) ||
     (notificationType === 'account-login-completed' && props.message.data?.success === false) ||
@@ -264,6 +265,14 @@ const notificationContent = computed(() => {
       icon: '⚠️',
       title: `${providerLabel} 运行时提醒`,
       description: `${data.message || '收到 provider 运行时提醒'}${threadSuffix}`
+    })
+  }
+
+  if (notificationType === 'runtime-diagnostic') {
+    return finalizeNotificationContent({
+      icon: data.level === 'error' ? '⚠️' : '🪵',
+      title: data.level === 'error' ? '运行时错误' : '运行时诊断',
+      description: data.message || '收到运行时诊断信息'
     })
   }
 

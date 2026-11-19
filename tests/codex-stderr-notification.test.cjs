@@ -16,24 +16,84 @@ const applyPatchStderr = [
 ].join('\n')
 
 const applyPatchEvent = buildCodexStderrEvent(applyPatchStderr)
-assert.strictEqual(applyPatchEvent.eventType, 'system-notification')
-assert.strictEqual(applyPatchEvent.data.type, 'tool-error')
+assert.strictEqual(applyPatchEvent.eventType, 'runtime-diagnostic')
+assert.strictEqual(applyPatchEvent.data.type, 'tool-router-error')
 assert.strictEqual(applyPatchEvent.data.toolName, 'apply_patch')
 assert.strictEqual(applyPatchEvent.data.errorType, 'apply_patch_verification_failed')
 assert.strictEqual(applyPatchEvent.data.filePath, '/Users/example/project/scripts/rebuild.sh')
 assert(applyPatchEvent.data.message.startsWith('apply_patch verification failed:'))
 assert(!applyPatchEvent.data.message.includes('\u001b'))
 
-assert.deepStrictEqual(buildCodexStderrEvent('\u001b[33mruntime warning\u001b[0m'), {
-  eventType: 'cli-status',
-  data: {
-    type: 'status',
-    message: 'runtime warning'
-  }
-})
+const viewImageEvent = buildCodexStderrEvent(
+  '2026-11-19T02:01:49.128466Z ERROR codex_core::tools::router: error=view_image is not allowed because you do not support image inputs'
+)
+assert.strictEqual(viewImageEvent.eventType, 'runtime-diagnostic')
+assert.strictEqual(viewImageEvent.data.type, 'tool-router-error')
+assert.strictEqual(viewImageEvent.data.toolName, 'view_image')
+assert.strictEqual(viewImageEvent.data.errorType, 'unsupported_image_input')
+assert.strictEqual(viewImageEvent.data.level, 'error')
+assert.strictEqual(viewImageEvent.data.message, 'view_image is not allowed because you do not support image inputs')
+
+const warningEvent = buildCodexStderrEvent('\u001b[33mruntime warning\u001b[0m')
+assert.strictEqual(warningEvent.eventType, 'runtime-diagnostic')
+assert.strictEqual(warningEvent.data.type, 'runtime-log')
+assert.strictEqual(warningEvent.data.message, 'runtime warning')
+assert.strictEqual(warningEvent.data.level, 'warning')
 assert.strictEqual(buildCodexStderrEvent(' \n '), null)
 
 async function run() {
+  const { CodexAdapter } = require('../electron/adapters/codex/adapter')
+  const adapter = new CodexAdapter(process.cwd(), 'stderr-test-session', false)
+  const notifications = []
+  adapter.on('system-notification', notification => notifications.push(notification))
+
+  adapter.handleRuntimeDiagnostic(applyPatchEvent.data)
+  await new Promise(resolve => setTimeout(resolve, 850))
+  const toolErrorNotification = notifications.find(item => item.type === 'tool-error')
+  assert(toolErrorNotification)
+  assert.strictEqual(toolErrorNotification.toolName, 'apply_patch')
+
+  adapter.handleRuntimeDiagnostic(warningEvent.data)
+  const runtimeDiagnostic = notifications.find(item => item.type === 'runtime-diagnostic')
+  assert(runtimeDiagnostic)
+  assert.strictEqual(runtimeDiagnostic.level, 'warning')
+
+  const rawAdapter = new CodexAdapter(process.cwd(), 'raw-tool-test-session', false)
+  const rawNotifications = []
+  const toolMessages = []
+  rawAdapter.on('system-notification', notification => rawNotifications.push(notification))
+  rawAdapter.on('message-start', message => toolMessages.push(message))
+
+  rawAdapter.handleRuntimeDiagnostic(viewImageEvent.data)
+  assert.strictEqual(rawAdapter.pendingStderrToolErrors.size, 1)
+  rawAdapter.handleRawResponseItem({
+    threadId: 'thread-1',
+    turnId: 'turn-1',
+    item: {
+      type: 'function_call',
+      id: 'fc_call_1',
+      call_id: 'call_1',
+      name: 'view_image',
+      arguments: JSON.stringify({ path: '/tmp/example.png' })
+    }
+  })
+  rawAdapter.handleRawResponseItem({
+    threadId: 'thread-1',
+    turnId: 'turn-1',
+    item: {
+      type: 'function_call_output',
+      call_id: 'call_1',
+      output: viewImageEvent.data.message
+    }
+  })
+  assert.strictEqual(rawAdapter.pendingStderrToolErrors.size, 0)
+  assert.strictEqual(toolMessages.length, 1)
+  assert.strictEqual(toolMessages[0].id, 'call_1')
+  assert.strictEqual(toolMessages[0].toolName, 'ViewImage')
+  assert.strictEqual(toolMessages[0].isError, true)
+  assert.strictEqual(toolMessages[0].result, viewImageEvent.data.message)
+  assert.strictEqual(rawNotifications.length, 0)
+
   const projectId = 'project-id'
   const sessionId = 'session-id'
   const target = {
@@ -58,8 +118,8 @@ async function run() {
 
   const event = {
     sessionId,
-    eventType: applyPatchEvent.eventType,
-    data: applyPatchEvent.data,
+    eventType: 'system-notification',
+    data: toolErrorNotification,
     timestamp: new Date().toISOString()
   }
 

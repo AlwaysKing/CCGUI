@@ -20,7 +20,7 @@ export function isMcpLifecycleNotificationType(type = '') {
 }
 
 export function shouldIgnoreMcpNotificationUpdate(currentType = '', nextType = '') {
-  return currentType === nextType ||
+  return (currentType === nextType && currentType !== 'mcp-server-status') ||
     (currentType === 'mcp-server-error' && nextType === 'mcp-server-ready')
 }
 
@@ -33,7 +33,7 @@ export function findMcpNotificationByOperationId(queues, operationId) {
       const message = entries[index]
       if (
         message?.role === 'system_notification' &&
-        isMcpLifecycleNotificationType(message.notificationType) &&
+        isMcpNotificationType(message.notificationType) &&
         message.data?.operationId === operationId
       ) {
         return { queue, message }

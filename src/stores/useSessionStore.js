@@ -3,7 +3,6 @@ import { ref, computed, watch, reactive } from 'vue'
 import { QueueManager } from './AgentQueue'
 import {
   findMcpNotificationByOperationId,
-  isMcpLifecycleNotificationType,
   isMcpNotificationType,
   shouldIgnoreMcpNotificationUpdate
 } from './systemNotificationOperation'
@@ -1418,11 +1417,13 @@ export const useSessionStore = defineStore('session', () => {
       }
 
       session.queueManager.getOrCreateQueue(agentId)
+      const currentEntry = nextRegistry.get(agentId) || null
+      const historyRegistry = subagentHistory?.registry || null
       const historyStatus = resolveSubagentHistoryStatus(subagentHistory, session)
-      nextRegistry.set(agentId, mergeAgentRegistryEntry(nextRegistry.get(agentId), {
-        ...(subagentHistory?.registry || {}),
+      nextRegistry.set(agentId, mergeAgentRegistryEntry(currentEntry, {
+        ...(historyRegistry || {}),
         agentId,
-        agentKind: 'collaborative',
+        agentKind: currentEntry?.agentKind || historyRegistry?.agentKind || 'collaborative',
         ...(historyStatus ? { status: historyStatus } : {})
       }))
 
@@ -4185,7 +4186,7 @@ export const useSessionStore = defineStore('session', () => {
       session.runtimeReady = false
     }
 
-    const existingMcpNotification = operationId && isMcpLifecycleNotificationType(data?.type)
+    const existingMcpNotification = operationId && isMcpNotificationType(data?.type)
       ? findMcpNotificationByOperationId(session.queueManager.queues.values(), operationId)
       : null
 

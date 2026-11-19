@@ -145,6 +145,61 @@ function isCodexApprovalStyleElicitation(params = {}) {
   return Object.keys(getCodexElicitationProperties(params)).length === 0
 }
 
+function normalizeCodexFunctionOutput(output) {
+  if (typeof output === 'string') {
+    return output
+  }
+
+  if (Array.isArray(output)) {
+    const text = output
+      .map(item => {
+        if (typeof item === 'string') return item
+        if (item?.type === 'input_text' || item?.type === 'output_text') {
+          return item.text || ''
+        }
+        return item?.text || item?.content || ''
+      })
+      .filter(Boolean)
+      .join('\n')
+    return text || JSON.stringify(output, null, 2)
+  }
+
+  if (output === undefined || output === null) {
+    return ''
+  }
+
+  return typeof output === 'object'
+    ? JSON.stringify(output, null, 2)
+    : String(output)
+}
+
+function parseCodexToolArguments(value) {
+  if (value && typeof value === 'object') {
+    return value
+  }
+  if (typeof value !== 'string' || !value.trim()) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? parsed : { value: parsed }
+  } catch {
+    return { arguments: value }
+  }
+}
+
+function isCodexToolFailureOutput(output) {
+  const text = normalizeCodexFunctionOutput(output)
+  return /(?:^|\n)(?:[a-zA-Z0-9_.:/-]+\s+)?(?:is not allowed because|not allowed because|failed:|verification failed:|is not supported|not supported|permission denied)/i.test(text)
+}
+
+function buildCodexToolErrorSignature(toolName, message) {
+  return `${String(toolName || 'unknown').trim().toLowerCase()}|${String(message || '').trim()}`
+}
+
+const STDERR_TOOL_ERROR_FALLBACK_MS = 800
+
 /**
  * CodexAdapter
  *
@@ -169,6 +224,10 @@ class CodexAdapter extends CodexClient {
     this.turnPatchSections = new Map() // 用户消息 uuid -> Map<文件路径, diff 段落>
     this.turnPatchFiles = new Map() // turnId -> 该 turn 最近一次上报涉及的文件
     this._atReferencesCache = null
+    this.rawToolCalls = new Map()
+    this.rawToolErrorSignatures = new Set()
+    this.pendingStderrToolErrors = new Map()
+    this.on('runtime-diagnostic', (event) => this.handleRuntimeDiagnostic(event))
   }
 
   finalizeTurnCaches(turnId, userMessageUuid = null) {
@@ -228,6 +287,11 @@ class CodexAdapter extends CodexClient {
     this.turnMessageMap.delete(turnId)
     this.turnPatchFiles.delete(turnId)
     this.turnUserMessageUuids.delete(turnId)
+    for (const [callId, call] of this.rawToolCalls.entries()) {
+      if (call.turnId === turnId) {
+        this.rawToolCalls.delete(callId)
+      }
+    }
 
     for (const key of [...this.interruptingTurnKeys]) {
       if (key.includes(turnId)) {
@@ -1377,6 +1441,167 @@ class CodexAdapter extends CodexClient {
     }
   }
 
+  handleRuntimeDiagnostic(event = {}) {
+    const data = event && typeof event === 'object' ? event : {}
+    const message = typeof data.message === 'string' ? data.message.trim() : ''
+    if (!message) {
+      return
+    }
+
+    if (!data.toolName) {
+      this.emit('system-notification', {
+        ...data,
+        type: 'runtime-diagnostic',
+        provider: 'codex',
+        source: data.source || 'codex-cli',
+        level: data.level || 'info',
+        message,
+        raw: data.raw || message
+      })
+      return
+    }
+
+    const signature = buildCodexToolErrorSignature(data.toolName, message)
+    if (this.rawToolErrorSignatures.has(signature) || this.pendingStderrToolErrors.has(signature)) {
+      return
+    }
+
+    const pending = {
+      data: {
+        ...data,
+        type: 'tool-error',
+        provider: 'codex',
+        toolName: data.toolName,
+        message
+      },
+      timer: null
+    }
+    this.pendingStderrToolErrors.set(signature, pending)
+    pending.timer = setTimeout(() => {
+      if (this.pendingStderrToolErrors.get(signature) !== pending) {
+        return
+      }
+      this.pendingStderrToolErrors.delete(signature)
+      this.emit('system-notification', pending.data)
+    }, STDERR_TOOL_ERROR_FALLBACK_MS)
+    pending.timer.unref?.()
+  }
+
+  handleRawResponseItem(params = {}) {
+    const item = params?.item
+    if (!item || !item.type) {
+      return
+    }
+
+    const itemType = item.type
+    const isToolCall = itemType === 'function_call' || itemType === 'custom_tool_call'
+    const isToolOutput = itemType === 'function_call_output' || itemType === 'custom_tool_call_output'
+    if (!isToolCall && !isToolOutput) {
+      return
+    }
+
+    const callId = String(item.call_id || item.id || '').trim()
+    if (!callId) {
+      return
+    }
+
+    if (isToolCall) {
+      this.rawToolCalls.set(callId, {
+        callId,
+        itemId: item.id || null,
+        name: item.name || item.tool || null,
+        arguments: item.arguments ?? item.input ?? null,
+        threadId: params.threadId || null,
+        turnId: params.turnId || null,
+        item
+      })
+      return
+    }
+
+    const pendingCall = this.rawToolCalls.get(callId)
+    const call = pendingCall || {
+      callId,
+      itemId: item.id || null,
+      name: item.name || item.tool || null,
+      arguments: null,
+      threadId: params.threadId || null,
+      turnId: params.turnId || null,
+      item: null
+    }
+    const outputText = normalizeCodexFunctionOutput(item.output)
+    this.rawToolCalls.delete(callId)
+    if (!outputText || !isCodexToolFailureOutput(outputText)) {
+      return
+    }
+
+    const toolName = call.name || item.name || item.tool || 'unknown'
+    const errorSignature = buildCodexToolErrorSignature(toolName, outputText)
+    const pendingDiagnostic = this.pendingStderrToolErrors.get(errorSignature)
+    const existingMessageId = this.itemToMessageMap.get(callId)
+      || this.itemToMessageMap.get(call.itemId)
+      || this.itemToMessageMap.get(item.id)
+
+    if (existingMessageId) {
+      if (pendingDiagnostic) {
+        clearTimeout(pendingDiagnostic.timer)
+        this.pendingStderrToolErrors.delete(errorSignature)
+      }
+      this.rawToolErrorSignatures.add(errorSignature)
+      this.emit('message-update', {
+        messageId: existingMessageId,
+        updates: {
+          isExecuting: false,
+          isError: true,
+          result: outputText,
+          rawMessages: [call.item, item].filter(Boolean),
+          ccgui: this.buildCcguiPatch({
+            attribution: this.resolveAttributionFromThreadId(call.threadId || params.threadId)
+          })
+        }
+      })
+      return
+    }
+
+    // apply_patch 由 fileChange 和补丁通知链路负责，避免再生成一张重复工具卡。
+    if (toolName === 'apply_patch') {
+      return
+    }
+
+    if (pendingDiagnostic) {
+      clearTimeout(pendingDiagnostic.timer)
+      this.pendingStderrToolErrors.delete(errorSignature)
+    }
+    this.rawToolErrorSignatures.add(errorSignature)
+    if (this.rawToolErrorSignatures.size > 200) {
+      this.rawToolErrorSignatures.delete(this.rawToolErrorSignatures.values().next().value)
+    }
+
+    const now = new Date()
+    const messageId = callId
+    if (call.itemId) {
+      this.itemToMessageMap.set(call.itemId, messageId)
+    }
+    this.itemToMessageMap.set(callId, messageId)
+    this.emit('message-start', {
+      id: messageId,
+      role: 'tool_use',
+      toolName: normalizeToolName(toolName),
+      toolInput: parseCodexToolArguments(call.arguments),
+      result: outputText,
+      isError: true,
+      isExecuting: false,
+      request_id: callId,
+      tool_use_id: callId,
+      collapsed: false,
+      timestamp: now,
+      startTime: now.getTime(),
+      ccgui: this.buildCcguiPatch({
+        attribution: this.resolveAttributionFromThreadId(call.threadId || params.threadId)
+      }),
+      rawMessages: [call.item, item].filter(Boolean)
+    })
+  }
+
   handleNotification(message) {
     const { method, params } = message
 
@@ -1748,11 +1973,13 @@ class CodexAdapter extends CodexClient {
         break
 
       case 'rawResponseItem/completed':
+        this.handleRawResponseItem(params || {})
+        this.emitCodexSilentEvent('raw-response-item-completed', params || {})
+        break
+
       case 'serverRequest/resolved':
         this.emitCodexSilentEvent(
-          method === 'serverRequest/resolved'
-            ? 'server-request-resolved'
-            : 'raw-response-item-completed',
+          'server-request-resolved',
           params || {}
         )
         break
@@ -2218,7 +2445,7 @@ class CodexAdapter extends CodexClient {
 
     if (item.type === 'agentMessage' || item.type === 'reasoning' || item.type === 'plan') {
       if (item.type === 'agentMessage' && item.text) {
-        const messageId = this.ensureAssistantMessage(params.turnId, item.id, params.threadId)
+        const messageId = this.ensureAssistantMessage(params.turnId, item.id, params.threadId, 'content')
         this.emit('message-delta', {
           messageId,
           field: 'content',
@@ -2226,7 +2453,7 @@ class CodexAdapter extends CodexClient {
         })
       }
       if (item.type === 'reasoning' && Array.isArray(item.content) && item.content.length > 0) {
-        const messageId = this.ensureAssistantMessage(params.turnId, item.id, params.threadId)
+        const messageId = this.ensureAssistantMessage(params.turnId, item.id, params.threadId, 'thinking')
         const thinkingText = item.content.join('\n')
         this.emit('message-delta', {
           messageId,
@@ -2235,7 +2462,7 @@ class CodexAdapter extends CodexClient {
         })
       }
       if (item.type === 'plan' && item.text) {
-        const messageId = this.ensureAssistantMessage(params.turnId, item.id, params.threadId)
+        const messageId = this.ensureAssistantMessage(params.turnId, item.id, params.threadId, 'thinking')
         this.emit('message-delta', {
           messageId,
           field: 'thinking',
@@ -2349,7 +2576,7 @@ class CodexAdapter extends CodexClient {
     })
   }
 
-  ensureAssistantMessage(turnId, itemId, threadId = null) {
+  ensureAssistantMessage(turnId, itemId, threadId = null, field = null) {
     const currentState = this.turnAssistantState.get(turnId)
     if (currentState?.messageId && currentState.itemId === itemId) {
       this.itemToMessageMap.set(itemId, currentState.messageId)
@@ -2379,9 +2606,10 @@ class CodexAdapter extends CodexClient {
     this.emit('message-start', {
       id: messageId,
       role: 'assistant',
+      subtype: field === 'thinking' ? 'thinking' : null,
       content: '',
       thinking: '',
-      hasThinking: false,
+      hasThinking: field === 'thinking',
       isStreaming: true,
       startTime: Date.now(),
       timestamp: new Date(),
@@ -2395,7 +2623,7 @@ class CodexAdapter extends CodexClient {
   }
 
   emitAssistantDelta(turnId, itemId, field, delta, threadId = null) {
-    const messageId = this.ensureAssistantMessage(turnId, itemId, threadId)
+    const messageId = this.ensureAssistantMessage(turnId, itemId, threadId, field)
     this.emit('message-delta', {
       messageId,
       field,

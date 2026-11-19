@@ -316,7 +316,8 @@ export function useWorkspaceDialogs({
 
       await window.electronAPI.startSession({
         sessionId: session.id,
-        projectPath: store.currentProject?.path
+        projectPath: store.currentProject?.path,
+        deferMcpStartupNotifications: session?.deferMcpStartupNotifications === true
       })
       logger.info('[Workspace] Runtime process started for session:', session.id)
     } catch (error) {
